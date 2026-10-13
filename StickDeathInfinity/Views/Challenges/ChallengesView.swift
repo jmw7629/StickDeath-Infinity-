@@ -1,198 +1,133 @@
 import SwiftUI
 
+/// Scheduled community challenges from `sdi_challenge_action`. Phases come
+/// from the server clock, entry counts are server totals, and reward text is
+/// shown only when a moderator configured one. No coins, prizes or money.
 struct ChallengesView: View {
-    @State private var selectedFilter = "active"
-    @State private var challenges: [Challenge] = []
-    @State private var isLoading = false
-    @State private var loadError: String?
-    @State private var selectedChallenge: Challenge?
-    
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var selectedPhase: ChallengePhase = .active
+    @State private var challenges: [ChallengeSummary] = []
+    @State private var clock: ChallengeClock?
+    @State private var tick = Date()
+    @State private var busy = false
+    @State private var loaded = false
+    @State private var error: String?
+    @State private var selected: ChallengeSummary?
+    @State private var epoch = UUID()
+    private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(phase == .active)" }
+    private var serverNow: Date { clock?.now(deviceNow: tick) ?? tick }
+    private var visible: [ChallengeSummary] { challenges.filter { $0.phase(at: serverNow) == selectedPhase } }
+
     var body: some View {
-        ZStack {
-            Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            VStack(spacing: 0) {
-                // Header
-                HStack {
-                    Text("🏆")
-                        .font(.system(size: 24))
-                    Text("Challenges")
-                        .font(.system(size: 20, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                
-                // Filter tabs
+        VStack(spacing: 0) {
+            HStack {
+                Text("Challenges").communityHeading()
+                Spacer()
+                Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44, height: 44) }
+                    .disabled(busy).accessibilityLabel("Refresh challenges")
+                    .accessibilityIdentifier("challenges.list.refresh")
+            }.padding(.horizontal, 16).padding(.vertical, 12)
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(["active", "upcoming", "voting", "completed"], id: \.self) { filter in
-                        Button(action: { selectedFilter = filter }) {
-                            Text(filter.capitalized)
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundColor(selectedFilter == filter ? .white : .white.opacity(0.4))
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(selectedFilter == filter ? Color.red : Color(hex: "1A1A24"))
-                                .cornerRadius(8)
-                        }
+                    ForEach(ChallengePhase.listed, id: \.self) { phaseOption in
+                        Button(phaseOption.title) { selectedPhase = phaseOption }
+                            .font(.specialElite(13, relativeTo: .footnote))
+                            .padding(.horizontal, 14).frame(minHeight: 40)
+                            .background(selectedPhase == phaseOption ? StudioCraftTheme.accent : StudioCraftTheme.card)
+                            .foregroundStyle(Color.white)
+                            .clipShape(Capsule())
+                            .accessibilityAddTraits(selectedPhase == phaseOption ? .isSelected : [])
+                            .accessibilityIdentifier("challenges.filter." + phaseOption.rawValue)
                     }
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-                
-                Divider().background(Color.white.opacity(0.06))
-                
-                // Challenges list
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        if isLoading { ProgressView().tint(.red) }
-                        if let loadError { Text(loadError).font(.caption).foregroundColor(.gray) }
-                        if !isLoading && challenges.filter({ $0.presentationStatus == selectedFilter }).isEmpty {
-                            Text(selectedFilter == "voting" ? "Voting challenges are unavailable from the current service." : "No challenges in this category.")
-                                .font(.callout).foregroundColor(.gray).padding()
-                        }
-                        ForEach(challenges.filter { $0.presentationStatus == selectedFilter }) { challenge in
-                            ChallengeCard(challenge: challenge) {
-                                selectedChallenge = challenge
-                            }
-                        }
+                }.padding(.horizontal, 16)
+            }.padding(.bottom, 8)
+            Divider().background(StudioCraftTheme.separator)
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    if !CommunityServices.isConfigured { CommunityMessage(text: CommunityServices.notConfiguredText, kind: .info) }
+                    if !auth.isAuthenticated {
+                        CommunitySignInPrompt(text: "Sign in to see scheduled challenges", identifier: "challenges.sign-in")
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                }
+                    if busy { ProgressView().tint(StudioCraftTheme.accent) }
+                    if let error { CommunityMessage(text: error, kind: .error).accessibilityIdentifier("challenges.list.error") }
+                    if let clock { Text("Phases use the server clock (\(clock.serverTime.formatted(date: .omitted, time: .shortened)) at last refresh).").communityCaption() }
+                    ForEach(visible) { challenge in
+                        ChallengeCard(challenge: challenge, serverNow: serverNow) { selected = challenge }
+                    }
+                    if auth.isAuthenticated && loaded && !busy && visible.isEmpty && error == nil {
+                        Text("No \(selectedPhase.title.lowercased()) challenges.").communityCaption().padding()
+                            .accessibilityIdentifier("challenges.list.empty")
+                    }
+                }.padding(.horizontal, 16).padding(.vertical, 12).padding(.bottom, 60)
             }
         }
-        .task { await loadChallenges() }
-        .refreshable { await loadChallenges() }
-        .sheet(item: $selectedChallenge) { challenge in
-            ChallengeDetailView(challenge: challenge)
+        .communityScreen()
+        .task(id: identity) {
+            epoch = UUID(); challenges = []; clock = nil; loaded = false; error = nil; selected = nil
+            if phase == .active { await load() }
+            // Recompute phases against the server anchor without re-fetching.
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+                tick = Date()
+            }
+        }
+        .refreshable { await load() }
+        .sheet(item: $selected) { challenge in
+            ChallengeDetailView(challenge: challenge, clock: clock)
         }
     }
-    @MainActor private func loadChallenges() async {
-        guard !isLoading else { return }
-        isLoading = true
-        defer { isLoading = false }
+    @MainActor private func load() async {
+        guard !busy, auth.isAuthenticated, let account = auth.userId else { return }
+        let revision = epoch
+        busy = true; defer { if revision == epoch { busy = false } }
         do {
-            challenges = try await ChallengeService.shared.fetchChallenges()
-            loadError = nil
+            let listing = try await CommunityServices.challenges.list()
+            guard !Task.isCancelled, revision == epoch, account == auth.userId else { return }
+            challenges = listing.challenges; clock = listing.clock; tick = Date(); loaded = true; error = nil
         } catch {
-            loadError = "Challenges could not be loaded. Check your connection and account configuration."
+            if revision == epoch { challenges = []; clock = nil; loaded = true; self.error = CommunityGateway.normalize(error).errorDescription }
         }
     }
-
 }
 
 struct ChallengeCard: View {
-    let challenge: Challenge
+    let challenge: ChallengeSummary
+    let serverNow: Date
     let onTap: () -> Void
-    
+    private var phase: ChallengePhase { challenge.phase(at: serverNow) }
+    private var timing: String {
+        switch phase {
+        case .upcoming: return challenge.starts_at.map { "Opens \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "Start not scheduled"
+        case .active: return challenge.submissions_close_at.map { "Submissions close \($0.formatted(date: .abbreviated, time: .shortened))" } ?? ""
+        case .voting: return challenge.voting_ends_at.map { "Voting ends \($0.formatted(date: .abbreviated, time: .shortened))" } ?? ""
+        case .completed: return challenge.voting_ends_at.map { "Ended \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "Ended"
+        case .cancelled: return "Cancelled"
+        case .draft: return "Not scheduled"
+        }
+    }
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 0) {
-                // Banner
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color(hex: challenge.gradientStart), Color(hex: challenge.gradientEnd)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(height: 100)
-                    
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(challenge.emoji)
-                                .font(.system(size: 28))
-                            Text(challenge.title)
-                                .font(.system(size: 16, weight: .black, design: .monospaced))
-                                .foregroundColor(.white)
-                        }
-                        Spacer()
-                        
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text(challenge.reward)
-                                .font(.system(size: 18, weight: .bold, design: .monospaced))
-                                .foregroundColor(.yellow)
-                            Text("Prize")
-                                .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.6))
-                        }
-                    }
-                    .padding(16)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                
-                // Info
-                HStack {
-                    HStack(spacing: 4) {
-                        Image(systemName: "person.2.fill")
-                            .font(.system(size: 9))
-                        Text(challenge.entriesLabel)
-                            .font(.system(size: 10))
-                    }
-                    .foregroundColor(.white.opacity(0.4))
-                    
+            CommunityCard {
+                HStack(alignment: .top) {
+                    Text(challenge.title).font(.specialElite(18, relativeTo: .title3)).foregroundStyle(StudioCraftTheme.text)
                     Spacer()
-                    
-                    HStack(spacing: 4) {
-                        Image(systemName: "clock.fill")
-                            .font(.system(size: 9))
-                        Text(challenge.timeLeft)
-                            .font(.system(size: 10, weight: .bold))
-                    }
-                    .foregroundColor(.red)
+                    Text(phase.title).font(.specialElite(11, relativeTo: .caption2))
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(StudioCraftTheme.accentSoft).foregroundStyle(StudioCraftTheme.accentText)
+                        .clipShape(Capsule())
                 }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 8)
+                if !challenge.brief.isEmpty { Text(challenge.brief).font(.specialElite(13, relativeTo: .footnote)).foregroundStyle(StudioCraftTheme.textDim).lineLimit(3) }
+                HStack(spacing: 14) {
+                    Label("\(challenge.entry_count) \(challenge.entry_count == 1 ? "entry" : "entries")", systemImage: "person.2")
+                    Label(timing, systemImage: "clock")
+                }.font(.specialElite(12, relativeTo: .caption)).foregroundStyle(StudioCraftTheme.textDim)
+                if challenge.hasReward { Text("Reward (as configured): \(challenge.reward_text)").communityCaption() }
+                if challenge.my_entry { Text("You have an entry in this challenge.").communityCaption() }
+                if let outcome = challenge.outcomeText { Text(outcome).font(.specialElite(13, relativeTo: .footnote)).foregroundStyle(StudioCraftTheme.accentText) }
             }
-            .padding(12)
-            .background(Color(hex: "12121A"))
-            .cornerRadius(16)
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
-            )
         }
         .buttonStyle(.plain)
-    }
-}
-
-// The inline route shares the canonical detail view and Challenge model.
-struct InlineChallengeDetailView: View {
-    let challenge: Challenge
-    var body: some View { ChallengeDetailView(challenge: challenge) }
-}
-
-extension Challenge {
-    var presentationStatus: String { status == .ended ? "completed" : (status?.rawValue ?? "unknown") }
-    var gradientStart: String { status == .upcoming ? "581C87" : status == .ended ? "713F12" : "7F1D1D" }
-    var gradientEnd: String { status == .upcoming ? "7C3AED" : status == .ended ? "B45309" : "991B1B" }
-    var emoji: String { "🏆" }
-    var reward: String { prizeDescription ?? "Not specified" }
-    var entriesLabel: String { submissionCount.map { "\($0) entries" } ?? "Entries unavailable" }
-    var timeLeft: String {
-        if status == .ended { return "Ended" }
-        guard let raw = status == .upcoming ? startDate : endDate else { return "Date unavailable" }
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var parsedDate = parser.date(from: raw)
-        if parsedDate == nil {
-            parser.formatOptions = [.withInternetDateTime]
-            parsedDate = parser.date(from: raw)
-        }
-        guard let date = parsedDate else { return "Date unavailable" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
-    }
-}
-
-struct ChallengesView_Previews: PreviewProvider {
-    static var previews: some View {
-        ChallengesView()
+        .accessibilityIdentifier("challenges.list.card")
     }
 }

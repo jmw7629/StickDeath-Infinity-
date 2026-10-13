@@ -23,16 +23,22 @@ struct AdminDashboardView: View {
     @State private var permissionRequest = UUID()
     @State private var permissionMessage: String? = "Verify MFA and refresh access."
     @State private var loadingPermissions = false
+    @State private var stepUpCurrent: Bool?
+    /// Tab visibility mirrors the server capability each panel's RPC requires.
+    /// Seeing a tab grants nothing; every reply is server-authorized with MFA.
     private var visibleTabs: [(id: String, icon: String, label: String)] {
         guard usesLiveOverview else { return tabs }
-        let needed = ["dashboard": "overview", "users": "users", "approvals": "reviews", "decisions": "reviews",
+        let needed = ["dashboard": "overview", "health": "overview", "agents": "overview", "analytics": "overview",
+                      "users": "users", "approvals": "reviews", "decisions": "reviews", "spatter": "reviews",
                       "publishing": "publishing", "moderation": "moderation", "warReports": "moderation",
-                      "warAppeals": "moderation", "content": "moderation", "billing": "finance"]
+                      "warAppeals": "moderation", "content": "moderation", "challenges": "moderation",
+                      "roomReports": "moderation", "removalAppeals": "moderation", "finance": "finance"]
         return tabs.filter { isOwner || needed[$0.id].map { capabilities.contains($0) } == true }
     }
-    
+
     let tabs: [(id: String, icon: String, label: String)] = [
         ("dashboard", "chart.bar.fill", "Dashboard"),
+        ("health", "waveform.path.ecg", "Service health"),
         ("users", "person.2.fill", "Users"),
         ("permissions", "key", "Permissions"),
         ("content", "doc.fill", "Content"),
@@ -40,14 +46,15 @@ struct AdminDashboardView: View {
         ("decisions", "clock.arrow.circlepath", "Decision history"),
         ("publishing", "arrow.up.doc", "Publishing"),
         ("challenges", "trophy.fill", "Challenges"),
-        ("spatter", "brain.fill", "Spatter AI"),
-        ("bots", "cpu.fill", "AI Bots"),
-        ("analytics", "chart.xyaxis.line", "Analytics"),
+        ("agents", "cpu.fill", "Agents"),
         ("moderation", "shield.fill", "Moderation"),
         ("warReports", "flag", "War Room reports"),
         ("warAppeals", "arrow.uturn.backward.circle", "War Room appeals"),
-        ("settings", "gearshape.fill", "Settings"),
-        ("billing", "creditcard.fill", "Billing"),
+        ("roomReports", "person.3", "Room reports"),
+        ("removalAppeals", "arrow.uturn.backward", "Removal appeals"),
+        ("finance", "creditcard.fill", "Finance"),
+        ("spatter", "brain.fill", "Spatter AI"),
+        ("analytics", "chart.xyaxis.line", "Analytics"),
     ]
     
     var body: some View {
@@ -117,11 +124,18 @@ struct AdminDashboardView: View {
                 ScrollView {
                     VStack(spacing: 12) {
                         if let permissionMessage, usesLiveOverview { Text(permissionMessage).font(.caption) }
+                        if usesLiveOverview, stepUpCurrent == false {
+                            Text("Privileged actions need a recent authenticator verification (15-minute window). Verify MFA before changing roles, agents, finance products or account states.")
+                                .font(.caption).foregroundStyle(StudioCraftTheme.warning)
+                                .accessibilityIdentifier("admin.step-up.notice")
+                        }
                         if !usesLiveOverview || visibleTabs.contains(where: { $0.id == selectedTab }) {
                         switch selectedTab {
                         case "dashboard":
                             if usesLiveOverview { AdminLiveOverviewContent() }
                             else { AdminDashboardContent(state: overview.state) }
+                        case "health":
+                            AdminHealthContent()
                         case "users":
                             AdminUsersContent()
                         case "permissions":
@@ -136,22 +150,24 @@ struct AdminDashboardView: View {
                             AdminContentContent()
                         case "challenges":
                             AdminChallengesContent()
-                        case "spatter":
-                            AdminSpatterContent()
-                        case "bots":
-                            AdminBotsContent()
-                        case "analytics":
-                            AdminAnalyticsContent()
+                        case "agents":
+                            AdminAgentsContent()
                         case "moderation":
                             AdminModerationContent()
                         case "warReports":
                             AdminWarReportsContent()
                         case "warAppeals":
                             AdminWarAppealsContent()
-                        case "settings":
-                            AdminSettingsContent()
-                        case "billing":
-                            AdminBillingContent()
+                        case "roomReports":
+                            AdminRoomReportsContent()
+                        case "removalAppeals":
+                            AdminRemovalAppealsContent()
+                        case "finance":
+                            AdminFinanceContent()
+                        case "spatter":
+                            AdminSpatterContent()
+                        case "analytics":
+                            AdminAnalyticsContent()
                         default:
                             EmptyView()
                         }
@@ -168,10 +184,12 @@ struct AdminDashboardView: View {
         }
         .onChange(of: scenePhase) { _, phase in if phase != .active { overview.invalidate(); clearPermissions() } }
         .onDisappear { overview.invalidate(); clearPermissions() }
-        .sheet(isPresented: $showAuthenticator, onDismiss: { Task { await refreshPermissions() } }) { NavigationStack { AccountAuthenticatorView() } }
+        .sheet(isPresented: $showAuthenticator, onDismiss: { Task { await refreshPermissions() } }) {
+            NavigationStack { AccountAuthenticatorView(onVerified: { CommunityServices.admin.recordVerification() }) }
+        }
     }
     private func clearPermissions() {
-        permissionRequest = UUID(); capabilities = []; isOwner = false; loadingPermissions = false
+        permissionRequest = UUID(); capabilities = []; isOwner = false; loadingPermissions = false; stepUpCurrent = nil
     }
     private func refreshPermissions() async {
         guard usesLiveOverview else { return }
@@ -182,19 +200,34 @@ struct AdminDashboardView: View {
         let id = UUID(); permissionRequest = id; loadingPermissions = true; permissionMessage = "Loading current permissions…"
         defer { if permissionRequest == id { loadingPermissions = false } }
         do {
-            let client = try SupabaseManager.shared.client
-            let result: AdminAccessResponse = try await client.rpc("sdi_admin_permissions", params: ["action": "mine"]).execute().value
+            let access = try await CommunityServices.admin.access()
             guard !Task.isCancelled, permissionRequest == id, account == authVM.userId, scenePhase == .active else { return }
-            guard result.error == nil, let owner = result.owner, let granted = result.capabilities else {
-                permissionMessage = result.error ?? "Administrator access unavailable."; return
-            }
-            isOwner = owner; capabilities = Set(granted); permissionMessage = nil
+            isOwner = access.owner; capabilities = access.capabilities; stepUpCurrent = access.stepUpCurrent; permissionMessage = nil
             if !visibleTabs.contains(where: { $0.id == selectedTab }) { selectedTab = visibleTabs.first?.id ?? "" }
             if visibleTabs.isEmpty { permissionMessage = "No administrative capabilities have been granted." }
-        } catch { if permissionRequest == id { permissionMessage = "Access unavailable. Verify MFA and refresh; server permissions are required." } }
+        } catch {
+            guard permissionRequest == id else { return }
+            if case .server(let message, _) = CommunityGateway.normalize(error) { permissionMessage = message }
+            else { permissionMessage = "Access unavailable. Verify MFA and refresh; server permissions are required." }
+        }
     }
 }
-private struct AdminAccessResponse: Decodable { let error: String?; let owner: Bool?; let capabilities: [String]? }
+
+/// Shown before a privileged action when the recent re-authentication window
+/// is not current (#210). Nothing is sent until the member verifies again.
+private struct AdminStepUpBanner: View {
+    let message: String
+    @State private var showing = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(message).font(.caption).foregroundStyle(StudioCraftTheme.warning)
+            Button("Verify authenticator now") { showing = true }
+                .font(.caption).accessibilityIdentifier("admin.step-up.verify")
+        }
+        .sheet(isPresented: $showing) { NavigationStack { AccountAuthenticatorView(onVerified: { CommunityServices.admin.recordVerification() }) } }
+        .accessibilityIdentifier("admin.step-up.banner")
+    }
+}
 
 // MARK: - Read-only verified overview
 @MainActor
@@ -335,6 +368,7 @@ struct AdminUsersContent: View {
     @State private var more = true
     @State private var busy = false
     @State private var error: String?
+    @State private var stepUp: String?
     @State private var generation = UUID()
     private var client: SupabaseClient { get throws { try SupabaseManager.shared.client } }
     var body: some View {
@@ -349,6 +383,7 @@ struct AdminUsersContent: View {
             }
             TextField("Reason for account action", text: $reason, axis: .vertical).lineLimit(2...4)
             if let error { Text(error).foregroundColor(.red) }
+            if let stepUp { AdminStepUpBanner(message: stepUp) }
             if busy { ProgressView() }
             ForEach(users) { user in
                 VStack(alignment: .leading, spacing: 8) {
@@ -422,6 +457,8 @@ struct AdminUsersContent: View {
     @MainActor private func apply(_ pending: AdminPendingAccountAction) async {
         guard !busy, auth.isAuthenticated, phase == .active, pending.generation == generation else { return }
         pendingAction = nil
+        if let prompt = CommunityServices.admin.stepUpPrompt(for: "users.\(pending.action)") { stepUp = prompt; return }
+        stepUp = nil
         let epoch = generation, account = auth.userId; busy = true
         defer { if epoch == generation { busy = false } }
         do {
@@ -568,31 +605,36 @@ private struct AdminCurationIntent { let post: AdminContentEntry; let reason: St
 private struct AdminCurationRequest: Encodable { let post: UUID; let revision: Int; let featured: Bool; let reason: String }
 private struct AdminCurationResponse: Decodable { let status: String?; let error: String? }
 
-// MARK: - Challenges Tab
-struct AdminChallengesContent: View {
-    var body: some View {
-        AdminInfoCard(title: "Challenge administration", value: "—", detail: "Service connection pending. No sample data or local-only controls.")
-    }
-}
-
 // MARK: - Spatter AI Tab
+/// Spatter videos are approved render by render in Video approvals (owner
+/// only). The generation service has no status contract exposed to this
+/// client, so no counts, schedules or costs are shown here.
 struct AdminSpatterContent: View {
     var body: some View {
-        AdminInfoCard(title: "Spatter operations", value: "—", detail: "Service connection pending. No sample data or local-only controls.")
-    }
-}
-
-// MARK: - Bots Tab
-struct AdminBotsContent: View {
-    var body: some View {
-        AdminInfoCard(title: "Agent operations", value: "—", detail: "Service connection pending. No sample data or local-only controls.")
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Spatter operations").font(.specialElite(22))
+            Text("Every Spatter-generated video reaches the feed, channel or social only after the owner approves the exact render in Video approvals. Generation schedules, quotas and the emergency stop are managed in the Agents tab (agent key spatter_daily_video) once the agent controls are deployed.")
+                .font(.caption)
+            Text("No generation status, draft count or provider cost is connected to this build; nothing is estimated.")
+                .font(.caption).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            .background(Color(hex: "12121A")).cornerRadius(12)
+            .accessibilityIdentifier("admin.spatter.status")
     }
 }
 
 // MARK: - Analytics Tab
+/// Business analytics have no server contract; the overview and health tabs
+/// show the counts that exist. Nothing is sampled or estimated here.
 struct AdminAnalyticsContent: View {
     var body: some View {
-        AdminInfoCard(title: "Analytics", value: "—", detail: "Service connection pending. No sample data or local-only controls.")
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Analytics").font(.specialElite(22))
+            Text("Engagement analytics are not connected. Registered-user, review, publishing and report counts are on the Dashboard; queue depth, worker liveness and denials are under Service health.")
+                .font(.caption)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            .background(Color(hex: "12121A")).cornerRadius(12)
+            .accessibilityIdentifier("admin.analytics.status")
     }
 }
 
@@ -606,6 +648,7 @@ struct AdminModerationContent: View {
     @State private var note = ""
     @State private var busy = false
     @State private var error: String?
+    @State private var stepUp: String?
     @State private var generation = UUID()
     private var client: SupabaseClient { get throws { try SupabaseManager.shared.client } }
     var body: some View {
@@ -614,6 +657,7 @@ struct AdminModerationContent: View {
             Text("Removal hides the rendition from the app and queues external removal. It does not claim an external platform has removed it.").font(.caption)
             Button("Refresh reports") { Task { await load() } }.disabled(busy)
             if let error { Text(error).foregroundColor(.red) }
+            if let stepUp { AdminStepUpBanner(message: stepUp) }
             if busy { ProgressView() }
             if let selected {
                 Text(selected.title).font(.specialElite(18))
@@ -663,6 +707,8 @@ struct AdminModerationContent: View {
     }
     @MainActor private func decide(_ action: String) async {
         guard !busy, let selected else { return }
+        if action == "remove", let prompt = CommunityServices.admin.stepUpPrompt(for: "moderation.remove") { stepUp = prompt; return }
+        stepUp = nil
         let epoch = generation; busy = true
         do {
             let response: ModerationResponse = try await client.rpc("sdi_moderation_action", params: ModerationRequest(action: action, report: selected.id, version: selected.version, note: note)).execute().value
@@ -678,20 +724,6 @@ private struct ModerationResponse: Decodable { let error: String?; let status: S
 private struct ModerationReport: Decodable, Identifiable {
     let id: UUID; let reason: String; let version: Int; let created_at: Date
     let caption: String; let creator: UUID; let title: String; let url: String; let render_digest: String
-}
-
-// MARK: - Settings Tab
-struct AdminSettingsContent: View {
-    var body: some View {
-        AdminInfoCard(title: "Service settings", value: "—", detail: "Service connection pending. No sample data or local-only controls.")
-    }
-}
-
-// MARK: - Billing Tab
-struct AdminBillingContent: View {
-    var body: some View {
-        AdminInfoCard(title: "Finance and billing", value: "—", detail: "Service connection pending. No sample data or local-only controls.")
-    }
 }
 
 // MARK: - Reusable Info Card
@@ -735,6 +767,8 @@ private struct AdminVideoApprovalContent: View {
     @State private var selected: RenderReview?
     @State private var player: AVPlayer?
     @State private var acknowledged = false
+    @State private var history: [AdminRenderDecisionRecord] = []
+    @State private var historyNote: String?
     @State private var generation = UUID()
     private var client: SupabaseClient { get throws { try SupabaseManager.shared.client } }
     private var identity: String { "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)" }
@@ -759,7 +793,21 @@ private struct AdminVideoApprovalContent: View {
                 Text("Consent: \(selected.consent_version)").font(.caption)
                 Text(selected.rights_summary)
                 Text("Destinations: \(selected.destinations.joined(separator: ", "))")
+                Text("Script and storyboard: not supplied by the review service for this render; the decision binds to the exact rendered video, its source revision, consent and destinations above.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("admin.review.storyboard")
                 if selected.spatter_generated { Text("Spatter video — owner approval required").foregroundColor(.red) }
+                DisclosureGroup("Decision history for this render (\(history.count))") {
+                    if let historyNote { Text(historyNote).font(.caption) }
+                    ForEach(history) { decision in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(decision.decision) · version \(decision.review_version) · \(decision.created_at.formatted())").font(.caption)
+                            Text(decision.owner_at_decision ? "Owner at decision time" : "Administrator at decision time").font(.caption)
+                            Text("Render: \(decision.render_digest.prefix(16))…").font(.caption.monospaced())
+                            if !decision.note.isEmpty { Text(decision.note).font(.caption) }
+                        }.padding(.vertical, 3)
+                    }
+                }.font(.caption).accessibilityIdentifier("admin.review.history")
                 Toggle("I reviewed this exact video with audio, its rights and its destinations.", isOn: $acknowledged)
                 TextField("Decision notes / rights evidence", text: $note, axis: .vertical).lineLimit(2...5)
                 Text(selected.rights_cleared ? "Rights cleared — publication still needs a separate approval." : "Rights pending — record the evidence reviewed before approving.")
@@ -779,11 +827,13 @@ private struct AdminVideoApprovalContent: View {
             ForEach(reviews) { review in
                 Button(review.title) {
                     player?.pause(); selected = review; note = ""; acknowledged = false; player = nil
+                    history = []; historyNote = nil
+                    Task { await loadHistory(review.id) }
                     guard review.preview_expires_at > Date(), let parts = URLComponents(string: review.preview_url),
                           parts.scheme == "https", parts.host != nil, parts.user == nil, parts.password == nil,
                           let url = parts.url else { error = "Preview expired or unavailable. Refresh the queue."; return }
                     player = AVPlayer(url: url)
-                }.font(.specialElite(16)).padding(10)
+                }.font(.specialElite(16)).padding(10).accessibilityIdentifier("admin.review.select")
             }
             if reviews.isEmpty && !loading && error == nil { Text("No pending renders.") }
         }
@@ -806,6 +856,17 @@ private struct AdminVideoApprovalContent: View {
             guard let items = response.reviews, let isOwner = response.owner else { error = "Invalid review response."; return }
             reviews = items; owner = isOwner; error = nil
         } catch { if revision == generation { reviews = []; owner = false; self.error = "Review queue unavailable. Check your administrator session and MFA." } }
+    }
+    /// Earlier decisions on the same render from the audited history (latest
+    /// pages only; the note says how far the search went).
+    @MainActor private func loadHistory(_ review: UUID) async {
+        let revision = generation
+        do {
+            let result = try await CommunityServices.admin.decisions(for: review, pages: 3)
+            guard !Task.isCancelled, revision == generation, selected?.id == review else { return }
+            history = result.records
+            historyNote = result.records.isEmpty ? "No earlier decisions in the latest \(result.searchedPages * 50) history records." : "Searched the latest \(result.searchedPages * 50) history records."
+        } catch { if revision == generation, selected?.id == review { historyNote = "Decision history unavailable: \(CommunityGateway.normalize(error).errorDescription ?? "")" } }
     }
     @MainActor private func decide(_ decision: String) async {
         guard !loading, let selected, note.count <= 2000 else { return }
@@ -1010,7 +1071,7 @@ private struct AdminPublishingContent: View {
 private struct AdminReviewHistoryContent: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
-    @State private var decisions: [AdminRenderDecision] = []
+    @State private var decisions: [AdminRenderDecisionRecord] = []
     @State private var page = 0
     @State private var busy = false
     @State private var error: String?
@@ -1061,20 +1122,11 @@ private struct AdminReviewHistoryContent: View {
         let id = UUID(); requestID = id; busy = true
         defer { if requestID == id { busy = false } }
         do {
-            let client = try SupabaseManager.shared.client
-            let result: AdminReviewHistoryResponse = try await client.rpc("sdi_review_history", params: ["page": page]).execute().value
+            let items = try await CommunityServices.admin.reviewHistory(page: page)
             guard !Task.isCancelled, requestID == id else { return }
-            guard result.error == nil, let items = result.decisions else { decisions = []; error = result.error ?? "History response unavailable."; return }
             decisions = items; error = nil
-        } catch { if requestID == id { decisions = []; self.error = "Decision history unavailable. Check admin authorization and MFA." } }
+        } catch { if requestID == id { decisions = []; self.error = CommunityGateway.normalize(error).errorDescription } }
     }
-}
-private struct AdminReviewHistoryResponse: Decodable { let error: String?; let decisions: [AdminRenderDecision]? }
-private struct AdminRenderDecision: Decodable, Identifiable {
-    let id: UUID; let review_id: UUID; let actor: UUID; let owner_at_decision: Bool
-    let render_title: String; let source_revision: String; let rights_summary: String
-    let render_digest: String; let review_version: Int; let consent_version: String
-    let destinations: [String]; let decision: String; let note: String; let created_at: Date
 }
 
 @MainActor
@@ -1088,12 +1140,14 @@ private struct AdminWarReportsContent: View {
     @State private var busy = false
     @State private var requestID = UUID()
     @State private var error: String?
+    @State private var stepUp: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("War Room reports").font(.specialElite(22))
             Button("Refresh reports") { Task { await request("list") } }.disabled(busy)
             if busy { ProgressView() }
             if let error { Text(error).foregroundStyle(.red) }
+            if let stepUp { AdminStepUpBanner(message: stepUp) }
             if let selected {
                 Text(selected.reason)
                 Text("Match state: \(selected.status)").font(.caption)
@@ -1132,6 +1186,8 @@ private struct AdminWarReportsContent: View {
     }
     private func request(_ action: String) async {
         guard !busy, auth.isAuthenticated, phase == .active else { return }
+        if action == "remove", let prompt = CommunityServices.admin.stepUpPrompt(for: "war.remove") { stepUp = prompt; return }
+        stepUp = nil
         let id = UUID(); requestID = id; busy = true
         defer { if requestID == id { busy = false } }
         do {
@@ -1252,15 +1308,17 @@ private struct AdminPermissionsContent: View {
     @State private var loaded = false
     @State private var busy = false
     @State private var message: String?
+    @State private var stepUp: String?
     @State private var requestID = UUID()
     private let available = ["users", "reviews", "moderation", "publishing", "overview", "finance"]
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Administrator permissions").font(.specialElite(22))
-            Text("Owner only. Role changes require a reason and sign the affected account out. Ownership and your own role cannot be changed here.").font(.caption)
+            Text("Owner only. Role changes require a reason, a recent authenticator verification, and sign the affected account out. Ownership and your own role cannot be changed here.").font(.caption)
             Button("Refresh roles") { Task { await request("list") } }.disabled(busy)
             if busy { ProgressView() }
             if let message { Text(message).font(.caption) }
+            if let stepUp { AdminStepUpBanner(message: stepUp) }
             if loaded {
                 ForEach(roles) { role in
                     Button {
@@ -1296,13 +1354,18 @@ private struct AdminPermissionsContent: View {
     private func clear() { requestID = UUID(); busy = false; loaded = false; roles = []; subject = ""; capabilities = []; enabled = false; reason = ""; revision = 0; message = nil }
     private func request(_ action: String) async {
         guard !busy, auth.isAuthenticated, phase == .active else { return }
+        if action == "save", let prompt = CommunityServices.admin.stepUpPrompt(for: "admin_permissions.save") { stepUp = prompt; return }
+        stepUp = nil
         let id = UUID(); requestID = id; busy = true
         defer { if requestID == id { busy = false } }
         do {
             let client = try SupabaseManager.shared.client
             let response: AdminPermissionsResponse = try await client.rpc("sdi_admin_permissions", params: AdminPermissionsRequest(action: action, subject: UUID(uuidString: subject), capabilities: capabilities.sorted(), enabled: enabled, reason: reason, revision: revision)).execute().value
             guard !Task.isCancelled, requestID == id else { return }
-            if let error = response.error { message = error; if action == "list" { loaded = false; roles = [] }; return }
+            if let error = response.error {
+                if response.code == "step_up_required" { stepUp = error; _ = CommunityServices.admin.noteRefusal(CommunityError.server(message: error, code: response.code)) }
+                message = error; if action == "list" { loaded = false; roles = [] }; return
+            }
             if action == "list", let items = response.roles { roles = items; loaded = true; subject = ""; capabilities = []; enabled = false; revision = 0; reason = ""; message = nil }
             else if response.status == "confirmed" { busy = false; await request("list") }
             else { message = "Role response unavailable. Refresh before retrying." }
@@ -1310,7 +1373,7 @@ private struct AdminPermissionsContent: View {
     }
 }
 private struct AdminPermissionsRequest: Encodable { let action: String; let subject: UUID?; let capabilities: [String]; let enabled: Bool; let reason: String; let revision: Int }
-private struct AdminPermissionsResponse: Decodable { let error: String?; let status: String?; let roles: [AdminRoleRecord]? }
+private struct AdminPermissionsResponse: Decodable { let error: String?; let code: String?; let status: String?; let roles: [AdminRoleRecord]? }
 private struct AdminRoleRecord: Decodable, Identifiable {
     let user_id: UUID; let owner: Bool; let enabled: Bool; let permissions: [String]; let revision: Int
     var id: UUID { user_id }
@@ -1523,4 +1586,667 @@ private struct AccountAppealRequest: Encodable {
 private struct AccountAppealResponse: Decodable {
     let error: String?; let status: String?; let appeals: [AccountAppealEntry]?
     let account_state: String?; let can_appeal: Bool?; let restriction: String?
+}
+
+
+// MARK: - Service health (#257)
+/// Authenticated queue depth, oldest pending items, worker liveness, the agent
+/// emergency stop and 24-hour denials from `sdi_admin_health`. Hostnames,
+/// credentials and backups are deliberately absent from the contract.
+@MainActor
+private struct AdminHealthContent: View {
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var health: AdminHealthResponse?
+    @State private var busy = false
+    @State private var error: String?
+    @State private var requestID = UUID()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Service health").font(.specialElite(22))
+            Text("Queue counts and worker heartbeats as recorded by the database. Backup, rollback and release operations are not exposed to this client; nothing here opens a terminal or control endpoint.").font(.caption)
+            Button("Refresh health") { Task { await load() } }.disabled(busy).accessibilityIdentifier("admin.health.refresh")
+            if busy { ProgressView() }
+            if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.health.error") }
+            if let health {
+                if health.emergency_stop == true {
+                    Text("AGENT EMERGENCY STOP IS ACTIVE").font(.specialElite(14)).foregroundStyle(StudioCraftTheme.accentText)
+                        .accessibilityIdentifier("admin.health.emergency-stop")
+                }
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(AdminHealthResponse.queueTitles, id: \.key) { entry in
+                        AdminStatCard(icon: "tray.full", label: entry.title,
+                                      value: (health.queues?[entry.key] ?? nil).map(String.init) ?? "not installed", color: "EF4444")
+                    }
+                }
+                if let oldest = health.oldest_pending, oldest.contains(where: { $0.value != nil }) {
+                    Text("Oldest pending").font(.specialElite(16))
+                    ForEach(oldest.keys.sorted(), id: \.self) { key in
+                        if let date = oldest[key] ?? nil {
+                            Text("\(key.replacingOccurrences(of: "_", with: " ")): \(date.formatted())").font(.caption)
+                        }
+                    }
+                }
+                Text("Workers").font(.specialElite(16))
+                if health.workers?.isEmpty ?? true { Text("No worker heartbeats recorded.").font(.caption) }
+                ForEach(health.workers ?? []) { worker in
+                    HStack {
+                        Circle().fill(worker.stale ? StudioCraftTheme.warning : Color.green).frame(width: 8, height: 8).accessibilityHidden(true)
+                        Text("\(worker.worker) · seen \(worker.seen_at.formatted())\(worker.stale ? " · stale" : "")").font(.caption)
+                    }.accessibilityElement(children: .combine)
+                }
+                if let denials = health.admin_denials_24h { Text("Administrative denials in the last 24 hours: \(denials)").font(.caption) }
+                if let measured = health.measured_at { Text("Measured \(measured.formatted())").font(.caption).foregroundStyle(.secondary) }
+            }
+        }
+        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
+            clear(); if auth.isAuthenticated && phase == .active { await load() }
+        }
+        .onDisappear { clear() }
+    }
+    private func clear() { requestID = UUID(); busy = false; health = nil; error = nil }
+    private func load() async {
+        guard !busy, auth.isAuthenticated, phase == .active else { return }
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let value = try await CommunityServices.admin.health()
+            guard !Task.isCancelled, requestID == id else { return }
+            health = value; error = nil
+        } catch { if requestID == id { health = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+    }
+}
+
+// MARK: - Agents (#248)
+/// Owner console over `sdi_agent_admin`: registry (paused by default), caps,
+/// permissions, versioned instructions, run log and the global emergency stop.
+/// Provider credentials never reach this client; caps are configuration only.
+@MainActor
+private struct AdminAgentsContent: View {
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var registry: AdminAgentsResponse?
+    @State private var selected: AdminAgent?
+    @State private var runs: [AdminAgentRun] = []
+    @State private var instructions: [AdminAgentInstruction] = []
+    @State private var activeVersion: Int?
+    @State private var reason = ""
+    @State private var daily = ""
+    @State private var perRun = ""
+    @State private var monthlyMinor = ""
+    @State private var permissions: Set<String> = []
+    @State private var instructionBody = ""
+    @State private var busy = false
+    @State private var error: String?
+    @State private var notice: String?
+    @State private var stepUp: String?
+    @State private var confirmStop: Bool?
+    @State private var requestID = UUID()
+    private var reasonValid: Bool { (1...2000).contains(reason.trimmingCharacters(in: .whitespacesAndNewlines).count) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Agent controls").font(.specialElite(22))
+            Text("Agents start paused and run only with published instructions, under daily run, per-run item and monthly cost caps. Changes are owner-only, reason-required and audited. Nothing here spends or publishes.").font(.caption)
+            Button("Refresh registry") { Task { await load() } }.disabled(busy).accessibilityIdentifier("admin.agents.refresh")
+            if busy { ProgressView() }
+            if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.agents.error") }
+            if let notice { Text(notice).font(.caption) }
+            if let stepUp { AdminStepUpBanner(message: stepUp) }
+            if let registry {
+                HStack {
+                    Text(registry.emergency_stop == true ? "Emergency stop ACTIVE" : "Emergency stop clear").font(.specialElite(15))
+                        .foregroundStyle(registry.emergency_stop == true ? StudioCraftTheme.accentText : .primary)
+                    Spacer()
+                    Button(registry.emergency_stop == true ? "Clear emergency stop" : "Emergency stop all agents") { confirmStop = !(registry.emergency_stop == true) }
+                        .disabled(busy || !reasonValid)
+                        .accessibilityIdentifier("admin.agents.emergency-stop")
+                }
+                if let why = registry.emergency_reason, !why.isEmpty { Text("Reason: \(why)").font(.caption) }
+                TextField("Required reason for any change", text: $reason, axis: .vertical).lineLimit(2...4)
+                    .accessibilityIdentifier("admin.agents.reason")
+                ForEach(registry.agents ?? []) { agent in
+                    Button {
+                        select(agent)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(agent.title).font(.specialElite(16))
+                            Text("\(agent.paused ? "Paused" : "Enabled") · instructions v\(agent.active_instruction_version.map(String.init) ?? "none") · \(agent.running) running · \(agent.runs_today)/\(agent.daily_run_cap) runs today · \(agent.failures_7d) failures (7d)").font(.caption)
+                            Text("Month cost \(agent.cost_month_minor) of cap \(agent.monthly_cost_cap_minor) (minor units) · permissions \(agent.permissions.isEmpty ? "none" : agent.permissions.joined(separator: ", "))").font(.caption)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                    }.disabled(busy).accessibilityIdentifier("admin.agents.select")
+                }
+                if registry.agents?.isEmpty ?? true { Text("No agents registered.").font(.caption) }
+            }
+            if let selected {
+                Divider()
+                Text(selected.title).font(.specialElite(18))
+                HStack {
+                    Button(selected.paused ? "Resume" : "Pause") {
+                        Task { await mutate(AdminAgentRequest(action: selected.paused ? "resume" : "pause", agent: selected.key, revision: selected.revision, reason: reason), action: selected.paused ? "agent.resume" : "agent.pause") }
+                    }.disabled(busy || !reasonValid).accessibilityIdentifier(selected.paused ? "admin.agents.resume" : "admin.agents.pause")
+                }
+                if selected.paused && selected.active_instruction_version == nil { Text("Publish instructions before this agent can resume.").font(.caption) }
+                Text("Caps").font(.specialElite(15))
+                HStack {
+                    TextField("Daily runs", text: $daily).keyboardType(.numberPad).accessibilityIdentifier("admin.agents.cap-daily")
+                    TextField("Items per run", text: $perRun).keyboardType(.numberPad).accessibilityIdentifier("admin.agents.cap-items")
+                    TextField("Monthly cost cap (minor units)", text: $monthlyMinor).keyboardType(.numberPad).accessibilityIdentifier("admin.agents.cap-cost")
+                }.textFieldStyle(.roundedBorder)
+                Button("Save caps") {
+                    guard let d = Int(daily), let p = Int(perRun), let m = Int(monthlyMinor),
+                          let request = AdminAgentRequest.caps(agent: selected, daily: d, perRun: p, monthlyMinor: m, reason: reason) else {
+                        error = "Caps must be numeric: daily runs up to 9999, items per run up to 99999, cost cap in minor units."; return
+                    }
+                    Task { await mutate(request, action: "agent.set_caps") }
+                }.disabled(busy || !reasonValid).accessibilityIdentifier("admin.agents.save-caps")
+                Text("Permissions").font(.specialElite(15))
+                ForEach(["read", "write", "propose"], id: \.self) { permission in
+                    Toggle(permission.capitalized, isOn: Binding(get: { permissions.contains(permission) }, set: { on in
+                        if on { permissions.insert(permission) } else { permissions.remove(permission) }
+                    })).disabled(busy)
+                }
+                Button("Save permissions") {
+                    Task { await mutate(AdminAgentRequest(action: "set_permissions", agent: selected.key, revision: selected.revision,
+                        payload: .object(["permissions": .array(permissions.sorted().map { .string($0) })]), reason: reason), action: "agent.set_permissions") }
+                }.disabled(busy || !reasonValid).accessibilityIdentifier("admin.agents.save-permissions")
+                Text("Instructions (active v\(activeVersion.map(String.init) ?? "none"))").font(.specialElite(15))
+                TextField("New instruction text (publishing creates the next version and activates it)", text: $instructionBody, axis: .vertical).lineLimit(3...10)
+                    .textFieldStyle(.roundedBorder).accessibilityIdentifier("admin.agents.instructions")
+                Button("Publish instructions") {
+                    Task { await mutate(AdminAgentRequest(action: "publish_instructions", agent: selected.key, revision: selected.revision,
+                        payload: .object(["body": .string(instructionBody)]), reason: reason), action: "agent.publish_instructions") }
+                }.disabled(busy || !reasonValid || instructionBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || instructionBody.count > 20_000)
+                    .accessibilityIdentifier("admin.agents.publish-instructions")
+                ForEach(instructions) { version in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text("v\(version.version) · \(version.created_at.formatted())").font(.caption)
+                            Text(version.body).font(.caption).lineLimit(3)
+                        }
+                        Spacer()
+                        if version.version != activeVersion {
+                            Button("Roll back") {
+                                Task { await mutate(AdminAgentRequest(action: "rollback_instructions", agent: selected.key, revision: selected.revision,
+                                    payload: .object(["version": .string(String(version.version))]), reason: reason), action: "agent.rollback_instructions") }
+                            }.disabled(busy || !reasonValid).accessibilityIdentifier("admin.agents.rollback")
+                        }
+                    }
+                }
+                Text("Recent runs").font(.specialElite(15))
+                if runs.isEmpty { Text("No runs recorded.").font(.caption) }
+                ForEach(runs.prefix(20)) { run in
+                    Text("\(run.state) · started \(run.started_at.formatted()) · \(run.items) items · cost \(run.cost_minor)\(run.error.map { " · \($0)" } ?? "")").font(.caption)
+                }
+            }
+        }
+        .confirmationDialog("Confirm emergency stop change", isPresented: Binding(get: { confirmStop != nil }, set: { if !$0 { confirmStop = nil } }), titleVisibility: .visible, presenting: confirmStop) { enable in
+            Button(enable ? "Stop all agents now" : "Clear emergency stop", role: enable ? .destructive : nil) {
+                confirmStop = nil
+                Task { await mutate(.emergencyStop(enabled: enable, reason: reason), action: "agent.emergency_stop") }
+            }
+            Button("Cancel", role: .cancel) { confirmStop = nil }
+        } message: { enable in
+            Text(enable ? "Running agent work is marked stopped and no agent may begin until the stop is cleared. Drafts are not deleted." : "Agents remain paused individually until resumed.")
+        }
+        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
+            clear(); if auth.isAuthenticated && phase == .active { await load() }
+        }
+        .onDisappear { clear() }
+    }
+    private func clear() {
+        requestID = UUID(); busy = false; registry = nil; selected = nil; runs = []; instructions = []; activeVersion = nil
+        reason = ""; daily = ""; perRun = ""; monthlyMinor = ""; permissions = []; instructionBody = ""; error = nil; notice = nil; stepUp = nil; confirmStop = nil
+    }
+    private func select(_ agent: AdminAgent) {
+        selected = agent; daily = String(agent.daily_run_cap); perRun = String(agent.per_run_item_cap)
+        monthlyMinor = String(agent.monthly_cost_cap_minor); permissions = Set(agent.permissions); instructionBody = ""
+        Task { await loadDetail(agent) }
+    }
+    private func load() async {
+        guard !busy, auth.isAuthenticated, phase == .active else { return }
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let value = try await CommunityServices.admin.agents()
+            guard !Task.isCancelled, requestID == id else { return }
+            registry = value; error = nil
+            if let current = selected, let refreshed = value.agents?.first(where: { $0.key == current.key }) { selected = refreshed } else { selected = nil }
+        } catch { if requestID == id { registry = nil; selected = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+    }
+    private func loadDetail(_ agent: AdminAgent) async {
+        let id = requestID
+        do {
+            let log = try await CommunityServices.admin.agentRuns(agent.key)
+            let history = try await CommunityServices.admin.agentInstructions(agent.key)
+            guard !Task.isCancelled, requestID == id, selected?.key == agent.key else { return }
+            runs = log; instructions = history.versions; activeVersion = history.active
+        } catch { if requestID == id { runs = []; instructions = []; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+    }
+    private func mutate(_ request: AdminAgentRequest, action: String) async {
+        guard !busy else { return }
+        if let prompt = CommunityServices.admin.stepUpPrompt(for: action) { stepUp = prompt; return }
+        stepUp = nil
+        let id = UUID(); requestID = id; busy = true; error = nil; notice = nil
+        defer { if requestID == id { busy = false } }
+        do {
+            _ = try await CommunityServices.admin.mutateAgent(request)
+            guard !Task.isCancelled, requestID == id else { return }
+            notice = "Change confirmed and audited."; busy = false; await load()
+        } catch {
+            guard requestID == id else { return }
+            let problem = CommunityServices.admin.noteRefusal(error)
+            if problem.isStepUpRequired { stepUp = problem.errorDescription } else { self.error = problem.errorDescription }
+        }
+    }
+}
+
+// MARK: - Finance (#255)
+/// Finance-capability reads of provider-reported records and owner-only
+/// product configuration through `sdi_finance_admin`. No balances, estimates
+/// or charges; the approved offers are the two monthly tiers.
+@MainActor
+private struct AdminFinanceContent: View {
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var section = "summary"
+    @State private var page = 0
+    @State private var response: AdminFinanceResponse?
+    @State private var busy = false
+    @State private var error: String?
+    @State private var notice: String?
+    @State private var stepUp: String?
+    @State private var productID = ""
+    @State private var provider = "apple"
+    @State private var tier = "creator"
+    @State private var period = "monthly"
+    @State private var approved = false
+    @State private var reason = ""
+    @State private var requestID = UUID()
+    private let sections = [("summary", "Summary"), ("products", "Products"), ("subscriptions", "Subscriptions"), ("ledger", "Ledger"), ("events", "Provider events")]
+    private var reasonValid: Bool { (1...2000).contains(reason.trimmingCharacters(in: .whitespacesAndNewlines).count) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Finance").font(.specialElite(22))
+            Text("Provider-reported records in minor units. Sums are not balances; no charge, refund or payout can be made from this client. Approved offers: two monthly tiers at USD 4.99 and USD 9.99; annual periods need explicit owner configuration.").font(.caption)
+            Picker("Section", selection: $section) { ForEach(sections, id: \.0) { Text($0.1).tag($0.0) } }
+                .pickerStyle(.segmented).accessibilityIdentifier("admin.finance.section")
+            HStack {
+                Button("Refresh") { Task { await load() } }
+                Spacer()
+                if section != "summary" && section != "products" {
+                    Button("Previous") { page -= 1; Task { await load() } }.disabled(page == 0)
+                    Text("\(page + 1)").font(.caption)
+                    Button("Next") { page += 1; Task { await load() } }.disabled(page >= 199 || currentCount < 50)
+                }
+            }.disabled(busy).accessibilityIdentifier("admin.finance.refresh")
+            if busy { ProgressView() }
+            if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.finance.error") }
+            if let notice { Text(notice).font(.caption) }
+            if let stepUp { AdminStepUpBanner(message: stepUp) }
+            if let response {
+                switch section {
+                case "summary":
+                    if let label = response.label { Text(label).font(.caption) }
+                    if let accounts = response.entitled_accounts { Text("Entitled accounts: \(accounts)").font(.specialElite(15)) }
+                    ForEach(response.totals ?? []) { total in Text("\(total.provider) · \(total.kind): \(total.amountText) over \(total.entries) entries").font(.caption) }
+                    if response.totals?.isEmpty ?? true { Text("No provider-reported entries.").font(.caption) }
+                case "products":
+                    if let offers = response.approved_offers { Text(offers).font(.caption) }
+                    ForEach(response.products ?? []) { product in
+                        Text("\(product.product_id) · \(product.provider) · \(product.tier) \(product.period) · \(product.approved ? "approved" : "not approved")\(product.owner_configured_at == nil && product.period == "annual" ? " · awaiting owner configuration" : "")").font(.caption)
+                    }
+                    if response.products?.isEmpty ?? true { Text("No product identifiers recorded.").font(.caption) }
+                    Divider()
+                    Text("Owner: record a product identifier").font(.specialElite(15))
+                    TextField("Provider product id", text: $productID).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityIdentifier("admin.finance.product-id")
+                    Picker("Provider", selection: $provider) { Text("Apple").tag("apple"); Text("Stripe").tag("stripe") }.pickerStyle(.segmented)
+                    Picker("Tier", selection: $tier) { Text("Creator (USD 4.99)").tag("creator"); Text("Pro (USD 9.99)").tag("pro") }.pickerStyle(.segmented)
+                    Picker("Period", selection: $period) { Text("Monthly").tag("monthly"); Text("Annual (owner configuration required)").tag("annual") }.pickerStyle(.segmented)
+                    Toggle("Approved for sale", isOn: $approved)
+                    TextField("Required reason", text: $reason, axis: .vertical).lineLimit(2...4).textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("admin.finance.reason")
+                    Button("Save product") { Task { await mutate(AdminFinanceRequest(action: "set_product", product: productID, provider: provider, tier: tier, period: period, approved: approved, reason: reason), action: "finance.set_product") } }
+                        .disabled(busy || !reasonValid || productID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("admin.finance.save-product")
+                    if period == "annual" {
+                        Button("Record owner configuration for this annual product") { Task { await mutate(AdminFinanceRequest(action: "configure_annual", product: productID, reason: reason), action: "finance.configure_annual") } }
+                            .disabled(busy || !reasonValid || productID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityIdentifier("admin.finance.configure-annual")
+                        Text("Annual amounts live in the provider dashboards; this records only the owner's explicit decision.").font(.caption)
+                    }
+                case "subscriptions":
+                    ForEach(response.subscriptions ?? []) { sub in
+                        Text("\(sub.provider) · \(sub.product_id) · \(sub.status)\(sub.paid_through.map { " · paid through \($0.formatted(date: .abbreviated, time: .omitted))" } ?? "")\(sub.cancel_at_period_end ? " · cancels at period end" : "") · account \(communityShortID(sub.user_id))").font(.caption)
+                    }
+                    if response.subscriptions?.isEmpty ?? true { Text("No subscriptions on this page.").font(.caption) }
+                case "ledger":
+                    if let label = response.label { Text(label).font(.caption) }
+                    ForEach(response.ledger ?? []) { entry in
+                        Text("\(entry.occurred_at.formatted()) · \(entry.provider) · \(entry.kind) · \(entry.currency.uppercased()) \(String(format: "%.2f", Double(entry.amount_minor) / 100))\(entry.note.map { " · \($0)" } ?? "")").font(.caption)
+                    }
+                    if response.ledger?.isEmpty ?? true { Text("No ledger entries on this page.").font(.caption) }
+                default:
+                    ForEach(response.events ?? []) { event in
+                        Text("\(event.received_at.formatted()) · \(event.provider) · \(event.event_type) · \(event.processed_at == nil ? "unprocessed" : (event.outcome ?? "processed"))").font(.caption)
+                    }
+                    if response.events?.isEmpty ?? true { Text("No provider events on this page.").font(.caption) }
+                }
+            }
+        }
+        .onChange(of: section) { _, _ in page = 0; Task { await load() } }
+        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
+            clear(); if auth.isAuthenticated && phase == .active { await load() }
+        }
+        .onDisappear { clear() }
+    }
+    private var currentCount: Int {
+        switch section {
+        case "subscriptions": return response?.subscriptions?.count ?? 0
+        case "ledger": return response?.ledger?.count ?? 0
+        case "events": return response?.events?.count ?? 0
+        default: return 0
+        }
+    }
+    private func clear() { requestID = UUID(); busy = false; response = nil; error = nil; notice = nil; stepUp = nil; page = 0; reason = ""; productID = "" }
+    private func load() async {
+        guard !busy, auth.isAuthenticated, phase == .active else { return }
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let value = try await CommunityServices.admin.finance(AdminFinanceRequest(action: section, page: page))
+            guard !Task.isCancelled, requestID == id else { return }
+            response = value; error = nil
+        } catch { if requestID == id { response = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+    }
+    private func mutate(_ request: AdminFinanceRequest, action: String) async {
+        guard !busy else { return }
+        if let prompt = CommunityServices.admin.stepUpPrompt(for: action) { stepUp = prompt; return }
+        stepUp = nil
+        let id = UUID(); requestID = id; busy = true; error = nil; notice = nil
+        defer { if requestID == id { busy = false } }
+        do {
+            _ = try await CommunityServices.admin.finance(request)
+            guard !Task.isCancelled, requestID == id else { return }
+            notice = "Recorded and audited."; busy = false; await load()
+        } catch {
+            guard requestID == id else { return }
+            let problem = CommunityServices.admin.noteRefusal(error)
+            if problem.isStepUpRequired { stepUp = problem.errorDescription } else { self.error = problem.errorDescription }
+        }
+    }
+}
+
+// MARK: - Room reports (#235, #247)
+@MainActor
+private struct AdminRoomReportsContent: View {
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var reports: [AdminRoomReport] = []
+    @State private var selected: AdminRoomReport?
+    @State private var reason = ""
+    @State private var busy = false
+    @State private var error: String?
+    @State private var stepUp: String?
+    @State private var requestID = UUID()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Room reports").font(.specialElite(22))
+            Text("Closing a room ends access for everyone; it never deletes anyone's device project. Reporter identity is not returned. An uninvolved administrator must decide.").font(.caption)
+            Button("Refresh reports") { Task { await load() } }.disabled(busy).accessibilityIdentifier("admin.rooms.reports.refresh")
+            if busy { ProgressView() }
+            if let error { Text(error).foregroundStyle(.red) }
+            if let stepUp { AdminStepUpBanner(message: stepUp) }
+            if let selected {
+                Text(selected.title).font(.specialElite(18))
+                Text("Reason: \(selected.reason)\(selected.detail.isEmpty ? "" : " · \(selected.detail)")")
+                Text("Owner \(communityShortID(selected.owner_id)) · \(selected.members) approved members · \(selected.report_count) reports · \(selected.closed ? "closed" : "open")").font(.caption)
+                TextField("Required decision reason", text: $reason, axis: .vertical).lineLimit(2...5)
+                    .accessibilityIdentifier("admin.rooms.reports.reason")
+                HStack {
+                    Button("Dismiss") { Task { await decide(close: false) } }.accessibilityIdentifier("admin.rooms.reports.dismiss")
+                    Button("Close room", role: .destructive) { Task { await decide(close: true) } }.accessibilityIdentifier("admin.rooms.reports.close")
+                }.disabled(busy || reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || reason.count > 2000)
+            }
+            ForEach(reports) { report in
+                Button { selected = report; reason = ""; error = nil } label: {
+                    VStack(alignment: .leading) {
+                        Text(report.title).font(.specialElite(16))
+                        Text("\(report.reason) · \(report.created_at.formatted())").font(.caption)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                }.disabled(busy).accessibilityIdentifier("admin.rooms.reports.select")
+            }
+            if reports.isEmpty && !busy && error == nil { Text("No pending room reports.").font(.caption) }
+        }
+        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
+            clear(); if auth.isAuthenticated && phase == .active { await load() }
+        }
+        .onDisappear { clear() }
+    }
+    private func clear() { requestID = UUID(); busy = false; reports = []; selected = nil; reason = ""; error = nil; stepUp = nil }
+    private func load() async {
+        guard !busy, auth.isAuthenticated, phase == .active else { return }
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let items = try await CommunityServices.admin.roomReports()
+            guard !Task.isCancelled, requestID == id else { return }
+            reports = items; selected = nil; error = nil
+        } catch { if requestID == id { reports = []; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+    }
+    private func decide(close: Bool) async {
+        guard !busy, let selected else { return }
+        if close, let prompt = CommunityServices.admin.stepUpPrompt(for: "rooms.close") { stepUp = prompt; return }
+        stepUp = nil
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            try await CommunityServices.admin.decideRoomReport(selected, close: close, reason: reason)
+            guard !Task.isCancelled, requestID == id else { return }
+            busy = false; await load()
+        } catch {
+            guard requestID == id else { return }
+            let problem = CommunityServices.admin.noteRefusal(error)
+            if problem.isStepUpRequired { stepUp = problem.errorDescription } else { self.error = problem.errorDescription }
+        }
+    }
+}
+
+// MARK: - Feed removal appeals (#247)
+@MainActor
+private struct AdminRemovalAppealsContent: View {
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var appeals: [ModerationAppeal] = []
+    @State private var selected: ModerationAppeal?
+    @State private var player: AVPlayer?
+    @State private var note = ""
+    @State private var reviewed = false
+    @State private var busy = false
+    @State private var error: String?
+    @State private var stepUp: String?
+    @State private var requestID = UUID()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Feed removal appeals").font(.specialElite(22))
+            Text("Acceptance restores the exact removed render only while its hosted copy still exists and no newer restriction applies; otherwise the creator resubmits for review. The decision reason is shown to the member.").font(.caption)
+            Button("Refresh appeals") { Task { await load() } }.disabled(busy).accessibilityIdentifier("admin.appeals.refresh")
+            if busy { ProgressView() }
+            if let error { Text(error).foregroundStyle(.red) }
+            if let stepUp { AdminStepUpBanner(message: stepUp) }
+            if let selected {
+                Text(selected.title).font(.specialElite(18))
+                Text("Removal reason: \(selected.removal_reason ?? "unavailable") · hosted copy \(selected.removal_state ?? "unknown")").font(.caption)
+                Text("Creator's appeal: \(selected.explanation)")
+                if let digest = selected.render_digest { Text(digest).font(.caption.monospaced()).textSelection(.enabled) }
+                if let url = selected.url.flatMap(CommunityMediaURL.checked(_:)) {
+                    Button("Play the removed rendition") { player?.pause(); player = AVPlayer(url: url) }.accessibilityIdentifier("admin.appeals.play")
+                }
+                if let player { VideoPlayer(player: player).frame(minHeight: 220) }
+                Toggle("I reviewed the removal, the appeal and the rendition.", isOn: $reviewed)
+                TextField("Member-visible decision reason", text: $note, axis: .vertical).lineLimit(2...6)
+                    .accessibilityIdentifier("admin.appeals.note")
+                HStack {
+                    Button("Accept and restore") { Task { await decide(accept: true) } }.accessibilityIdentifier("admin.appeals.accept")
+                    Button("Reject appeal", role: .destructive) { Task { await decide(accept: false) } }.accessibilityIdentifier("admin.appeals.reject")
+                }.disabled(busy || !reviewed || note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || note.count > 2000)
+            }
+            ForEach(appeals) { appeal in
+                Button { player?.pause(); player = nil; selected = appeal; note = ""; reviewed = false; error = nil } label: {
+                    VStack(alignment: .leading) {
+                        Text(appeal.title).font(.specialElite(16))
+                        Text(appeal.created_at.formatted()).font(.caption)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                }.disabled(busy).accessibilityIdentifier("admin.appeals.select")
+            }
+            if appeals.isEmpty && !busy && error == nil { Text("No pending removal appeals.").font(.caption) }
+        }
+        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
+            clear(); if auth.isAuthenticated && phase == .active { await load() }
+        }
+        .onDisappear { clear() }
+    }
+    private func clear() { requestID = UUID(); busy = false; appeals = []; selected = nil; player?.pause(); player = nil; note = ""; reviewed = false; error = nil; stepUp = nil }
+    private func load() async {
+        guard !busy, auth.isAuthenticated, phase == .active else { return }
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let items = try await CommunityServices.admin.appealQueue()
+            guard !Task.isCancelled, requestID == id else { return }
+            appeals = items; selected = nil; player?.pause(); player = nil; error = nil
+        } catch { if requestID == id { appeals = []; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+    }
+    private func decide(accept: Bool) async {
+        guard !busy, let selected else { return }
+        if let prompt = CommunityServices.admin.stepUpPrompt(for: accept ? "appeal.accept" : "appeal.reject") { stepUp = prompt; return }
+        stepUp = nil
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            try await CommunityServices.admin.decideAppeal(selected, accept: accept, note: note)
+            guard !Task.isCancelled, requestID == id else { return }
+            busy = false; await load()
+        } catch {
+            guard requestID == id else { return }
+            let problem = CommunityServices.admin.noteRefusal(error)
+            if problem.isStepUpRequired { stepUp = problem.errorDescription } else { self.error = problem.errorDescription }
+        }
+    }
+}
+
+// MARK: - Challenges (#223 moderator lifecycle)
+/// Create, schedule and cancel challenges through `sdi_challenge_action`
+/// (moderation capability with MFA). Reward text is descriptive only.
+@MainActor
+struct AdminChallengesContent: View {
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var challenges: [ChallengeSummary] = []
+    @State private var clock: ChallengeClock?
+    @State private var title = ""
+    @State private var brief = ""
+    @State private var reward = ""
+    @State private var created: (id: UUID, revision: Int)?
+    @State private var selected: ChallengeSummary?
+    @State private var startsAt = Date().addingTimeInterval(3600)
+    @State private var closesAt = Date().addingTimeInterval(3600 * 25)
+    @State private var endsAt = Date().addingTimeInterval(3600 * 49)
+    @State private var reason = ""
+    @State private var busy = false
+    @State private var error: String?
+    @State private var notice: String?
+    @State private var requestID = UUID()
+    private var draft: ChallengeScheduleDraft { ChallengeScheduleDraft(startsAt: startsAt, closesAt: closesAt, endsAt: endsAt) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Challenge administration").font(.specialElite(22))
+            Text("Challenges reuse the War Room rules: approved renditions only, one entry per creator, one favourite vote per non-participant, server-timed phases, ties record no winner. reward_text describes a real configured reward or stays empty; no coins or money exist.").font(.caption)
+            Button("Refresh challenges") { Task { await load() } }.disabled(busy).accessibilityIdentifier("admin.challenges.refresh")
+            if busy { ProgressView() }
+            if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.challenges.error") }
+            if let notice { Text(notice).font(.caption) }
+            Text("Create").font(.specialElite(16))
+            TextField("Title (1–100)", text: $title).textFieldStyle(.roundedBorder).accessibilityIdentifier("admin.challenges.title")
+            TextField("Brief (up to 2000)", text: $brief, axis: .vertical).lineLimit(2...5).textFieldStyle(.roundedBorder).accessibilityIdentifier("admin.challenges.brief")
+            TextField("Reward text (configured real reward or empty)", text: $reward).textFieldStyle(.roundedBorder).accessibilityIdentifier("admin.challenges.reward")
+            Button("Create draft challenge") { Task { await create() } }
+                .disabled(busy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("admin.challenges.create")
+            if let created { Text("Draft created: \(communityShortID(created.id)) (revision \(created.revision)). Schedule it below.").font(.caption) }
+            Text("Schedule").font(.specialElite(16))
+            DatePicker("Opens", selection: $startsAt).accessibilityIdentifier("admin.challenges.starts")
+            DatePicker("Submissions close", selection: $closesAt).accessibilityIdentifier("admin.challenges.closes")
+            DatePicker("Voting ends", selection: $endsAt).accessibilityIdentifier("admin.challenges.ends")
+            if let problem = draft.validation(now: Date()) { Text(problem).font(.caption).foregroundStyle(StudioCraftTheme.warning) }
+            Button("Schedule \(selected.map { "“\($0.title)”" } ?? created.map { _ in "new draft" } ?? "(select a challenge)")") { Task { await schedule() } }
+                .disabled(busy || (selected == nil && created == nil) || draft.validation(now: Date()) != nil)
+                .accessibilityIdentifier("admin.challenges.schedule")
+            Text("Scheduled challenges").font(.specialElite(16))
+            ForEach(challenges) { challenge in
+                Button { selected = challenge; created = nil } label: {
+                    VStack(alignment: .leading) {
+                        Text(challenge.title).font(.specialElite(15))
+                        Text("\(challenge.phase(at: clock?.now(deviceNow: Date()) ?? Date()).title) · \(challenge.entry_count) entries · revision \(challenge.revision)").font(.caption)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                }.disabled(busy).accessibilityIdentifier("admin.challenges.select")
+            }
+            if challenges.isEmpty && !busy && error == nil { Text("No scheduled challenges.").font(.caption) }
+            if let selected {
+                TextField("Cancellation reason", text: $reason, axis: .vertical).lineLimit(2...4).textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("admin.challenges.cancel-reason")
+                Button("Cancel “\(selected.title)”", role: .destructive) { Task { await cancel(selected) } }
+                    .disabled(busy || reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("admin.challenges.cancel")
+            }
+        }
+        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
+            clear(); if auth.isAuthenticated && phase == .active { await load() }
+        }
+        .onDisappear { clear() }
+    }
+    private func clear() { requestID = UUID(); busy = false; challenges = []; clock = nil; selected = nil; created = nil; error = nil; notice = nil; reason = "" }
+    private func load() async {
+        guard !busy, auth.isAuthenticated, phase == .active else { return }
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let listing = try await CommunityServices.challenges.list()
+            guard !Task.isCancelled, requestID == id else { return }
+            challenges = listing.challenges; clock = listing.clock; error = nil
+            if let current = selected { selected = listing.challenges.first { $0.id == current.id } }
+        } catch { if requestID == id { challenges = []; self.error = CommunityGateway.normalize(error).errorDescription } }
+    }
+    private func create() async {
+        guard !busy else { return }
+        let id = UUID(); requestID = id; busy = true; error = nil; notice = nil
+        defer { if requestID == id { busy = false } }
+        do {
+            let result = try await CommunityServices.challenges.create(title: title, brief: brief, reward: reward)
+            guard !Task.isCancelled, requestID == id else { return }
+            created = result; selected = nil; title = ""; brief = ""; reward = ""; notice = "Draft recorded. It is listed to members only after scheduling."
+        } catch { if requestID == id { self.error = CommunityGateway.normalize(error).errorDescription } }
+    }
+    private func schedule() async {
+        guard !busy else { return }
+        let target: (UUID, Int)
+        if let selected { target = (selected.id, selected.revision) } else if let created { target = (created.id, created.revision) } else { return }
+        let id = UUID(); requestID = id; busy = true; error = nil; notice = nil
+        defer { if requestID == id { busy = false } }
+        do {
+            let revision = try await CommunityServices.challenges.schedule(challenge: target.0, revision: target.1, draft: draft)
+            guard !Task.isCancelled, requestID == id else { return }
+            notice = "Scheduled (revision \(revision))."; created = nil; busy = false; await load()
+        } catch { if requestID == id { self.error = CommunityGateway.normalize(error).errorDescription } }
+    }
+    private func cancel(_ challenge: ChallengeSummary) async {
+        guard !busy else { return }
+        let id = UUID(); requestID = id; busy = true; error = nil; notice = nil
+        defer { if requestID == id { busy = false } }
+        do {
+            _ = try await CommunityServices.challenges.cancel(challenge: challenge.id, revision: challenge.revision, reason: reason)
+            guard !Task.isCancelled, requestID == id else { return }
+            notice = "Challenge cancelled and audited."; reason = ""; selected = nil; busy = false; await load()
+        } catch { if requestID == id { self.error = CommunityGateway.normalize(error).errorDescription } }
+    }
 }

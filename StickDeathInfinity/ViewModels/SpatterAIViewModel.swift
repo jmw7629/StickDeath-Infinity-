@@ -6,6 +6,8 @@ import Darwin
 @MainActor
 final class SpatterAIViewModel: ObservableObject {
     typealias Responder = ([SpatterChatMessage], SpatterContext) async throws -> String
+    /// Provider-neutral reply with the server's optional remaining budget.
+    typealias RichResponder = ([SpatterChatMessage], SpatterContext) async throws -> SpatterCloudReply
     enum Status: Equatable {
         case localGuide, lookingUp, requestingCloud, cloudAdvice, cancelled, stale
         case unavailable(SpatterClientError), invalidInput
@@ -14,24 +16,36 @@ final class SpatterAIViewModel: ObservableObject {
     @Published var isOrbVisible = false
     @Published var isExpanded = false
     @Published var useCloud = false
+    /// Sub-toggle of cloud advice. Off (default) replaces the project and layer
+    /// names in the cloud snapshot with ordinals; local guidance is unaffected.
+    @Published var shareProjectNames = false
     @Published private(set) var messages: [SpatterMessage] = []
     @Published private(set) var isThinking = false
     @Published private(set) var status: Status = .localGuide
     @Published private(set) var notice: String?
+    /// Last server-reported allowance. Nil until a versioned reply carries one.
+    @Published private(set) var cloudBudget: SpatterBudget?
     @Published private(set) var personalPreferences = SpatterPersonalPreferences()
     @Published private(set) var memoryError: String?
     private let memoryStore: SpatterPersonalMemoryStore
     private var memoryScope: SpatterPersonalMemoryStore.Scope?
-    private let responder: Responder
+    private let responder: RichResponder
     private var request: Task<Void, Never>?
     private var generation = UUID()
     private var scope: String?
     private var cloudHistory: [SpatterChatMessage] = []
 
     static let capabilityNotice = "Advice only. Editing, saving, export and publishing through chat are unavailable. Local references can describe features still under development."
+    var budgetText: String? { cloudBudget?.displayText }
 
     init(responder: @escaping Responder, memoryStore: SpatterPersonalMemoryStore = .init()) {
-        self.responder = responder; self.memoryStore = memoryStore
+        self.responder = { messages, context in
+            SpatterCloudReply(schemaVersion: 0, reply: try await responder(messages, context), usageUnits: nil, budget: nil)
+        }
+        self.memoryStore = memoryStore
+    }
+    init(richResponder: @escaping RichResponder, memoryStore: SpatterPersonalMemoryStore = .init()) {
+        self.responder = richResponder; self.memoryStore = memoryStore
     }
     func suspendPersonalMemory() {
         endSession(); personalPreferences = .init(); memoryScope = nil; memoryError = nil
@@ -98,6 +112,8 @@ final class SpatterAIViewModel: ObservableObject {
             messages.removeAll(); cloudHistory.removeAll(); scope = context.scope
         }
         let cloud = useCloud
+        // The cloud copy of the snapshot redacts names unless the sub-toggle is on.
+        let cloudContext = context.sharingNames(shareProjectNames)
         let requestID = UUID()
         generation = requestID
         notice = nil
@@ -112,7 +128,8 @@ final class SpatterAIViewModel: ObservableObject {
             do {
                 try Task.checkCancellation()
                 if cloud {
-                    let response = try await self.responder(history, context)
+                    let reply = try await self.responder(history, cloudContext)
+                    let response = reply.reply
                     try Task.checkCancellation()
                     guard !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                         throw SpatterClientError.emptyResponse
@@ -121,6 +138,7 @@ final class SpatterAIViewModel: ObservableObject {
                     guard self.acceptCompletion(requestID, stillCurrent: stillCurrent) else { return }
                     self.appendAdvice(response, origin: .cloud)
                     self.cloudHistory = history + [.init(role: .assistant, content: response)]
+                    if let budget = reply.budget { self.cloudBudget = budget }
                     self.status = .cloudAdvice
                 } else {
                     let response = self.personalizedLocalGuidance(for: prompt, context: context)
@@ -185,7 +203,7 @@ final class SpatterAIViewModel: ObservableObject {
 
     func endSession() {
         cancel(); messages.removeAll(); cloudHistory.removeAll(); scope = nil
-        useCloud = false; notice = nil; status = .localGuide
+        useCloud = false; shareProjectNames = false; cloudBudget = nil; notice = nil; status = .localGuide
     }
 
     // Compatibility for the retained, currently unmounted orb surface.
@@ -199,7 +217,11 @@ final class SpatterAIViewModel: ObservableObject {
 
     /// Current implemented behavior takes precedence over historical brain packs.
     /// These are instructions for the user, never execution receipts.
-    static let currentGuideVersion = "2026-10-09.5"
+    static let currentGuideVersion = "2026-10-12.1"
+    /// Verified sign-in and account facts. Nothing here grants account access.
+    static let accountGuide = "Sign in with Apple, Google, GitHub or Microsoft through the sign-in screen; the app restores a saved session on launch and shows Loading until that check finishes. Guest use keeps projects and local Spatter preferences on this device under a separate guest scope, and signing in later does not merge or upload them. Admin roles come from server-authorized metadata, never from the app. In-app account deletion is not available yet: the screen does not offer a delete button and I cannot delete, merge, rename or inspect accounts, change email or reset passwords from this conversation. Editable projects stay on your device; the server keeps only identity, access, vote, consent, billing and job metadata. Do not paste passwords, verification codes or card numbers here."
+    /// Rooms as implemented today: invitation codes, mutual agreement, no chat or calls.
+    static let roomsGuide = "Rooms are invitation-based collaboration on a Studio project that both creators explicitly agree to share. A room invite is a revocable, expiring code that can be forwarded, and it is never an account sign-in token; having a code alone does not open a private project until the owner approves the member. There is no chat, direct messaging, calling by voice or video, camera, microphone or whole-device screen sharing in SDI. Watch Together lets accepted room members view approved public renditions in sync; it is not a call. The Calendar shows scheduled sessions and challenge dates. Connected room editing of a shared project is not available yet; I cannot create rooms, send invites, approve members or see who is in a room from this conversation."
     private static let portableProjectGuide = "Save and return to the project library. In a saved project's menu, choose Save Project Backup to Files, choose a destination and complete the Files save; the system confirmation can be labelled Save or Move. The .sdiproject backup contains the saved editable project and its stored media; MP4 and GIF exports are not editable project backups. Wait for Project backup saved to Files before treating the save as complete. To bring it back, choose Import project backup in the library and select the .sdiproject file. Validation must finish before a separate project with a new identity is created; it does not overwrite the original or restore prior-process Undo history. Cancelling changes no projects. If a file is unsupported, damaged or too large, keep the original and report the displayed error; I cannot repair it or claim it was imported. This is an explicit Files transfer, not automatic cloud sync or a backup of every app setting."
     private static let deviceStorageGuide = "Open Storage in the project library, then Refresh to measure files. The report covers Documents and disk caches, including saved revisions. Downloaded image packs and preferences in Application Support, and exported backups outside the app, are excluded; the number is not total app or device usage. Clear releases cached frame encodings from memory, not disk space. It preserves projects, history, media, backups and exports, and leaves unclassified disk cache files untouched. I cannot inspect free device space or promise a storage reduction. Keep a verified project backup before managing files outside the app; Recently Deleted is recoverable storage, not a permanent-delete or automatic-purge feature."
 
@@ -261,12 +283,16 @@ final class SpatterAIViewModel: ObservableObject {
     PNG sequence and spritesheet export offer White or Transparent; MP4 and GIF use white.
     Magic Cut removes edge-connected pixels matching a chosen color/tolerance in imported images. Preview before Apply.
     Magic Cut preserves originals and supports Undo; it is not semantic AI segmentation.
-    Spatter's separate Studio edit panel supports bounded editable circle motion, walking/running/jumping/waving stick figures,
-    and selected-audio volume, mute and fades. Choose a complete example and Apply; chat advice does not execute it.
-    Stick recipes support 8–20 frames with color, start/end positions, height and line width at the project's current FPS.
+    Spatter's separate Studio edit panel executes only the complete local instruction grammars listed below (catalog v\(SpatterInstructionCatalog.version)).
+    Choose a complete example and Apply; chat advice never executes an edit. Each applied edit is one Undo step with a factual receipt.
+    \(SpatterInstructionCatalog.capabilityLines.joined(separator: "\n"))
+    Audio fade curve shapes (linear, equal-power, S-curve, exponential, logarithmic) are set in the Audio panel; the Spatter fade grammar sets linear fade durations only.
     The Export panel renders MP4, GIF, PNG sequence or spritesheet. Actual success requires a completed real output file.
-    Open-ended AI video generation, automatic publishing and connected collaboration are not available yet.
-    User messaging, text chat, phone and video calls are removed. Every generated public video needs owner approval of its exact render.
+    After a saved Spatter edit, Export this edit as MP4 hands the exact saved revision to the real exporter and reports its byte count, duration, frame count and SHA-256.
+    Open-ended AI video generation and automatic publishing are not available yet.
+    \(accountGuide)
+    \(roomsGuide)
+    User messaging, text chat and calling by phone or video are removed. Every generated public video needs owner approval of its exact render.
     """
 
     private static func authorityGuide(for query: String) -> String? {
@@ -278,8 +304,23 @@ final class SpatterAIViewModel: ObservableObject {
         let communicationCall = ["phone call", "voice call", "video call", "conference call", "make a call",
             "start a call", "join a call", "call with", "call a user", "call another user", "call the user",
             "call someone", "call a friend", "call my friend"].contains { normalized.contains(" " + $0 + " ") }
-        if mentions("messaging", "messenger", "calls", "calling", "livekit") || communicationCall {
-            return "User messaging and voice/video calls have been removed. Collaboration rooms are planned for mutually agreed sharing of a Studio project; connected rooms are not available yet. Spatter remains your Studio assistant."
+        let removedCommunication = "User messaging and voice/video calls have been removed. Collaboration rooms are planned for mutually agreed sharing of a Studio project; connected rooms are not available yet. Spatter remains your Studio assistant.\n\n"
+        if mentions("messaging", "messenger", "calls", "calling", "livekit", "dm", "dms") || communicationCall {
+            return removedCommunication + roomsGuide
+        }
+        // "room" alone can mean canvas space; require a collaboration word with it.
+        if mentions("rooms", "invite", "invites", "invitation", "invitations", "collaborate", "collaboration", "collaborator") ||
+            (mentions("room") && mentions("join", "create", "share", "shared", "code", "member", "members", "collab", "together")) ||
+            (mentions("watch") && mentions("together")) {
+            // "chat" alone can mean this conversation; inside a rooms question it
+            // asks about user-to-user chat or calls, which are removed scope.
+            let asksCommunication = mentions("chat", "chats", "chatting", "call", "video", "voice", "mic", "microphone", "camera")
+            return (asksCommunication ? removedCommunication : "") + roomsGuide
+        }
+        if mentions("account", "accounts", "login", "signin", "password", "passwords") ||
+            (mentions("sign") && mentions("in", "out", "up")) || (mentions("delete", "deletion") && mentions("account")) ||
+            (mentions("guest") && mentions("mode", "projects", "data", "preferences")) {
+            return accountGuide
         }
         if mentions("publish", "publication", "upload", "youtube", "marketing") {
             return "Export creates a file on your device; it does not publish it. Official-channel uploads and marketing need separate creator permissions, asset rights and moderation. Every Spatter-generated public video also needs Joe's approval of the exact render. Connected automatic publishing is not available yet."
@@ -466,7 +507,8 @@ final class SpatterAIViewModel: ObservableObject {
         // Bound synchronous local ranking even for an adversarial maximum-size prompt.
         let tokens = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }
             .map(String.init).filter { $0.count > 1 && !stopWords.contains($0) }.prefix(32))
-        let ranked = SpatterKnowledgeBase.allModules.compactMap { module -> (SpatterKnowledgeModule, Int)? in
+        // Retired messaging/call modules are preserved for provenance but never ranked.
+        let ranked = SpatterKnowledgeBase.activeModules.compactMap { module -> (SpatterKnowledgeModule, Int)? in
             let title = module.title.lowercased(), summary = module.summary.lowercased()
             let body = module.knowledge.joined(separator: " ").lowercased()
             let score = tokens.reduce(0) { $0 + (title.contains($1) ? 5 : 0) + (summary.contains($1) ? 3 : 0) + (body.contains($1) ? 1 : 0) }
@@ -519,7 +561,9 @@ struct SpatterMessage: Identifiable {
 struct SpatterContext: Equatable {
     struct StudioSnapshot: Codable, Equatable {
         struct Layer: Codable, Equatable {
-            let id: String, name: String, blendMode: String
+            let id: String
+            var name: String
+            let blendMode: String
             let visible: Bool, fullyLocked: Bool
             let opacity: Double
         }
@@ -529,14 +573,21 @@ struct SpatterContext: Equatable {
         let onionSettings: StudioOnionSettings
         let projectID: UUID
         let revision: Int
-        let name: String
+        /// Redacted to "Current project" in the cloud copy unless names are shared.
+        var name: String
         let width: Int, height: Int, fps: Int, frameCount: Int, layerCount: Int
         let activeFrameID: String, activeLayerID: String
+        /// One-based position in the top-to-bottom Layers list; the ordinal used when names are withheld.
+        let activeLayerIndex: Int?
         let displayedFrameID: String?
         let tool: String?, panel: String
-        let activeLayer: Layer?
+        var activeLayer: Layer?
         let selectedElementCount: Int
         let isPlaying: Bool, isDirty: Bool, isSaving: Bool
+        /// Actual history availability from the editor, never inferred from receipts.
+        let canUndo: Bool, canRedo: Bool
+        /// Supported drawing tools plus the local instruction grammar names from the catalog.
+        let capabilities: [String]
         let editableAudioClipCount: Int, retainedAudioTrackCount: Int, unknownAudioTimingCount: Int
         let selectedAudioClipID: String?
         let audioPlayheadTime: Double?
@@ -544,6 +595,19 @@ struct SpatterContext: Equatable {
         var audioMix: [StudioViewModel.CommandScreenContext.AudioMixTrack]? = nil
         var selectedAudioClip: AudioClipSnapshot? = nil
         var selectedImageCount: Int = 0
+        var namesShared: Bool = true
+        static let redactedProjectName = "Current project"
+        /// Ordinals replace names; identities, counts and settings are unchanged.
+        func withNamesRedacted() -> StudioSnapshot {
+            var copy = self
+            copy.name = Self.redactedProjectName
+            if var layer = copy.activeLayer {
+                layer.name = activeLayerIndex.map { "Layer \($0)" } ?? "Active layer"
+                copy.activeLayer = layer
+            }
+            copy.namesShared = false
+            return copy
+        }
         struct AudioClipSnapshot: Codable, Equatable {
             let track: Int
             let startTime: Double
@@ -561,12 +625,27 @@ struct SpatterContext: Equatable {
     static let general = SpatterContext(currentScreen: "general", studio: nil)
     private init(currentScreen: String, studio: StudioSnapshot?) { self.currentScreen = currentScreen; self.studio = studio }
 
+    /// The copy handed to the cloud responder. `false` (the default toggle state)
+    /// replaces project/layer names with ordinals; `scope` and equality of the
+    /// original context are unaffected because the caller keeps the original.
+    func sharingNames(_ share: Bool) -> SpatterContext {
+        guard let studio, !share else { return self }
+        return SpatterContext(currentScreen: currentScreen, studio: studio.withNamesRedacted())
+    }
+
+    /// Supported tools plus every local grammar name; the cloud reads this list
+    /// instead of guessing what Apply can execute.
+    static func capabilityList(_ doc: StudioCommandContext) -> [String] {
+        doc.supportedTools.map { "tool:" + $0.rawValue } + SpatterInstructionCatalog.names.map { "grammar:" + $0 }
+    }
+
     static func studio(_ context: StudioViewModel.CommandScreenContext) -> SpatterContext? {
         guard context.route == .editor, let doc = context.document else { return nil }
         let layer = doc.layers.first { $0.id == doc.activeLayerID }.map {
             StudioSnapshot.Layer(id: $0.id, name: String($0.name.prefix(80)), blendMode: String($0.blendMode.prefix(32)),
                                  visible: $0.visible, fullyLocked: $0.isFullyLocked, opacity: $0.opacity)
         }
+        let layerIndex = doc.layers.firstIndex { $0.id == doc.activeLayerID }.map { $0 + 1 }
         let audioMix = context.audioMix.flatMap { tracks -> [StudioViewModel.CommandScreenContext.AudioMixTrack]? in
             guard tracks.count == 4, Set(tracks.map(\.track)) == Set(1...4),
                   tracks.allSatisfy({ $0.volume.isFinite && (0...1).contains($0.volume) && (0...4096).contains($0.clipCount) }) else { return nil }
@@ -583,10 +662,11 @@ struct SpatterContext: Equatable {
             projectID: doc.projectID, revision: doc.revision,
             name: String(doc.name.prefix(80)), width: doc.width, height: doc.height, fps: doc.fps,
             frameCount: doc.frames.count, layerCount: doc.layers.count, activeFrameID: doc.activeFrameID,
-            activeLayerID: doc.activeLayerID, displayedFrameID: context.displayedFrameID,
+            activeLayerID: doc.activeLayerID, activeLayerIndex: layerIndex, displayedFrameID: context.displayedFrameID,
             tool: context.selectedTool?.rawValue, panel: String(describing: context.activePanel), activeLayer: layer,
             selectedElementCount: context.selectedElementIDs.count, isPlaying: context.isPlaying,
-            isDirty: context.isDirty, isSaving: context.isSaving, editableAudioClipCount: doc.editableAudioClips.count,
+            isDirty: context.isDirty, isSaving: context.isSaving, canUndo: context.canUndo, canRedo: context.canRedo,
+            capabilities: capabilityList(doc), editableAudioClipCount: doc.editableAudioClips.count,
             retainedAudioTrackCount: context.retainedAudio.count,
             unknownAudioTimingCount: context.retainedAudio.filter { !$0.timingKnown }.count,
             selectedAudioClipID: context.selectedAudioClipID, audioPlayheadTime: context.audioPlayheadTime, wand: context.wand,

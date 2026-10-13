@@ -366,9 +366,39 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             try await rejects { _ = try await service.export(document: large, format: .pngSequence, outputParent: folder) }
             let sheet = try document(colors: Array(repeating: "#FF0000", count: 5), width: 2048, height: 2048)
             try await rejects { _ = try await service.export(document: sheet, format: .spritesheet, outputParent: folder) }
-            let many = try document(colors: Array(repeating: "#FF0000", count: 241), width: 16, height: 16)
+            // The sequence streams to disk, so the cap is 1,440 images (#182/#184).
+            let many = try document(colors: Array(repeating: "#FF0000", count: 1441), width: 16, height: 16)
             try await rejects { _ = try await service.export(document: many, format: .pngSequence, outputParent: folder) }
             try require(try fm.contentsOfDirectory(atPath: folder.path).isEmpty, "Oversized request created output")
+        }
+        await test("scale draws at the output size and separate layers write one decodable PNG per visible layer") {
+            let folder = try parent(root, "scale-layers")
+            var doc = try document(colors: ["#FF0000", "#0000FF"], width: 64, height: 32)
+            doc.layers.append(CanvasLayer(id: "layer-top", name: "Top"))
+            doc.frames[0].elements.append(DrawnElement(id: "top-stroke", tool: .brush,
+                points: [StrokePoint(x: 56, y: 4), StrokePoint(x: 64, y: 4)], color: "#00FF00", width: 8, opacity: 1, layerID: "layer-top"))
+            let doubled = try await service.export(document: doc, format: .pngSequence, outputParent: folder, scale: .double)
+            try require(doubled.manifest.imageWidth == 128 && doubled.manifest.imageHeight == 64 && doubled.manifest.scale == .double
+                        && doubled.manifest.version == 6 && doubled.manifest.frames.allSatisfy { $0.width == 128 && $0.height == 64 }, "Doubled manifest wrong")
+            let big = try decode(doubled.imageURLs[1])
+            try require(big.width == 128 && big.height == 64, "Doubled PNG size")
+            try pixel(big.pixel(64, 32), [0, 0, 255, 255])
+            let half = try await service.export(document: doc, format: .pngSequence, outputParent: folder, scale: .half)
+            let halfImage = try decode(half.imageURLs[0])
+            try require(half.manifest.imageWidth == 32 && half.manifest.imageHeight == 16 && halfImage.width == 32 && halfImage.height == 16, "Half scale wrong")
+            let layered = try await service.export(document: doc, format: .pngSequence, outputParent: folder, filenameBase: "fixture", separateLayers: true)
+            try require(layered.imageURLs.count == 4 && layered.manifest.separateLayers == true && layered.manifest.layerCount == 2
+                        && layered.manifest.frames.map(\.filename) == ["fixture_000000_L01.png", "fixture_000000_L02.png", "fixture_000001_L01.png", "fixture_000001_L02.png"]
+                        && layered.manifest.frames.map(\.layerID) == [doc.layers[0].id, "layer-top", doc.layers[0].id, "layer-top"], "Layer pass records wrong: \(layered.manifest.frames.map(\.filename))")
+            // Frame 0, top layer only: green stroke present, red base stroke absent (white background).
+            let top = try decode(layered.imageURLs[1])
+            try pixel(top.pixel(60, 4), [0, 255, 0, 255]); try pixel(top.pixel(8, 16), [255, 255, 255, 255])
+            // Frame 0, base layer only: the 48 px red stroke covers the whole 64×32 canvas,
+            // so (60, 4) is red here and must not carry the top layer's green.
+            let base = try decode(layered.imageURLs[0])
+            try pixel(base.pixel(8, 16), [255, 0, 0, 255]); try pixel(base.pixel(60, 4), [255, 0, 0, 255])
+            try await rejects { _ = try await service.export(document: doc, format: .spritesheet, outputParent: folder, separateLayers: true) }
+            for output in [doubled, half, layered] { try fm.removeItem(at: output.directory) }
         }
         await test("destination symlink rejected and project title never becomes a path") {
             let folder = try parent(root, "safe-path"); let link = root.appendingPathComponent("link")
@@ -532,6 +562,66 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
                 try require(decoded.version == version && decoded.imageCredits == nil && decoded.frames.count == 3,
                     "Optional credits broke historical manifest decoding")
             }
+        }
+        await test("export filename base is ASCII-only, bounded and falls back to animation") {
+            try require(StudioExportFilename.base(for: "My Animation") == "My-Animation", "spaces collapse to one dash")
+            try require(StudioExportFilename.base(for: "  Stick!! Death  (final) ") == "Stick-Death-final", "punctuation runs collapse and edges trim")
+            try require(StudioExportFilename.base(for: "épée 🎬 scène") == "p-e-sc-ne", "non-ASCII drops to separators")
+            try require(StudioExportFilename.base(for: "🎬🎬") == "animation", "all-symbol names fall back")
+            try require(StudioExportFilename.base(for: "") == "animation" && StudioExportFilename.base(for: nil) == "animation", "empty falls back")
+            try require(StudioExportFilename.base(for: "keep_under-score9") == "keep_under-score9", "allowed characters are preserved")
+            let long = StudioExportFilename.base(for: String(repeating: "a", count: 90) + " tail")
+            try require(long.count == 40 && long == String(repeating: "a", count: 40), "base is cut to 40 characters")
+            try require(StudioExportFilename.base(for: String(repeating: "b", count: 39) + " c") == String(repeating: "b", count: 39), "trailing separator after the cut is trimmed")
+            try require(StudioExportFilename.isValid("Stick-Death_1") && !StudioExportFilename.isValid("") && !StudioExportFilename.isValid("a b") && !StudioExportFilename.isValid("-a") && !StudioExportFilename.isValid(String(repeating: "a", count: 41)), "validator mismatch")
+        }
+        await test("project-named PNG and spritesheet files keep manifest records and legacy names stay without a base") {
+            let folder = try parent(root, "named")
+            var doc = try document(); doc.name = "Scene 2: Café fight"
+            let base = StudioExportFilename.base(for: doc.name)
+            try require(base == "Scene-2-Caf-fight", "unexpected base \(base)")
+            let sequence = try await service.export(document: doc, format: .pngSequence, outputParent: folder, filenameBase: base)
+            try require(sequence.imageURLs.map(\.lastPathComponent) == ["Scene-2-Caf-fight_000000.png", "Scene-2-Caf-fight_000001.png", "Scene-2-Caf-fight_000002.png"], "named sequence files")
+            try require(sequence.manifest.frames.map(\.filename) == sequence.imageURLs.map(\.lastPathComponent) && sequence.manifest.filenameBase == base, "manifest filenames diverge")
+            let sheet = try await service.export(document: doc, format: .spritesheet, outputParent: folder, filenameBase: base)
+            try require(sheet.imageURLs.map(\.lastPathComponent) == ["Scene-2-Caf-fight_spritesheet.png"] && sheet.manifest.frames.allSatisfy { $0.filename == "Scene-2-Caf-fight_spritesheet.png" }, "named sheet file")
+            let legacy = try await service.export(document: doc, format: .pngSequence, outputParent: folder)
+            try require(legacy.imageURLs.first?.lastPathComponent == "frame_000000.png" && legacy.manifest.filenameBase == nil, "legacy names changed")
+            try await rejects { _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder, filenameBase: "bad name") }
+            let decoded = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: sequence.manifestURL))
+            try require(decoded.filenameBase == base, "manifest does not round-trip the base")
+        }
+        await test("written PNGs are decoded back and a damaged file fails verification") {
+            let folder = try parent(root, "verify-png")
+            let output = try await service.export(document: document(), format: .pngSequence, outputParent: folder)
+            for url in output.imageURLs { try StudioExportService.verifyPNG(at: url, expectedWidth: 64, expectedHeight: 32) }
+            do { try StudioExportService.verifyPNG(at: output.imageURLs[0], expectedWidth: 65, expectedHeight: 32); throw Failure(message: "size mismatch passed") }
+            catch StudioExportService.ExportError.verificationFailed {}
+            let damaged = folder.appendingPathComponent("damaged.png")
+            let bytes = try Data(contentsOf: output.imageURLs[0])
+            try bytes.prefix(bytes.count / 2).write(to: damaged)
+            do { try StudioExportService.verifyPNG(at: damaged, expectedWidth: 64, expectedHeight: 32); throw Failure(message: "truncated PNG passed") }
+            catch StudioExportService.ExportError.verificationFailed {}
+            let notPNG = folder.appendingPathComponent("not.png")
+            try Data("plain text".utf8).write(to: notPNG)
+            do { try StudioExportService.verifyPNG(at: notPNG, expectedWidth: 64, expectedHeight: 32); throw Failure(message: "non-image passed") }
+            catch StudioExportService.ExportError.verificationFailed {}
+        }
+        await test("export preflight refuses critical thermal state and insufficient free space without blocking unknown capacity") {
+            try StudioExportPreflight.decide(availableBytes: 2_000, estimatedOutputBytes: 1_000, thermal: .nominal)
+            try StudioExportPreflight.decide(availableBytes: nil, estimatedOutputBytes: 1_000_000_000, thermal: .serious)
+            do { try StudioExportPreflight.decide(availableBytes: 1_999, estimatedOutputBytes: 1_000, thermal: .nominal); throw Failure(message: "space accepted") }
+            catch let failure as StudioExportPreflight.Failure {
+                try require(failure == .insufficientStorage(requiredBytes: 2_000, availableBytes: 1_999) && failure.errorDescription?.contains("Nothing was exported") == true, "wrong storage failure \(failure)")
+            }
+            do { try StudioExportPreflight.decide(availableBytes: nil, estimatedOutputBytes: 1, thermal: .critical); throw Failure(message: "critical accepted") }
+            catch let failure as StudioExportPreflight.Failure { try require(failure == .thermalCritical, "wrong thermal failure") }
+            try require(StudioExportPreflight.estimatedPNGBytes(width: 64, height: 32, frames: 3) == 64 * 32 * 3 + 65_536, "PNG estimate rule")
+            try require(StudioExportPreflight.estimatedGIFBytes(width: 64, height: 32, frames: 3) == 64 * 32 * 3 / 2 + 65_536, "GIF estimate rule")
+            let movie = StudioExportPreflight.estimatedMovieBytes(width: 1920, height: 1080, fps: 24, durationSeconds: 10, includesAudio: false)
+            try require(movie == 12_000_000 / 8 * 10 + 1_048_576, "movie estimate rule \(movie)")
+            // The real device check only adds measured inputs; it must not throw here for a tiny estimate.
+            try StudioExportPreflight.check(estimatedOutputBytes: 1, destination: root)
         }
         print("STUDIO_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         print("GENERATED_EXPORT_FIXTURES=\(root.path)")

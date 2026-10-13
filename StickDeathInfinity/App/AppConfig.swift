@@ -92,15 +92,6 @@ struct AppConfig {
         return .init(enabledProviders: enabled, microsoftTenant: validTenant ? tenant : nil)
     }
 
-    static var liveKitWSURL: URL? {
-        liveKitWSURL(from: Bundle.main.infoDictionary ?? [:])
-    }
-
-    static func liveKitWSURL(from values: [String: Any]) -> URL? {
-        guard let value = configuredString(values["LIVEKIT_WS_URL"]) else { return nil }
-        return serviceURL(value, scheme: "wss")
-    }
-
     private static func configuredString(_ value: Any?) -> String? {
         guard let value = value as? String else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -157,33 +148,15 @@ struct AppConfig {
             }
         }
     }
-
-    /// Existing display rates; actual billing authorization remains server-side.
-    enum CallRateTier: String, CaseIterable {
-        case standard, creator, pro, studio
-
-        var ratePerMinute: Double {
-            switch self {
-            case .standard: return 0.05
-            case .creator: return 0.10
-            case .pro: return 0.15
-            case .studio: return 0.25
-            }
-        }
-
-        var displayName: String { rawValue.capitalized }
-    }
 }
 
 enum AppConfigurationError: Error, LocalizedError {
-    case supabaseUnavailable, liveKitUnavailable
+    case supabaseUnavailable
 
     var errorDescription: String? {
         switch self {
         case .supabaseUnavailable:
             return "Cloud services are unavailable because their public configuration is missing or invalid."
-        case .liveKitUnavailable:
-            return "Calls are unavailable because their secure server configuration is missing or invalid."
         }
     }
 }

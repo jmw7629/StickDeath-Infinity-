@@ -133,6 +133,17 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             "Rejected import altered project library or left busy state")
         try require(try Data(contentsOf: file) == backup && Data(contentsOf: imageURL) == image.originalData,
             "Provider or original image file changed")
+        var missingAudio = original; missingAudio.audioTracks.removeAll()   // referenced clip, no bytes
+        let missingBundle = try storage.portableBundle(for: missingAudio)
+        do { _ = try await vm.importPortableProject(missingBundle); throw Failure(message: "Missing audio accepted silently") }
+        catch is Failure { throw Failure(message: "Missing audio accepted silently") } catch { }
+        try require(vm.lastImportWarnings.isEmpty, "Rejected import left warnings")
+        let dropped = try await vm.importPortableProject(missingBundle, droppingMissingAudio: true)
+        try require(vm.lastImportWarnings.count == 1 && vm.lastImportWarnings[0].contains("Dropped missing sound"), "No warning for dropped clip")
+        let droppedCold = StudioViewModel(storage: storage)
+        try require(await droppedCold.openProject(dropped) && droppedCold.document.audioClips.isEmpty
+                    && droppedCold.rasterData(droppedCold.currentFrame.rasterAssetID) == image.normalizedPNG, "Dropped-audio import did not reopen with its image")
+        await droppedCold.backToProjects()
         print("STUDIO_PORTABLE_PROJECT_TESTS=PASS real Files transport, managed image/audio bytes, two fresh identities, cold reopen, collision, checksum, cancel and symlink rejection")
     }
 }

@@ -46,6 +46,37 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             startTime: 0.6, duration: 0.4, volume: 0.8, assetID: track.id, sourceOffset: 0.05, isMuted: true))
         let snapshot = StudioMovieExportService.Snapshot(document: document, retainedAudioTracks: [track], rasterDataByID: [:])
         let service = StudioMixedMovieExportService()
+        try await run("library sound credits ride the capture proof into the mixed manifest and mismatches are refused") {
+            let digest = SHA256.hash(data: originalAudio).map { String(format: "%02x", $0) }.joined()
+            let attribution = StudioSoundAttribution(title: "Generated stereo tone", author: "Kenney", sourceURL: "https://kenney.nl/assets/casino-audio",
+                license: "CC0-1.0", licenseURL: "https://creativecommons.org/publicdomain/zero/1.0/", catalogueSoundID: digest, originalSHA256: String(repeating: "a", count: 64))
+            var credited = snapshot
+            credited.soundCredits = [StudioSoundCredit(assetID: track.id, attribution: attribution)]
+            let p = try parent("credits")
+            let out = try await service.export(snapshot: credited, outputParent: p)
+            try require(out.receipt.soundCredits == credited.soundCredits, "receipt lacks the verified sound credit")
+            let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: out.directory.appendingPathComponent("manifest.json"))) as! [String: Any]
+            let listed = manifest["soundCredits"] as? [[String: Any]]
+            try require(listed?.count == 1 && listed?[0]["author"] as? String == "Kenney" && listed?[0]["catalogueSoundID"] as? String == digest, "manifest JSON lacks the sound credit")
+            try out.cleanup(); try empty(p)
+            // A credit whose digest is not the asset's bytes, or naming an unknown asset, never reaches a movie.
+            var wrongDigest = snapshot
+            wrongDigest.soundCredits = [StudioSoundCredit(assetID: track.id, attribution: StudioSoundAttribution(title: attribution.title, author: attribution.author,
+                sourceURL: attribution.sourceURL, license: attribution.license, licenseURL: attribution.licenseURL,
+                catalogueSoundID: String(repeating: "b", count: 64), originalSHA256: attribution.originalSHA256))]
+            var unknownAsset = snapshot
+            unknownAsset.soundCredits = [StudioSoundCredit(assetID: UUID(), attribution: attribution)]
+            for bad in [wrongDigest, unknownAsset] {
+                let q = try parent("bad-credit")
+                do { _ = try await service.export(snapshot: bad, outputParent: q); throw TestError.failed("invalid sound credit exported") }
+                catch StudioMixedMovieExportService.ExportError.unsupportedSnapshot { }
+                try empty(q)
+            }
+            // Without credits the receipt omits the field rather than inventing attribution.
+            let plain = try await service.export(snapshot: snapshot, outputParent: try parent("plain"))
+            try require(plain.receipt.soundCredits == nil, "uncredited export invented sound credits")
+            try plain.cleanup()
+        }
         try await run("one real MP4 contains trimmed stereo gain muted clip silence and original pictures") {
             let p = try parent("success")
             let out = try await service.export(snapshot: snapshot, outputParent: p)

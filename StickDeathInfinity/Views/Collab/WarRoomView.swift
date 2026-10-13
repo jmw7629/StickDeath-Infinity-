@@ -1,171 +1,331 @@
 import SwiftUI
 import AVKit
-import Supabase
 
+/// War Room: a contest between two approved renditions. Both creators agree,
+/// viewers watch both videos and cast one mutable authenticated vote, and the
+/// server alone finalises the result. No invented opponents, viewers or scores.
 struct WarRoomView: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var matches: [WarMatch] = []
-    @State private var videos: [WarVideo] = []
+    @State private var videos: [ApprovedMedia] = []
+    @State private var votes: [UUID: WarVoteMachine] = [:]
+    @State private var players: [UUID: WarMatchPlayers] = [:]
     @State private var selection = ""
     @State private var opponent = ""
     @State private var agreed = false
+    @State private var playbackMode: WarPlaybackMode?
     @State private var busy = false
+    @State private var loaded = false
     @State private var error: String?
     @State private var notice: String?
-    @State private var playback: WarPlayback?
     @State private var reporting: WarMatch?
+    @State private var blocking: WarMatch?
     @State private var reportReason = ""
     @State private var epoch = UUID()
     private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(phase == .active)" }
-    private var client: SupabaseClient { get throws { try SupabaseManager.shared.client } }
+    private var viewer: UUID? { auth.userId.flatMap(UUID.init(uuidString:)) }
+    private var mode: WarPlaybackMode { playbackMode ?? (sizeClass == .regular ? .sideBySide : .sequential) }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("War Room").font(.specialElite(24))
-                Text("Watch both videos and pick your favorite. One current vote per viewer; participants cannot vote on their own matchup. Voting lasts 24 hours after both creators agree.")
-                    .foregroundColor(.sdTextSecondary)
-                if let error { Text(error).foregroundColor(.sdRed) }
-                if let notice { Text(notice).foregroundColor(.sdTextSecondary) }
-                if busy { ProgressView() }
+                Text("War Room").communityHeading()
+                Text("Watch both videos and pick your favorite. One current vote per viewer; participants cannot vote on their own matchup. Voting lasts 24 hours after both creators agree, and proposals expire after seven days.")
+                    .font(.specialElite(14, relativeTo: .callout)).foregroundStyle(StudioCraftTheme.textDim)
+                if !CommunityServices.isConfigured { CommunityMessage(text: CommunityServices.notConfiguredText, kind: .info) }
+                if let error { CommunityMessage(text: error, kind: .error).accessibilityIdentifier("warRoom.error") }
+                if let notice { CommunityMessage(text: notice, kind: .success).accessibilityIdentifier("warRoom.notice") }
+                if busy { ProgressView().tint(StudioCraftTheme.accent) }
                 if auth.isAuthenticated {
-                    NavigationLink("Leaderboard") { LeaderboardView() }
+                    NavigationLink { LeaderboardView() } label: {
+                        Label("Leaderboard", systemImage: "list.number").frame(minHeight: 44)
+                    }.accessibilityIdentifier("warRoom.leaderboard-link")
                     WarNoticesView()
                     submission
-                    Button("Refresh matchups") { Task { await load() } }.disabled(busy)
+                    Picker("Playback", selection: Binding(get: { mode }, set: { playbackMode = $0 })) {
+                        ForEach(WarPlaybackMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.pickerStyle(.segmented).accessibilityIdentifier("warRoom.playback.mode")
+                    Button("Refresh matchups") { Task { await load() } }
+                        .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                        .accessibilityIdentifier("warRoom.refresh")
                     ForEach(matches) { match in card(match) }
-                    if matches.isEmpty && !busy { Text("No available matchups.").foregroundColor(.sdTextSecondary) }
-                } else { Label("Sign in to participate", systemImage: "lock") }
+                    if matches.isEmpty && loaded && !busy && error == nil {
+                        Text("No available matchups.").communityCaption().accessibilityIdentifier("warRoom.empty")
+                    }
+                } else {
+                    CommunitySignInPrompt(text: "Sign in to participate", identifier: "warRoom.sign-in")
+                }
             }.padding(16).padding(.bottom, 60)
         }
-        .foregroundColor(.sdTextPrimary).background(Color.sdBackground.ignoresSafeArea())
+        .communityScreen()
         .navigationTitle("War Room").navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .task(id: identity) {
-            epoch = UUID(); matches = []; videos = []; playback?.player.pause(); playback = nil
-            reporting = nil; reportReason = ""
-            error = nil; notice = nil
+            epoch = UUID(); matches = []; videos = []; votes = [:]; stopPlayers(); loaded = false
+            reporting = nil; blocking = nil; reportReason = ""; error = nil; notice = nil
             if phase == .active { await load() }
         }
         .refreshable { await load() }
-        .sheet(item: $playback, onDismiss: { playback?.player.pause() }) { item in
-            VideoPlayer(player: item.player).onAppear { item.player.play() }.onDisappear { item.player.pause() }
-        }
         .sheet(item: $reporting) { match in
             NavigationStack {
                 Form {
-                    Text("Report a video, voting abuse or another issue in this matchup. Reports are reviewed by administrators, not posted publicly.")
+                    Text("Report a video, voting abuse or another issue in this matchup. Reports are reviewed by administrators, not posted publicly, and the reporter is not identified to participants.")
                     TextField("What happened?", text: $reportReason, axis: .vertical).lineLimit(4...10)
+                        .accessibilityIdentifier("warRoom.report.reason")
                     Button("Submit report") { Task { await submitReport(match.id) } }
                         .disabled(busy || reportReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || reportReason.count > 2000)
-                    if let error { Text(error).foregroundStyle(.red) }
+                        .accessibilityIdentifier("warRoom.report.submit")
+                    if let error { Text(error).foregroundStyle(StudioCraftTheme.accentText) }
                 }.navigationTitle("Report matchup")
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { reporting = nil } } }
-            }
+            }.preferredColorScheme(.dark)
         }
-        .onDisappear { playback?.player.pause(); playback = nil }
+        .confirmationDialog("Block this creator?", isPresented: Binding(get: { blocking != nil }, set: { if !$0 { blocking = nil } }), titleVisibility: .visible, presenting: blocking) { match in
+            Button("Block creator", role: .destructive) { Task { await block(match) } }
+            Button("Cancel", role: .cancel) { blocking = nil }
+        } message: { _ in
+            Text("Their matchups disappear from your War Room and open matchups between you are withdrawn. This does not report them.")
+        }
+        .onDisappear { stopPlayers() }
         .accessibilityIdentifier("warRoom.screen")
     }
+
     private var submission: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Your approved video").font(.specialElite(18))
+        CommunityCard {
+            Text("Your approved video").communitySubheading()
             Picker("Video", selection: $selection) {
                 Text("Select video").tag("")
                 ForEach(videos) { Text($0.title).tag($0.id.uuidString) }
-            }
-            if videos.isEmpty { Text("Publish a rights-cleared, approved rendition before submitting.").font(.caption) }
+            }.pickerStyle(.menu).tint(StudioCraftTheme.accentText)
+                .accessibilityIdentifier("warRoom.submission.video")
+            if videos.isEmpty { Text("Publish a rights-cleared, approved rendition before submitting.").communityCaption() }
             TextField("Opponent account ID", text: $opponent)
-                .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.roundedBorder)
+                .textInputAutocapitalization(.never).autocorrectionDisabled().communityField()
+                .accessibilityIdentifier("warRoom.submission.opponent")
+            Text("Ask the other creator for their account ID from their profile. There is no directory or matchmaking.").communityCaption()
             Toggle("I agree to submit this approved video under the voting rules above.", isOn: $agreed)
+                .font(.specialElite(14, relativeTo: .body))
+                .accessibilityIdentifier("warRoom.submission.agree")
             Button("Propose matchup") {
-                Task { await action(WarAction(action: "propose", media: UUID(uuidString: selection), opponent: UUID(uuidString: opponent))) }
-            }.disabled(busy || !agreed || UUID(uuidString: opponent) == nil || selection.isEmpty)
-        }.padding().background(Color.sdSurface).clipShape(RoundedRectangle(cornerRadius: 14))
+                guard let media = UUID(uuidString: selection), let target = UUID(uuidString: opponent) else { return }
+                Task { await act("Proposal recorded. The other creator must accept with their own approved video.") {
+                    try await CommunityServices.warRoom.propose(media: media, opponent: target, agreed: agreed)
+                } }
+            }
+            .buttonStyle(CommunityPrimaryButtonStyle())
+            .disabled(busy || !agreed || UUID(uuidString: opponent) == nil || UUID(uuidString: selection) == nil)
+            .accessibilityIdentifier("warRoom.submission.propose")
+        }
     }
+
     private func card(_ match: WarMatch) -> some View {
-        let participant = [match.creator,match.opponent].contains { $0.uuidString.lowercased() == auth.userId?.lowercased() }
-        let ended = match.ends_at.map { $0 <= Date() } ?? false
-        return VStack(alignment: .leading, spacing: 12) {
-            Text(match.status == "pending" ? "Awaiting opponent consent" : match.status == "completed" ? "Final result" : ended ? "Awaiting server result" : "Choose your favorite")
-                .font(.specialElite(18))
-            Button { play(match.left_url) } label: { Label(match.left_title, systemImage: "play.circle.fill") }
-            if let title = match.right_title, let url = match.right_url {
-                Button { play(url) } label: { Label(title, systemImage: "play.circle.fill") }
+        let presentation = WarMatchPresentation(match: match, viewer: viewer, now: Date())
+        let machine = votes[match.id] ?? WarVoteMachine(serverVote: match.my_vote)
+        return CommunityCard {
+            Text(presentation.heading).communitySubheading()
+            if let end = match.ends_at {
+                Text((match.ends_at ?? Date()) > Date() ? "Voting closes \(end.formatted(date: .abbreviated, time: .shortened))" : "Voting closed \(end.formatted(date: .abbreviated, time: .shortened))")
+                    .communityCaption()
             }
-            if let end = match.ends_at { Text("Closes \(end.formatted(date: .abbreviated, time: .shortened))").font(.caption) }
-            if match.status == "active" || match.status == "completed" {
-                Text("\(match.left_votes) · \(match.right_votes) votes").font(.specialElite(16))
-                if match.status == "completed" {
-                    Text(match.outcome == "tie" ? "Tie — no winner or loser" : match.outcome == "left" ? "Winner: \(match.left_title)" : match.outcome == "right" ? "Winner: \(match.right_title ?? "Second video")" : "Result unavailable")
-                        .font(.specialElite(17))
-                }
-                if match.status == "active" && !participant && !ended {
-                    HStack {
-                        voteButton("First video", "left", match)
-                        voteButton("Second video", "right", match)
-                    }
-                }
+            playback(match)
+            if presentation.showsTallies {
+                Text("\(match.left_votes) · \(match.right_votes) votes").font(.specialElite(16, relativeTo: .body)).monospacedDigit()
+                    .accessibilityLabel("\(match.left_votes) votes for the first video, \(match.right_votes) for the second")
             }
-            if match.status == "pending", match.opponent.uuidString.lowercased() == auth.userId?.lowercased() {
+            if let result = presentation.resultText { Text(result).font(.specialElite(17, relativeTo: .headline)).accessibilityIdentifier("warRoom.match.result") }
+            if presentation.phase == .awaitingFinalisation {
+                Text("The server finalises results after the deadline; running tallies are not a result.").communityCaption()
+            }
+            if presentation.canVote {
+                HStack(spacing: 10) {
+                    voteButton("First video", .left, match, machine)
+                    voteButton("Second video", .right, match, machine)
+                }
+                if case .failed(let message, _) = machine.state { CommunityMessage(text: message, kind: .error) }
+                if machine.isPending { Text("Sending your vote…").communityCaption() }
+            }
+            if presentation.canAccept {
                 Button("Accept with my selected video") {
-                    Task { await action(WarAction(action: "accept", match: match.id, media: UUID(uuidString: selection))) }
-                }.disabled(busy || !agreed || selection.isEmpty)
+                    guard let media = UUID(uuidString: selection) else { return }
+                    Task { await act("Matchup accepted. Voting is open for 24 hours.") {
+                        try await CommunityServices.warRoom.accept(match: match.id, media: media, agreed: agreed)
+                    } }
+                }
+                .buttonStyle(CommunityPrimaryButtonStyle())
+                .disabled(busy || !agreed || UUID(uuidString: selection) == nil)
+                .accessibilityIdentifier("warRoom.match.accept")
+                Text("Choose your video and agree to the rules above first.").communityCaption()
             }
-            if participant && !ended {
-                Button("Withdraw matchup", role: .destructive) { Task { await action(WarAction(action: "withdraw", match: match.id)) } }.disabled(busy)
+            HStack(spacing: 8) {
+                if presentation.canWithdraw {
+                    Button("Withdraw") { Task { await act("Matchup withdrawn.") { try await CommunityServices.warRoom.withdraw(match: match.id) } } }
+                        .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).disabled(busy)
+                        .accessibilityIdentifier("warRoom.match.withdraw")
+                }
+                Button("Report") { reportReason = ""; error = nil; reporting = match }
+                    .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                    .accessibilityIdentifier("warRoom.match.report")
+                if !presentation.isParticipant {
+                    Button("Block creator") { blocking = match }
+                        .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).disabled(busy)
+                        .accessibilityIdentifier("warRoom.match.block")
+                }
             }
-            Button("Report matchup") { reportReason = ""; error = nil; reporting = match }.disabled(busy)
-        }.padding().background(Color.sdSurface).clipShape(RoundedRectangle(cornerRadius: 14))
+        }
     }
-    private func voteButton(_ title: String, _ choice: String, _ match: WarMatch) -> some View {
+
+    /// Both renditions play on explicit taps only (no autoplay); side by side on
+    /// wide layouts, one at a time on phones. Sound is per device.
+    @ViewBuilder private func playback(_ match: WarMatch) -> some View {
+        let current = players[match.id]
+        if let current {
+            if mode == .sideBySide, let right = current.right {
+                HStack(spacing: 8) {
+                    VideoPlayer(player: current.left).frame(minHeight: 160).accessibilityLabel("First video: \(match.left_title)")
+                    VideoPlayer(player: right).frame(minHeight: 160).accessibilityLabel("Second video: \(match.right_title ?? "Second video")")
+                }
+            } else {
+                VideoPlayer(player: current.active).frame(minHeight: 200)
+                    .accessibilityLabel(current.showingRight ? "Second video: \(match.right_title ?? "Second video")" : "First video: \(match.left_title)")
+            }
+            HStack(spacing: 8) {
+                Button(current.showingRight ? "Play first: \(match.left_title)" : "Playing first") { switchPlayer(match, right: false) }
+                    .buttonStyle(CommunitySecondaryButtonStyle()).disabled(!current.showingRight && mode == .sequential)
+                    .accessibilityIdentifier("warRoom.match.play-left")
+                if current.right != nil {
+                    Button(current.showingRight ? "Playing second" : "Play second: \(match.right_title ?? "Second video")") { switchPlayer(match, right: true) }
+                        .buttonStyle(CommunitySecondaryButtonStyle()).disabled(current.showingRight && mode == .sequential)
+                        .accessibilityIdentifier("warRoom.match.play-right")
+                }
+                Button(current.muted ? "Unmute" : "Mute") { toggleMute(match) }
+                    .buttonStyle(CommunitySecondaryButtonStyle())
+                    .accessibilityIdentifier("warRoom.match.mute")
+            }
+        } else {
+            Button {
+                startPlayers(match)
+            } label: {
+                Label(match.right_url == nil ? "Watch: \(match.left_title)" : "Watch both videos", systemImage: "play.circle.fill").frame(minHeight: 44)
+            }.buttonStyle(CommunitySecondaryButtonStyle()).accessibilityIdentifier("warRoom.match.watch")
+            Text(match.right_title.map { "\(match.left_title) vs \($0)" } ?? "\(match.left_title) · opponent video pending").communityCaption()
+        }
+    }
+    private func voteButton(_ title: String, _ choice: WarVoteChoice, _ match: WarMatch, _ machine: WarVoteMachine) -> some View {
         Button {
-            Task { await action(WarAction(action: "vote", match: match.id, choice: choice)) }
+            Task { await vote(match, choice) }
         } label: {
-            Label(title, systemImage: match.my_vote == choice ? "checkmark.circle.fill" : "circle")
-        }.disabled(busy).accessibilityAddTraits(match.my_vote == choice ? .isSelected : [])
+            Label(title, systemImage: machine.isSelected(choice) ? "checkmark.circle.fill" : machine.isPendingChoice(choice) ? "clock" : "circle")
+                .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(CommunitySecondaryButtonStyle())
+        .disabled(busy || machine.isPending)
+        .accessibilityAddTraits(machine.isSelected(choice) ? .isSelected : [])
+        .accessibilityValue(machine.isSelected(choice) ? "Your current vote" : machine.isPendingChoice(choice) ? "Pending confirmation" : "")
+        .accessibilityIdentifier(choice == .left ? "warRoom.match.vote-left" : "warRoom.match.vote-right")
     }
-    private func play(_ value: String) {
-        guard let parts = URLComponents(string: value), parts.scheme == "https", parts.host != nil,
-              parts.user == nil, parts.password == nil, let url = parts.url else { error = "Video address is unavailable."; return }
-        playback?.player.pause(); playback = WarPlayback(player: AVPlayer(url: url))
+
+    private func startPlayers(_ match: WarMatch) {
+        guard let left = CommunityMediaURL.checked(match.left_url) else { error = "Video address is unavailable."; return }
+        let right = CommunityMediaURL.checked(match.right_url).map { AVPlayer(url: $0) }
+        var set = WarMatchPlayers(left: AVPlayer(url: left), right: right)
+        set.apply(mode: mode)
+        players[match.id] = set
     }
+    private func switchPlayer(_ match: WarMatch, right: Bool) {
+        guard var set = players[match.id] else { return }
+        set.showingRight = right && set.right != nil
+        set.apply(mode: mode)
+        players[match.id] = set
+    }
+    private func toggleMute(_ match: WarMatch) {
+        guard var set = players[match.id] else { return }
+        set.muted.toggle(); set.apply(mode: mode); players[match.id] = set
+    }
+    private func stopPlayers() {
+        for set in players.values { set.left.pause(); set.right?.pause() }
+        players = [:]
+    }
+
     @MainActor private func load() async {
-        guard auth.isAuthenticated, let account = auth.userId else { return }
+        guard auth.isAuthenticated, let account = viewer else { return }
+        let revision = epoch
+        busy = true; defer { if revision == epoch { busy = false } }
+        do {
+            let list = try await CommunityServices.warRoom.matches()
+            let owned = try await CommunityServices.warRoom.ownedMedia(account: account)
+            guard !Task.isCancelled, revision == epoch, account == viewer else { return }
+            matches = list; videos = owned; loaded = true; error = nil
+            votes = Dictionary(uniqueKeysWithValues: list.map { ($0.id, WarVoteMachine(serverVote: $0.my_vote)) })
+            let live = Set(list.map(\.id))
+            for key in players.keys where !live.contains(key) { players[key]?.left.pause(); players[key]?.right?.pause(); players[key] = nil }
+        } catch {
+            if revision == epoch { matches = []; videos = []; loaded = true; self.error = CommunityGateway.normalize(error).errorDescription }
+        }
+    }
+    @MainActor private func act(_ success: String, _ operation: @MainActor () async throws -> Void) async {
+        guard !busy, auth.isAuthenticated else { return }
+        let revision = epoch; busy = true; notice = nil; error = nil
+        defer { if revision == epoch { busy = false } }
+        do { try await operation(); guard revision == epoch else { return }; notice = success; busy = false; await load() }
+        catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
+    }
+    /// Pending until the server confirms; a refusal restores the previous vote.
+    @MainActor private func vote(_ match: WarMatch, _ choice: WarVoteChoice) async {
+        guard auth.isAuthenticated else { return }
+        var machine = votes[match.id] ?? WarVoteMachine(serverVote: match.my_vote)
+        let previous = machine.serverChoice
+        guard machine.tap(choice) else { return }
+        votes[match.id] = machine
         let revision = epoch
         do {
-            let response: WarResponse = try await client.rpc("sdi_war_action", params: WarAction(action: "list")).execute().value
-            let owned: [WarVideo] = try await client.from("sdi_watch_media").select("id,title").eq("owner_id", value: account).limit(100).execute().value
-            guard !Task.isCancelled, revision == epoch, account == auth.userId else { return }
-            if let problem = response.error { matches = []; error = problem; return }
-            matches = response.matches ?? []; videos = owned; error = nil
-        } catch { if revision == epoch { matches = []; videos = []; self.error = "War Room could not be refreshed. Check your connection and service configuration." } }
+            try await CommunityServices.warRoom.vote(match: match.id, choice: choice)
+            guard revision == epoch else { return }
+            machine.confirm(choice); votes[match.id] = machine
+            await load()
+        } catch {
+            guard revision == epoch else { return }
+            machine.fail(CommunityGateway.normalize(error).errorDescription ?? "Vote was not confirmed.", previous: previous)
+            votes[match.id] = machine
+        }
     }
-    @MainActor private func action(_ payload: WarAction) async {
-        guard !busy, auth.isAuthenticated else { return }
-        let revision = epoch; busy = true; notice = nil
-        defer { busy = false }
-        do {
-            let response: WarResponse = try await client.rpc("sdi_war_action", params: payload).execute().value
-            guard !Task.isCancelled, revision == epoch else { return }
-            if let problem = response.error { error = problem; return }
-            guard response.status == "confirmed" else { error = "Operation was not confirmed."; return }
-            notice = "Saved by the server."; await load()
-        } catch { if revision == epoch { self.error = "Operation was not confirmed. Refresh before retrying." } }
+    @MainActor private func block(_ match: WarMatch) async {
+        blocking = nil
+        guard let viewer else { return }
+        let target = match.creator == viewer ? match.opponent : match.creator
+        await act("Creator blocked. Their matchups are hidden from you.") { try await CommunityServices.warRoom.blockCreator(target) }
     }
     @MainActor private func submitReport(_ match: UUID) async {
         guard !busy, auth.isAuthenticated else { return }
         let revision = epoch; busy = true
-        defer { busy = false }
+        defer { if revision == epoch { busy = false } }
         do {
-            let response: WarResponse = try await client.rpc("sdi_war_report", params: WarReportRequest(match: match, reason: reportReason)).execute().value
-            guard !Task.isCancelled, revision == epoch else { return }
-            guard response.error == nil, response.status == "recorded" else { error = response.error ?? "Report was not confirmed."; return }
+            try await CommunityServices.warRoom.report(match: match, reason: reportReason)
+            guard revision == epoch else { return }
             reporting = nil; reportReason = ""; notice = "Report received for administrator review."
-        } catch { if revision == epoch { self.error = "Report not confirmed. Refresh before retrying." } }
+        } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
     }
 }
-private struct WarReportRequest: Encodable { let match: UUID; let reason: String }
+
+/// Per-matchup players: created on demand, paused when the card leaves.
+private struct WarMatchPlayers {
+    let left: AVPlayer
+    let right: AVPlayer?
+    var showingRight = false
+    var muted = false
+    var active: AVPlayer { showingRight ? (right ?? left) : left }
+    func apply(mode: WarPlaybackMode) {
+        left.isMuted = muted; right?.isMuted = muted
+        if mode == .sideBySide, right != nil {
+            left.play(); right?.play()
+        } else {
+            if showingRight { left.pause(); right?.play() } else { right?.pause(); left.play() }
+        }
+    }
+}
+
+/// Participant notices from moderation decisions and the appeal path.
 @MainActor
 private struct WarNoticesView: View {
     @ObservedObject private var auth = AuthService.shared
@@ -177,30 +337,44 @@ private struct WarNoticesView: View {
     @State private var error: String?
     @State private var requestID = UUID()
     var body: some View {
-        DisclosureGroup("Your matchup notices") {
+        DisclosureGroup {
             VStack(alignment: .leading, spacing: 10) {
-                Button("Refresh notices") { Task { await request("list") } }.disabled(busy)
-                if let error { Text(error).foregroundStyle(.red) }
-                if busy { ProgressView() }
+                Button("Refresh notices") { Task { await request("list") } }
+                    .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                    .accessibilityIdentifier("warRoom.notices.refresh")
+                if let error { CommunityMessage(text: error, kind: .error) }
+                if busy { ProgressView().tint(StudioCraftTheme.accent) }
+                if notices.isEmpty && !busy && error == nil { Text("No moderation notices for your matchups.").communityCaption() }
                 ForEach(notices) { notice in
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(notice.message)
-                        Text("Match \(notice.match_id.uuidString.prefix(8)) · \(notice.created_at.formatted())").font(.caption)
-                        if let state = notice.appeal_state { Text("Appeal: \(state)").font(.caption) }
+                        Text(notice.message).font(.specialElite(14, relativeTo: .body))
+                        Text("Match \(communityShortID(notice.match_id)) · \(notice.created_at.formatted())").communityCaption()
+                        if let state = notice.appeal_state { Text("Appeal: \(state)").communityCaption() }
                         else if notice.appeal_deadline > Date() {
-                            Button("Appeal this decision") { selected = notice; explanation = "" }.disabled(busy)
-                        }
+                            Button("Appeal this decision") { selected = notice; explanation = "" }
+                                .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                                .accessibilityIdentifier("warRoom.notices.appeal")
+                        } else { Text("The 30-day appeal window has closed.").communityCaption() }
                     }.padding(.vertical, 8)
                 }
                 if let selected {
-                    Text("Appeal matchup \(selected.match_id.uuidString.prefix(8))").font(.specialElite(16))
+                    Text("Appeal matchup \(communityShortID(selected.match_id))").communitySubheading()
                     TextField("Explain why this decision should be reviewed", text: $explanation, axis: .vertical).lineLimit(3...8)
-                    Button("Submit appeal") { Task { await request("appeal") } }
-                        .disabled(busy || explanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || explanation.count > 2000)
-                    Button("Cancel") { self.selected = nil; explanation = "" }.disabled(busy)
+                        .communityField().accessibilityIdentifier("warRoom.notices.explanation")
+                    HStack {
+                        Button("Submit appeal") { Task { await request("appeal") } }
+                            .buttonStyle(CommunityPrimaryButtonStyle())
+                            .disabled(busy || explanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || explanation.count > 2000)
+                            .accessibilityIdentifier("warRoom.notices.submit")
+                        Button("Cancel") { self.selected = nil; explanation = "" }
+                            .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                    }
                 }
             }
+        } label: {
+            Text("Your matchup notices").font(.specialElite(16, relativeTo: .body))
         }
+        .tint(StudioCraftTheme.accentText)
         .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
             clear(); if auth.isAuthenticated && phase == .active { await request("list") }
         }
@@ -212,31 +386,14 @@ private struct WarNoticesView: View {
         let id = UUID(); requestID = id; busy = true
         defer { if requestID == id { busy = false } }
         do {
-            let client = try SupabaseManager.shared.client
-            let response: WarNoticesResponse = try await client.rpc("sdi_war_notices", params: WarNoticeRequest(action: action, decision: selected?.id, explanation: explanation)).execute().value
+            if action == "appeal", let selected {
+                try await CommunityServices.warRoom.appeal(decision: selected.id, explanation: explanation)
+                guard requestID == id else { return }
+                self.selected = nil; explanation = ""; busy = false; await request("list"); return
+            }
+            let items = try await CommunityServices.warRoom.notices()
             guard !Task.isCancelled, requestID == id else { return }
-            if let problem = response.error { error = problem; return }
-            if action == "list", let items = response.notices { notices = items; selected = nil; error = nil }
-            else if response.status == "recorded" { busy = false; await request("list") }
-            else { error = "Response unavailable. Refresh before retrying." }
-        } catch { if requestID == id { notices = []; selected = nil; self.error = "Notices unavailable. Check your connection." } }
+            notices = items; error = nil
+        } catch { if requestID == id { if action == "list" { notices = [] }; self.error = CommunityGateway.normalize(error).errorDescription } }
     }
-}
-private struct WarNoticeRequest: Encodable { let action: String; let decision: UUID?; let explanation: String }
-private struct WarNoticesResponse: Decodable { let error: String?; let status: String?; let notices: [WarNotice]? }
-private struct WarNotice: Decodable, Identifiable {
-    let id: UUID; let match_id: UUID; let message: String; let created_at: Date; let appeal_state: String?; let appeal_deadline: Date
-}
-private struct WarPlayback: Identifiable { let id = UUID(); let player: AVPlayer }
-private struct WarVideo: Decodable, Identifiable { let id: UUID; let title: String }
-private struct WarAction: Encodable {
-    let action: String
-    var match: UUID? = nil; var media: UUID? = nil; var opponent: UUID? = nil; var choice: String? = nil
-}
-private struct WarResponse: Decodable { let status: String?; let error: String?; let matches: [WarMatch]? }
-private struct WarMatch: Decodable, Identifiable {
-    let id: UUID; let creator: UUID; let opponent: UUID; let status: String; let ends_at: Date?
-    let left_title: String; let left_url: String; let right_title: String?; let right_url: String?
-    let left_votes: Int; let right_votes: Int; let my_vote: String?
-    let outcome: String?
 }

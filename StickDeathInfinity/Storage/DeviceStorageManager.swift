@@ -4,22 +4,21 @@ import CryptoKit
 import Darwin
 
 /// Device-first storage architecture for StickDeath ∞
-/// All user data (animations, messages, videos, calls, media) stored on-device.
-/// Server only handles: auth tokens, challenge metadata, matchmaking, leaderboards.
+/// Editable projects, originals and imported media stay on this device. The
+/// server keeps only identity, access, vote, consent, billing and job metadata.
+/// User-to-user messaging and calls are retired: there is no message store.
 ///
 /// Storage hierarchy:
-///   ~/Documents/Animations/       — .sdi animation project bundles
-///   ~/Documents/Media/            — photos, videos, audio files
-///   ~/Documents/Messages/         — encrypted message archives (SQLite)
-///   ~/Library/Caches/AI/          — Spatter AI cached responses
-///   ~/Library/Caches/Thumbnails/  — generated thumbnails
-///   Core Data store               — projects metadata, frame data, layer data, user prefs
+///   ~/Documents/Animations/<uuid>/            — project bundle (legacy files kept byte-identical)
+///   ~/Documents/Animations/<uuid>/.sdi/       — immutable revisions, lineage receipts, current.json,
+///                                               migration.json manifest for migrated legacy bundles
+///   ~/Documents/.sdi-recently-deleted/        — recoverable deletions and migration rollbacks
+///   ~/Documents/Media/                        — imported photos, videos, audio files
+///   ~/Library/Caches/AI/, Thumbnails/         — regenerable caches (never evicted by inference)
 ///
-/// Sync strategy: Device → server only sends:
-///   - User profile (handle, avatar, plan)
-///   - Challenge entries (animation thumbnail + metadata, not full project)
-///   - Leaderboard scores
-///   - Presence/online status for collab rooms
+/// Protection: every directory and file this manager creates uses
+/// FileProtectionType.completeUntilFirstUserAuthentication (see docs/LOCAL_DATA_POLICY.md).
+/// Diagnostics and user-facing messages never include filesystem paths.
 
 class DeviceStorageManager {
     static let shared = DeviceStorageManager()
@@ -40,11 +39,7 @@ class DeviceStorageManager {
     var mediaDir: URL {
         documentsDir.appendingPathComponent("Media", isDirectory: true)
     }
-    
-    var messagesDir: URL {
-        documentsDir.appendingPathComponent("Messages", isDirectory: true)
-    }
-    
+
     var aiCacheDir: URL {
         cachesDir.appendingPathComponent("AI", isDirectory: true)
     }
@@ -64,10 +59,33 @@ class DeviceStorageManager {
     // MARK: - Initialization
     
     func setupDirectories() {
-        let dirs = [animationsDir, mediaDir, messagesDir, aiCacheDir, thumbnailsDir]
+        let dirs = [animationsDir, mediaDir, aiCacheDir, thumbnailsDir]
         for dir in dirs {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            Self.applyFileProtection(dir)
         }
+    }
+
+    // MARK: - File protection
+
+    /// Readable after the first unlock so background saves and relaunch-before-
+    /// unlock restoration work; unreadable on a locked device before that.
+    static let fileProtection = "completeUntilFirstUserAuthentication"
+    static func applyFileProtection(_ url: URL) {
+        #if os(iOS)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
+        #endif
+    }
+    static func protectedWriteOptions(_ options: Data.WritingOptions) -> Data.WritingOptions {
+        #if os(iOS)
+        return options.union(.completeFileProtectionUntilFirstUserAuthentication)
+        #else
+        return options
+        #endif
+    }
+    private static func writeProtected(_ data: Data, to url: URL, options: Data.WritingOptions) throws {
+        try data.write(to: url, options: protectedWriteOptions(options))
     }
     
     // MARK: - Storage metrics
@@ -151,10 +169,27 @@ class DeviceStorageManager {
                 }
             }
         }
+        // A legacy bundle (files outside .sdi, no selected revision yet) is about
+        // to be migrated. Record the originals before the first revision is
+        // selected so rollback can prove they are still byte-identical. Hashing
+        // happens only on that first (or retried first) save, never afterwards.
+        let existingStorage = projectDir.appendingPathComponent(".sdi", isDirectory: true)
+        let needsManifest = itemExists(projectDir) && (!itemExists(existingStorage) ||
+            (!itemExists(existingStorage.appendingPathComponent("migration.json")) && !itemExists(existingStorage.appendingPathComponent("current.json"))))
+        let legacyEntries = needsManifest ? try legacyOriginalEntries(projectDir) : []
         try checkedDirectory(projectDir, create: true)
         let storage = try revisionDirectory(projectDir, create: true)
         let ownership = try revisionMutationLock(storage)
         defer { flock(ownership, LOCK_UN); close(ownership) }
+        let manifestURL = storage.appendingPathComponent("migration.json")
+        if !legacyEntries.isEmpty, !itemExists(manifestURL) {
+            let manifest = MigrationManifest(version: 1, project: project.id, migratedAt: Date(),
+                                             protection: Self.fileProtection, originals: legacyEntries)
+            let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+            let bytes = try encoder.encode(manifest)
+            try writeRevisionFile(bytes, to: manifestURL, stage: .migrationManifest)
+            try synchronizeRevisionFile(manifestURL, stage: .migrationManifest)
+        }
         let revisions = storage.appendingPathComponent("revisions", isDirectory: true)
         let revision = UUID()
         let destination = revisions.appendingPathComponent(revision.uuidString + ".json")
@@ -189,11 +224,11 @@ class DeviceStorageManager {
         try commitCurrentRevision(current, to: pointer)
     }
 
-    enum RevisionWriteStage { case payload, lineageReceipt }
+    enum RevisionWriteStage { case payload, lineageReceipt, migrationManifest }
     /// Narrow filesystem seams: default behavior and publication ordering are unchanged.
     /// Failure leaves unselected recovery data intact and never selects partial content.
     func writeRevisionFile(_ data: Data, to url: URL, stage: RevisionWriteStage) throws {
-        try data.write(to: url, options: .withoutOverwriting)
+        try Self.writeProtected(data, to: url, options: .withoutOverwriting)
     }
     func synchronizeRevisionFile(_ url: URL, stage: RevisionWriteStage) throws {
         let handle = try FileHandle(forWritingTo: url)
@@ -204,7 +239,7 @@ class DeviceStorageManager {
     /// Filesystem failure seam for production-store tests. The default commit
     /// uses Foundation's atomic replacement; no document mutation follows it.
     func commitCurrentRevision(_ data: Data, to pointer: URL) throws {
-        try data.write(to: pointer, options: .atomic)
+        try Self.writeProtected(data, to: pointer, options: .atomic)
     }
 
     func loadAnimation(id: UUID) throws -> AnimationProject? {
@@ -222,12 +257,9 @@ class DeviceStorageManager {
             if itemExists(pointer) {
                 let current = try JSONDecoder().decode(CurrentRevision.self, from: checkedFile(pointer, maximumBytes: 1024))
                 guard current.version == 1 else { throw AnimationStorageError.unsupportedVersion }
-                let file = storage.appendingPathComponent("revisions/" + current.revision.uuidString + ".json")
-                let revision = try JSONDecoder().decode(Revision.self, from: checkedFile(file, maximumBytes: Self.maximumSnapshotBytes))
-                guard revision.version == 1 else { throw AnimationStorageError.unsupportedVersion }
-                guard revision.project.id == id else { throw AnimationStorageError.identityMismatch }
-                try validate(revision.project, exactFrameCount: true)
-                return revision.project
+                let revisions = storage.appendingPathComponent("revisions", isDirectory: true)
+                return try selectedRevisionProject(current.revision, lineageSHA256: current.lineageSHA256,
+                                                   revisions: revisions, project: id)
             }
             let revisions = storage.appendingPathComponent("revisions", isDirectory: true)
             guard try FileManager.default.contentsOfDirectory(atPath: revisions.path).isEmpty else {
@@ -235,6 +267,64 @@ class DeviceStorageManager {
             }
         }
         return try loadLegacyAnimation(id: id, directory: directory)
+    }
+
+    /// Reads one revision payload. When the selector carries a lineage digest,
+    /// the payload bytes must match the receipt's SHA-256 and byte count; a
+    /// mismatch is corruption or tampering and is reported, never opened.
+    private func selectedRevisionProject(_ revisionID: UUID, lineageSHA256: String?, revisions: URL, project id: UUID) throws -> AnimationProject {
+        let file = revisions.appendingPathComponent(revisionID.uuidString + ".json")
+        let data = try checkedFile(file, maximumBytes: Self.maximumSnapshotBytes)
+        if let digest = lineageSHA256 {
+            let receipt = try readOnlyLineageReceipt(revisionID, digest: digest, storage: revisions.deletingLastPathComponent(), project: id)
+            guard data.count == receipt.payloadBytes, Self.digest(data) == receipt.payloadSHA256 else {
+                throw AnimationStorageError.payloadIntegrity
+            }
+        }
+        let revision = try JSONDecoder().decode(Revision.self, from: data)
+        guard revision.version == 1 else { throw AnimationStorageError.unsupportedVersion }
+        guard revision.project.id == id else { throw AnimationStorageError.identityMismatch }
+        try validate(revision.project, exactFrameCount: true)
+        return revision.project
+    }
+
+    /// Receipt lookup for reads. Uses the same symlink/size-checked file reads
+    /// as the rest of the load path (not the cleanup descriptor walk), so an
+    /// open never depends on cleanup-only machinery; cleanup keeps its own.
+    private func readOnlyLineageReceipt(_ revisionID: UUID, digest: String, storage: URL, project id: UUID) throws -> LineageReceipt {
+        let lineage = storage.appendingPathComponent("lineage-v1", isDirectory: true)
+        try checkedDirectory(lineage)
+        guard try checkedFile(lineage.appendingPathComponent("format"), maximumBytes: 64) == Self.lineageMarker else {
+            throw AnimationStorageError.storageCollision
+        }
+        let bytes = try checkedFile(lineage.appendingPathComponent(revisionID.uuidString + ".json"), maximumBytes: 2048)
+        guard Self.digest(bytes) == digest else { throw AnimationStorageError.payloadIntegrity }
+        let receipt = try JSONDecoder().decode(LineageReceipt.self, from: bytes)
+        guard receipt.version == 1, receipt.project == id, receipt.revision == revisionID,
+              receipt.payloadBytes > 0, receipt.payloadBytes <= Self.maximumSnapshotBytes,
+              receipt.payloadSHA256.count == 64 else { throw AnimationStorageError.payloadIntegrity }
+        return receipt
+    }
+
+    /// The revision selected immediately before the current one, verified
+    /// through its lineage receipt. Nil when no selected ancestor exists or its
+    /// payload was explicitly cleaned up. Read-only: current.json is unchanged.
+    func loadPreviousRevision(id: UUID) throws -> AnimationProject? {
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        let directory = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
+        guard itemExists(directory) else { return nil }
+        try checkedDirectory(directory)
+        let storage = try revisionDirectory(directory, create: false)
+        let pointer = storage.appendingPathComponent("current.json")
+        guard itemExists(pointer) else { throw AnimationStorageError.missingRevisionSelector }
+        let current = try JSONDecoder().decode(CurrentRevision.self, from: checkedFile(pointer, maximumBytes: 1024))
+        guard current.version == 1 else { throw AnimationStorageError.unsupportedVersion }
+        guard let digest = current.lineageSHA256 else { return nil } // Pre-lineage document: no verified ancestry.
+        let revisions = storage.appendingPathComponent("revisions", isDirectory: true)
+        let receipt = try readOnlyLineageReceipt(current.revision, digest: digest, storage: storage, project: id)
+        guard let parent = receipt.parent else { return nil }
+        guard itemExists(revisions.appendingPathComponent(parent.revision.uuidString + ".json")) else { return nil }
+        return try selectedRevisionProject(parent.revision, lineageSHA256: parent.sha256, revisions: revisions, project: id)
     }
 
     private func loadLegacyAnimation(id: UUID, directory: URL) throws -> AnimationProject {
@@ -289,15 +379,101 @@ class DeviceStorageManager {
         guard contents.count <= 20_000 else { throw AnimationStorageError.limitExceeded }
         var result = AnimationStorageListing()
         for directory in contents.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            guard let id = UUID(uuidString: directory.lastPathComponent) else { continue }
+            let name = directory.lastPathComponent
+            guard let id = UUID(uuidString: name) else {
+                // Hidden entries are this store's own staging namespace or system
+                // files. Anything else is a bundle this version cannot identify;
+                // it is reported, never opened, renamed or removed.
+                if name.hasPrefix(".") { continue }
+                result.failures.append(AnimationStorageFailure(id: nil, entryName: name, error: AnimationStorageError.unrecognizedEntry))
+                continue
+            }
             do {
                 if let project = try loadAnimation(id: id) { result.animations.append(project.metadata) }
             } catch {
-                result.failures.append(AnimationStorageFailure(id: id, error: error))
+                result.failures.append(AnimationStorageFailure(id: id, entryName: name, error: error))
             }
         }
         return result
     }
+
+    // MARK: - Legacy migration manifest and rollback
+
+    struct MigrationOriginal: Codable, Equatable {
+        let name: String
+        let size: Int
+        /// Nil only when the file exceeded the hashing limit; size is still recorded.
+        let sha256: String?
+    }
+    struct MigrationManifest: Codable {
+        let version: Int
+        let project: UUID
+        let migratedAt: Date
+        let protection: String
+        let originals: [MigrationOriginal]
+    }
+    /// Regular files at the bundle's top level, excluding the `.sdi` store.
+    private func legacyOriginalEntries(_ projectDir: URL) throws -> [MigrationOriginal] {
+        guard itemExists(projectDir) else { return [] }
+        try checkedDirectory(projectDir)
+        let entries = try FileManager.default.contentsOfDirectory(at: projectDir, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard entries.count <= 20_000 else { throw AnimationStorageError.limitExceeded }
+        var result: [MigrationOriginal] = []
+        for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let name = entry.lastPathComponent
+            if name == ".sdi" { continue }
+            let values = try entry.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isSymbolicLink != true else { throw AnimationStorageError.unsafeFile }
+            guard values.isRegularFile == true, let size = values.fileSize, size >= 0 else { continue }
+            let digest = size <= Self.maximumAssetBytes ? Self.digest(try checkedFile(entry, maximumBytes: Self.maximumAssetBytes)) : nil
+            result.append(MigrationOriginal(name: name, size: size, sha256: digest))
+        }
+        return result
+    }
+    func migrationManifest(id: UUID) throws -> MigrationManifest? {
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        let projectDir = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
+        guard itemExists(projectDir.appendingPathComponent(".sdi")) else { return nil }
+        let storage = try revisionDirectory(projectDir, create: false)
+        let url = storage.appendingPathComponent("migration.json")
+        guard itemExists(url) else { return nil }
+        let manifest = try JSONDecoder().decode(MigrationManifest.self, from: checkedFile(url, maximumBytes: 4 * 1024 * 1024))
+        guard manifest.version == 1, manifest.project == id else { throw AnimationStorageError.invalidDocument }
+        return manifest
+    }
+    /// Undo a legacy migration: every original listed in the manifest must still
+    /// exist byte-identical, then the whole `.sdi` store (all revisions, lineage,
+    /// manifest) moves to Recently Deleted. Nothing is deleted and the legacy
+    /// files are not touched; the bundle reopens through the legacy reader.
+    func rollbackMigration(id: UUID) throws {
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        try checkedDirectory(animationsDir)
+        let projectDir = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
+        try checkedDirectory(projectDir)
+        guard let manifest = try migrationManifest(id: id) else { throw AnimationStorageError.migrationManifestMissing }
+        let storage = try revisionDirectory(projectDir, create: false)
+        let ownership = try revisionMutationLock(storage)
+        defer { flock(ownership, LOCK_UN); close(ownership) }
+        let current = try legacyOriginalEntries(projectDir)
+        for original in manifest.originals {
+            guard let live = current.first(where: { $0.name == original.name }), live.size == original.size,
+                  original.sha256 == nil || live.sha256 == original.sha256 else {
+                throw AnimationStorageError.migrationOriginalsChanged
+            }
+        }
+        guard !manifest.originals.isEmpty else { throw AnimationStorageError.migrationOriginalsChanged }
+        // The legacy reader must accept the originals before the store is set aside.
+        _ = try loadLegacyAnimation(id: id, directory: projectDir)
+        guard let recovery = try recoveryStore(create: true) else { throw AnimationStorageError.storageCollision }
+        let rollbacks = recovery.documentsRoot.appendingPathComponent(".migration-rollbacks", isDirectory: true)
+        try checkedDirectory(rollbacks, create: true)
+        let destination = rollbacks.appendingPathComponent(id.uuidString + "-" + UUID().uuidString, isDirectory: true)
+        try checkedDirectory(destination, create: true)
+        try FileManager.default.moveItem(at: storage, to: destination.appendingPathComponent(".sdi", isDirectory: true))
+    }
+    /// Root the recovery store is based on; exposed so rollback can place
+    /// migration stores beside, not inside, recoverable project bundles.
+    fileprivate var documentsRoot: URL { documentsDir }
 
     func deleteAnimation(id: UUID) throws {
         Self.operationLock.lock()
@@ -320,7 +496,7 @@ class DeviceStorageManager {
             try checkedDirectory(documentsDir, create: true)
             let staging = documentsDir.appendingPathComponent(".sdi-recovery-init-" + UUID().uuidString, isDirectory: true)
             try checkedDirectory(staging, create: true)
-            try marker.write(to: staging.appendingPathComponent("format"), options: .withoutOverwriting)
+            try Self.writeProtected(marker, to: staging.appendingPathComponent("format"), options: .withoutOverwriting)
             try FileManager.default.moveItem(at: staging, to: root)
         }
         try checkedDirectory(root)
@@ -440,7 +616,7 @@ class DeviceStorageManager {
             let staging = animationsDir.appendingPathComponent(".sdi-initializing-" + projectDir.lastPathComponent + "-" + UUID().uuidString, isDirectory: true)
             try checkedDirectory(staging, create: true)
             try checkedDirectory(staging.appendingPathComponent("revisions", isDirectory: true), create: true)
-            try Self.storageMarker.write(to: staging.appendingPathComponent("format"), options: .withoutOverwriting)
+            try Self.writeProtected(Self.storageMarker, to: staging.appendingPathComponent("format"), options: .withoutOverwriting)
             try FileManager.default.moveItem(at: staging, to: storage)
         }
         try checkedDirectory(storage)
@@ -457,6 +633,7 @@ class DeviceStorageManager {
     private func checkedDirectory(_ url: URL, create: Bool = false) throws {
         if !itemExists(url), create {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            Self.applyFileProtection(url)
         }
         let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
         guard values.isSymbolicLink != true, values.isDirectory == true else { throw AnimationStorageError.unsafeFile }
@@ -610,24 +787,40 @@ class DeviceStorageManager {
         }
     }
     
-    // MARK: - Messages (on-device encrypted SQLite)
-    
-    func saveMessage(_ message: ChatMessage) {
-        // Messages stored in local SQLite via Core Data
-        // Encrypted at rest using iOS Data Protection
-        // No server sync — peer-to-peer delivery via LiveKit data channels
-    }
-    
     // MARK: - Media files (on-device)
-    
+
     func saveMedia(data: Data, type: MediaType, filename: String) throws -> URL {
         guard !filename.isEmpty, filename != ".", filename != "..", !filename.contains("/"), !filename.contains("\\"), !filename.contains("\0") else { throw AnimationStorageError.unsafeFile }
         try checkedDirectory(mediaDir, create: true)
         let typeDir = mediaDir.appendingPathComponent(type.rawValue, isDirectory: true)
         try checkedDirectory(typeDir, create: true)
         let fileURL = typeDir.appendingPathComponent(filename)
-        try data.write(to: fileURL, options: .withoutOverwriting)
+        try Self.writeProtected(data, to: fileURL, options: .withoutOverwriting)
         return fileURL
+    }
+
+    // MARK: - User-facing failure text
+
+    /// Fixed, path-free messages. Raw `localizedDescription` values can embed
+    /// filesystem paths or account data, so callers show this instead.
+    static func userMessage(for error: Error) -> String {
+        if let storage = error as? AnimationStorageError { return storage.errorDescription ?? "Project storage failed. Original files were preserved." }
+        if let cleanup = error as? RevisionCleanupFailure { return cleanup.errorDescription ?? "Project storage failed. Original files were preserved." }
+        if let scan = error as? StudioStorageScanRequest.Failure { return scan.errorDescription ?? "Storage could not be measured." }
+        if error is CancellationError { return "The storage operation was cancelled. Nothing was changed." }
+        let nsError = error as NSError
+        if (nsError.domain == NSCocoaErrorDomain && nsError.code == CocoaError.Code.fileWriteOutOfSpace.rawValue) ||
+            (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOSPC)) {
+            return "Not enough free space to save. The last saved revision is unchanged; free up space and try again."
+        }
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == CocoaError.Code.fileWriteNoPermission.rawValue {
+            return "This project's files could not be written. The last saved revision is unchanged."
+        }
+        if nsError.domain == NSCocoaErrorDomain && [CocoaError.Code.fileReadNoSuchFile.rawValue, CocoaError.Code.fileNoSuchFile.rawValue].contains(nsError.code) {
+            return "A project file is missing. Its remaining original files were preserved."
+        }
+        if error is DecodingError { return "A project file could not be decoded. Its original files were preserved." }
+        return "Project storage failed. Original files were preserved."
     }
     
     struct CacheClearReceipt: Sendable {
@@ -751,21 +944,37 @@ struct AudioTrack: Codable {
 }
 
 struct AnimationStorageFailure {
-    let id: UUID
+    /// Nil for a bundle whose folder name is not a project identity.
+    let id: UUID?
+    /// Folder name as listed; only an identifier, never a full path.
+    let entryName: String
     let error: Error
+    init(id: UUID?, entryName: String? = nil, error: Error) {
+        self.id = id; self.entryName = entryName ?? id?.uuidString ?? "?"; self.error = error
+    }
+    /// Row text for the library: the original is always left in place.
+    var message: String {
+        "Can't open: \(id?.uuidString.lowercased() ?? entryName), original preserved — \(DeviceStorageManager.userMessage(for: error))"
+    }
 }
 
 struct AnimationStorageListing {
     var animations: [AnimationMetadata] = []
     var failures: [AnimationStorageFailure] = []
+    var unreadableProjectIDs: [UUID] { failures.compactMap(\.id) }
 }
 
 enum AnimationStorageError: Error, LocalizedError {
     case identityMismatch, invalidDocument, limitExceeded, unsafeFile
     case unsupportedVersion, storageCollision, legacyIndexCollision, invalidLegacyFilename, missingRevisionSelector
+    case payloadIntegrity, unrecognizedEntry, migrationManifestMissing, migrationOriginalsChanged
 
     var errorDescription: String? {
         switch self {
+        case .payloadIntegrity: return "The selected revision does not match its integrity receipt. It was not opened; its files were preserved for recovery."
+        case .unrecognizedEntry: return "A folder in the project library is not a recognized project. It was left untouched."
+        case .migrationManifestMissing: return "This project has no migration record, so there is nothing to roll back."
+        case .migrationOriginalsChanged: return "The original legacy files no longer match the migration record. Rollback was not performed; nothing was changed."
         case .identityMismatch: return "The project identity does not match its folder. Its original files were preserved."
         case .invalidDocument: return "The animation contains invalid or inconsistent document data."
         case .limitExceeded: return "The animation exceeds this storage version's safe size or count limits."
@@ -777,16 +986,6 @@ enum AnimationStorageError: Error, LocalizedError {
         case .missingRevisionSelector: return "The animation has saved revision data but no current revision selector. Recovery is required; its files were preserved."
         }
     }
-}
-
-struct StoredChatMessage: Codable {
-    let id: UUID
-    let senderId: String
-    let recipientId: String
-    let text: String
-    let timestamp: Date
-    let mediaURL: String?
-    // Stored on-device only, not synced to server
 }
 
 enum MediaType: String {
@@ -804,13 +1003,17 @@ struct StudioStorageUsage: Sendable {
         var bytes: Int64 = 0
     }
     var projects = Bucket()
+    /// Revision files other than each project's selected revision: interrupted
+    /// saves and earlier history ("Recoverable unsaved data" in the storage
+    /// sheet). Kept for recovery; only explicit cleanup may remove any of it.
+    var recoverableUnsavedData = Bucket()
     var recentlyDeleted = Bucket()
     var media = Bucket()
     var otherDocuments = Bucket()
     var preservedCaches = Bucket()
     var skippedLinksAndSpecialFiles = 0
     var totalFileBytes: Int64 {
-        projects.bytes + recentlyDeleted.bytes + media.bytes + otherDocuments.bytes + preservedCaches.bytes
+        projects.bytes + recoverableUnsavedData.bytes + recentlyDeleted.bytes + media.bytes + otherDocuments.bytes + preservedCaches.bytes
     }
 }
 
@@ -837,7 +1040,22 @@ struct StudioStorageScanRequest: Sendable {
         guard maximumEntries > 0, maximumDepth > 0 else { throw Failure.limit }
         var usage = StudioStorageUsage(), visited = 0
         var total: Int64 = 0
-        func walk(_ descriptor: Int32, depth: Int, category: String?, cache: Bool) throws {
+        // Selected revision name inside a project's `.sdi` store, read without
+        // following links and bounded to the selector's maximum size.
+        func selectedRevision(_ sdiDescriptor: Int32) -> String? {
+            let fd = openat(sdiDescriptor, "current.json", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+            guard fd >= 0 else { return nil }
+            defer { close(fd) }
+            var info = stat()
+            guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= 1024 else { return nil }
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            let count = read(fd, &buffer, buffer.count)
+            guard count > 0, let object = try? JSONSerialization.jsonObject(with: Data(buffer[0..<count])) as? [String: Any],
+                  let revision = object["revision"] as? String, let id = UUID(uuidString: revision) else { return nil }
+            return id.uuidString + ".json"
+        }
+        struct RevisionContext { let sdiDescriptor: Int32; let selected: String?; let inRevisions: Bool }
+        func walk(_ descriptor: Int32, depth: Int, category: String?, cache: Bool, context: RevisionContext? = nil) throws {
             try checkCancellation()
             guard depth <= maximumDepth else { throw Failure.limit }
             var before = stat()
@@ -871,7 +1089,16 @@ struct StudioStorageScanRequest: Sendable {
                     var opened = stat()
                     guard fstat(child, &opened) == 0, opened.st_dev == info.st_dev,
                           opened.st_ino == info.st_ino else { throw Failure.changed }
-                    try walk(child, depth: depth + 1, category: bucket, cache: cache)
+                    var next: RevisionContext?
+                    // Documents(0) › Animations(1) › <uuid>(2) › .sdi(3) › revisions(4)
+                    if !cache && bucket == "Animations" {
+                        if depth == 2 && name == ".sdi" {
+                            next = RevisionContext(sdiDescriptor: child, selected: selectedRevision(child), inRevisions: false)
+                        } else if let context, depth == 3, name == "revisions", !context.inRevisions {
+                            next = RevisionContext(sdiDescriptor: context.sdiDescriptor, selected: context.selected, inRevisions: true)
+                        }
+                    }
+                    try walk(child, depth: depth + 1, category: bucket, cache: cache, context: next)
                 } else if type == S_IFREG {
                     guard info.st_size >= 0 else { throw Failure.unreadable }
                     let sum = total.addingReportingOverflow(Int64(info.st_size))
@@ -880,7 +1107,13 @@ struct StudioStorageScanRequest: Sendable {
                     func add(_ target: inout StudioStorageUsage.Bucket) {
                         target.files += 1; target.bytes += Int64(info.st_size)
                     }
+                    // Inside `.sdi/revisions`: only the selected payload is the
+                    // project's current data. Every other revision file (an
+                    // interrupted save or earlier history) is recoverable and
+                    // measured separately; nothing here decides to remove it.
+                    let unselectedRevision = context?.inRevisions == true && name.hasSuffix(".json") && name != context?.selected
                     if cache { add(&usage.preservedCaches) }
+                    else if unselectedRevision { add(&usage.recoverableUnsavedData) }
                     else {
                         switch bucket {
                         case "Animations": add(&usage.projects)
@@ -978,14 +1211,15 @@ extension DeviceStorageManager {
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
+    static let lineageMarker = Data("SDI-SELECTED-REVISION-LINEAGE-1\n".utf8)
     private func lineageDirectory(_ storage: URL, create: Bool) throws -> URL {
         let directory = storage.appendingPathComponent("lineage-v1", isDirectory: true)
-        let marker = Data("SDI-SELECTED-REVISION-LINEAGE-1\n".utf8)
+        let marker = Self.lineageMarker
         if !itemExists(directory), create {
             let staging = storage.appendingPathComponent(".lineage-init-" + UUID().uuidString)
             try checkedDirectory(staging, create: true)
             let markerPath = staging.appendingPathComponent("format")
-            try marker.write(to: markerPath, options: .withoutOverwriting)
+            try Self.writeProtected(marker, to: markerPath, options: .withoutOverwriting)
             let markerHandle = try FileHandle(forWritingTo: markerPath)
             do { try markerHandle.synchronize(); try markerHandle.close() }
             catch { try? markerHandle.close(); throw error }

@@ -4,25 +4,68 @@ import java.util.UUID
 
 fun newID(): String = UUID.randomUUID().toString()
 data class Point(val x: Float, val y: Float)
-enum class Tool { Pencil, Eraser, Line, Rectangle, Ellipse, Triangle, Diamond, Star, Arrow, Text, Image, Fill, Eyedropper, Lasso, Move, Hand;
+/** `SoftEraser` is Android-local v26 (feathered destination-out passes, see [SoftEraser]). */
+enum class Tool { Pencil, Eraser, SoftEraser, Line, Rectangle, Ellipse, Triangle, Diamond, Star, Arrow, Text, Image, Fill, Eyedropper, Lasso, Move, Hand;
     val isClosedShape get() = this in listOf(Rectangle, Ellipse, Triangle, Diamond, Star, Arrow)
     val isShape get() = this == Line || isClosedShape
-    val isDrawing get() = this == Pencil || this == Eraser || isShape
-    val isSelectable get() = (isDrawing && this != Eraser) || this == Text || this == Image || this == Fill
+    val isEraser get() = this == Eraser || this == SoftEraser
+    val isDrawing get() = this == Pencil || isEraser || isShape
+    val isSelectable get() = (isDrawing && !isEraser) || this == Text || this == Image || this == Fill
+    /** Tools first stored by Android-local v26; older envelopes cannot carry them. */
+    val needsV26 get() = this == SoftEraser
 }
+/** [preservesLayerAlpha] (iOS schema 24) paints only over the layer's existing coverage; it is the one
+ * mark an alpha-locked layer accepts. [imageCrop]/[imageQuarterTurns] mirror iOS `rasterCrop` and
+ * `rasterQuarterTurns`: the crop is a fraction of the upright source, turns are clockwise. */
 data class Stroke(val id: String = newID(), val layerID: String, val points: List<Point>,
                   val color: Int, val width: Float, val tool: Tool, val filled: Boolean = false, val opacity: Float = 1f,
                   val brush: BrushFamily = BrushFamily.Round, val brushSeed: Int = id.hashCode(), val brushTransform: BrushTransform = BrushTransform(),
                   val nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f, val text: EditableText? = null,
-                  val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null, val assetCredit: AssetCredit? = null, val swiftLegacyPath: Boolean = false, val swiftLegacyButtCap: Boolean = false, val swiftRoundBrush: SwiftRoundBrush? = null)
-enum class LayerBlend(val label: String, val needsModernBlend: Boolean = false) {
-    Normal("Normal"), Multiply("Multiply", true), Screen("Screen"), Overlay("Overlay"), Darken("Darken"), Lighten("Lighten"),
-    ColorDodge("Color Dodge", true), ColorBurn("Color Burn", true), HardLight("Hard Light", true), SoftLight("Soft Light", true),
-    Difference("Difference", true), Exclusion("Exclusion", true), Hue("Hue", true), Saturation("Saturation", true),
-    Color("Color", true), Luminosity("Luminosity", true)
+                  val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null, val assetCredit: AssetCredit? = null, val swiftLegacyPath: Boolean = false, val swiftLegacyButtCap: Boolean = false, val swiftRoundBrush: SwiftRoundBrush? = null,
+                  val preservesLayerAlpha: Boolean = false, val imageCrop: ImageCrop? = null, val imageQuarterTurns: Int = 0) {
+    /** True when this stroke needs the Android-local v26 envelope. */
+    val needsV26 get() = tool.needsV26 || brush.needsV26 || preservesLayerAlpha || imageCrop != null || imageQuarterTurns != 0
 }
+/** [swiftName] is the iOS `StudioLayerBlendMode` raw value (lowercase, hyphenated). The local
+ * v25 envelope persists it; v1–v24 records hold the enum name and both remain readable. */
+enum class LayerBlend(val label: String, val swiftName: String, val needsModernBlend: Boolean = false) {
+    Normal("Normal", "normal"), Multiply("Multiply", "multiply", true), Screen("Screen", "screen"), Overlay("Overlay", "overlay"),
+    Darken("Darken", "darken"), Lighten("Lighten", "lighten"),
+    ColorDodge("Color Dodge", "color-dodge", true), ColorBurn("Color Burn", "color-burn", true),
+    HardLight("Hard Light", "hard-light", true), SoftLight("Soft Light", "soft-light", true),
+    Difference("Difference", "difference", true), Exclusion("Exclusion", "exclusion", true),
+    Hue("Hue", "hue", true), Saturation("Saturation", "saturation", true),
+    Color("Color", "color", true), Luminosity("Luminosity", "luminosity", true),
+    /** PhotoCraft Linear Dodge (Add): Android `BlendMode.PLUS`, API 29+. */
+    LinearDodge("Linear Dodge (Add)", "linear-dodge", true),
+    /** PhotoCraft Linear Burn has no exact Android compositing mode; FrameRenderer rejects it explicitly. */
+    LinearBurn("Linear Burn", "linear-burn", true);
+
+    /** True for PhotoCraft modes beyond the six every historical Studio build stored (iOS schema ≥ 34). */
+    val isExtended get() = this !in historical
+
+    companion object {
+        /** The six modes every historical Studio build renders and exports. */
+        val historical = setOf(Normal, Multiply, Screen, Overlay, Darken, Lighten)
+        /** Case-insensitive iOS raw-value lookup. Unknown legacy strings stay unrecognised (null) so
+         * callers decide: iOS draws them as Normal, Android project transfer rejects them. */
+        fun fromSwift(stored: String): LayerBlend? = entries.firstOrNull { it.swiftName.equals(stored, ignoreCase = true) }
+        /** Local envelope reader: v1–v24 enum names or the v25 iOS raw value; anything else is rejected. */
+        fun fromStored(stored: String): LayerBlend = entries.firstOrNull { it.name == stored } ?: fromSwift(stored)
+            ?: throw IllegalArgumentException("Unsupported layer blend \"$stored\"; original preserved.")
+    }
+}
+/** [locked] is derived: it is true only for [LayerLockMode.Full], so every historical `locked` check
+ * still refuses edits on fully locked layers while Position/Alpha locks refuse only what iOS refuses. */
 data class Layer(val id: String = newID(), val name: String, val visible: Boolean = true,
-                 val locked: Boolean = false, val opacity: Float = 1f, val blend: LayerBlend = LayerBlend.Normal)
+                 val lockMode: LayerLockMode = LayerLockMode.Free, val opacity: Float = 1f, val blend: LayerBlend = LayerBlend.Normal,
+                 val label: LayerLabel? = null) {
+    val locked get() = lockMode == LayerLockMode.Full
+    /** A visible, non-full-locked layer with coverage, the precondition of every edit. */
+    val isEditable get() = visible && !locked && opacity > 0f
+    /** True when this layer needs the Android-local v26 envelope. */
+    val needsV26 get() = (lockMode != LayerLockMode.Free && lockMode != LayerLockMode.Full) || label != null
+}
 data class OnionSettings(val enabled: Boolean = false, val previous: Int = 1, val next: Int = 1,
                          val opacity: Float = 0.25f, val tinted: Boolean = true) {
     fun validate() {
@@ -34,7 +77,7 @@ data class GridSettings(val enabled: Boolean = false, val spacing: Int = 32, val
 }
 data class Frame(val id: String = newID(), val strokes: List<Stroke> = emptyList(), val hold: Int = 1)
 /** Front-to-back layer ordering matches the native Swift document convention.
- * The storage envelope is Android-local v24 (reads v1–v24), not an advertised .sdi interchange codec. */
+ * The storage envelope is Android-local v26 (reads v1–v26), not an advertised .sdi interchange codec. */
 data class Document(val id: String, val name: String, val width: Int, val height: Int, val fps: Int,
     val frames: List<Frame>, val layers: List<Layer>, val activeFrameID: String,
     val activeLayerID: String, val revision: Long = 0, val modified: Long = System.currentTimeMillis(), val onion: OnionSettings = OnionSettings(), val backgroundColor: Int = -1, val grid: GridSettings = GridSettings(), val audioClips: List<AudioClip> = emptyList(), val audioTracks: List<AudioTrackMix> = List(4) { AudioTrackMix() }) {
@@ -44,6 +87,8 @@ data class Document(val id: String, val name: String, val width: Int, val height
     val imageBytes get() = frames.sumOf { f -> f.strokes.sumOf { it.image?.byteCount?.toLong() ?: 0L } }
     val imagePixels get() = frames.sumOf { f -> f.strokes.sumOf { it.image?.pixels ?: 0L } }
     val audioBytes get() = audioClips.sumOf { it.source.byteCount.toLong() }
+    /** True when any content needs the Android-local v26 envelope (older clients reject it). */
+    val needsV26 get() = layers.any { it.needsV26 } || frames.any { f -> f.strokes.any { it.needsV26 } }
     fun validated(): Document {
         require(audioTracks.size == 4) { "A project requires four audio tracks." }
         audioTracks.forEach { it.validate() }
@@ -99,6 +144,12 @@ data class Document(val id: String, val name: String, val width: Int, val height
                 require(stroke.assetCredit == null || stroke.image != null)
                 stroke.assetCredit?.validate()
                 stroke.image?.validateGeometry(stroke)
+                require(stroke.image != null || (stroke.imageCrop == null && stroke.imageQuarterTurns == 0)) { "Only images carry crop or turn metadata." }
+                require(stroke.imageQuarterTurns in 0..3) { "Image turns must be 0–3 quarter turns." }
+                stroke.imageCrop?.validate()
+                require(!stroke.preservesLayerAlpha || (stroke.tool == Tool.Pencil && stroke.swiftLegacyPath.not())) {
+                    "Alpha-preserving paint is a pencil brush mark."
+                }
                 require((stroke.tool == Tool.Text) == (stroke.text != null))
                 stroke.text?.let { text ->
                     text.validate()
@@ -243,7 +294,7 @@ class FramePlaybackClock(document: Document) {
 enum class MirrorMode { Off, Vertical, Horizontal, Both }
 /** Baked editable marks share the ordinary renderer, selection, history and export path. */
 fun Stroke.mirrored(canvasWidth: Int, canvasHeight: Int, mode: MirrorMode): List<Stroke> {
-    if (mode == MirrorMode.Off || tool == Tool.Eraser) return listOf(this)
+    if (mode == MirrorMode.Off || tool.isEraser) return listOf(this)
     val result = mutableListOf(this)
     fun reflect(horizontal: Boolean, vertical: Boolean) {
         val reflected = points.map { Point(if (horizontal) canvasWidth - it.x else it.x, if (vertical) canvasHeight - it.y else it.y) }

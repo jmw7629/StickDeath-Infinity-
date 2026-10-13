@@ -90,7 +90,8 @@ enum StudioCommandDirection: String, Codable { case earlier, later
     var offset: Int { self == .earlier ? -1 : 1 }
 }
 enum StudioCommandLock: String, Codable { case free, full, position, alpha }
-enum StudioCommandBlend: String, Codable { case normal, multiply, screen, overlay, darken, lighten }
+/// Commands accept every PhotoCraft mode the native compositor renders.
+typealias StudioCommandBlend = StudioLayerBlendMode
 
 struct StudioCommandLayerSettings: Codable {
     var name: String? = nil
@@ -106,6 +107,15 @@ struct StudioCommandLayerSettings: Codable {
 
 enum StudioCommand: Codable {
     struct RenameProject: Codable { let name: String }
+    /// Omitted fields keep the current value; the editor applies the same
+    /// 16–4096 px / 1–60 fps limits as the Project Settings panel.
+    /// `anchorX`/`anchorY` (0…1, default 0 = top-left) choose which canvas point stays fixed during a resize.
+    struct UpdateProjectSettings: Codable {
+        var name: String? = nil; var width: Int? = nil; var height: Int? = nil; var fps: Int? = nil
+        var anchorX: Double? = nil; var anchorY: Double? = nil
+    }
+    struct CopyFrame: Codable { let source: StudioCommandReference }
+    struct PasteFrame: Codable { let after: StudioCommandReference }
     struct Draw: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let strokes: [StudioCommandStroke] }
     struct EraseSelectedElements: Codable {
         let frame: StudioCommandReference
@@ -157,7 +167,7 @@ enum StudioCommand: Codable {
     struct SplitAudioClip: Codable { let clipID: String; let seconds: Double; let newClipID: String }
     struct DeleteAudioClip: Codable { let clipID: String }
     struct DuplicateAudioClip: Codable { let clipID: String; let newClipID: String }
-    struct UpdateAudioTrack: Codable { let track: Int; var volume: Double? = nil; var muted: Bool? = nil }
+    struct UpdateAudioTrack: Codable { let track: Int; var volume: Double? = nil; var muted: Bool? = nil; var pan: Double? = nil; var soloed: Bool? = nil }
     struct UpdateAudioClip: Codable { let clipID: String; let settings: StudioAudioClipSettings }
     struct CanvasOptions: Codable {
         let grid: Bool?
@@ -174,6 +184,8 @@ enum StudioCommand: Codable {
     case duplicateFrameRange(ReverseFrames)
     case eraseSelectedElements(EraseSelectedElements)
     case renameProject(RenameProject)
+    case updateProjectSettings(UpdateProjectSettings)
+    case copyFrame(CopyFrame), pasteFrame(PasteFrame)
     case cropImage(CropImage)
     case setFrameHold(SetFrameHold)
     case tweenFrames(TweenFrames)
@@ -195,6 +207,9 @@ enum StudioCommand: Codable {
         switch key.stringValue {
         case "eraseSelectedElements": self = .eraseSelectedElements(try container.decode(EraseSelectedElements.self, forKey: key))
         case "renameProject": self = .renameProject(try container.decode(RenameProject.self, forKey: key))
+        case "updateProjectSettings": self = .updateProjectSettings(try container.decode(UpdateProjectSettings.self, forKey: key))
+        case "copyFrame": self = .copyFrame(try container.decode(CopyFrame.self, forKey: key))
+        case "pasteFrame": self = .pasteFrame(try container.decode(PasteFrame.self, forKey: key))
         case "cropImage": self = .cropImage(try container.decode(CropImage.self, forKey: key))
         case "tweenFrames": self = .tweenFrames(try container.decode(TweenFrames.self, forKey: key))
         case "setFrameHold": self = .setFrameHold(try container.decode(SetFrameHold.self, forKey: key))
@@ -243,6 +258,9 @@ enum StudioCommand: Codable {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
         case .renameProject(let value): try container.encode(value, forKey: StudioWireKey("renameProject"))
+        case .updateProjectSettings(let value): try container.encode(value, forKey: StudioWireKey("updateProjectSettings"))
+        case .copyFrame(let value): try container.encode(value, forKey: StudioWireKey("copyFrame"))
+        case .pasteFrame(let value): try container.encode(value, forKey: StudioWireKey("pasteFrame"))
         case .cropImage(let value): try container.encode(value, forKey: StudioWireKey("cropImage"))
         case .tweenFrames(let value): try container.encode(value, forKey: StudioWireKey("tweenFrames"))
         case .setFrameHold(let value): try container.encode(value, forKey: StudioWireKey("setFrameHold"))
@@ -366,7 +384,8 @@ struct StudioCommandContext {
     let frames: [Frame]
     let layers: [CanvasLayer]
     let editableAudioClips: [AudioClip]
-    let supportedAudioEdits = ["clipVolume", "clipMute", "clipFades", "clipPlacement", "clipTrim", "clipDuplicate", "clipSplit", "clipDelete"]
+    let supportedAudioEdits = ["clipVolume", "clipMute", "clipFades", "clipPlacement", "clipTrim", "clipDuplicate", "clipSplit", "clipDelete",
+                               "trackVolume", "trackMute", "trackPan", "trackSolo"]
     let supportedTools: [DrawingTool]
     let supportedBrushFamilies = StudioBrushFamily.allCases
     let supportedTweenEasings = StudioTweenEasing.allCases
@@ -375,7 +394,7 @@ struct StudioCommandContext {
     let gridSettings: StudioGridSettings
     let onionEnabled: Bool
     let onionSettings: StudioOnionSettings
-    let unavailableCommands = ["export", "importMedia", "audioMix", "publish", "sendMessage", "call", "shell", "admin"]
+    let unavailableCommands = ["export", "importMedia", "publish", "sendMessage", "call", "shell", "admin"]
 
     init(document: StudioDocument) {
         projectID = document.id; revision = document.revision; name = document.name
@@ -452,10 +471,12 @@ enum StudioCommandExecutor {
             "tweenFrames": ["after", "to", "inbetweenCount", "easing"],
             "eraseSelectedElements": ["frame", "layer", "elementIDs", "points", "width", "opacity", "mode"],
             "renameProject": ["name"],
+            "updateProjectSettings": ["name", "width", "height", "fps", "anchorX", "anchorY"],
+            "copyFrame": ["source"], "pasteFrame": ["after"],
             "splitAudioClip": ["clipID", "seconds", "newClipID"],
             "deleteAudioClip": ["clipID"],
             "duplicateAudioClip": ["clipID", "newClipID"],
-            "updateAudioTrack": ["track", "volume", "muted"],
+            "updateAudioTrack": ["track", "volume", "muted", "pan", "soloed"],
             "updateAudioClip": ["clipID", "settings"],
             "rotateImage": ["layer", "frame", "assetID", "direction"],
             "reflectImage": ["layer", "frame", "assetID", "axis"],
@@ -512,7 +533,7 @@ enum StudioCommandExecutor {
                     _ = try object(placement, keys: ["startTime", "track"])
                 }
                 if let fades = values["fades"] {
-                    _ = try object(fades, keys: ["fadeIn", "fadeOut"])
+                    _ = try object(fades, keys: ["fadeIn", "fadeOut", "fadeInShape", "fadeOutShape"])
                 }
             }
             if kind == "cropImage" {
@@ -597,13 +618,17 @@ enum StudioCommandExecutor {
             try result.validate()
             let stagedClipboard = candidate
             candidate = editor
-            try candidate.change { $0 = result }
+            // Grid/onion overlays are editor state: a batch made only of them
+            // commits like the Studio toggles, without an Undo entry.
+            let overlayOnly = commands.allSatisfy { if case .canvasOptions = $0 { return true } else { return false } }
+            if overlayOnly { candidate.changeViewSettings { $0 = result } }
+            else { try candidate.change { $0 = result } }
             try candidate.adoptClipboard(from: stagedClipboard)
             // These operations preserve the same selection as their manual paths.
             // A mixed batch containing any other operation keeps existing clearing semantics.
             let preservesSelection = commands.allSatisfy {
                 switch $0 {
-                case .renameProject, .eraseSelectedElements, .updateAudioTrack: return true
+                case .renameProject, .updateProjectSettings, .copyFrame, .eraseSelectedElements, .updateAudioTrack, .canvasOptions: return true
                 default: return false
                 }
             }
@@ -706,6 +731,19 @@ enum StudioCommandExecutor {
         switch command {
         case .renameProject(let value):
             try editor.renameProject(value.name)
+        case .updateProjectSettings(let value):
+            guard value.name != nil || value.width != nil || value.height != nil || value.fps != nil else { throw StudioCommandError.malformed }
+            let anchor = StudioCanvasAnchor(x: value.anchorX ?? 0, y: value.anchorY ?? 0)
+            guard anchor.isValid else { throw StudioCommandError.malformed }
+            try editor.updateProjectSettings(name: value.name ?? document.name, width: value.width ?? document.width,
+                height: value.height ?? document.height, fps: value.fps ?? document.fps, anchor: anchor)
+        case .copyFrame(let value):
+            try editor.copyFrame(try frame(value.source))
+        case .pasteFrame(let value):
+            let after = try frame(value.after)
+            guard let source = editor.clipboardFrame else { throw StudioCommandError.malformed }
+            try budget.generate(source.elements)
+            try editor.pasteFrame(after: after)
         case .splitAudioClip(let value):
             try editor.splitAudioClip(value.clipID, at: value.seconds, newClipID: value.newClipID)
         case .deleteAudioClip(let value):
@@ -713,7 +751,7 @@ enum StudioCommandExecutor {
         case .duplicateAudioClip(let value):
             try editor.duplicateAudioClip(value.clipID, newClipID: value.newClipID)
         case .updateAudioTrack(let value):
-            try editor.updateAudioTrack(value.track, volume: value.volume, muted: value.muted)
+            try editor.updateAudioTrack(value.track, volume: value.volume, muted: value.muted, pan: value.pan, soloed: value.soloed)
         case .updateAudioClip(let value):
             try editor.updateAudioClip(value.clipID, settings: value.settings)
         case .eraseSelectedElements(let value):
@@ -990,11 +1028,17 @@ enum StudioCommandExecutor {
                 layerID: imageLayer(value.layer, frame: value.frame, assetID: value.assetID), checkCancellation: checkCancellation)
         case .canvasOptions(let value):
             guard value.grid != nil || value.onion != nil || value.gridSettings != nil || value.onionSettings != nil else { throw StudioCommandError.invalidSettings }
-            try editor.change {
+            // Overlays are editor state, not artwork: they bypass Undo history
+            // exactly like the Studio toggles, and invalid settings change nothing.
+            let before = editor.document
+            editor.changeViewSettings {
                 if let grid = value.grid { $0.gridEnabled = grid }
                 if let onion = value.onion { $0.onionEnabled = onion }
                 if let settings = value.gridSettings { $0.gridSettings = settings }
                 if let settings = value.onionSettings { $0.onionSettings = settings }
+            }
+            if editor.document == before {
+                guard (value.gridSettings?.isValid ?? true), (value.onionSettings?.isValid ?? true) else { throw StudioCommandError.invalidSettings }
             }
         }
     }

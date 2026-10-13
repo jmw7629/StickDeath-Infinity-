@@ -26,7 +26,8 @@ final class StudioMoviePanelState: ObservableObject {
     @discardableResult
     func start(from vm: StudioViewModel, background: StudioMovieExportService.Background,
                scope: StudioMovieExportSession.Scope,
-               expectedRequest: DirectRequest? = nil) -> Bool {
+               expectedRequest: DirectRequest? = nil,
+               options: StudioMovieExportSession.ExportOptions = .init()) -> Bool {
         guard !isBusy, scope.isStudioVisible, scope.isForeground else { return false }
         if session.isClosed {
             guard !session.needsCleanup, session.output == nil else { return false }
@@ -34,7 +35,7 @@ final class StudioMoviePanelState: ObservableObject {
             observeSession()
         }
         directError = nil; directSource = nil
-        return session.start(from: vm, background: background, scope: scope, expectedRequest: expectedRequest)
+        return session.start(from: vm, background: background, scope: scope, expectedRequest: expectedRequest, options: options)
     }
     /// Consume even rejected requests: presentation retries are not authority
     /// to rerun exports. Manual Export remains available after a rejected handoff.

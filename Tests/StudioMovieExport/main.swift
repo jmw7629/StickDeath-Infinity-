@@ -301,6 +301,18 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             }
             try require(contents(folder).isEmpty, "Preflight budget left partial output")
         }
+        await test("frames stream through one pool buffer so 300 frames export above the former 240 cap") {
+            try require(Service.Limits().maximumFrames == 1440 && Service.Limits().maximumTotalPixels == 2_985_984_000, "Streaming limits")
+            let folder = try parent(root, "stream-300")
+            let colors = (0..<300).map { $0 % 2 == 0 ? "#FF0000" : "#0000FF" }
+            let output = try await Service().export(snapshot: snapshot(try document(colors: colors, width: 32, height: 16, fps: 24)), outputParent: folder, background: .white)
+            let decoded = try await decode(output.movieURL)
+            try require(output.manifest.frameIDs.count == 300 && decoded.frames.count == 300 && decoded.pts.count == 300, "300-frame movie incomplete")
+            try require(CMTimeCompare(decoded.duration, CMTime(value: 300, timescale: 24)) == 0, "300-frame duration")
+            try pixel(decoded.frames[0].pixel(16, 8), [255, 0, 0, 255]); try pixel(decoded.frames[299].pixel(16, 8), [0, 0, 255, 255])
+            try output.cleanup()
+            try require(try contents(folder).isEmpty, "Streamed export left files")
+        }
         await test("cancellation before work and after real encoded frame removes only owned partial output") {
             let folder = try parent(root, "cancel"); let sentinel = folder.appendingPathComponent("keep.txt")
             try Data("keep".utf8).write(to: sentinel); let doc = try document()
@@ -1036,6 +1048,63 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                     outputParent: folder, background: .white)
             }
             try require(contents(folder).isEmpty, "Rejected movie credits published or left staging files")
+        }
+        await test("render plan documents the exact scale and even padding rule") {
+            let original = try Service.RenderPlan.make(canvasWidth: 65, canvasHeight: 33, preset: .original)
+            try require(original.scale == 1 && original.contentWidth == 65 && original.contentHeight == 33 && original.paddingRight == 1 && original.paddingBottom == 1 && original.outputWidth == 66 && original.outputHeight == 34, "odd canvas padding rule")
+            let even = try Service.RenderPlan.make(canvasWidth: 64, canvasHeight: 32, preset: .original)
+            try require(even.paddingRight == 0 && even.paddingBottom == 0 && even.outputWidth == 64 && even.outputHeight == 32, "even canvas must not pad")
+            let hd = try Service.RenderPlan.make(canvasWidth: 64, canvasHeight: 32, preset: .p720)
+            try require(hd.scale == 22.5 && hd.contentWidth == 1440 && hd.contentHeight == 720 && hd.outputWidth == 1440 && hd.outputHeight == 720, "720p scales the shorter edge")
+            let portrait = try Service.RenderPlan.make(canvasWidth: 1080, canvasHeight: 1920, preset: .p480)
+            try require(portrait.contentWidth == 480 && portrait.contentHeight == 853 && portrait.paddingBottom == 1 && portrait.outputHeight == 854, "portrait 480p rounds then pads")
+            try require(Service.RenderPreset(quality: .standard) == .p480 && Service.RenderPreset(quality: .hd) == .p720 && Service.RenderPreset(quality: .fullHD) == .p1080, "ExportQuality mapping")
+            try require(original.rule.contains("right=1") && original.rule.contains("66x34"), "rule text \(original.rule)")
+            try await rejected({ _ = try Service.RenderPlan.make(canvasWidth: 0, canvasHeight: 10, preset: .original) })
+        }
+        await test("odd canvas exports with one white padding column and row instead of failing") {
+            let folder = try parent(root, "odd")
+            let doc = try document(colors: ["#FF0000"], width: 65, height: 33)
+            let output = try await Service().export(snapshot: snapshot(doc), outputParent: folder, background: .white, filenameBase: "Odd-Canvas")
+            let decoded = try await decode(output.movieURL)
+            try require(decoded.frames.count == 1 && decoded.frames[0].width == 66 && decoded.frames[0].height == 34, "padded dimensions")
+            try pixel(decoded.frames[0].pixel(32, 16), [255, 0, 0, 255])
+            let corner = decoded.frames[0].pixel(65, 33)
+            try require(corner[0] > 150 && corner[1] > 150 && corner[2] > 150, "padding corner is not white-ish: \(corner)")
+            try require(output.movieURL.lastPathComponent == "Odd-Canvas.mp4" && output.manifest.movieFilename == "Odd-Canvas.mp4", "project-named movie file")
+            try require(output.manifest.width == 66 && output.manifest.height == 34 && output.manifest.canvasWidth == 65 && output.manifest.canvasHeight == 33, "manifest records output and canvas sizes")
+            try require(output.manifest.renderPlan?.paddingRight == 1 && output.manifest.renderPlan?.paddingBottom == 1 && output.manifest.renderRule?.contains("66x34") == true, "manifest records the padding rule")
+            let manifest = try JSONDecoder().decode(Service.Manifest.self, from: Data(contentsOf: output.manifestURL))
+            try require(manifest.renderPlan == output.manifest.renderPlan && manifest.codec == "H.264", "manifest round trip")
+            try output.cleanup()
+        }
+        await test("480p preset scales the shorter edge and records the scale in the manifest") {
+            let folder = try parent(root, "preset")
+            var input = snapshot(try document(colors: ["#0000FF"]))
+            input.render = .init(codec: .h264, preset: .p480)
+            let output = try await Service().export(snapshot: input, outputParent: folder, background: .white)
+            let decoded = try await decode(output.movieURL)
+            try require(decoded.frames[0].width == 960 && decoded.frames[0].height == 480, "480p output size")
+            try pixel(decoded.frames[0].pixel(480, 240), [0, 0, 255, 255])
+            try require(output.manifest.renderPlan?.scale == 15 && output.manifest.renderPlan?.preset == .p480, "manifest scale")
+            try output.cleanup()
+        }
+        await test("HEVC is applied when this encoder accepts it and otherwise refused explicitly") {
+            let folder = try parent(root, "hevc")
+            var input = snapshot(try document(colors: ["#00FF00"]))
+            input.render = .init(codec: .hevc, preset: .original)
+            do {
+                let output = try await Service().export(snapshot: input, outputParent: folder, background: .white)
+                let asset = AVURLAsset(url: output.movieURL)
+                let formats = try await asset.loadTracks(withMediaType: .video)[0].load(.formatDescriptions)
+                try require(formats.count == 1 && CMFormatDescriptionGetMediaSubType(formats[0]) == kCMVideoCodecType_HEVC && output.manifest.codec == "HEVC", "HEVC stream/manifest")
+                let decoded = try await decode(output.movieURL)
+                try pixel(decoded.frames[0].pixel(32, 16), [0, 255, 0, 255])
+                try output.cleanup()
+            } catch Service.ExportError.codecUnavailable {
+                print("SKIP HEVC encoder unavailable on this host; explicit codecUnavailable returned")
+                try require(contents(folder).isEmpty, "Refused HEVC left staging files")
+            }
         }
         print("STUDIO_MOVIE_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         if failed != 0 { exit(1) }

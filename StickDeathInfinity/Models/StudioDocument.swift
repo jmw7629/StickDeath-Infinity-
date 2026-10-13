@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...33
+    static let supportedSchemaVersions = 1...35
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -20,6 +20,10 @@ struct StudioDocument: Codable, Equatable {
     // Four numbered bus levels, independent of each clip's own gain/mute.
     // Absent in historical projects means unity gain on every track.
     var audioTrackVolumes: [Double]?
+    // Schema 34 SoundCraft mixer state: four balance positions (-1...1) and
+    // soloed tracks. Absent means centred and no solo, matching older mixes.
+    var audioTrackPans: [Double]?
+    var soloedAudioTracks: [Int]?
     var gridEnabled = false
     var gridSettings: StudioGridSettings?
     var onionEnabled = false
@@ -45,7 +49,7 @@ struct StudioDocument: Codable, Equatable {
             width: width, height: height, fps: fps, frames: frames, layers: layers,
             activeFrameID: activeFrameID, activeLayerID: activeLayerID,
             audioClips: audioClips, mutedAudioTracks: mutedAudioTracks, audioTrackVolumes: audioTrackVolumes,
-            gridEnabled: gridEnabled, gridSettings: gridSettings, onionEnabled: onionEnabled,
+            audioTrackPans: audioTrackPans, soloedAudioTracks: soloedAudioTracks, gridEnabled: gridEnabled, gridSettings: gridSettings, onionEnabled: onionEnabled,
             onionSettings: onionSettings, createdAt: date, modifiedAt: date, revision: 0)
         try copy.validate()
         return copy
@@ -83,6 +87,16 @@ struct StudioDocument: Codable, Equatable {
         guard (1...4).contains(track), let audioTrackVolumes, audioTrackVolumes.count == 4 else { return 1 }
         return audioTrackVolumes[track - 1]
     }
+    func audioTrackPan(_ track: Int) -> Double {
+        guard (1...4).contains(track), let audioTrackPans, audioTrackPans.count == 4 else { return 0 }
+        return audioTrackPans[track - 1]
+    }
+    func isAudioTrackSoloed(_ track: Int) -> Bool { soloedAudioTracks?.contains(track) == true }
+    /// SoundCraft rule: muted tracks are silent, and any solo silences every
+    /// track that is not soloed. Per-clip mute is applied separately.
+    func isAudioTrackAudible(_ track: Int) -> Bool {
+        StudioCraftAudio.isTrackAudible(track, muted: Set(mutedAudioTracks ?? []), soloed: Set(soloedAudioTracks ?? []))
+    }
     var referencedRasterAssetIDs: Set<String> { frames.reduce(into: Set<String>()) { $0.formUnion($1.referencedRasterAssetIDs) } }
 
     static func validatedProjectName(_ proposed: String) throws -> String {
@@ -112,6 +126,11 @@ struct StudioDocument: Codable, Equatable {
             }
             guard !layer.name.isEmpty, layer.name.count <= 120, layer.opacity.isFinite, (0...1).contains(layer.opacity) else {
                 throw StudioDocumentError.invalid("A layer has invalid settings.")
+            }
+            if StudioLayerBlendMode(stored: layer.blendMode)?.isExtended == true {
+                guard schemaVersion >= StudioLayerBlendMode.extendedSchemaVersion else {
+                    throw StudioDocumentError.invalid("This layer blend mode needs project version 34.")
+                }
             }
         }
         var elementIDs = Set<String>(); var pointCount = 0
@@ -329,6 +348,19 @@ struct StudioDocument: Codable, Equatable {
                 throw StudioDocumentError.invalid("Audio track volumes are invalid or need a newer project version.")
             }
         }
+        if let audioTrackPans {
+            guard schemaVersion >= 34, audioTrackPans.count == 4,
+                  audioTrackPans.allSatisfy({ $0.isFinite && (-1...1).contains($0) }) else {
+                throw StudioDocumentError.invalid("Audio track pan settings are invalid or need project version 34.")
+            }
+        }
+        if let soloedAudioTracks {
+            guard schemaVersion >= 34, soloedAudioTracks.count <= 4,
+                  soloedAudioTracks.allSatisfy({ (1...4).contains($0) }),
+                  soloedAudioTracks == Array(Set(soloedAudioTracks)).sorted() else {
+                throw StudioDocumentError.invalid("Audio track solo settings are invalid or need project version 34.")
+            }
+        }
         guard Set(audioClips.map(\.id)).count == audioClips.count else { throw StudioDocumentError.invalid("Audio clip identities are invalid.") }
         guard audioClips.filter({ $0.assetID != nil }).count <= 128 else { throw StudioDocumentError.invalid("This project exceeds the 128 imported audio clip limit.") }
         for clip in audioClips {
@@ -337,6 +369,9 @@ struct StudioDocument: Codable, Equatable {
                     throw StudioDocumentError.invalid("Audio fades require managed audio and project version14.")
                 }
                 try envelope.validate()
+                guard !envelope.hasCurveShapes || schemaVersion >= 34 else {
+                    throw StudioDocumentError.invalid("Shaped audio fades need project version 34.")
+                }
             }
             guard clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.sourceOffset <= 300,
                   (clip.sourceOffset + clip.duration).isFinite,
@@ -460,8 +495,11 @@ extension StudioAudioClipSettings {
             let start = Int((result.sourceOffset * rate).rounded())
             let count = Int(((result.startTime + result.duration) * rate).rounded() - (result.startTime * rate).rounded())
             let inFrames = Int((incoming * rate).rounded()), outFrames = Int((outgoing * rate).rounded())
+            let inShape = fades.fadeInShape == .linear ? nil : fades.fadeInShape
+            let outShape = fades.fadeOutShape == .linear ? nil : fades.fadeOutShape
             result.fadeEnvelope = inFrames == 0 && outFrames == 0 ? nil : .init(
-                sourceStartFrame: start, frameCount: count, fadeInFrames: inFrames, fadeOutFrames: outFrames)
+                sourceStartFrame: start, frameCount: count, fadeInFrames: inFrames, fadeOutFrames: outFrames,
+                fadeInShape: inFrames == 0 ? nil : inShape, fadeOutShape: outFrames == 0 ? nil : outShape)
             try result.fadeEnvelope?.validate()
         }
         return result
@@ -490,6 +528,11 @@ struct StudioDocumentEditor {
         return values
     }
     var clipboardElementCount: Int { clipboardElements?.count ?? 0 }
+    /// The copied frame, if the clipboard currently holds one.
+    var clipboardFrame: AnimationFrame? {
+        if case .frame(let frame) = clipboard { return frame }
+        return nil
+    }
     /// Preserve staged clipboard changes when a typed batch is coalesced into
     /// one document/history edit. This never imports another project's files.
     mutating func adoptClipboard(from source: Self) throws {
@@ -533,13 +576,19 @@ struct StudioDocumentEditor {
 
     /// Change the viewport, not artwork coordinates. Reject any resize which
     /// would silently discard fill coverage or reinterpret flattened/effect pixels.
-    mutating func updateProjectSettings(name: String, width: Int, height: Int, fps: Int) throws {
+    /// A non-default `anchor` keeps that canvas point fixed by offsetting every
+    /// placement by the whole-pixel size difference; the default keeps content
+    /// top-left so historical documents and their bytes stay identical.
+    mutating func updateProjectSettings(name: String, width: Int, height: Int, fps: Int,
+                                        anchor: StudioCanvasAnchor = .topLeading) throws {
         let title = try StudioDocument.validatedProjectName(name)
         guard (16...4096).contains(width), (16...4096).contains(height), (1...60).contains(fps) else {
             throw StudioDocumentError.invalid("Canvas sides must be 16–4096 pixels and FPS must be 1–60.")
         }
+        guard anchor.isValid else { throw StudioDocumentError.invalid("The resize anchor must stay inside the canvas, 0–1 on each axis.") }
         guard title != document.name || width != document.width || height != document.height || fps != document.fps else { return }
         let resizing = width != document.width || height != document.height
+        let offset = anchor.offset(fromWidth: document.width, height: document.height, toWidth: width, height: height)
         try change { value in
             if resizing {
                 for index in value.frames.indices {
@@ -549,6 +598,10 @@ struct StudioDocumentEditor {
                     }
                     guard !frame.elements.contains(where: { $0.hasPixelEffect }) else {
                         throw StudioDocumentError.unavailable("Canvas resizing with replayable pixel effects is unavailable. Name and FPS can still be changed.")
+                    }
+                    if offset != .zero {
+                        try Self.anchorFrameContent(&value.frames[index], offset: offset, width: width, height: height, schemaVersion: &value.schemaVersion)
+                        continue
                     }
                     for elementIndex in frame.elements.indices {
                         guard let mask = frame.elements[elementIndex].fillMask else { continue }
@@ -564,6 +617,97 @@ struct StudioDocumentEditor {
             value.name = title; value.width = width; value.height = height; value.fps = fps
             // Existing image placement bounds, effect budgets, audio seconds and
             // the one-hour timeline limit remain enforced by change/validate.
+        }
+    }
+
+    /// Offset one frame's drawings and images by a whole-pixel resize anchor.
+    /// World-space placement (transform, then translation) moves when present so
+    /// reflections and selection erasures follow; otherwise the original samples,
+    /// text origins and fill spans move. Nothing is resampled or re-rendered.
+    private static func anchorFrameContent(_ frame: inout AnimationFrame, offset: StudioCanvasAnchor.Offset,
+                                           width: Int, height: Int, schemaVersion: inout Int) throws {
+        let dx = Double(offset.dx), dy = Double(offset.dy)
+        let discardsFill = StudioDocumentError.unavailable("This size would discard stored fill coverage. Choose a larger canvas or another anchor; nothing changed.")
+        for index in frame.elements.indices {
+            var element = frame.elements[index]
+            if var transform = element.transform {
+                transform.tx += dx; transform.ty += dy
+                try transform.validate(); element.transform = transform
+            } else if var translation = element.translation {
+                translation.x += dx; translation.y += dy
+                try translation.validate(); element.translation = translation
+            } else if element.reflection != nil || element.selectionErasures?.isEmpty == false {
+                let translation = StudioElementTranslation(x: dx, y: dy)
+                try translation.validate(); element.translation = translation
+                schemaVersion = max(schemaVersion, 7)
+            } else {
+                if let mask = element.fillMask {
+                    guard mask.spans.allSatisfy({ (0..<height).contains($0.row + offset.dy) && $0.start + offset.dx >= 0 && $0.end + offset.dx <= width }) else { throw discardsFill }
+                    let moved = StudioFillMask(width: width, height: height, spans: mask.spans.map {
+                        .init(row: $0.row + offset.dy, start: $0.start + offset.dx, end: $0.end + offset.dx, alpha: $0.alpha)
+                    })
+                    try moved.validate(); element.fillMask = moved
+                }
+                for pointIndex in element.points.indices {
+                    element.points[pointIndex].x += CGFloat(dx); element.points[pointIndex].y += CGFloat(dy)
+                }
+            }
+            if element.fillMask?.width != width || element.fillMask?.height != height, let mask = element.fillMask {
+                // Placed fills keep their span coordinates; only the mask frame grows or shrinks.
+                guard mask.spans.allSatisfy({ $0.row < height && $0.end <= width }) else { throw discardsFill }
+                let resized = StudioFillMask(width: width, height: height, spans: mask.spans)
+                try resized.validate(); element.fillMask = resized
+            }
+            frame.elements[index] = element
+        }
+        func moved(_ placement: StudioRasterPlacement) -> StudioRasterPlacement {
+            .init(x: placement.x + dx, y: placement.y + dy, width: placement.width, height: placement.height)
+        }
+        func movedGeometry(_ geometry: StudioImageRegionMask.Geometry) throws -> StudioImageRegionMask.Geometry {
+            var instance = geometry.applying(to: StudioRasterLayerInstance(layerID: "anchor"))
+            instance.placement = instance.placement.map(moved)
+            guard let result = StudioImageRegionMask.Geometry(instance) else { throw StudioDocumentError.invalid("An image region has no placement.") }
+            return result
+        }
+        func movedMask(_ mask: StudioImageRegionMask) throws -> StudioImageRegionMask {
+            guard let sampling = mask.samplingGeometry, let placement = mask.placementGeometry else { return mask }
+            var result = mask
+            let movedSampling = try movedGeometry(sampling)
+            result.samplingGeometry = movedSampling
+            // Recompute the compact placement from the moved sampling geometry so
+            // validation's exact reframe equality holds without rounding drift.
+            if sampling == placement { result.placementGeometry = movedSampling }
+            else if let crop = placement.crop { result.placementGeometry = try movedSampling.reframed(crop: crop) }
+            else { result.placementGeometry = try movedGeometry(placement) }
+            return result
+        }
+        func movedInstance(_ instance: StudioRasterLayerInstance) throws -> StudioRasterLayerInstance {
+            var result = instance
+            guard let placement = instance.placement else { return result }
+            guard instance.rotationDegrees != nil || (placement.x + dx >= 0 && placement.y + dy >= 0) else {
+                throw StudioDocumentError.unavailable("This size would move an image outside the canvas. Choose a larger canvas or another anchor; nothing changed.")
+            }
+            if let mask = instance.regionMask {
+                let movedRegion = try movedMask(mask)
+                result.regionMask = movedRegion
+                // A fragment still at its lifted placement follows its recomputed geometry exactly.
+                if mask.placementGeometry != nil, StudioImageRegionMask.Geometry(instance) == mask.placementGeometry,
+                   let next = movedRegion.placementGeometry?.placement {
+                    result.placement = next
+                    return result
+                }
+            }
+            result.placement = moved(placement)
+            return result
+        }
+        if frame.rasterPlacement != nil, let layerID = frame.rasterLayerID {
+            let primary = try movedInstance(.init(layerID: layerID, placement: frame.rasterPlacement, reflection: frame.rasterReflection,
+                quarterTurns: frame.rasterQuarterTurns, crop: frame.rasterCrop, rotationDegrees: frame.rasterRotationDegrees,
+                regionMask: frame.rasterRegionMask, stackPosition: frame.rasterStackPosition))
+            frame.rasterPlacement = primary.placement; frame.rasterRegionMask = primary.regionMask
+        }
+        if let aliases = frame.rasterAliases {
+            frame.rasterAliases = try aliases.map(movedInstance)
         }
     }
 
@@ -619,17 +763,20 @@ struct StudioDocumentEditor {
     }
 
     /// Track controls preserve clip/source identities and share full-document Undo.
-    mutating func updateAudioTrack(_ track: Int, volume: Double?, muted: Bool?) throws {
-        guard (1...4).contains(track), volume != nil || muted != nil,
-              volume.map({ $0.isFinite && (0...1).contains($0) }) ?? true else {
-            throw StudioDocumentError.invalid("Choose track 1–4 and volume 0–100% or a mute setting.")
+    mutating func updateAudioTrack(_ track: Int, volume: Double?, muted: Bool?, pan: Double? = nil, soloed: Bool? = nil) throws {
+        guard (1...4).contains(track), volume != nil || muted != nil || pan != nil || soloed != nil,
+              volume.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
+              pan.map({ $0.isFinite && (-1...1).contains($0) }) ?? true else {
+            throw StudioDocumentError.invalid("Choose track 1–4 with volume 0–100%, pan L100–R100, mute or solo.")
         }
         guard document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else {
             throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
         }
         let changesVolume = volume.map { $0 != document.audioTrackVolume(track) } ?? false
         let changesMute = muted.map { $0 != document.isAudioTrackMuted(track) } ?? false
-        guard changesVolume || changesMute else { return }
+        let changesPan = pan.map { $0 != document.audioTrackPan(track) } ?? false
+        let changesSolo = soloed.map { $0 != document.isAudioTrackSoloed(track) } ?? false
+        guard changesVolume || changesMute || changesPan || changesSolo else { return }
         try change { value in
             if let volume, changesVolume {
                 value.schemaVersion = max(value.schemaVersion, 13)
@@ -641,6 +788,17 @@ struct StudioDocumentEditor {
                 var tracks = Set(value.mutedAudioTracks ?? [])
                 if muted { tracks.insert(track) } else { tracks.remove(track) }
                 value.mutedAudioTracks = tracks.sorted()
+            }
+            if let pan, changesPan {
+                value.schemaVersion = max(value.schemaVersion, 34)
+                var pans = value.audioTrackPans ?? Array(repeating: 0, count: 4)
+                pans[track - 1] = pan; value.audioTrackPans = pans
+            }
+            if let soloed, changesSolo {
+                value.schemaVersion = max(value.schemaVersion, 34)
+                var tracks = Set(value.soloedAudioTracks ?? [])
+                if soloed { tracks.insert(track) } else { tracks.remove(track) }
+                value.soloedAudioTracks = tracks.sorted()
             }
         }
     }
@@ -656,6 +814,7 @@ struct StudioDocumentEditor {
         guard updated != original else { return }
         try change { value in
             value.schemaVersion = max(value.schemaVersion, original.fadeEnvelope != updated.fadeEnvelope ? 14 : 4)
+            if updated.fadeEnvelope?.hasCurveShapes == true { value.schemaVersion = max(value.schemaVersion, 34) }
             value.audioClips[index] = updated
         }
     }
@@ -773,6 +932,7 @@ struct StudioDocumentEditor {
             if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
             if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
             if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
+            if element.text?.style.font == .specialElite { value.schemaVersion = max(value.schemaVersion, StudioTextFont.schemaVersion) }
             if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
             if element.smudge != nil { value.schemaVersion = max(value.schemaVersion, 17) }
             if element.blur != nil { value.schemaVersion = max(value.schemaVersion, 18) }
@@ -875,6 +1035,7 @@ struct StudioDocumentEditor {
             value.frames[fi].elements[ei].text = text
             value.frames[fi].elements[ei].color = color
             value.frames[fi].elements[ei].opacity = opacity
+            if text.style.font == .specialElite { value.schemaVersion = max(value.schemaVersion, StudioTextFont.schemaVersion) }
         }
     }
     mutating func addFrame() throws {
@@ -1024,6 +1185,7 @@ struct StudioDocumentEditor {
                 if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
                 if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
                 if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
+                if element.text?.style.font == .specialElite { value.schemaVersion = max(value.schemaVersion, StudioTextFont.schemaVersion) }
                 if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
             if element.smudge != nil { value.schemaVersion = max(value.schemaVersion, 17) }
             if element.blur != nil { value.schemaVersion = max(value.schemaVersion, 18) }
@@ -1130,6 +1292,27 @@ struct StudioDocumentEditor {
         try change { value in
             guard let index = value.frames.firstIndex(where: { $0.id == id }), value.frames.indices.contains(index + offset) else { return }
             value.frames.swapAt(index, index + offset)
+        }
+    }
+    /// Move a contiguous run of frames so its first frame lands at `position`
+    /// (0-based index in the resulting order). The run keeps its internal order,
+    /// exposures and identities; every other frame keeps its relative order.
+    /// One history entry; an unknown, non-contiguous or out-of-range request changes nothing.
+    mutating func moveFrames(_ ids: [String], toPosition position: Int) throws {
+        guard !ids.isEmpty, ids.count <= document.frames.count,
+              let first = document.frames.firstIndex(where: { $0.id == ids[0] }),
+              first + ids.count <= document.frames.count,
+              Array(document.frames[first..<(first + ids.count)].map(\.id)) == ids else {
+            throw StudioDocumentError.invalid("Choose a contiguous range of existing frames to move.")
+        }
+        guard (0...(document.frames.count - ids.count)).contains(position) else {
+            throw StudioDocumentError.invalid("Choose a position between 1 and \(document.frames.count - ids.count + 1) for this range.")
+        }
+        guard position != first else { return }
+        try change { value in
+            let moving = Array(value.frames[first..<(first + ids.count)])
+            value.frames.removeSubrange(first..<(first + ids.count))
+            value.frames.insert(contentsOf: moving, at: position)
         }
     }
     /// One reversible edit; original geometry and fill pixels are never cropped.
@@ -1653,6 +1836,9 @@ struct StudioDocumentEditor {
             if value.layers[index].glowRadius != nil || value.layers[index].glowStrength != nil {
                 value.schemaVersion = max(value.schemaVersion, 28)
             }
+            if StudioLayerBlendMode(stored: value.layers[index].blendMode)?.isExtended == true {
+                value.schemaVersion = max(value.schemaVersion, StudioLayerBlendMode.extendedSchemaVersion)
+            }
         }
     }
     mutating func duplicateLayer(_ id: String) throws {
@@ -1688,12 +1874,44 @@ struct StudioDocumentEditor {
     mutating func undo() {
         guard document.revision < Int.max - 2, var previous = undoDocuments.popLast() else { return }
         redoDocuments.append(document); previous.revision = document.revision + 1; previous.modifiedAt = Date()
-        document = previous; selectedElementIDs.removeAll()
+        Self.carryViewSettings(from: document, to: &previous)
+        document = previous; retainSelectionAfterHistoryStep()
     }
     mutating func redo() {
         guard document.revision < Int.max - 2, var next = redoDocuments.popLast() else { return }
         undoDocuments.append(document); next.revision = document.revision + 1; next.modifiedAt = Date()
-        document = next; selectedElementIDs.removeAll()
+        Self.carryViewSettings(from: document, to: &next)
+        document = next; retainSelectionAfterHistoryStep()
+    }
+    /// Grid and onion-skin overlays persist with the project but are not
+    /// artwork: changing them never enters Undo history, and Undo/Redo keep the
+    /// current overlay settings rather than reverting them with the artwork.
+    /// Anything else the operation touches is refused and nothing changes.
+    @discardableResult
+    mutating func changeViewSettings(_ operation: (inout StudioDocument) -> Void) -> Bool {
+        guard document.revision < Int.max - 2 else { return false }
+        var next = document
+        operation(&next)
+        var artwork = next
+        Self.carryViewSettings(from: document, to: &artwork)
+        guard artwork == document, next != document, (try? next.validate()) != nil else { return false }
+        next.revision = document.revision + 1; next.modifiedAt = Date()
+        document = next
+        return true
+    }
+    private static func carryViewSettings(from current: StudioDocument, to restored: inout StudioDocument) {
+        restored.gridEnabled = current.gridEnabled; restored.gridSettings = current.gridSettings
+        restored.onionEnabled = current.onionEnabled; restored.onionSettings = current.onionSettings
+    }
+    /// Keep the element selection across a history step while every selected
+    /// drawing still exists on the active frame; otherwise clear it.
+    private mutating func retainSelectionAfterHistoryStep() {
+        guard !selectedElementIDs.isEmpty,
+              let frame = document.frames.first(where: { $0.id == document.activeFrameID }) else {
+            selectedElementIDs.removeAll(); return
+        }
+        let existing = Set(frame.elements.map(\.id))
+        if !selectedElementIDs.isSubset(of: existing) { selectedElementIDs.removeAll() }
     }
     private mutating func trimHistory() {
         func cost(_ value: StudioDocument) -> Int {
@@ -1862,10 +2080,18 @@ struct StudioGridSettings: Codable, Equatable {
 /// Deliberately non-overshooting timing for editable, baked in-between frames.
 enum StudioTweenEasing: String, Codable, CaseIterable, Identifiable {
     case linear, easeIn, easeOut, easeInOut
+    /// ArtCraft EffectCraft "Easy Ease": cubic-bezier(1/3, 0, 2/3, 1), whose
+    /// x(s) = s so the curve reduces exactly to 3t² − 2t³ (smoothstep). Gentler
+    /// than Ease in/out and never overshoots.
+    case easyEase
+    /// EffectCraft "Hold": a step curve. Every in-between repeats the start pose
+    /// and the motion lands entirely on the end frame (classic held pose).
+    case hold
     var id: String { rawValue }
     var title: String {
         switch self { case .linear: return "Linear"; case .easeIn: return "Ease in"
-        case .easeOut: return "Ease out"; case .easeInOut: return "Ease in/out" }
+        case .easeOut: return "Ease out"; case .easeInOut: return "Ease in/out"
+        case .easyEase: return "Easy ease"; case .hold: return "Hold" }
     }
     func progress(_ t: Double) -> Double {
         let t = min(1, max(0, t))
@@ -1874,6 +2100,8 @@ enum StudioTweenEasing: String, Codable, CaseIterable, Identifiable {
         case .easeIn: return t * t
         case .easeOut: return t * (2 - t)
         case .easeInOut: return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+        case .easyEase: return t * t * (3 - 2 * t)
+        case .hold: return t < 1 ? 0 : 1
         }
     }
 }
@@ -2110,5 +2338,32 @@ extension StudioDocumentEditor {
         }
         try checkCancellation()
         self = candidate
+    }
+}
+
+/// Normalised canvas point that stays fixed while the project canvas is resized.
+/// `(0, 0)` is the historical top-left behaviour; `(0.5, 0.5)` keeps the centre
+/// and `(1, 1)` keeps the bottom-right corner. Foundation-only so the document
+/// editor, Spatter commands and SwiftUI share one definition.
+struct StudioCanvasAnchor: Equatable, Hashable, Sendable {
+    var x: Double
+    var y: Double
+    static let topLeading = Self(x: 0, y: 0)
+    static let center = Self(x: 0.5, y: 0.5)
+    static let bottomTrailing = Self(x: 1, y: 1)
+    /// The nine picker positions, row by row from top-left.
+    static let grid: [Self] = [0.0, 0.5, 1.0].flatMap { y in [0.0, 0.5, 1.0].map { x in Self(x: x, y: y) } }
+    var isValid: Bool { x.isFinite && y.isFinite && (0...1).contains(x) && (0...1).contains(y) }
+
+    /// Whole-pixel content offset so fill coverage and vector strokes stay aligned.
+    struct Offset: Equatable, Sendable {
+        var dx: Int
+        var dy: Int
+        static let zero = Self(dx: 0, dy: 0)
+    }
+    func offset(fromWidth oldWidth: Int, height oldHeight: Int, toWidth newWidth: Int, height newHeight: Int) -> Offset {
+        guard isValid else { return .zero }
+        return Offset(dx: Int((Double(newWidth - oldWidth) * x).rounded()),
+                      dy: Int((Double(newHeight - oldHeight) * y).rounded()))
     }
 }

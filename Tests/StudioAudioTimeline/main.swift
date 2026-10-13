@@ -659,6 +659,35 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
                 try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "cancel leak")
             }
         }
+        try await test("timelines beyond 120 seconds play a real window from the playhead and report timeline times") {
+            // Same clips, placed late on a long timeline: the mixer renders only the window.
+            var long = vm.document
+            for index in long.audioClips.indices { long.audioClips[index].startTime += 125 }
+            try long.validate()
+            let session = StudioAudioTimelineSession(scratchParent: scratch)
+            defer { session.close() }
+            var updates: [(Double, Bool)] = []
+            try check(session.play(document: long, tracks: vm.projectAudioTracks, duration: 126.5, from: 124.5,
+                auditionVolume: 0, stillCurrent: { true }, onTime: { updates.append(($0, $1)) }), session.notice ?? "window prepare refused")
+            for _ in 0..<2000 { if !session.isPreparing { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            try check(session.actualPlayerIsPlaying && session.isPlaying, session.notice ?? "window player absent")
+            guard let window = session.window else { throw Failure(message: "window not published") }
+            try check(abs(window.start - 124.5) < 1.0 / 48_000 && window.end == 126.5 && session.duration == 126.5, "window range \(window)")
+            try check(updates.first?.0 == 124.5 && updates.first?.1 == true, "window clock did not start at the playhead")
+            try check(session.notice?.contains("from the playhead") == true, "window not announced")
+            session.tick()
+            try check((updates.last?.0 ?? 0) >= 124.5 && (updates.last?.0 ?? 999) <= 126.5, "reported time left the timeline window")
+            session.stop()
+            try check(!session.isPlaying && session.window == nil && updates.last?.1 == false, "window stop")
+            try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "window mix leaked")
+            // A window with no audio inside is refused honestly instead of playing silence.
+            let empty = StudioAudioTimelineSession(scratchParent: scratch)
+            try check(!empty.play(document: long, tracks: vm.projectAudioTracks, duration: 126.5, from: 0,
+                auditionVolume: 0, stillCurrent: { true }, onTime: { _, _ in }) && empty.notice?.contains("No audio clips") == true, "empty window played")
+            // The pure window arithmetic agrees with the session's shifted document.
+            guard let shifted = StudioAudioTimelineSession.windowed(document: long, tracks: vm.projectAudioTracks, range: window) else { throw Failure(message: "window arithmetic dropped every clip") }
+            try check(shifted.document.audioClips.count == long.audioClips.count && shifted.document.audioClips.allSatisfy { $0.startTime >= 0 && $0.startTime + $0.duration <= window.length + 0.000001 }, "shifted clips outside window")
+        }
         try await test("geometry rejects invalid values and schema guards prevent silent feature downgrade") {
             for x in [Double.nan, .infinity, -1, 1001] {
                 try check(StudioAudioTimelineGeometry.snapped(x, fps: 8, enabled: true) == nil, "invalid snap")
@@ -1235,6 +1264,40 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
                 try check(local.projectAudioTracks.first?.audioData == imported.track.audioData, "rejection lost original bytes")
             }
             await local.flush()
+        }
+        try await test("preview silence hint follows the mixer's mute, solo and zero-volume rules") {
+            try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 1, trackMuted: false, trackVolume: 1, trackAudible: true) == nil, "audible clip has no hint")
+            try check(StudioAudioPreviewSilence.reason(clipMuted: true, clipVolume: 1, trackMuted: false, trackVolume: 1, trackAudible: true) == "Preview is silent: clip or track is muted", "clip mute")
+            try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 1, trackMuted: true, trackVolume: 1, trackAudible: false) == "Preview is silent: clip or track is muted", "track mute wins over solo wording")
+            try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 1, trackMuted: false, trackVolume: 1, trackAudible: false) == "Preview is silent: another track is soloed", "solo hint")
+            try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 0, trackMuted: false, trackVolume: 1, trackAudible: true) == "Preview is silent: clip or track volume is zero", "zero volume")
+            // Evaluate against the real document type without depending on the
+            // mute/track state the earlier journeys left on the shared clip.
+            var doc = vm.document
+            doc.schemaVersion = max(doc.schemaVersion, 34)
+            doc.mutedAudioTracks = nil; doc.audioTrackVolumes = nil
+            var clip = doc.audioClips[0]
+            clip.isMuted = false; clip.volume = 1
+            let other = clip.track == 1 ? 2 : 1
+            doc.soloedAudioTracks = [other]
+            try check(StudioAudioPreviewSilence.reason(for: clip, in: doc) == "Preview is silent: another track is soloed", "document solo evaluation")
+            doc.soloedAudioTracks = [clip.track]
+            try check(StudioAudioPreviewSilence.reason(for: clip, in: doc) == nil, "soloing the clip's own track keeps it audible")
+        }
+        try await test("audio session controller stops registered owners on interruption and releases on last end") {
+            let controller = StudioAudioSessionController.shared
+            let a = UUID(), b = UUID()
+            var events: [String] = []
+            try controller.begin(owner: a) { events.append("a:\($0)") }
+            try controller.begin(owner: b) { events.append("b:\($0)") }
+            try check(controller.isActive && controller.activeOwnerCount == 2, "owners registered")
+            controller.dispatch(.interruptionBegan)
+            try check(events.sorted() == ["a:interruptionBegan", "b:interruptionBegan"] && controller.lastEvent == .interruptionBegan, "handlers invoked")
+            controller.end(owner: a)
+            try check(controller.isActive && controller.activeOwnerCount == 1, "session stays active while an owner remains")
+            controller.end(owner: b); controller.end(owner: b)
+            try check(!controller.isActive && controller.activeOwnerCount == 0, "last owner deactivates")
+            try check(StudioAudioSessionController.message(for: .routeLost).contains("disconnected") && StudioAudioSessionController.message(for: .interruptionBegan).contains("interrupted"), "truthful messages")
         }
         print("AUDIO_TIMELINE_TESTS_PASSED=\(passed)")
     }

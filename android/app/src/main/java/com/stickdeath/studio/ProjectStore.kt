@@ -12,6 +12,11 @@ data class Library(val entries: List<ProjectEntry>, val unreadable: Int)
 
 /** Private application storage. AtomicFile restores the previous file after an interrupted write. */
 class ProjectStore(context: Context) {
+    companion object {
+        /** Android-local envelope version: 26 adds lock modes, labels, soft eraser, marker/crayon,
+         * alpha-preserving paint and image crop/turns. Documents without them are written as v25. */
+        const val CURRENT_VERSION = 26
+    }
     private val directory = File(context.filesDir, "studio-projects").apply { mkdirs() }
     private fun file(id: String): AtomicFile {
         require(UUID.fromString(id).toString() == id)
@@ -79,17 +84,27 @@ class ProjectStore(context: Context) {
         }
         require(!quoted && depth == 0) { "Incomplete project file." }
         val j = JSONObject(text)
-        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..24) { "Unsupported project format; original preserved." }
+        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..CURRENT_VERSION) { "Unsupported project format; original preserved." }
+        val version = j.getInt("version")
         fun array(a: JSONArray): List<JSONObject> = (0 until a.length()).map { a.getJSONObject(it) }
         require(j.getJSONArray("layers").length() in 1..32 && j.getJSONArray("frames").length() in 1..500)
         var strokeCount = 0; var pointCount = 0
         var imageBytes = 0L; var imagePixels = 0L
         val images = mutableMapOf<String, ImageArtwork>()
         val layers = array(j.getJSONArray("layers")).map {
-            Layer(it.getString("id"), it.getString("name"), it.getBoolean("visible"), it.getBoolean("locked"), it.getDouble("opacity").toFloat(),
-                if (it.has("blend")) LayerBlend.valueOf(it.getString("blend")) else LayerBlend.Normal)
+            // v1–v24 stored the enum name; v25 stores the iOS raw value. Both read; unknown names reject.
+            // v26 adds lockMode (iOS raw value) and the optional colorLabel hex; `locked` stays authoritative for Full.
+            require((!it.has("lockMode") && !it.has("colorLabel")) || version >= 26) { "Layer lock modes and labels need Android-local v26; original preserved." }
+            val lockMode = if (it.getBoolean("locked")) LayerLockMode.Full
+                else if (it.has("lockMode")) LayerLockMode.fromStored(it.getString("lockMode")).also { mode -> require(mode != LayerLockMode.Full) { "Inconsistent layer lock; original preserved." } }
+                else LayerLockMode.Free
+            val label = if (it.has("colorLabel")) LayerLabel.fromHex(it.getString("colorLabel")) ?: throw IllegalArgumentException("Unsupported layer label; original preserved.") else null
+            Layer(it.getString("id"), it.getString("name"), it.getBoolean("visible"), lockMode, it.getDouble("opacity").toFloat(),
+                if (it.has("blend")) LayerBlend.fromStored(it.getString("blend")) else LayerBlend.Normal, label)
         }
-        require(layers.all { FrameRenderer.supports(it.blend) }) { "This project uses a blend mode that requires Android 10 or later. Original preserved." }
+        layers.firstOrNull { !FrameRenderer.supports(it.blend) }?.let { layer ->
+            throw IllegalArgumentException(FrameRenderer.unavailableReason(layer.blend) ?: "This project uses a blend mode this device cannot render. Original preserved.")
+        }
         val frames = array(j.getJSONArray("frames")).map { f ->
             strokeCount += f.getJSONArray("strokes").length()
             require(strokeCount <= 10_000) { "Project has too many strokes." }
@@ -97,12 +112,17 @@ class ProjectStore(context: Context) {
                 val points = s.getJSONArray("points")
                 pointCount += points.length()
                 require(points.length() in 1..10192 && pointCount <= 100_000) { "Project has too many drawing points." }
+                val tool = Tool.entries.firstOrNull { it.name == s.getString("tool") } ?: throw IllegalArgumentException("Unsupported tool \"${s.getString("tool")}\"; original preserved.")
+                val brush = if (s.has("brush")) BrushFamily.entries.firstOrNull { it.name == s.getString("brush") } ?: throw IllegalArgumentException("Unsupported brush \"${s.getString("brush")}\"; original preserved.") else BrushFamily.Round
+                require(version >= 26 || (!tool.needsV26 && !brush.needsV26 && !s.has("preservesLayerAlpha") && !s.has("imageCrop") && !s.has("imageQuarterTurns"))) {
+                    "This project uses Android-local v26 tools; original preserved."
+                }
                 Stroke(s.getString("id"), s.getString("layerID"), (0 until points.length()).map { n ->
                     val p = points.getJSONArray(n); Point(p.getDouble(0).toFloat(), p.getDouble(1).toFloat())
-                }, s.getInt("color"), s.getDouble("width").toFloat(), Tool.valueOf(s.getString("tool")),
+                }, s.getInt("color"), s.getDouble("width").toFloat(), tool,
                     if (s.has("filled")) s.getBoolean("filled") else false,
                     if (s.has("opacity")) s.getDouble("opacity").toFloat() else 1f,
-                    if (s.has("brush")) BrushFamily.valueOf(s.getString("brush")) else BrushFamily.Round,
+                    brush,
                     if (s.has("brushSeed")) s.getInt("brushSeed") else s.getString("id").hashCode(),
                     if (s.has("brushTransform")) s.getJSONArray("brushTransform").let { t ->
                         require(t.length() == 4)
@@ -155,7 +175,12 @@ class ProjectStore(context: Context) {
                     if (s.has("swiftRoundBrush")) {
                         require(j.getInt("version") >= 24)
                         SwiftRoundBrush.decode(s.getJSONObject("swiftRoundBrush"))
-                    } else null)
+                    } else null,
+                    s.optBoolean("preservesLayerAlpha", false),
+                    if (s.has("imageCrop")) s.getJSONObject("imageCrop").let { crop ->
+                        ImageCrop(crop.getDouble("x"), crop.getDouble("y"), crop.getDouble("width"), crop.getDouble("height"))
+                    } else null,
+                    s.optInt("imageQuarterTurns", 0))
             }, f.getInt("hold"))
         }
         val onion = if (j.has("onion")) j.getJSONObject("onion").let {
@@ -174,6 +199,9 @@ class ProjectStore(context: Context) {
             (0 until clips.length()).map { index ->
                 require(!clips.getJSONObject(index).has("fade") || j.getInt("version") >= 18)
                 require(!clips.getJSONObject(index).has("assetCredit") || j.getInt("version") >= 21)
+                clips.getJSONObject(index).optJSONObject("fade")?.let { fade ->
+                    require((!fade.has("inShape") && !fade.has("outShape")) || j.getInt("version") >= 25) { "Shaped audio fades need Android-local v25; original preserved." }
+                }
                 val encoded = clips.getJSONObject(index).getString("wav")
                 val source = sources[encoded] ?: AudioSource.decode(encoded).also { sources[encoded] = it }
                 AudioClip.decode(clips.getJSONObject(index), source).also {
@@ -186,7 +214,11 @@ class ProjectStore(context: Context) {
             require(j.getInt("version") >= 19)
             val values = j.getJSONArray("audioTracks")
             require(values.length() == 4)
-            (0 until 4).map { AudioTrackMix.decode(values.getJSONObject(it)) }
+            (0 until 4).map { index ->
+                val track = values.getJSONObject(index)
+                require((!track.has("pan") && !track.has("soloed")) || j.getInt("version") >= 25) { "Track pan/solo settings need Android-local v25; original preserved." }
+                AudioTrackMix.decode(track)
+            }
         } else {
             require(j.getInt("version") < 19) { "Missing audio track settings; original preserved." }
             List(4) { AudioTrackMix() }
@@ -197,7 +229,8 @@ class ProjectStore(context: Context) {
     }
     fun encode(document: Document): ByteArray {
         val d = document.validated()
-        val j = JSONObject().put("format", "sdi-android-local").put("version", 24)
+        // v26 fields are written only when used, so projects without them stay readable by v25 clients.
+        val j = JSONObject().put("format", "sdi-android-local").put("version", if (d.needsV26) CURRENT_VERSION else 25)
             .put("id", d.id).put("name", d.name).put("width", d.width).put("height", d.height).put("fps", d.fps)
             .put("activeFrameID", d.activeFrameID).put("activeLayerID", d.activeLayerID).put("revision", d.revision).put("modified", d.modified).put("backgroundColor", d.backgroundColor)
         j.put("audioClips", JSONArray(d.audioClips.map { it.json() }))
@@ -206,11 +239,20 @@ class ProjectStore(context: Context) {
         j.put("onion", JSONObject().put("enabled", d.onion.enabled).put("previous", d.onion.previous)
             .put("next", d.onion.next).put("opacity", d.onion.opacity).put("tinted", d.onion.tinted))
         j.put("layers", JSONArray(d.layers.map { l -> JSONObject().put("id", l.id).put("name", l.name)
-            .put("visible", l.visible).put("locked", l.locked).put("opacity", l.opacity).put("blend", l.blend.name) }))
+            .put("visible", l.visible).put("locked", l.locked).put("opacity", l.opacity).put("blend", l.blend.swiftName)
+            .apply {
+                if (l.lockMode != LayerLockMode.Free && l.lockMode != LayerLockMode.Full) put("lockMode", l.lockMode.swiftName)
+                l.label?.let { put("colorLabel", it.hex) }
+            } }))
         j.put("frames", JSONArray(d.frames.map { f -> JSONObject().put("id", f.id).put("hold", f.hold)
             .put("strokes", JSONArray(f.strokes.map { s -> JSONObject().put("id", s.id).put("layerID", s.layerID)
                 .put("color", s.color).put("width", s.width).put("tool", s.tool.name).put("filled", s.filled).put("opacity", s.opacity).put("brush", s.brush.name).put("brushSeed", s.brushSeed).put("nibAngle", s.nibAngle)
                 .put("swiftLegacyPath", s.swiftLegacyPath).put("swiftLegacyButtCap", s.swiftLegacyButtCap)
+                .apply {
+                    if (s.preservesLayerAlpha) put("preservesLayerAlpha", true)
+                    s.imageCrop?.let { put("imageCrop", JSONObject().put("x", it.x).put("y", it.y).put("width", it.width).put("height", it.height)) }
+                    if (s.imageQuarterTurns != 0) put("imageQuarterTurns", s.imageQuarterTurns)
+                }
                 .put("brushTransform", JSONArray(listOf(s.brushTransform.a,s.brushTransform.b,s.brushTransform.c,s.brushTransform.d)))
                 .apply { s.swiftRoundBrush?.let { put("swiftRoundBrush", it.json()) } }
                 .apply { s.image?.let { put("image", it.encoded) }; s.assetCredit?.let { put("assetCredit", it.json()) } }

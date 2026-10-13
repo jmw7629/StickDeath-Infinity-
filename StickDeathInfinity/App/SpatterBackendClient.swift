@@ -39,10 +39,29 @@ enum SpatterClientError: Error, LocalizedError, Equatable {
         case .responseTooLarge: return "Spatter's backend response exceeded the size limit."
         case .networkUnavailable: return "Spatter's backend could not be reached. Try again later."
         case .httpStatus(401), .httpStatus(403): return "Spatter's backend did not authorize this request."
-        case .httpStatus(429): return "Spatter's backend is rate-limited. Try again later."
+        case .httpStatus(429): return "Spatter's backend is rate-limited or your daily Spatter budget is used up. Try again later."
+        case .httpStatus(503): return "Spatter cloud is not configured on the server. Local animation guidance remains available."
         case .httpStatus: return "Spatter's backend reported an HTTP error."
         }
     }
+}
+
+/// Server-reported remaining allowance for this account. It is display data,
+/// never a client-side entitlement, and absent when the backend omits it.
+struct SpatterBudget: Equatable {
+    let remaining: Int
+    let resetsAt: Date?
+    var displayText: String { "Remaining today: \(remaining)" }
+}
+
+/// One decoded provider-neutral reply. `schemaVersion` 0 marks the legacy
+/// choices-shaped response; `units` is the backend's own usage count, if sent.
+struct SpatterCloudReply: Equatable {
+    static let currentSchemaVersion = 1
+    let schemaVersion: Int
+    let reply: String
+    let usageUnits: Int?
+    let budget: SpatterBudget?
 }
 
 struct SpatterChatMessage: Codable, Equatable {
@@ -72,7 +91,16 @@ struct SpatterBackendClient {
         self.transport = transport
     }
 
+    /// Legacy convenience: the reply text only. Budget is dropped here.
     func complete(messages: [SpatterChatMessage]) async throws -> String {
+        try await completeReply(messages: messages).reply
+    }
+
+    /// Request contract (schemaVersion 1): {schemaVersion, messages, max_tokens, temperature}.
+    /// Response contract: {schemaVersion, reply, usage:{units}, budget:{remaining, resetsAt}}
+    /// or the legacy {choices:[{message:{content}}]} shape. Unknown fields are ignored;
+    /// an unsupported future schemaVersion is an invalid response, never a guess.
+    func completeReply(messages: [SpatterChatMessage]) async throws -> SpatterCloudReply {
         try Task.checkCancellation()
         guard let endpoint = endpoint() else { throw SpatterClientError.notConfigured }
         guard SpatterEndpoint.url(from: endpoint.absoluteString) != nil else {
@@ -90,6 +118,7 @@ struct SpatterBackendClient {
               messages.allSatisfy({ !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                   && $0.content.utf8.count <= 32_768 }) else { throw SpatterClientError.invalidRequest }
         struct Payload: Encodable {
+            let schemaVersion = SpatterCloudReply.currentSchemaVersion
             let messages: [SpatterChatMessage]
             let max_tokens = 500
             let temperature = 0.8
@@ -119,21 +148,56 @@ struct SpatterBackendClient {
         guard response.mimeType?.lowercased() == "application/json" else {
             throw SpatterClientError.invalidResponse
         }
-        struct Response: Decodable {
+        return try Self.decodeReply(data)
+    }
+
+    /// Pure decode of both accepted response shapes. Exposed for tests and for
+    /// any future transport that shares the same contract.
+    static func decodeReply(_ data: Data) throws -> SpatterCloudReply {
+        struct Versioned: Decodable {
+            struct Usage: Decodable { let units: Int? }
+            struct Budget: Decodable { let remaining: Int?; let resetsAt: String? }
+            let schemaVersion: Int
+            let reply: String?
+            let usage: Usage?
+            let budget: Budget?
+        }
+        struct Legacy: Decodable {
             struct Choice: Decodable {
                 struct Message: Decodable { let content: String }
                 let message: Message
             }
             let choices: [Choice]
         }
-        guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
+        func nonEmpty(_ text: String?) throws -> String {
+            guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw SpatterClientError.emptyResponse
+            }
+            return text
+        }
+        let decoder = JSONDecoder()
+        if let versioned = try? decoder.decode(Versioned.self, from: data) {
+            guard versioned.schemaVersion == SpatterCloudReply.currentSchemaVersion else {
+                throw SpatterClientError.invalidResponse
+            }
+            let reply = try nonEmpty(versioned.reply)
+            var budget: SpatterBudget?
+            if let raw = versioned.budget {
+                // A budget without a sane remaining count is dropped, not invented.
+                if let remaining = raw.remaining, (0...1_000_000).contains(remaining) {
+                    let formatter = ISO8601DateFormatter()
+                    let resets = raw.resetsAt.flatMap { formatter.date(from: $0) }
+                    budget = SpatterBudget(remaining: remaining, resetsAt: resets)
+                }
+            }
+            let units = versioned.usage?.units.flatMap { (0...1_000_000_000).contains($0) ? $0 : nil }
+            return SpatterCloudReply(schemaVersion: versioned.schemaVersion, reply: reply, usageUnits: units, budget: budget)
+        }
+        guard let legacy = try? decoder.decode(Legacy.self, from: data) else {
             throw SpatterClientError.invalidResponse
         }
-        guard let content = parsed.choices.first?.message.content,
-              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw SpatterClientError.emptyResponse
-        }
-        return content
+        let content = try nonEmpty(legacy.choices.first?.message.content)
+        return SpatterCloudReply(schemaVersion: 0, reply: content, usageUnits: nil, budget: nil)
     }
 }
 

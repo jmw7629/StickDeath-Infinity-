@@ -36,11 +36,25 @@ class ImageArtwork private constructor(val encoded: String, val byteCount: Int, 
         require(listOf(a,b,c,d).all { it.isFinite() && abs(it) <= 256f } && abs(a*d-b*c) in 0.000001f..65536f) { "Image transform is outside supported limits." }
         require(hypot(p[2].x-p[1].x-p[3].x+p[0].x,p[2].y-p[1].y-p[3].y+p[0].y) < .05f) { "Invalid image geometry." }
     }
+    /** The quad shows the cropped, quarter-turned source (iOS rasterCrop/rasterQuarterTurns);
+     * pixels outside the crop are clipped away rather than resampled into a new bitmap. */
     fun draw(canvas: Canvas, stroke: Stroke, appearance: Paint) {
         val p = stroke.points; val transform = Matrix()
-        check(transform.setPolyToPoly(floatArrayOf(0f,0f,width.toFloat(),0f,0f,height.toFloat()),0,
-            floatArrayOf(p[0].x,p[0].y,p[1].x,p[1].y,p[3].x,p[3].y),0,3))
-        canvas.drawBitmap(bitmap,transform,Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = appearance.alpha })
+        val crop = stroke.imageCrop ?: ImageCrop.full
+        val source = ImageGeometry.sourceTriangle(width, height, crop, stroke.imageQuarterTurns)
+        check(transform.setPolyToPoly(source, 0, floatArrayOf(p[0].x,p[0].y,p[1].x,p[1].y,p[3].x,p[3].y),0,3))
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+            alpha = appearance.alpha
+            xfermode = appearance.xfermode
+        }
+        if (crop.isFull) { canvas.drawBitmap(bitmap,transform,paint); return }
+        val checkpoint = canvas.save()
+        try {
+            canvas.clipPath(android.graphics.Path().apply {
+                moveTo(p[0].x,p[0].y); lineTo(p[1].x,p[1].y); lineTo(p[2].x,p[2].y); lineTo(p[3].x,p[3].y); close()
+            })
+            canvas.drawBitmap(bitmap,transform,paint)
+        } finally { canvas.restoreToCount(checkpoint) }
     }
     companion object {
         const val MAX_BYTES = 1024 * 1024

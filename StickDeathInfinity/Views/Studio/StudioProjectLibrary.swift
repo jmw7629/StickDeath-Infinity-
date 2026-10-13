@@ -16,7 +16,11 @@ struct StudioProjectLibrary: View {
     @State private var transferTask: Task<Void, Never>?
     @State private var transferID: UUID?
     @State private var transferNotice: String?
+    /// Backup whose import failed only because referenced sound bytes are missing; offers a retry that drops those clips.
+    @State private var missingAudioImportURL: URL?
     @State private var removal: AnimationMetadata?
+    @State private var renaming: AnimationMetadata?
+    @State private var renameText = ""
     @State private var showingRecovery = false
     @State private var showingStorage = false
     @State private var creating = false
@@ -144,6 +148,16 @@ struct StudioProjectLibrary: View {
                                 .font(.custom("SpecialElite-Regular", size: 16, relativeTo: .callout)).foregroundColor(.gray).multilineTextAlignment(.center)
                         }.frame(maxWidth: .infinity).padding(.vertical, 70)
                     }
+                    if !vm.unreadableProjects.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(vm.unreadableProjects, id: \.entryName) { failure in
+                                Label(failure.message, systemImage: "exclamationmark.triangle")
+                                    .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.orange)
+                                    .accessibilityIdentifier("studio.library.unreadable." + failure.entryName)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("studio.library.unreadable")
+                    }
                     if !vm.savedProjects.isEmpty && matchingProjects.isEmpty {
                         Text("No projects match your search.").font(.custom("SpecialElite-Regular", size: 16, relativeTo: .callout)).foregroundColor(.gray)
                             .frame(maxWidth: .infinity).padding(.vertical, 40)
@@ -200,6 +214,26 @@ struct StudioProjectLibrary: View {
                     Button("Cancel") { transferTask?.cancel() }
                         .accessibilityIdentifier("studio.library.transfer.cancel")
                 }.padding().background(Color(hex: "17171F")).foregroundColor(.white).cornerRadius(12)
+            } else if let url = missingAudioImportURL {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("This backup references sounds it does not contain.")
+                        .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
+                    Button("Import without missing sounds") {
+                        missingAudioImportURL = nil
+                        startTransfer { check in
+                            let metadata = try await vm.importPortableProject(from: url, droppingMissingAudio: true, checkCancellation: check)
+                            let dropped = vm.lastImportWarnings
+                            transferNotice = "Imported \(metadata.title) as a new project." + (dropped.isEmpty ? "" : " " + dropped.joined(separator: " "))
+                        }
+                    }
+                    .font(.custom("SpecialElite-Regular", size: 13, relativeTo: .body)).foregroundColor(.red)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("studio.library.import.drop-missing-audio")
+                    Button("Dismiss") { missingAudioImportURL = nil }
+                        .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.gray)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("studio.library.import.drop-missing-audio.dismiss")
+                }.padding().background(Color(hex: "17171F")).foregroundColor(.white).cornerRadius(12)
             }
         }
         .fileImporter(isPresented: $showingImport, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
@@ -208,9 +242,15 @@ struct StudioProjectLibrary: View {
             switch result {
             case .success(let urls):
                 guard let url = urls.first else { return }
+                missingAudioImportURL = nil
                 startTransfer { check in
-                    let metadata = try await vm.importPortableProject(from: url, checkCancellation: check)
-                    transferNotice = "Imported \(metadata.title) as a new project."
+                    do {
+                        let metadata = try await vm.importPortableProject(from: url, checkCancellation: check)
+                        transferNotice = "Imported \(metadata.title) as a new project."
+                    } catch {
+                        if error.localizedDescription.contains("missing referenced managed audio") { missingAudioImportURL = url }
+                        throw error
+                    }
                 }
             case .failure(let error):
                 transferNotice = isPickerCancellation(error) ? "Import cancelled. Projects unchanged." : error.localizedDescription
@@ -247,13 +287,31 @@ struct StudioProjectLibrary: View {
             }
             Button("Cancel", role: .cancel) { removal = nil }
         } message: { Text("Your complete project stays on this device and can be restored. Nothing is permanently erased.") }
+        .alert("Rename project", isPresented: Binding(
+            get: { renaming != nil }, set: { if !$0 { renaming = nil } }), presenting: renaming) { project in
+            TextField("Project name", text: $renameText)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("studio.library.rename.field")
+            Button("Rename") {
+                let proposed = renameText
+                renaming = nil
+                Task { await vm.renameSavedProject(project, to: proposed) }
+            }
+            .accessibilityIdentifier("studio.library.rename.confirm")
+            Button("Cancel", role: .cancel) { renaming = nil }
+                .accessibilityIdentifier("studio.library.rename.cancel")
+        } message: { project in
+            Text("Use 1–120 characters. Renaming \"\(project.title)\" changes its title only; frames, images and sound stay intact.")
+        }
         .sheet(isPresented: $showingStorage) { StudioStorageSheet(vm: vm) }
         .sheet(isPresented: $showingRecovery) {
             NavigationStack {
                 List {
                     Text("Projects remain on this device until restored. There is no automatic deletion.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                     if let message = vm.message { Text(message).foregroundColor(.red) }
-                    if vm.recoverableProjects.isEmpty { Text("No readable projects in Recently Deleted.") }
+                    if vm.recoverableProjects.isEmpty {
+                        Text("No readable projects in Recently Deleted.").accessibilityIdentifier("studio.recovery.empty")
+                    }
                     ForEach(vm.recoverableProjects, id: \.id) { project in
                         HStack {
                             Text(project.title)
@@ -263,7 +321,9 @@ struct StudioProjectLibrary: View {
                         }
                     }
                 }.navigationTitle("Recently Deleted")
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingRecovery = false } } }
+                    .toolbar { ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingRecovery = false }.accessibilityIdentifier("studio.recovery.done")
+                    } }
             }.preferredColorScheme(.dark)
         }
 
@@ -344,10 +404,13 @@ struct StudioProjectLibrary: View {
         }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.project.backup.\(project.id.uuidString)")
         Button { searchFocused = false; Task { await vm.duplicateProject(project) } } label: {
             Label("Duplicate Project", systemImage: "doc.on.doc")
-        }.disabled(vm.isManagingProjects)
+        }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.library.menu.duplicate")
+        Button { searchFocused = false; renameText = project.title; renaming = project } label: {
+            Label("Rename…", systemImage: "pencil")
+        }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.library.menu.rename")
         Button(role: .destructive) { searchFocused = false; removal = project } label: {
             Label("Move to Recently Deleted", systemImage: "trash")
-        }
+        }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.library.menu.remove")
     }
 }
 
@@ -408,6 +471,7 @@ private struct StudioStorageSheet: View {
                     if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("studio.storage.error") }
                     if let usage {
                         row("Projects and revisions", usage.projects)
+                        row("Recoverable unsaved data", usage.recoverableUnsavedData)
                         row("Recently Deleted", usage.recentlyDeleted)
                         row("Media", usage.media)
                         row("Other documents and historical files", usage.otherDocuments)

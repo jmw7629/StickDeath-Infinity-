@@ -398,13 +398,13 @@ class FreshSimulator(unittest.TestCase):
         self.assertFalse(receipt['runtimeVerified'])
         self.assert_one_create()
 
-    def test_auth_runner_requires_all_twelve_real_auth_results(self):
+    def test_auth_runner_requires_all_nineteen_real_auth_results(self):
         self.run_selector()
         (self.root / 'sdi-native-build/SourcePackages/checkouts').mkdir(parents=True)
         def subprocess_run(argv, **kwargs):
             if argv[:2] != ['git', 'diff']:
                 select.copy_marker(pathlib.Path(argv[3]), self.new_id, SHA)
-        for passed, failed, skipped, expected in [(12, 0, 0, 0), (5, 0, 0, 3), (9, 0, 0, 3), (11, 0, 0, 3), (None, 0, 0, 3), (12, 1, 0, 3), (12, 0, 1, 3)]:
+        for passed, failed, skipped, expected in [(19, 0, 0, 0), (5, 0, 0, 3), (12, 0, 0, 3), (18, 0, 0, 3), (None, 0, 0, 3), (19, 1, 0, 3), (19, 0, 1, 3)]:
             def bounded(command, log, timeout):
                 # Exercise the real runner's terminal receipt gate only. These
                 # fixture summaries do not claim any native test execution.

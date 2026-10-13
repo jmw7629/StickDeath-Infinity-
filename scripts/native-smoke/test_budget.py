@@ -20,10 +20,14 @@ EXTENDED_CASE_SECONDS = {
     "testBucketFillPopupUndoSaveReopenAndPNG": 240,
     "testImagePlacementCancelApplyUndoAndColdReopen": 240,
     "testImageQuarterTurnsUndoAndColdReopen": 240,
+    # Create, draw, layer, sound, PNG export, save, Back and a cold relaunch in
+    # one real journey (#265): two app launches plus the export preview decode.
+    "testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen": 240,
 }
-# Includes real rendered-MP4 Files save/re-export/cold-readback coverage. Adding a
-# journey changes the total inventory budget, never another case's allowance.
-MAXIMUM_CASES = 108
+# Includes real rendered-MP4 Files save/re-export/cold-readback coverage, the
+# accessibility-size audit (#264) and the complete project journey (#265).
+# Adding a journey changes the total inventory budget, never another case's allowance.
+MAXIMUM_CASES = 110
 SUITE_OVERHEAD_SECONDS = 300
 
 

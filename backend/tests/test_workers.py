@@ -1,0 +1,333 @@
+"""Offline tests for the feed publisher, destination adapters, marketing worker,
+service sweeps and push batch worker. Fake RPC clients record every call; no
+network, no provider, no device.
+
+    python3 -m unittest discover -s backend/tests -t .
+"""
+import contextlib
+import hashlib
+import io
+import json
+import os
+import tempfile
+import unittest
+import uuid
+from pathlib import Path
+
+from backend.notifications.push import AnnouncementAPI, PushBatchWorker, SinkTransport
+from backend.ops import sweeps
+from backend.publishing import destinations
+from backend.publishing.destinations import DestinationConfig, MarketingWorker, Post, default_registry
+from backend.publishing.feed_publisher import FeedJobAPI, FeedPublisher
+from backend.publishing.worker import JobAPI
+
+
+class FakeAPI:
+    """Answers RPC calls from a dict of scripted results and records them."""
+
+    def __init__(self, script):
+        self.script = {k: list(v) for k, v in script.items()}
+        self.calls = []
+
+    def call(self, operation, **payload):
+        self.calls.append((operation, payload))
+        answers = self.script.get(operation)
+        if not answers:
+            raise AssertionError("unexpected RPC %s %s" % (operation, payload))
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def ops(self):
+        return [c[0] for c in self.calls]
+
+
+class FakeHost:
+    def __init__(self, fail_put=False, delete_result=True):
+        self.puts = []
+        self.deletes = []
+        self.fail_put = fail_put
+        self.delete_result = delete_result
+
+    def put(self, name, source, digest):
+        if self.fail_put:
+            raise OSError("bucket unavailable")
+        self.puts.append((name, Path(source).read_bytes(), digest))
+        return "https://cdn.example.test/feed/%s" % name
+
+    def delete(self, url):
+        self.deletes.append(url)
+        return self.delete_result
+
+
+class JobAPIPrefixTests(unittest.TestCase):
+    def test_subclasses_keep_their_own_prefix_and_allowlist(self):
+        api = FeedJobAPI("https://backend.example.test", "service-key")
+        self.assertEqual(api.PREFIX, "sdi_feed_")
+        with self.assertRaises(ValueError):
+            api.call("claim")   # not a feed operation
+        legacy = JobAPI("https://backend.example.test", "service-key")
+        with self.assertRaises(ValueError):
+            legacy.call("publish_claim")
+        with self.assertRaises(ValueError):
+            JobAPI("http://backend.example.test", "service-key")
+
+
+class FeedPublisherTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        os.chmod(self.root, 0o700)
+        self.payload = b"\x00\x00\x00\x18ftypmp42" + b"m" * 5000
+        self.digest = hashlib.sha256(self.payload).hexdigest()
+        (self.root / "render.mp4").write_bytes(self.payload)
+        self.job_id, self.lease = str(uuid.uuid4()), str(uuid.uuid4())
+
+    def claim(self, **overrides):
+        job = {"job": self.job_id, "lease": self.lease, "destination": "feed", "digest": self.digest, "object_key": "render.mp4",
+               "byte_count": len(self.payload), "title": "Clip", "description": "A caption.", "made_for_kids": False,
+               "creator": str(uuid.uuid4()), "creator_name": "stick", "allow_export": False, "spatter_generated": False}
+        job.update(overrides)
+        return job
+
+    def publisher(self, api, host=None, duration=12.5):
+        return FeedPublisher(api, self.root, host or FakeHost(), lambda path: duration)
+
+    def test_publishes_verified_bytes_and_reports_the_hosted_url(self):
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})
+        host = FakeHost()
+        result = self.publisher(api, host).run_once()
+        self.assertEqual(result["state"], "published")
+        self.assertEqual(api.ops(), ["removal_claim", "publish_claim", "publish_finish"])
+        finish = api.calls[-1][1]
+        self.assertEqual(finish, {"job": self.job_id, "token": self.lease, "url": "https://cdn.example.test/feed/%s.mp4" % self.digest, "duration": 12.5})
+        self.assertEqual(host.puts[0][1], self.payload)
+
+    def test_digest_mismatch_never_copies(self):
+        (self.root / "render.mp4").write_bytes(b"m" * len(self.payload))
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})
+        host = FakeHost()
+        result = self.publisher(api, host).run_once()
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(host.puts, [])
+        self.assertIn("do not match the approved digest", api.calls[-1][1]["failure"])
+        self.assertIsNone(api.calls[-1][1]["url"])
+
+    def test_size_mismatch_missing_file_and_escape_are_refused(self):
+        for overrides, fragment in (({"byte_count": 1}, "size differs"), ({"object_key": "missing.mp4"}, "missing from staging"), ({"object_key": "../etc"}, "invalid")):
+            api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim(**overrides)], "publish_finish": [True]})
+            result = self.publisher(api).run_once()
+            self.assertEqual(result["state"], "failed", overrides)
+            self.assertIn(fragment, api.calls[-1][1]["failure"])
+
+    def test_bad_duration_and_hosting_failure(self):
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})
+        self.assertEqual(self.publisher(api, duration=0).run_once()["state"], "failed")
+        self.assertIn("duration", api.calls[-1][1]["failure"].lower())
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})
+        result = self.publisher(api, FakeHost(fail_put=True)).run_once()
+        self.assertEqual(result["state"], "failed")
+        self.assertNotIn("bucket", api.calls[-1][1]["failure"])
+
+    def test_lost_lease_after_copy_removes_the_orphan(self):
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [False]})
+        host = FakeHost()
+        result = self.publisher(api, host).run_once()
+        self.assertEqual(result["state"], "reconcile")
+        self.assertTrue(result["orphan_removed"])
+        self.assertEqual(host.deletes, [result["url"]])
+
+    def test_removals_run_first_and_only_confirmed_deletion_succeeds(self):
+        removal = {"source": "removal_job", "job": str(uuid.uuid4()), "lease": str(uuid.uuid4()), "url": "https://cdn.example.test/feed/x.mp4", "digest": self.digest}
+        api = FakeAPI({"removal_claim": [removal], "removal_finish": [True]})
+        result = self.publisher(api, FakeHost(delete_result=True)).run_once()
+        self.assertEqual(result["state"], "removed")
+        self.assertEqual(api.calls[-1][1], {"source": "removal_job", "job": removal["job"], "token": removal["lease"], "confirmed": True})
+        api = FakeAPI({"removal_claim": [removal], "removal_finish": [True]})
+        result = self.publisher(api, FakeHost(delete_result=False)).run_once()
+        self.assertEqual(result["state"], "removal_unconfirmed")
+        self.assertFalse(api.calls[-1][1]["confirmed"])
+
+    def test_idle_when_nothing_is_queued(self):
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [{"empty": True}]})
+        self.assertEqual(self.publisher(api).run_once(), {"state": "idle"})
+
+
+class FakeTransport:
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+
+    def __call__(self, method, url, headers, body):
+        self.calls.append((method, url, dict(headers), body))
+        answer = self.script.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+class DestinationTests(unittest.TestCase):
+    def test_unconfigured_destinations_are_unavailable_and_attempt_nothing(self):
+        registry = default_registry()
+        transport = FakeTransport([])
+        for key, adapter in registry.items():
+            outcome = adapter.publish(Post(destination=key, copy="Hello"), transport)
+            self.assertEqual(outcome.state, "unavailable", key)
+            self.assertTrue(outcome.reason)
+        self.assertEqual(transport.calls, [])
+        statuses = {s["key"]: s for s in (a.status() for a in registry.values())}
+        self.assertFalse(any(s["configured"] for s in statuses.values()))
+        self.assertIn("no public API", statuses["youtube"]["reason"])
+
+    def test_dry_run_returns_the_redacted_request_and_sends_nothing(self):
+        registry = default_registry({
+            "discord": DestinationConfig(enabled=True, dry_run=True, target="123", guild_id="9", credential=lambda: "webhook-token"),
+            "x": DestinationConfig(enabled=True, dry_run=True, target="account", credential=lambda: "bearer-secret"),
+            "facebook": DestinationConfig(enabled=True, dry_run=True, target="page1", credential=lambda: "page-token"),
+        })
+        transport = FakeTransport([])
+        discord = registry["discord"].publish(Post(destination="discord", copy="New clip", media_url="https://cdn.example.test/a.mp4"), transport)
+        self.assertEqual(discord.state, "dry_run")
+        self.assertEqual(discord.request["url"], "https://discord.com/api/webhooks/<redacted>")
+        self.assertEqual(discord.request["body"]["content"], "New clip\nhttps://cdn.example.test/a.mp4")
+        x = registry["x"].publish(Post(destination="x", copy="New clip"), transport)
+        self.assertEqual(x.request["headers"]["Authorization"], "<redacted>")
+        facebook = registry["facebook"].publish(Post(destination="facebook", copy="New clip", media_url="https://cdn.example.test/a.mp4"), transport)
+        self.assertEqual(facebook.request["body"]["access_token"], "<redacted>")
+        self.assertEqual(facebook.request["body"]["link"], "https://cdn.example.test/a.mp4")
+        self.assertEqual(transport.calls, [])
+        self.assertNotIn("webhook-token", json.dumps([discord.request, x.request, facebook.request]))
+
+    def test_live_posting_uses_the_transport_and_parses_real_results(self):
+        registry = default_registry({
+            "discord": DestinationConfig(enabled=True, dry_run=False, target="123", guild_id="9", credential=lambda: "webhook-token"),
+            "x": DestinationConfig(enabled=True, dry_run=False, target="account", credential=lambda: "bearer-secret"),
+            "facebook": DestinationConfig(enabled=True, dry_run=False, target="page1", credential=lambda: "page-token"),
+        })
+        transport = FakeTransport([(200, {}, json.dumps({"id": "555", "channel_id": "77"}).encode())])
+        outcome = registry["discord"].publish(Post(destination="discord", copy="Clip"), transport)
+        self.assertEqual((outcome.state, outcome.result_url, outcome.provider_ref), ("published", "https://discord.com/channels/9/77/555", "555"))
+        self.assertIn("webhook-token", transport.calls[0][1])          # the real request carries the credential
+        transport = FakeTransport([(201, {}, json.dumps({"data": {"id": "42"}}).encode())])
+        outcome = registry["x"].publish(Post(destination="x", copy="Clip"), transport)
+        self.assertEqual(outcome.result_url, "https://x.com/i/web/status/42")
+        self.assertEqual(transport.calls[0][2]["Authorization"], "Bearer bearer-secret")
+        transport = FakeTransport([(200, {}, json.dumps({"id": "page1_99"}).encode())])
+        outcome = registry["facebook"].publish(Post(destination="facebook", copy="Clip"), transport)
+        self.assertEqual(outcome.result_url, "https://www.facebook.com/page1_99")
+        transport = FakeTransport([(403, {}, b'{"error":"forbidden"}')])
+        outcome = registry["facebook"].publish(Post(destination="facebook", copy="Clip"), transport)
+        self.assertEqual(outcome.state, "failed")
+        self.assertNotIn("page-token", outcome.reason)
+        transport = FakeTransport([OSError("down")])
+        self.assertEqual(registry["x"].publish(Post(destination="x", copy="Clip"), transport).state, "failed")
+
+    def test_platform_limits_are_enforced_before_sending(self):
+        registry = default_registry({
+            "discord": DestinationConfig(enabled=True, dry_run=False, target="123", credential=lambda: "t"),
+            "x": DestinationConfig(enabled=True, dry_run=False, target="a", credential=lambda: "t"),
+        })
+        transport = FakeTransport([])
+        long_copy = "x" * 1990
+        self.assertEqual(registry["discord"].publish(Post(destination="discord", copy=long_copy, media_url="https://cdn.example.test/a.mp4"), transport).state, "failed")
+        self.assertEqual(registry["x"].publish(Post(destination="x", copy="y" * 270, media_url="https://cdn.example.test/a.mp4"), transport).state, "failed")
+        self.assertEqual(registry["x"].publish(Post(destination="facebook", copy="wrong adapter"), transport).state, "failed")
+        self.assertEqual(transport.calls, [])
+        with self.assertRaises(ValueError):
+            Post(destination="x", copy="c", media_url="http://insecure.example/a.mp4")
+
+
+class MarketingWorkerTests(unittest.TestCase):
+    def claim(self, destination="discord"):
+        return {"draft": str(uuid.uuid4()), "lease": str(uuid.uuid4()), "destination": destination, "copy": "Daily draft.", "digest": "a" * 64,
+                "media_url": "https://cdn.example.test/a.mp4", "object_key": "a.mp4", "byte_count": 10, "title": "Clip", "brand_voice_version": 1, "attempt": 1}
+
+    def test_dry_run_is_recorded_as_a_failure_never_as_published(self):
+        api = FakeAPI({"claim": [self.claim()], "finish": [True]})
+        registry = default_registry({"discord": DestinationConfig(enabled=True, dry_run=True, target="1", credential=lambda: "t")})
+        result = MarketingWorker(api, registry).run_once()
+        self.assertEqual(result["state"], "dry_run")
+        finish = api.calls[-1][1]
+        self.assertIn("Dry run only", finish["failure"])
+        self.assertNotIn("result_url", finish)
+
+    def test_unavailable_destination_fails_with_the_reason(self):
+        api = FakeAPI({"claim": [self.claim("tiktok")], "finish": [True]})
+        result = MarketingWorker(api, default_registry()).run_once()
+        self.assertEqual(result["state"], "unavailable")
+        self.assertIn("TikTok", api.calls[-1][1]["failure"])
+
+    def test_live_result_is_reported_with_the_provider_link(self):
+        api = FakeAPI({"claim": [self.claim()], "finish": [True]})
+        registry = default_registry({"discord": DestinationConfig(enabled=True, dry_run=False, target="1", guild_id="g", credential=lambda: "t")})
+        transport = FakeTransport([(200, {}, json.dumps({"id": "5", "channel_id": "6"}).encode())])
+        result = MarketingWorker(api, registry, transport).run_once()
+        self.assertEqual(result["state"], "published")
+        self.assertEqual(api.calls[-1][1]["result_url"], "https://discord.com/channels/g/6/5")
+        api = FakeAPI({"claim": [self.claim()], "finish": [False]})
+        transport = FakeTransport([(200, {}, json.dumps({"id": "5", "channel_id": "6"}).encode())])
+        self.assertEqual(MarketingWorker(api, registry, transport).run_once()["state"], "late_result")
+
+    def test_idle_and_unknown_destination(self):
+        self.assertEqual(MarketingWorker(FakeAPI({"claim": [{"empty": True}]}), default_registry()).run_once(), {"state": "idle"})
+        api = FakeAPI({"claim": [self.claim("myspace")], "finish": [True]})
+        self.assertEqual(MarketingWorker(api, default_registry()).run_once()["state"], "failed")
+
+
+class SweepTests(unittest.TestCase):
+    def test_runs_each_named_sweep_once_and_loops_deletion_until_idle(self):
+        api = FakeAPI({"billing_reconcile": [{"expired_now": 1, "measured_at": "t", "list": [1, 2]}],
+                       "account_deletion_run": [{"action": "prepared", "user": "u"}, {"action": "purged"}, {"action": "idle"}],
+                       "war_expire_proposals": [3], "worker_heartbeat": [True]})
+        report = sweeps.run_sweeps(api, ["billing_reconcile", "account_deletion_run", "war_expire_proposals", "nonsense"])
+        self.assertEqual(report["billing_reconcile"], {"state": "ok", "iterations": 1, "result": {"expired_now": 1, "measured_at": "t"}})
+        self.assertEqual(report["account_deletion_run"]["iterations"], 3)
+        self.assertEqual(report["war_expire_proposals"]["result"], 3)
+        self.assertEqual(report["nonsense"]["state"], "skipped")
+        self.assertEqual(api.calls[-1], ("worker_heartbeat", {"worker": "service-sweeps", "note": "ok"}))
+
+    def test_failures_are_reported_without_detail_and_do_not_stop_other_sweeps(self):
+        api = FakeAPI({"support_retention": [RuntimeError("Job service response unavailable; secret=abc")], "challenge_finalize": [{"finalized": 0}], "worker_heartbeat": [True]})
+        report = sweeps.run_sweeps(api, ["support_retention", "challenge_finalize"])
+        self.assertEqual(report["support_retention"], {"state": "failed", "iterations": 0, "error": "RuntimeError"})
+        self.assertEqual(report["challenge_finalize"]["state"], "ok")
+        self.assertEqual(api.calls[-1][1]["note"], "failed: support_retention")
+        self.assertNotIn("secret", json.dumps(report))
+
+    def test_main_refuses_to_run_without_configuration(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(sweeps.main(["--all"], environment={}), 2)
+            self.assertEqual(sweeps.main(["--list", "--all"], environment={}), 0)
+            api = FakeAPI({"billing_reconcile": [{"expired_now": 0}], "worker_heartbeat": [True]})
+            self.assertEqual(sweeps.main(["--only", "billing_reconcile"], environment={}, api_factory=lambda: api), 0)
+        self.assertIn("not configured", err.getvalue())
+        self.assertIn("billing_reconcile", out.getvalue())
+        self.assertEqual(sweeps.SweepAPI.PREFIX, "sdi_")
+        self.assertTrue(set(sweeps.SWEEPS.values()) <= sweeps.SweepAPI.PERMITTED)
+
+
+class PushWorkerTests(unittest.TestCase):
+    def test_batch_is_sent_through_the_transport_and_results_reported(self):
+        deliveries = [{"delivery": "d1", "platform": "ios", "environment": "sandbox", "token": "a" * 40, "title": "T", "body": "B"},
+                      {"delivery": "d2", "platform": "android", "environment": "production", "token": "b" * 40, "title": "T", "body": "B"}]
+        api = FakeAPI({"claim": [{"announcement": "ann", "deliveries": deliveries, "complete": False}], "finish": [{"sent": 1, "failed": 1}]})
+        sink = SinkTransport(failures={"b" * 40: "Unregistered"})
+        result = PushBatchWorker(api, sink, batch=100).run_once()
+        self.assertEqual(result, {"state": "batch", "announcement": "ann", "attempted": 2, "sent": 1, "failed": 1})
+        self.assertEqual(api.calls[0], ("claim", {"batch": 100}))
+        self.assertEqual(api.calls[1][1]["results"], [{"delivery": "d1", "ok": True, "reason": ""}, {"delivery": "d2", "ok": False, "reason": "Unregistered"}])
+        self.assertEqual(len(sink.sent), 2)
+        self.assertNotIn("a" * 40, json.dumps(sink.sent))     # the sink keeps a suffix only
+
+    def test_idle_and_complete(self):
+        self.assertEqual(PushBatchWorker(FakeAPI({"claim": [{"empty": True}]}), SinkTransport()).run_once(), {"state": "idle"})
+        api = FakeAPI({"claim": [{"announcement": "ann", "deliveries": [], "complete": True}]})
+        self.assertEqual(PushBatchWorker(api, SinkTransport()).run_once()["state"], "complete")
+        self.assertEqual(AnnouncementAPI.PREFIX, "sdi_announcement_")
+        with self.assertRaises(ValueError):
+            PushBatchWorker(api, SinkTransport(), batch=0)
+
+
+if __name__ == "__main__":
+    unittest.main()

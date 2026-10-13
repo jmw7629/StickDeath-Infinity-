@@ -53,3 +53,44 @@ selected states, thin typewriter text, and each tool's own accent at actual size
 Dynamic Type, VoiceOver, Reduce Motion, landscape space use, iPad and physical
 device acceptance remain open under #264. This slice does not close that issue
 or establish independent review approval.
+
+## Token re-measurement 2026-10-12 (#264, wave 3)
+
+Offline WCAG 2.x relative-luminance ratios of the theme tokens in
+`Extensions/StudioCraftTheme.swift` and `Extensions/Color+SD.swift` against
+the surfaces they are drawn on (`python3` implementation of the W3C formula;
+sRGB hex values straight from source, no alpha compositing). Benchmark for
+muted/faint labels and icons is the 3:1 minimum for large text and
+non-text UI; 4.5:1 remains the benchmark for body copy.
+
+| Foreground | chrome `#12121A` | card `#1A1A28` | hover `#22222F` | pressed `#2A2A3A` | sdBackground `#0A0A0A` | sdSurface2 `#1A1A1A` | sdSurfaceLight `#1E1E1E` | sdSurface3 `#222222` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `textFaint` `#6B7280` (unchanged) | 3.85 | 3.55 | 3.25 | 2.91 | 4.10 | 3.60 | 3.45 | 3.29 |
+| `textDim` `#9CA3AF` | 7.34 | 6.77 | 6.18 | 5.55 | 7.80 | 6.86 | 6.57 | 6.27 |
+| `sdTextMuted` **before** `#666666` | 3.24 | 2.99 | 2.73 | 2.45 | 3.45 | 3.03 | **2.90** | **2.77** |
+| `sdTextMuted` **after** `#757575` | 4.04 | 3.73 | 3.41 | 3.06 | 4.30 | 3.78 | 3.62 | 3.45 |
+| `sdTextSecondary` `#999999` | 6.54 | 6.03 | 5.51 | 4.94 | 6.95 | 6.11 | 5.85 | 5.58 |
+| `accentText` `#FF6B6B` | 6.71 | 6.19 | 5.66 | 5.08 | 7.13 | 6.27 | 6.01 | 5.73 |
+| `sdRed` `#C80000` as text | 3.07 | 2.83 | 2.58 | 2.32 | 3.26 | 2.86 | 2.74 | 2.62 |
+
+Findings and changes:
+
+- `StudioCraftTheme.textFaint` is already `#6B7280` (the earlier gap note
+  measured the superseded `#606068`). Its only uses are the four `LayerPanel`
+  rows (`LayerPanel.swift:190,216,230,240`), which draw on `card`
+  (`.studioCraftCard`) or `hover` when active (`LayerPanel.swift:244`): 3.55:1
+  and 3.25:1. The 2.91:1 `pressed` cell is not a shipping pairing. **No change.**
+- `Color.sdTextMuted` failed 3:1 on `sdSurfaceLight` and `sdSurface3`
+  (68 call sites across Spatter, auth, settings, profile, onboarding and
+  components). It is now `#757575`, ≥ 3.45:1 on every `sd*` surface and ≥ 3.06:1
+  on every Studio surface. It stays below 4.5:1 on purpose-neutral surfaces, so
+  the token comment forbids it for body copy or essential values.
+- `sdRed` as *text* is below 3:1 on every dark surface; Studio already uses
+  `sdStudioActionText` (`#FF6B6B`) for red text (section above). Remaining
+  `sdRed` text uses outside Studio (sign-in links, pricing emphasis) are a
+  file-owner change; listed for #264, not changed here.
+- Verification: `swiftc -parse` on the two token files passes; the colour
+  change needs the exact-source native run and the new audit journey
+  (`testAccessibilityAuditLibraryAndStudioAtAccessibilityTextSize`, contrast
+  category recorded, see `docs/ACCESSIBILITY_DYNAMIC_TYPE.md`) before any
+  screenshot-based claim. **DEFERRED (not run).**

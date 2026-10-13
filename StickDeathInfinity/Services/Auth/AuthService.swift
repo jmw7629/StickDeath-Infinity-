@@ -1,10 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
-// AuthService — Full Auth Architecture
-// Matches: src/services/AuthManager.ts + Supabase OAuth
+// AuthService — native account identity for StickDeath Infinity
 //
 // Sign In with Apple: Native ASAuthorizationController → Supabase
-// Sign In with Google: GoogleSignIn SDK → Supabase
-// Email/Password: Direct Supabase Auth
+//   (credential-state revocation observed after restoration, #130)
+// Google / GitHub / Microsoft: Supabase OAuth (PKCE) through ASWebAuthenticationSession
+// Email/Password: Direct Supabase Auth, with recovery links completed in-app
 // Guest: Anonymous Supabase session
 // ═══════════════════════════════════════════════════════════════════
 
@@ -29,8 +29,14 @@ final class AuthService: ObservableObject {
 
     private let injectedClient: SupabaseClient?
     private let injectedOAuthConfiguration: AppConfig.OAuthConfiguration?
-    init(client: SupabaseClient? = nil, oauthConfiguration: AppConfig.OAuthConfiguration? = nil) {
-        injectedClient = client; injectedOAuthConfiguration = oauthConfiguration
+    private let defaults: UserDefaults
+    /// Absent after a fresh install or reinstall. Keychain items can outlive the
+    /// app bundle, so the first launch without this marker discards any stored
+    /// session locally before restoration instead of silently adopting it.
+    static let installMarkerKey = "sdi.installMarker"
+    init(client: SupabaseClient? = nil, oauthConfiguration: AppConfig.OAuthConfiguration? = nil,
+         defaults: UserDefaults = .standard) {
+        injectedClient = client; injectedOAuthConfiguration = oauthConfiguration; self.defaults = defaults
     }
     private var supabase: SupabaseClient {
         get throws { if let injectedClient { return injectedClient }; return try SupabaseManager.shared.client }
@@ -51,7 +57,9 @@ final class AuthService: ObservableObject {
         profileTask?.cancel()
         profileTask = nil
         identityRevision = UUID()
-        if currentUser?.id != user?.id || user == nil { currentProfile = nil }
+        if currentUser?.id != user?.id || user == nil {
+            currentProfile = nil; profileNotice = nil; passwordRecoveryPending = false
+        }
         currentUser = user
         if user == nil { state = .unauthenticated }
     }
@@ -122,6 +130,13 @@ final class AuthService: ObservableObject {
             restoration = .ready
             return
         }
+        if defaults.string(forKey: Self.installMarkerKey) == nil {
+            // A session left in the Keychain by a previous installation does not
+            // belong to this install. Clear it locally; the remote revocation
+            // result is not required to proceed and never blocks the launch.
+            if client.auth.currentSession != nil { try? await client.auth.signOut(scope: .local) }
+            defaults.set(UUID().uuidString, forKey: Self.installMarkerKey)
+        }
         // The pinned SDK removes revoked sessions and throws sessionMissing,
         // the same error used when no credentials existed. This presence check
         // classifies that outcome only; it never authenticates cached identity.
@@ -130,6 +145,9 @@ final class AuthService: ObservableObject {
             let session = try await client.auth.session
             try Task.checkCancellation()
             try await finishAuthentication(session.user)
+            // A restored Apple account is re-checked against Apple's credential
+            // state off the critical path; a revoked grant signs out locally.
+            Task { [weak self] in await self?.verifyAppleCredentialState() }
         } catch {
             // Never promote an expired cached session after a refresh failure.
             // Keep SDK-owned credentials intact on transient errors for retry.
@@ -149,6 +167,7 @@ final class AuthService: ObservableObject {
     }
 
     private func observeAuthChanges() {
+        observeAppleCredentialRevocation()
         guard authStateTask == nil, let client = try? supabase else { return }
         // Install only after restoration succeeds or no session is present.
         // Subscribing after a failed refresh can itself trigger SDK refresh.
@@ -242,19 +261,24 @@ final class AuthService: ObservableObject {
         _ = try supabase
         let nonce = try generateNonce()
         let hashedNonce = sha256(nonce)
+        // Apple echoes `state` unchanged; a mismatch means the response does not
+        // belong to this request and is rejected before any token exchange.
+        let state = try generateNonce()
 
         return try await withCheckedThrowingContinuation { continuation in
             let provider = ASAuthorizationAppleIDProvider()
             let request = provider.createRequest()
             request.requestedScopes = [.fullName, .email]
             request.nonce = hashedNonce
+            request.state = state
 
             let delegate = AppleSignInDelegate(
                 nonce: nonce,
+                state: state,
                 continuation: continuation,
-                onCredential: { [weak self] idToken, nonce in
+                onCredential: { [weak self] idToken, nonce, fullName in
                     guard let self else { throw CancellationError() }
-                    try await self.exchangeAppleToken(idToken: idToken, nonce: nonce)
+                    try await self.exchangeAppleToken(idToken: idToken, nonce: nonce, fullName: fullName)
                 }
             )
             self.appleSignInDelegate = delegate
@@ -275,7 +299,7 @@ final class AuthService: ObservableObject {
     }
 
     /// Exchange Apple ID token with Supabase
-    private func exchangeAppleToken(idToken: String, nonce: String) async throws {
+    private func exchangeAppleToken(idToken: String, nonce: String, fullName: PersonNameComponents?) async throws {
         let session = try await supabase.auth.signInWithIdToken(
             credentials: .init(
                 provider: .apple,
@@ -283,12 +307,84 @@ final class AuthService: ObservableObject {
                 nonce: nonce
             )
         )
-        let username = session.user.email?.components(separatedBy: "@").first ?? "AppleUser"
-        try await finishAuthentication(session.user, ensureUsername: username)
+        // Apple supplies the name only on the first authorization. Persist it to
+        // the user's own metadata now; a failed metadata write never fails sign-in.
+        if let name = Self.appleDisplayName(fullName) {
+            _ = try? await supabase.auth.update(user: UserAttributes(data: ["full_name": .string(name)]))
+        }
+        try await finishAuthentication(session.user, ensureUsername: Self.appleUsername(for: session.user))
+    }
+    static func appleDisplayName(_ components: PersonNameComponents?) -> String? {
+        guard let components else { return nil }
+        let name = [components.givenName, components.familyName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        guard !name.isEmpty, name.count <= 120, name.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+        return name
+    }
+    /// Private-relay and missing addresses never become a visible handle.
+    static func appleUsername(for user: User) -> String {
+        let fallback = "Creator_" + String(user.id.uuidString.prefix(8))
+        guard let email = user.email?.lowercased(), !email.hasSuffix("@privaterelay.appleid.com"),
+              let local = email.components(separatedBy: "@").first, !local.isEmpty else { return fallback }
+        return local
+    }
+    var appleSignInUnavailableReason: String? {
+        (try? supabase) == nil ? "Account sign-in is not configured for this build." : nil
+    }
+
+    // MARK: - Apple credential revocation (#130)
+
+    /// Apple's stable subject identifier for this account, taken from the
+    /// server-side identity list; never from email text or profile metadata.
+    static func appleUserIdentifier(for user: User) -> String? {
+        user.identities?.first(where: { $0.provider == "apple" })?.id
+    }
+    /// Only an explicit revocation ends the session. `.notFound` and
+    /// `.transferred` are not proof the person withdrew access on this device.
+    static func appleCredentialRequiresSignOut(_ state: ASAuthorizationAppleIDProvider.CredentialState) -> Bool {
+        state == .revoked
+    }
+    static let appleRevokedNotice = "Your Apple ID no longer authorizes StickDeath Infinity. You were signed out on this device; your local projects are unchanged."
+    private var appleRevocationObserver: NSObjectProtocol?
+    /// Installed once with the auth-change observer. The system posts this while
+    /// the app runs; the handler re-queries Apple rather than trusting the post.
+    private func observeAppleCredentialRevocation() {
+        guard appleRevocationObserver == nil else { return }
+        appleRevocationObserver = NotificationCenter.default.addObserver(
+            forName: ASAuthorizationAppleIDProvider.credentialRevokedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.verifyAppleCredentialState() }
+        }
+    }
+    /// Asks Apple for the live credential state of the signed-in Apple account.
+    /// Accounts without an Apple identity, and in-flight sign-ins, are untouched.
+    func verifyAppleCredentialState() async {
+        guard isAuthenticated, let user = currentUser, let appleID = Self.appleUserIdentifier(for: user) else { return }
+        let state: ASAuthorizationAppleIDProvider.CredentialState = await withCheckedContinuation { continuation in
+            ASAuthorizationAppleIDProvider().getCredentialState(forUserID: appleID) { state, _ in
+                continuation.resume(returning: state)
+            }
+        }
+        guard currentUser?.id == user.id else { return }
+        await handleAppleCredentialState(state)
+    }
+    /// Internal so native tests can replay Apple's answer without the system
+    /// prompt. A revoked grant clears the local session (the remote revocation
+    /// result never blocks it) and leaves a visible, non-error notice.
+    func handleAppleCredentialState(_ state: ASAuthorizationAppleIDProvider.CredentialState) async {
+        guard Self.appleCredentialRequiresSignOut(state), isAuthenticated,
+              !authenticationInProgress, !restorationInProgress, let client = try? supabase else { return }
+        authenticationInProgress = true
+        defer { authenticationInProgress = false }
+        if client.auth.currentSession != nil { try? await client.auth.signOut(scope: .local) }
+        setIdentity(nil)
+        restoration = .signInRequired
+        profileNotice = Self.appleRevokedNotice
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // MARK: - Sign In with Google (GoogleSignIn SDK)
+    // MARK: - Google / GitHub / Microsoft (Supabase OAuth, PKCE)
     // ═══════════════════════════════════════════════════════════════
 
     typealias OAuthProvider = AppConfig.OAuthProvider
@@ -303,6 +399,9 @@ final class AuthService: ObservableObject {
         guard (try? supabase) != nil else { return "Account sign-in is not configured for this build." }
         return nil
     }
+    /// Public deployment value shown under the Microsoft button. The Supabase
+    /// Azure provider must be configured with this same tenant.
+    var microsoftTenant: String? { (injectedOAuthConfiguration ?? AppConfig.oauthConfiguration).microsoftTenant }
     func signInWithGoogle() async throws { try await signIn(provider: .google) }
     func signInWithGitHub() async throws { try await signIn(provider: .github) }
     func signInWithMicrosoft() async throws { try await signIn(provider: .microsoft) }
@@ -332,12 +431,32 @@ final class AuthService: ObservableObject {
                     callback = try await browser.open(url, callbackScheme: "stickdeath")
                 }
                 try Task.checkCancellation()
+                if let denial = Self.oauthCallbackDenial(callback) { throw AuthError.providerDenied(denial) }
                 guard Self.isExpectedOAuthCallback(callback) else { throw AuthError.invalidCallback }
                 return callback
             })
         try Task.checkCancellation()
         let username = "Creator_" + result.user.id.uuidString.prefix(8)
         try await finishAuthentication(result.user, ensureUsername: String(username))
+    }
+    /// A provider or server denial arrives on our callback URL as `error=`.
+    /// It is reported as a denial and never exchanged, even when a code is present.
+    static func oauthCallbackDenial(_ url: URL) -> String? {
+        guard url.scheme == "stickdeath", url.host == "auth", url.path == "/callback",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let code = items.first(where: { $0.name == "error" })?.value, !code.isEmpty else { return nil }
+        let raw = items.first(where: { $0.name == "error_description" })?.value?
+            .replacingOccurrences(of: "+", with: " ").trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var cleaned = ""
+        cleaned.unicodeScalars.append(contentsOf: raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        let description = String(cleaned.prefix(240))
+        if description.hasPrefix("AADSTS") {
+            return "Microsoft declined this sign-in (\(description.prefix(11))). Check the tenant configuration and try again."
+        }
+        if description.isEmpty {
+            return code == "access_denied" ? "The sign-in request was declined by the provider." : "The provider declined this sign-in (\(code))."
+        }
+        return "The provider declined this sign-in: \(description)"
     }
     private static func isExpectedOAuthCallback(_ url: URL) -> Bool {
         guard url.scheme == "stickdeath", url.host == "auth", url.path == "/callback",
@@ -490,8 +609,38 @@ final class AuthService: ObservableObject {
         throw AuthError.accountDeletionUnavailable
     }
 
+    /// Recovery links return to this app and finish through the SDK's own PKCE
+    /// verifier, so only the device that requested the link can complete it.
+    static let passwordResetRedirect = URL(string: "stickdeath://auth/reset")!
     func resetPassword(email: String) async throws {
-        try await supabase.auth.resetPasswordForEmail(email)
+        let address = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard address.contains("@"), address.count <= 254 else { throw AuthError.invalidEmail }
+        try await supabase.auth.resetPasswordForEmail(address, redirectTo: Self.passwordResetRedirect)
+    }
+    /// Set after a recovery link established a session; cleared once the password changes.
+    @Published private(set) var passwordRecoveryPending = false
+    func completePasswordRecovery(url: URL) async throws {
+        guard DeepLinkRouter.route(url) == .passwordReset else { throw AuthError.invalidCallback }
+        try beginAuthentication()
+        defer { authenticationInProgress = false }
+        let client = try supabase
+        // Without the verifier stored by this device's reset request the SDK
+        // rejects the code; an unsolicited or replayed link cannot sign in.
+        let session = try await client.auth.session(from: url)
+        passwordRecoveryPending = true
+        try await finishAuthentication(session.user)
+    }
+    func updatePassword(_ password: String) async throws {
+        guard password.count >= 6, password.count <= 128 else { throw AuthError.weakPassword }
+        try beginAuthentication()
+        defer { authenticationInProgress = false }
+        let client = try supabase
+        guard isAuthenticated, let account = currentUser?.id,
+              client.auth.currentSession?.user.id == account else { throw AuthError.notAuthenticated }
+        let user = try await client.auth.update(user: UserAttributes(password: password))
+        guard user.id == account else { throw CancellationError() }
+        currentUser = user
+        passwordRecoveryPending = false
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -521,7 +670,11 @@ final class AuthService: ObservableObject {
         }
     }
 
+    /// Account-level notice that is not an authentication failure (for example
+    /// a username another creator already uses). Cleared on identity change.
+    @Published private(set) var profileNotice: String?
     private func ensureProfile(userId: String, email: String?, username: String) async {
+        profileNotice = nil
         do {
             try await supabase.from("users").upsert([
                 "id": AnyJSON.string(userId),
@@ -529,6 +682,10 @@ final class AuthService: ObservableObject {
                 "username": .string(username),
                 "created_at": .string(ISO8601DateFormatter().string(from: Date()))
             ], onConflict: "id", ignoreDuplicates: true).execute()
+        } catch let error as PostgrestError where error.code == "23505" {
+            // Unique violation on a non-identity column: the account exists and
+            // is signed in, but the requested handle is taken. Say so.
+            profileNotice = "The username \"\(username)\" is already taken. You are signed in; choose a different username in Settings."
         } catch {
             // Profile availability is separate from authentication. The fenced
             // fetch leaves it unavailable without displaying a prior account.
@@ -573,7 +730,9 @@ final class AuthService: ObservableObject {
     // MARK: - Errors
     enum AuthError: LocalizedError {
         case providerUnavailable(String)
+        case providerDenied(String)
         case operationInProgress, invalidCallback, accountDeletionUnavailable
+        case invalidEmail, weakPassword
         case notAuthenticated
         case noPresentingViewController
         case appleSignInFailed(String)
@@ -582,6 +741,9 @@ final class AuthService: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .providerUnavailable(let reason): return reason
+            case .providerDenied(let reason): return reason
+            case .invalidEmail: return "Enter the email address of your account."
+            case .weakPassword: return "Use a password of 6–128 characters."
             case .operationInProgress: return "Another sign-in or sign-out is still finishing. Wait before trying again."
             case .invalidCallback: return "This sign-in callback is not for StickDeath Infinity."
             case .accountDeletionUnavailable: return "Account deletion is unavailable until secure identity and data deletion is configured. Your account has not been deleted."
@@ -600,16 +762,24 @@ final class AuthService: ObservableObject {
 
 private class AppleSignInDelegate: NSObject, ASAuthorizationControllerDelegate {
     let nonce: String
-    let continuation: CheckedContinuation<Void, Error>
-    let onCredential: (String, String) async throws -> Void
+    let state: String
+    private var continuation: CheckedContinuation<Void, Error>?
+    let onCredential: (String, String, PersonNameComponents?) async throws -> Void
     var contextProvider: AppleSignInContextProvider?
 
     init(nonce: String,
+         state: String,
          continuation: CheckedContinuation<Void, Error>,
-         onCredential: @escaping (String, String) async throws -> Void) {
+         onCredential: @escaping (String, String, PersonNameComponents?) async throws -> Void) {
         self.nonce = nonce
+        self.state = state
         self.continuation = continuation
         self.onCredential = onCredential
+    }
+    private func finish(_ result: Result<Void, Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(with: result)
     }
 
     func authorizationController(controller: ASAuthorizationController,
@@ -617,23 +787,32 @@ private class AppleSignInDelegate: NSObject, ASAuthorizationControllerDelegate {
         guard let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential,
               let idTokenData = appleIDCredential.identityToken,
               let idToken = String(data: idTokenData, encoding: .utf8) else {
-            continuation.resume(throwing: AuthService.AuthError.appleSignInFailed("Missing ID token"))
+            finish(.failure(AuthService.AuthError.appleSignInFailed("Missing ID token")))
             return
         }
-
+        guard appleIDCredential.state == state else {
+            finish(.failure(AuthService.AuthError.appleSignInFailed("The response did not match this sign-in request.")))
+            return
+        }
+        let fullName = appleIDCredential.fullName
         Task {
             do {
-                try await onCredential(idToken, nonce)
-                continuation.resume()
+                try await onCredential(idToken, nonce, fullName)
+                finish(.success(()))
             } catch {
-                continuation.resume(throwing: error)
+                finish(.failure(error))
             }
         }
     }
 
     func authorizationController(controller: ASAuthorizationController,
                                  didCompleteWithError error: Error) {
-        continuation.resume(throwing: AuthService.AuthError.appleSignInFailed(error.localizedDescription))
+        // The person closed the Apple sheet: cancellation, not a failure banner.
+        if let authorizationError = error as? ASAuthorizationError, authorizationError.code == .canceled {
+            finish(.failure(CancellationError()))
+            return
+        }
+        finish(.failure(AuthService.AuthError.appleSignInFailed(error.localizedDescription)))
     }
 }
 
@@ -667,7 +846,10 @@ private class AppleSignInContextProvider: NSObject, ASAuthorizationControllerPre
                 self.continuation = continuation
                 let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { [weak self] url, error in
                     Task { @MainActor in
-                        if let error { self?.finish(.failure(error)) }
+                        if let error = error as? ASWebAuthenticationSessionError, error.code == .canceledLogin {
+                            // Closing the browser sheet is cancellation, not an error.
+                            self?.finish(.failure(CancellationError()))
+                        } else if let error { self?.finish(.failure(error)) }
                         else if let url { self?.finish(.success(url)) }
                         else { self?.finish(.failure(AuthService.AuthError.invalidCallback)) }
                     }

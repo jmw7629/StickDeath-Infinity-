@@ -238,7 +238,21 @@ struct StudioElementTransform: Codable, Equatable, Sendable {
 }
 
 enum StudioTextAlignment: String, Codable, CaseIterable { case left, center, right }
-enum StudioTextFont: String, Codable, CaseIterable { case system, monospaced, serif }
+enum StudioTextFont: String, Codable, CaseIterable {
+    case system, monospaced, serif
+    /// The bundled SD∞ Special Elite typewriter face (DesignCraft text layers
+    /// use the product's own display face). Requires schema 35.
+    case specialElite
+    static let schemaVersion = 35
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .monospaced: return "Monospaced"
+        case .serif: return "Serif"
+        case .specialElite: return "Special Elite"
+        }
+    }
+}
 
 struct StudioTextStyle: Codable, Equatable {
     var font: StudioTextFont = .monospaced
@@ -514,13 +528,19 @@ enum StudioMirrorMode: String, Codable, CaseIterable {
 
 /// Captured at touch start. Copies retain original samples and brush seed;
 /// canonical reflection/translation makes their pixels true mirror images.
+/// `axisX`/`axisY` are the normalised mirror lines (0…1 of the canvas); the
+/// default 0.5 reflects across the canvas centre exactly as before.
 struct StudioMirrorCapture: Equatable {
     let mode: StudioMirrorMode
     let width: Double
     let height: Double
+    var axisX: Double = 0.5
+    var axisY: Double = 0.5
+    static func isValidAxis(_ value: Double) -> Bool { value.isFinite && (0...1).contains(value) }
     func elements(from source: DrawnElement) throws -> [DrawnElement] {
         guard width.isFinite, height.isFinite, (1...8192).contains(width), (1...8192).contains(height),
-              [.pencil,.pen,.brush,.marker,.crayon,.line,.rectangle,.circle].contains(source.tool),
+              Self.isValidAxis(axisX), Self.isValidAxis(axisY),
+              StudioStrokeInput.mirrorTools.contains(source.tool),
               source.translation == nil, source.reflection == nil, source.transform == nil,
               source.selectionErasures?.isEmpty != false else {
             throw StudioBrushError.invalidSettings("This mirror draft cannot be applied. The original remains unchanged.")
@@ -533,12 +553,15 @@ struct StudioMirrorCapture: Equatable {
         case .horizontal: axes = [(false,true)]
         case .both: axes = [(true,false),(false,true),(true,true)]
         }
+        // Reflecting about x = axisX·width is x' = 2·axisX·width − x: a reflection
+        // through the origin followed by this translation. 2·0.5·width == width exactly.
+        let translationX = 2 * axisX * width, translationY = 2 * axisY * height
         for (x,y) in axes {
             result.append(DrawnElement(id: source.id + "-mirror-" + (x ? "x" : "") + (y ? "y" : ""),
                 tool: source.tool, points: source.points, color: source.color, width: source.width,
                 opacity: source.opacity, fillColor: source.fillColor, layerID: source.layerID,
                 brush: source.brush, shape: source.shape,
-                translation: .init(x: x ? width : 0, y: y ? height : 0),
+                translation: .init(x: x ? translationX : 0, y: y ? translationY : 0),
                 reflection: .init(horizontal: x, vertical: y), preservesLayerAlpha: source.preservesLayerAlpha))
         }
         return result
@@ -614,8 +637,8 @@ struct StudioStrokeInput {
         guard [0.0, 15, 45, 90].contains(angleSnapDegrees),
               angleSnapDegrees == 0 || tool == .line,
               !equalShapeSides || [.rectangle, .circle].contains(tool),
-              rulerAngleDegrees.map({ $0.isFinite && (-180...180).contains($0) && tool == .line && angleSnapDegrees == 0 }) ?? true,
-              rulerLength.map({ $0.isFinite && (1...4096).contains($0) && rulerAngleDegrees != nil }) ?? true else {
+              rulerAngleDegrees.map({ $0.isFinite && (-180...180).contains($0) && Self.rulerTools.contains(tool) && angleSnapDegrees == 0 }) ?? true,
+              rulerLength.map({ $0.isFinite && (1...4096).contains($0) && rulerAngleDegrees != nil && tool == .line }) ?? true else {
             throw StudioBrushError.invalidSettings("These drawing constraints are invalid for this tool.")
         }
         var point = CGPoint(x: min(max(location.x / viewportSize.width, 0), 1) * documentSize.width,
@@ -657,9 +680,15 @@ struct StudioStrokeInput {
         }
         points.append(StrokePoint(x: point.x, y: point.y, pressure: pressure, timestamp: elapsed, tilt: tilt))
     }
+    /// Tools that accept the straight-edge ruler: Line, and the styled brush
+    /// tools whose samples are projected onto the ruler axis (PhotoCraft
+    /// straight-line painting). Fixed length remains Line-only.
+    static let rulerTools: Set<DrawingTool> = [.line, .pencil, .pen, .brush, .marker, .crayon]
+    /// Tools whose committed strokes `StudioMirrorCapture` can reflect.
+    static let mirrorTools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .line, .rectangle, .circle]
     /// Editor-only ruler guide, never part of a DrawnElement or export.
     var rulerGuide: [CGPoint] {
-        guard tool == .line, let angle = rulerAngleDegrees, angle.isFinite,
+        guard Self.rulerTools.contains(tool), let angle = rulerAngleDegrees, angle.isFinite,
               let start = points.first else { return [] }
         let radians = CGFloat(angle * .pi / 180), dx = cos(radians), dy = sin(radians)
         func endpoint(_ sign: CGFloat) -> CGPoint {
@@ -991,6 +1020,9 @@ struct CanvasLayer: Codable, Identifiable, Equatable {
     /// Document-space radius; omitted fields retain legacy full-resolution appearance.
     var glowRadius: Double?
     var glowStrength: Double?
+    /// Reference material (for example extracted video frames) is shown while
+    /// drawing but never rendered into exports. Encoded only when set.
+    var isReference: Bool = false
     var effectiveGlowRadius: Double { glowRadius ?? 5 }
     var effectiveGlowStrength: Double { glowStrength ?? 1 }
     var hasValidGlowSettings: Bool {
@@ -1009,17 +1041,19 @@ struct CanvasLayer: Codable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, visible, locked, opacity, lockMode, blendMode
-        case glowEnabled, glowColor, glowRadius, glowStrength, colorLabel
+        case glowEnabled, glowColor, glowRadius, glowStrength, colorLabel, isReference
     }
 
     init(id: String, name: String, visible: Bool = true, locked: Bool = false, opacity: Double = 1,
          lockMode: String = "free", blendMode: String = "normal", glowEnabled: Bool = false,
-         glowColor: String? = nil, colorLabel: String? = nil, glowRadius: Double? = nil, glowStrength: Double? = nil) {
+         glowColor: String? = nil, colorLabel: String? = nil, glowRadius: Double? = nil, glowStrength: Double? = nil,
+         isReference: Bool = false) {
         self.id = id; self.name = name; self.visible = visible; self.locked = locked
         self.opacity = opacity; self.lockMode = locked ? "full" : lockMode
         self.blendMode = blendMode; self.glowEnabled = glowEnabled
         self.glowColor = glowColor; self.colorLabel = colorLabel
         self.glowRadius = glowRadius; self.glowStrength = glowStrength
+        self.isReference = isReference
     }
 
     init(from decoder: Decoder) throws {
@@ -1036,6 +1070,21 @@ struct CanvasLayer: Codable, Identifiable, Equatable {
         colorLabel = try c.decodeIfPresent(String.self, forKey: .colorLabel)
         glowRadius = try c.decodeIfPresent(Double.self, forKey: .glowRadius)
         glowStrength = try c.decodeIfPresent(Double.self, forKey: .glowStrength)
+        isReference = try c.decodeIfPresent(Bool.self, forKey: .isReference) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(name, forKey: .name)
+        try c.encode(visible, forKey: .visible); try c.encode(locked, forKey: .locked)
+        try c.encode(opacity, forKey: .opacity); try c.encode(lockMode, forKey: .lockMode)
+        try c.encode(blendMode, forKey: .blendMode); try c.encode(glowEnabled, forKey: .glowEnabled)
+        try c.encodeIfPresent(glowColor, forKey: .glowColor)
+        try c.encodeIfPresent(glowRadius, forKey: .glowRadius)
+        try c.encodeIfPresent(glowStrength, forKey: .glowStrength)
+        try c.encodeIfPresent(colorLabel, forKey: .colorLabel)
+        // Historical documents never carried this key; keep their bytes identical.
+        if isReference { try c.encode(true, forKey: .isReference) }
     }
 
     var isFullyLocked: Bool { locked || lockMode == "full" }
@@ -1089,6 +1138,10 @@ struct AudioFadeEnvelope: Codable, Equatable, Sendable {
     let frameCount: Int
     let fadeInFrames: Int
     let fadeOutFrames: Int
+    /// Schema 34 SoundCraft curve shapes. Nil preserves the historical linear ramp.
+    var fadeInShape: StudioFadeShape? = nil
+    var fadeOutShape: StudioFadeShape? = nil
+    var hasCurveShapes: Bool { fadeInShape != nil || fadeOutShape != nil }
     enum Failure: Error, LocalizedError {
         case invalid
         var errorDescription: String? { "Audio fades must fit within the selected clip and contain finite nonnegative durations." }
@@ -1109,7 +1162,7 @@ struct AudioFadeEnvelope: Codable, Equatable, Sendable {
         let relative = frame - sourceStartFrame
         let incoming = fadeInFrames == 0 ? 1 : min(1, Double(relative) / Double(fadeInFrames))
         let outgoing = fadeOutFrames == 0 ? 1 : min(1, Double(frameCount - 1 - relative) / Double(fadeOutFrames))
-        return min(incoming, outgoing)
+        return min((fadeInShape ?? .linear).gain(incoming), (fadeOutShape ?? .linear).gain(outgoing))
     }
 }
 
@@ -1129,6 +1182,9 @@ struct StudioAudioClipSettings: Codable, Equatable {
     struct Fades: Codable, Equatable {
         let fadeIn: Double
         let fadeOut: Double
+        /// Optional SoundCraft curve shapes; nil keeps the linear ramp.
+        var fadeInShape: StudioFadeShape? = nil
+        var fadeOutShape: StudioFadeShape? = nil
     }
     var volume: Double? = nil
     var isMuted: Bool? = nil
@@ -1441,34 +1497,6 @@ struct Challenge: Codable, Identifiable {
     enum ChallengeStatus: String, Codable {
         case upcoming, active, ended
     }
-}
-
-// MARK: - Tip
-struct Tip: Codable, Identifiable {
-    let id: Int
-    var senderID: String
-    var receiverID: String
-    var amount: Double
-    var type: String?
-    var createdAt: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, amount, type
-        case senderID = "sender_id"
-        case receiverID = "receiver_id"
-        case createdAt = "created_at"
-    }
-}
-
-// MARK: - R3 Call State
-struct R3CallState {
-    var isActive = false
-    var rateTier: AppConfig.CallRateTier = .standard
-    var duration: TimeInterval = 0
-    var currentCost: Double = 0
-    var spendLimit: Double = 50.0
-    var isIdle = false
-    var personalityLine: String? = nil
 }
 
 /// Geometry shared by image editing, viewport input and validation. Placement

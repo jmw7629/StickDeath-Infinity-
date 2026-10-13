@@ -24,7 +24,11 @@ class AudioSource private constructor(private val bytes: ByteArray, val rate: In
     fun encoded(): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
     private fun copyFrames(frame: Int, count: Int, target: ByteArray) =
         bytes.copyInto(target, 0, offset + frame * channels * 2, offset + (frame + count) * channels * 2)
-    suspend fun preview(clip: AudioClip) {
+    /** [pan] is the owning track's balance (-1…1). Centre keeps the historical single-gain path;
+     * other positions use AudioTrack's per-output-channel gains so mono sources also balance. */
+    @Suppress("DEPRECATION")
+    suspend fun preview(clip: AudioClip, pan: Float = 0f) {
+        val balance = StudioCraftAudio.balanceGains(pan.toDouble())
         val mask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
         val minimum = AudioTrack.getMinBufferSize(rate, mask, AudioFormat.ENCODING_PCM_16BIT)
         require(minimum > 0) { "This device cannot preview this WAV format." }
@@ -35,7 +39,9 @@ class AudioSource private constructor(private val bytes: ByteArray, val rate: In
             .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(maxOf(minimum, 8192)).build()
         try {
             require(track.state == AudioTrack.STATE_INITIALIZED) { "Audio output could not initialize." }
-            track.setVolume(if (clip.muted) 0f else clip.volume)
+            val gain = if (clip.muted) 0f else clip.volume
+            if (balance.left == 1.0 && balance.right == 1.0) track.setVolume(gain)
+            else track.setStereoVolume(gain * balance.left.toFloat(), gain * balance.right.toFloat())
             track.play()
             val first = kotlin.math.round(clip.sourceOffset * rate).toInt()
             val total = minOf(kotlin.math.round(clip.duration * rate).toInt(), frames - first)
@@ -113,7 +119,7 @@ class AudioSource private constructor(private val bytes: ByteArray, val rate: In
             }
             require(at == bytes.size && rate > 0 && offset >= 0 && size > 0 && size % (channels*(bits/8)) == 0) { "Invalid PCM WAV structure." }
             val frames = size / (channels*(bits/8))
-            require(frames > 0 && frames.toDouble()/rate <= 60.0) { "Use nonempty audio up to 60 seconds." }
+            require(frames > 0 && frames.toDouble()/rate <= AudioLimits.MAX_CLIP_SECONDS) { AudioLimits.durationMessage() }
             if (bits == 24) {
                 val pcmBytes = frames * channels * 2
                 val output = java.nio.ByteBuffer.allocate(44 + pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
@@ -132,8 +138,12 @@ class AudioSource private constructor(private val bytes: ByteArray, val rate: In
     }
 }
 
-/** Source-time envelope: trim and split retain the original fade phase. */
-data class AudioFade(val start: Double, val end: Double, val fadeIn: Double, val fadeOut: Double) {
+/** Source-time envelope: trim and split retain the original fade phase. Schema-34 SoundCraft
+ * curve shapes default to Linear, which reproduces the historical ramp exactly; only
+ * non-linear shapes are persisted. */
+data class AudioFade(val start: Double, val end: Double, val fadeIn: Double, val fadeOut: Double,
+                     val inShape: FadeShape = FadeShape.Linear, val outShape: FadeShape = FadeShape.Linear) {
+    val hasCurveShapes get() = inShape != FadeShape.Linear || outShape != FadeShape.Linear
     fun validate(sourceDuration: Double) {
         require(listOf(start, end, fadeIn, fadeOut).all { it.isFinite() } && start >= 0 &&
             end > start && end <= sourceDuration + 0.000001 && fadeIn >= 0 && fadeOut >= 0 &&
@@ -142,11 +152,16 @@ data class AudioFade(val start: Double, val end: Double, val fadeIn: Double, val
     fun gain(sourceTime: Double): Double {
         val incoming = if (fadeIn == 0.0) 1.0 else ((sourceTime - start) / fadeIn).coerceIn(0.0, 1.0)
         val outgoing = if (fadeOut == 0.0) 1.0 else ((end - sourceTime) / fadeOut).coerceIn(0.0, 1.0)
-        return minOf(incoming, outgoing)
+        return minOf(inShape.gain(incoming), outShape.gain(outgoing))
     }
-    fun json() = JSONObject().put("start", start).put("end", end).put("in", fadeIn).put("out", fadeOut)
+    fun json() = JSONObject().put("start", start).put("end", end).put("in", fadeIn).put("out", fadeOut).apply {
+        if (inShape != FadeShape.Linear) put("inShape", inShape.swiftName)
+        if (outShape != FadeShape.Linear) put("outShape", outShape.swiftName)
+    }
     companion object {
-        fun decode(j: JSONObject) = AudioFade(j.getDouble("start"), j.getDouble("end"), j.getDouble("in"), j.getDouble("out"))
+        fun decode(j: JSONObject) = AudioFade(j.getDouble("start"), j.getDouble("end"), j.getDouble("in"), j.getDouble("out"),
+            if (j.has("inShape")) FadeShape.fromStored(j.getString("inShape")) else FadeShape.Linear,
+            if (j.has("outShape")) FadeShape.fromStored(j.getString("outShape")) else FadeShape.Linear)
     }
 }
 
@@ -156,8 +171,9 @@ data class AudioClip(val id: String = newID(), val name: String, val source: Aud
     fun validate() {
         java.util.UUID.fromString(id)
         require(name.isNotBlank() && name.length <= 80 && track in 1..4)
-        require(start.isFinite() && start in 0.0..3600.0 && sourceOffset.isFinite() && sourceOffset >= 0 &&
+        require(start.isFinite() && start in 0.0..AudioLimits.MAX_TIMELINE_START_SECONDS && sourceOffset.isFinite() && sourceOffset >= 0 &&
             duration.isFinite() && duration + 1e-12 >= 1.0 / source.rate && sourceOffset + duration <= source.duration + 0.000001) { "Trim must remain inside the source (minimum one source sample)." }
+        require(duration <= AudioLimits.MAX_CLIP_SECONDS + 0.000001 && sourceOffset <= AudioLimits.MAX_CLIP_SECONDS) { "Clips and source trims are capped at ${AudioLimits.MAX_CLIP_SECONDS.toInt()} seconds, as on iOS." }
         require(volume.isFinite() && volume in 0f..1f)
         assetCredit?.validate()
         fade?.validate(source.duration)
@@ -170,11 +186,19 @@ data class AudioClip(val id: String = newID(), val name: String, val source: Aud
     }
 }
 
-/** Track gain is independent of clip gain and drawing-layer controls. */
-data class AudioTrackMix(val volume: Float = 1f, val muted: Boolean = false) {
-    fun validate() { require(volume.isFinite() && volume in 0f..1f) { "Track volume must be between 0 and 100 percent." } }
-    fun json() = JSONObject().put("volume", volume).put("muted", muted)
-    companion object { fun decode(j: JSONObject) = AudioTrackMix(j.getDouble("volume").toFloat(), j.getBoolean("muted")) }
+/** Track gain is independent of clip gain and drawing-layer controls. Schema-34 SoundCraft
+ * state: [pan] is a balance position (-1 left … 1 right, 0 centred) and [soloed] silences every
+ * track that is not soloed (see [StudioCraftAudio.isTrackAudible]). Both are optional on read. */
+data class AudioTrackMix(val volume: Float = 1f, val muted: Boolean = false, val pan: Float = 0f, val soloed: Boolean = false) {
+    fun validate() {
+        require(volume.isFinite() && volume in 0f..1f) { "Track volume must be between 0 and 100 percent." }
+        require(pan.isFinite() && pan in -1f..1f) { "Track pan must be between L100 and R100." }
+    }
+    fun json() = JSONObject().put("volume", volume).put("muted", muted).put("pan", pan).put("soloed", soloed)
+    companion object {
+        fun decode(j: JSONObject) = AudioTrackMix(j.getDouble("volume").toFloat(), j.getBoolean("muted"),
+            if (j.has("pan")) j.getDouble("pan").toFloat() else 0f, j.optBoolean("soloed", false))
+    }
 }
 
 /** A streaming AudioTrack starts only after its device buffer threshold is met.

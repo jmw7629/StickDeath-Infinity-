@@ -58,7 +58,8 @@ object ShareExports {
             ExportKind.MP4 -> "video/mp4"
             ExportKind.GIF -> "image/gif"
             ExportKind.PNG -> "image/png"
-            ExportKind.PROJECT, ExportKind.CREDITS -> "application/json"
+            ExportKind.PROJECT, ExportKind.CREDITS, ExportKind.MANIFEST -> "application/json"
+            ExportKind.SDI -> "application/octet-stream"
             ExportKind.SEQUENCE, ExportKind.SPRITESHEET -> "application/zip"
         }
         val send = Intent(Intent.ACTION_SEND).apply {

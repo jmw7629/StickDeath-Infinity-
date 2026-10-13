@@ -112,10 +112,10 @@
       "signaturePhrases": [
         "That impact hit hard.",
         "This can be pushed further.",
-        "Freeze that frame \u2014 that one has thumbnail energy.",
+        "Freeze that frame — that one has thumbnail energy.",
         "The motion is alive here.",
         "This scene is collapsing, but in a fixable way.",
-        "You\u2019re close. The timing is the problem, not the idea."
+        "You’re close. The timing is the problem, not the idea."
       ],
       "modes": {
         "directorMode": "Serious cinematic critique and improvement.",
@@ -167,8 +167,8 @@
         "style": "Short, useful, creative, non-spammy"
       },
       "exampleInterventions": [
-        "You\u2019ve redrawn this recoil a few times. Want me to stabilize the arc?",
-        "Layer is locked \u2014 unlock it or switch layers before erasing.",
+        "You’ve redrawn this recoil a few times. Want me to stabilize the arc?",
+        "Layer is locked — unlock it or switch layers before erasing.",
         "The middle section loses energy. Add a reaction shot or escalation around frame 36.",
         "This frame has thumbnail potential. Want me to save it?",
         "Export failed from memory pressure. I can optimize the scene before trying again."
@@ -798,7 +798,9 @@
         "creator rooms",
         "live classes",
         "Spatter live commentary"
-      ]
+      ],
+      "retired": true,
+      "retiredReason": "Retired by the September 19, 2026 product scope: user-to-user messaging, text chat, voice and video calls were removed. Preserved for provenance; excluded from Spatter prompts."
     },
     {
       "createdFor": "StickDeath Infinity / Spatter AI",
@@ -1163,5 +1165,6 @@
         "improve export sound mix"
       ]
     }
-  ]
+  ],
+  "retiredScope": "Retired by the September 19, 2026 product scope: user-to-user messaging, text chat, voice and video calls were removed. Preserved for provenance; excluded from Spatter prompts."
 }

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import AVFoundation
+import VideoToolbox
 import ImageIO
 import CryptoKit
 import Darwin
@@ -11,11 +12,76 @@ import Darwin
 @MainActor
 final class StudioMovieExportService {
     enum Background: String, Codable { case white, transparent }
+    /// H.264 is the default; HEVC is offered only where AVAssetWriter accepts it (#182).
+    enum Codec: String, Codable, CaseIterable, Hashable {
+        case h264, hevc
+        var label: String { self == .h264 ? "H.264" : "HEVC" }
+        var mediaSubType: CMVideoCodecType { self == .h264 ? kCMVideoCodecType_H264 : kCMVideoCodecType_HEVC }
+    }
+    /// Output size presets wired to the existing `ExportQuality` choices (#185).
+    /// The preset names the shorter output edge; the canvas aspect is kept.
+    enum RenderPreset: String, Codable, CaseIterable, Hashable {
+        case original, p480, p720, p1080
+        init(quality: ExportQuality) {
+            switch quality { case .standard: self = .p480; case .hd: self = .p720; case .fullHD: self = .p1080 }
+        }
+        var targetShortSide: Int? {
+            switch self { case .original: return nil; case .p480: return 480; case .p720: return 720; case .p1080: return 1080 }
+        }
+        var label: String {
+            switch self { case .original: return "Original"; case .p480: return "480p"; case .p720: return "720p"; case .p1080: return "1080p" }
+        }
+    }
+    struct RenderOptions: Codable, Equatable {
+        var codec: Codec = .h264
+        var preset: RenderPreset = .original
+        init(codec: Codec = .h264, preset: RenderPreset = .original) { self.codec = codec; self.preset = preset }
+    }
+    /// The exact scaling rule recorded in every MP4 manifest (#182/#185):
+    /// `scale` = targetShortSide / min(canvasWidth, canvasHeight), or 1 for
+    /// Original. Content size = canvas × scale rounded to the nearest pixel,
+    /// drawn from the top-left origin. When the content width or height is
+    /// odd, one white pixel column (right) or row (bottom) is appended so the
+    /// encoder receives even dimensions; nothing is cropped or stretched.
+    struct RenderPlan: Codable, Equatable {
+        let preset: RenderPreset
+        let canvasWidth: Int
+        let canvasHeight: Int
+        let scale: Double
+        let contentWidth: Int
+        let contentHeight: Int
+        let paddingRight: Int
+        let paddingBottom: Int
+        var outputWidth: Int { contentWidth + paddingRight }
+        var outputHeight: Int { contentHeight + paddingBottom }
+        var rule: String {
+            "scale=\(scale) (\(preset.label)); content \(contentWidth)x\(contentHeight) at top-left; white padding right=\(paddingRight) bottom=\(paddingBottom); output \(outputWidth)x\(outputHeight)"
+        }
+        static func make(canvasWidth: Int, canvasHeight: Int, preset: RenderPreset) throws -> RenderPlan {
+            guard canvasWidth > 0, canvasHeight > 0 else { throw ExportError.limitExceeded }
+            let scale: Double
+            if let target = preset.targetShortSide { scale = Double(target) / Double(min(canvasWidth, canvasHeight)) } else { scale = 1 }
+            guard scale.isFinite, scale > 0 else { throw ExportError.limitExceeded }
+            let contentWidth = max(1, Int((Double(canvasWidth) * scale).rounded()))
+            let contentHeight = max(1, Int((Double(canvasHeight) * scale).rounded()))
+            guard contentWidth <= 8192, contentHeight <= 8192 else { throw ExportError.limitExceeded }
+            return RenderPlan(preset: preset, canvasWidth: canvasWidth, canvasHeight: canvasHeight, scale: scale,
+                              contentWidth: contentWidth, contentHeight: contentHeight,
+                              paddingRight: contentWidth % 2, paddingBottom: contentHeight % 2)
+        }
+    }
     struct Snapshot {
         let document: StudioDocument
         let retainedAudioTracks: [AudioTrack]
         let rasterDataByID: [String: Data]
         var imageCredits: [String: StudioExportService.ImageCredit] = [:]
+        var render: RenderOptions = .init()
+        /// Set by `StudioMuxCapture` when the last frame was held so audio that
+        /// ends after the animation fits inside the movie (#181). Informational.
+        var heldLastFrameTicks: Int = 0
+        /// Library attribution for the retained audio assets, resolved by digest
+        /// before capture (#191). Verified against the assets by the mux proof.
+        var soundCredits: [StudioSoundCredit] = []
     }
     enum Phase { case rendering, finalizing, verifying, publishing }
     struct Progress {
@@ -41,6 +107,17 @@ final class StudioMovieExportService {
         /// Present only for an internal video component, never a completed audio export.
         var visualComponentProof: StudioMuxCapture.Proof? = nil
         var imageCredits: [StudioExportService.ImageCredit]? = nil
+        /// Original canvas size and the exact scale/padding rule that produced `width` × `height`.
+        var canvasWidth: Int? = nil
+        var canvasHeight: Int? = nil
+        var renderPlan: RenderPlan? = nil
+        var renderRule: String? = nil
+        /// Ticks added to the last frame so audio ending after the animation fits (#181).
+        var heldLastFrameTicks: Int? = nil
+        /// The movie's actual filename inside the output directory.
+        var movieFilename: String? = nil
+        /// Library sound attribution carried by a mixed export (#191); nil without audio.
+        var soundCredits: [StudioSoundCredit]? = nil
     }
     /// The caller retains this handle while a share sheet or decoder consumes
     /// its files. URLs alone do not transfer cleanup ownership. Neither service
@@ -87,7 +164,7 @@ final class StudioMovieExportService {
     func exportVisualComponent(capture: StudioMuxCapture, outputParent: URL,
                                progress: (Progress) throws -> Void = { _ in }) async throws -> VisualComponent {
         let output = try await exportCore(snapshot: capture.snapshot, outputParent: outputParent,
-                                          background: .white, componentProof: capture.proof, progress: progress)
+                                          background: .white, componentProof: capture.proof, filenameBase: nil, progress: progress)
         return VisualComponent(capture: capture, output: output)
     }
 
@@ -136,9 +213,12 @@ final class StudioMovieExportService {
         fileprivate var cancelled = false
         private var currentURL: URL { parentURL.appendingPathComponent(name, isDirectory: true) }
 
-        init(parent: URL, staging: URL, movieDigest: SHA256.Digest,
+        private let movieFilename: String
+
+        init(parent: URL, staging: URL, movieFilename: String, movieDigest: SHA256.Digest,
              movieBytes: Int, manifestData: Data, original: PublicationIdentity) throws {
-            guard Set(original.files.keys) == Set(["animation.mp4", "manifest.json"]) else { throw ExportError.unsafeDestination }
+            guard Set(original.files.keys) == Set([movieFilename, "manifest.json"]) else { throw ExportError.unsafeDestination }
+            self.movieFilename = movieFilename
             parentURL = parent; name = staging.lastPathComponent
             var parentInfo = stat()
             guard lstat(parent.path, &parentInfo) == 0, Self.directory(parentInfo) else { throw ExportError.unsafeDestination }
@@ -160,7 +240,7 @@ final class StudioMovieExportService {
             parentIdentity = Identity(parentOpenedInfo); directoryIdentity = Identity(directoryInfo)
             do {
                 let expected: [(String, Int64, SHA256.Digest)] = [
-                    ("animation.mp4", Int64(movieBytes), movieDigest),
+                    (movieFilename, Int64(movieBytes), movieDigest),
                     ("manifest.json", Int64(manifestData.count), SHA256.hash(data: manifestData))
                 ]
                 for (filename, size, digest) in expected {
@@ -204,7 +284,7 @@ final class StudioMovieExportService {
                 // An unexpected nested item leaves everything intact. Already
                 // missing owned files are allowed so partial cleanup is retryable.
                 try validateFiles(allowMissing: true)
-                for filename in ["animation.mp4", "manifest.json"] {
+                for filename in [movieFilename, "manifest.json"] {
                     try confirmDirectories()
                     guard let record = files[filename] else { throw ExportError.unsafeDestination }
                     if try fileStillOwned(filename, record: record, allowMissing: true) {
@@ -350,10 +430,10 @@ final class StudioMovieExportService {
         }
         /// Call immediately after startWriting succeeds, before any await,
         /// render or user callback. Only that explicit output is captured.
-        func captureStartedMovie() throws {
+        func captureStartedMovie(named filename: String) throws {
             try confirmDirectories()
-            let fd = openat(directoryFD, "animation.mp4", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-            try retainCreatedFile(fd, name: "animation.mp4")
+            let fd = openat(directoryFD, filename, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            try retainCreatedFile(fd, name: filename)
         }
         func writeManifest(_ data: Data) throws {
             try confirmDirectories()
@@ -427,9 +507,9 @@ final class StudioMovieExportService {
         /// exclusive manifest creation, then carry those same identities into
         /// the final owner's reopened descriptors. No callback or suspension
         /// occurs during this transfer, and the constructor rechecks identity.
-        func publicationIdentity() throws -> PublicationIdentity {
+        func publicationIdentity(movieFilename: String) throws -> PublicationIdentity {
             try confirmDirectories()
-            guard Set(files.keys) == Set(["animation.mp4", "manifest.json"]) else { throw ExportError.cleanupFailed(stagingURL) }
+            guard Set(files.keys) == Set([movieFilename, "manifest.json"]) else { throw ExportError.cleanupFailed(stagingURL) }
             var parent = stat(), directory = stat()
             guard fstat(parentFD, &parent) == 0, Identity(parent) == parentIdentity,
                   fstat(directoryFD, &directory) == 0, Identity(directory) == directoryIdentity else { throw ExportError.cleanupFailed(stagingURL) }
@@ -477,10 +557,14 @@ final class StudioMovieExportService {
         }
     }
 
+    /// Frames stream through one pool buffer each, so the frame cap bounds
+    /// encoder time rather than memory (#182): 1,440 frames at 1080p (one
+    /// minute at 24 fps, two at 12 fps) fit the 300-second operation timeout
+    /// on current devices; the total-pixel cap is 1,440 × 1920 × 1080.
     struct Limits {
-        var maximumFrames = 240
+        var maximumFrames = 1440
         var maximumFramePixels = 4_194_304
-        var maximumTotalPixels = 134_217_728
+        var maximumTotalPixels = 2_985_984_000
         var maximumOutputBytes = 64 * 1024 * 1024
         var maximumRasterBytes = 64 * 1024 * 1024
         var maximumRasterPixels = 16_777_216
@@ -516,22 +600,27 @@ final class StudioMovieExportService {
     /// outputParent must be an existing app-owned cache/temporary directory.
     /// Background is required: H.264 cannot represent the transparent option.
     /// Progress is factual intermediate work, not a save/export success receipt.
-    func export(snapshot: Snapshot, outputParent: URL, background: Background,
+    func export(snapshot: Snapshot, outputParent: URL, background: Background, filenameBase: String? = nil,
                 progress: (Progress) throws -> Void = { _ in }) async throws -> Output {
         try await exportCore(snapshot: snapshot, outputParent: outputParent, background: background,
-                             componentProof: nil, progress: progress)
+                             componentProof: nil, filenameBase: filenameBase, progress: progress)
     }
 
     private func exportCore(snapshot: Snapshot, outputParent: URL, background: Background,
-                            componentProof: StudioMuxCapture.Proof?, progress: (Progress) throws -> Void) async throws -> Output {
+                            componentProof: StudioMuxCapture.Proof?, filenameBase: String?,
+                            progress: (Progress) throws -> Void) async throws -> Output {
         try Task.checkCancellation()
         guard !Self.movieInProgress else { throw ExportError.alreadyExporting }
         Self.movieInProgress = true
         defer { Self.movieInProgress = false }
         let started = ProcessInfo.processInfo.systemUptime
-        try validate(snapshot, background: background, componentProof: componentProof)
+        if let filenameBase { guard StudioExportFilename.isValid(filenameBase) else { throw ExportError.unsafeDestination } }
+        let movieFilename = (filenameBase ?? StudioExportFilename.fallback) + ".mp4"
+        let plan = try validate(snapshot, background: background, componentProof: componentProof)
+        let codec = snapshot.render.codec
         try checkpoint(started)
-        let document = snapshot.document
+        // Reference layers (imported video frames for tracing) never render (#200).
+        let document = snapshot.document.hidingReferenceLayers
         let imageCredits = try StudioExportService.renderedImageCredits(document: document, creditsByRasterID: snapshot.imageCredits)
         guard try JSONEncoder().encode(imageCredits).count <= 128 * 1024 else { throw ExportError.limitExceeded }
         let fm = FileManager.default
@@ -557,31 +646,34 @@ final class StudioMovieExportService {
                 guard parentIdentity.stillMatches(), identity.stillMatches() else { throw ExportError.unsafeDestination }
             }
             try confirmOwnership()
-            let movie = staging.appendingPathComponent("animation.mp4")
+            let movie = staging.appendingPathComponent(movieFilename)
             writer = try AVAssetWriter(outputURL: movie, fileType: .mp4)
             writer!.movieTimeScale = CMTimeScale(document.fps * 600)
             writer!.shouldOptimizeForNetworkUse = true
-            let bitrate = min(12_000_000, max(2_000_000, document.width * document.height * document.fps * 2))
+            let bitrate = min(12_000_000, max(2_000_000, plan.outputWidth * plan.outputHeight * document.fps * 2))
+            var compression: [String: Any] = [AVVideoAverageBitRateKey: bitrate,
+                AVVideoExpectedSourceFrameRateKey: document.fps, AVVideoAllowFrameReorderingKey: false,
+                // Independent animation frames avoid the measured solid-color
+                // drift on abrupt inter-frame transitions and allow seeking.
+                AVVideoMaxKeyFrameIntervalKey: 1]
+            compression[AVVideoProfileLevelKey] = codec == .hevc ? kVTProfileLevel_HEVC_Main_AutoLevel as String : AVVideoProfileLevelH264HighAutoLevel
             let settings: [String: Any] = [
-                AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: document.width, AVVideoHeightKey: document.height,
+                AVVideoCodecKey: codec == .hevc ? AVVideoCodecType.hevc : AVVideoCodecType.h264,
+                AVVideoWidthKey: plan.outputWidth, AVVideoHeightKey: plan.outputHeight,
                 AVVideoColorPropertiesKey: [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
                     AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                     AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2],
-                AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: bitrate,
-                    AVVideoExpectedSourceFrameRateKey: document.fps, AVVideoAllowFrameReorderingKey: false,
-                    // Independent animation frames avoid the measured solid-color
-                    // drift on abrupt inter-frame transitions and allow seeking.
-                    AVVideoMaxKeyFrameIntervalKey: 1,
-                    AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel]
+                AVVideoCompressionPropertiesKey: compression
             ]
+            // The device's encoder decides whether HEVC at this size is possible;
+            // an unsupported combination is an explicit error, never a silent H.264.
             guard writer!.canApply(outputSettings: settings, forMediaType: .video) else { throw ExportError.codecUnavailable }
             let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
             input.expectsMediaDataInRealTime = false
             input.mediaTimeScale = CMTimeScale(document.fps * 600)
             let bufferAttributes: [String: Any] = [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: document.width, kCVPixelBufferHeightKey as String: document.height,
+                kCVPixelBufferWidthKey as String: plan.outputWidth, kCVPixelBufferHeightKey as String: plan.outputHeight,
                 kCVPixelBufferCGImageCompatibilityKey as String: true,
                 kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:]
@@ -590,7 +682,7 @@ final class StudioMovieExportService {
             guard writer!.canAdd(input) else { throw ExportError.codecUnavailable }
             writer!.add(input)
             guard writer!.startWriting() else { throw ExportError.writerFailed }
-            try encodingOwnership!.captureStartedMovie()
+            try encodingOwnership!.captureStartedMovie(named: movieFilename)
             writer!.startSession(atSourceTime: .zero)
             guard let pool = adaptor.pixelBufferPool else { throw ExportError.codecUnavailable }
             var formatDescription: CMVideoFormatDescription?
@@ -600,7 +692,7 @@ final class StudioMovieExportService {
                 try confirmOwnership()
                 try autoreleasepool {
                     try checkpoint(started)
-                    let image = try render(frame, document: document, rasterDataByID: snapshot.rasterDataByID)
+                    let image = try render(frame, document: document, plan: plan, rasterDataByID: snapshot.rasterDataByID)
                     try draw(image, into: buffer)
                     if formatDescription == nil {
                         guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: buffer,
@@ -646,15 +738,19 @@ final class StudioMovieExportService {
             let verifiedBytes = try fingerprint(movie, started: started)
             try progress(Progress(phase: .verifying, completedFrames: document.frames.count, totalFrames: document.frames.count))
             try confirmOwnership()
-            try await verify(movie, document: document, started: started)
+            try await verify(movie, document: document, plan: plan, codec: codec, started: started)
             try confirmOwnership()
             let bytes = try checkOutputSize(movie, requireNonempty: true)
             var manifest = Manifest(version: imageCredits.isEmpty ? 1 : 2, projectID: document.id, documentRevision: document.revision,
-                frameIDs: document.frames.map(\.id), fps: document.fps, width: document.width, height: document.height,
-                durationNumerator: document.totalTimelineTicks, durationDenominator: document.fps, codec: "H.264",
+                frameIDs: document.frames.map(\.id), fps: document.fps, width: plan.outputWidth, height: plan.outputHeight,
+                durationNumerator: document.totalTimelineTicks, durationDenominator: document.fps, codec: codec.label,
                 background: .white, audioIncluded: false, editorGuidesIncluded: false, encodedBytes: bytes)
             manifest.visualComponentProof = componentProof
             manifest.imageCredits = imageCredits.isEmpty ? nil : imageCredits
+            manifest.canvasWidth = document.width; manifest.canvasHeight = document.height
+            manifest.renderPlan = plan; manifest.renderRule = plan.rule
+            manifest.heldLastFrameTicks = snapshot.heldLastFrameTicks > 0 ? snapshot.heldLastFrameTicks : nil
+            manifest.movieFilename = movieFilename
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
             let manifestData = try encoder.encode(manifest)
             guard manifestData.count <= 128 * 1024, manifestData.count <= limits.maximumOutputBytes - bytes else {
@@ -670,14 +766,14 @@ final class StudioMovieExportService {
             // Byte verification is insufficient if a caller replaced a file
             // with an identical clone. The final owner must inherit the actual
             // encoder/manifest descriptor identities before it may clean them.
-            let originalIdentity = try encodingOwnership!.publicationIdentity()
+            let originalIdentity = try encodingOwnership!.publicationIdentity(movieFilename: movieFilename)
             capturingOutputOwnership = true
-            let ownership = try OutputOwnership(parent: parent, staging: staging,
+            let ownership = try OutputOwnership(parent: parent, staging: staging, movieFilename: movieFilename,
                 movieDigest: verifiedBytes, movieBytes: bytes, manifestData: manifestData, original: originalIdentity)
             outputOwnership = ownership
             try ownership.publish(to: destination)
             try checkpoint(started)
-            return Output(directory: destination, movieURL: destination.appendingPathComponent("animation.mp4"),
+            return Output(directory: destination, movieURL: destination.appendingPathComponent(movieFilename),
                 manifestURL: destination.appendingPathComponent("manifest.json"), manifest: manifest, ownership: ownership)
         } catch {
             if capturingOutputOwnership {
@@ -699,7 +795,8 @@ final class StudioMovieExportService {
         }
     }
 
-    private func validate(_ snapshot: Snapshot, background: Background, componentProof: StudioMuxCapture.Proof?) throws {
+    @discardableResult
+    private func validate(_ snapshot: Snapshot, background: Background, componentProof: StudioMuxCapture.Proof?) throws -> RenderPlan {
         let hard = Limits()
         guard (1...hard.maximumFrames).contains(limits.maximumFrames),
               (1...hard.maximumFramePixels).contains(limits.maximumFramePixels),
@@ -715,14 +812,19 @@ final class StudioMovieExportService {
         } else {
             guard snapshot.document.audioClips.isEmpty, snapshot.retainedAudioTracks.isEmpty else { throw ExportError.audioUnsupported }
         }
-        let document = snapshot.document
+        let document = snapshot.document.hidingReferenceLayers
         try document.validate()
-        guard document.width.isMultiple(of: 2), document.height.isMultiple(of: 2) else { throw ExportError.oddDimensions }
-        let pixels = document.width * document.height
+        // Odd canvases are no longer refused (#182): the render plan pads the
+        // encoded frame with one white column/row and records that rule.
+        let plan = try RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: snapshot.render.preset)
+        guard plan.outputWidth.isMultiple(of: 2), plan.outputHeight.isMultiple(of: 2), plan.outputWidth >= 2, plan.outputHeight >= 2 else {
+            throw ExportError.oddDimensions
+        }
+        let pixels = plan.outputWidth * plan.outputHeight
         guard document.frames.count <= limits.maximumFrames, pixels <= limits.maximumFramePixels,
               pixels * document.frames.count <= limits.maximumTotalPixels else { throw ExportError.limitExceeded }
         let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill, .smudge, .blur, .sharpen, .dodge, .burn]
-        let blends: Set<String> = ["normal", "multiply", "screen", "overlay", "darken", "lighten"]
+        let blends = Set(StudioLayerBlendMode.allCases.map(\.rawValue))
         func colorValid(_ value: String) -> Bool {
             let hex = value.hasPrefix("#") ? value.dropFirst() : value[...]
             return hex.utf8.count == 6 && hex.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
@@ -774,21 +876,29 @@ final class StudioMovieExportService {
                       UIImage(data: data) != nil else { throw ExportError.invalidRaster }
             }
         }
+        return plan
     }
 
-    private func render(_ frame: AnimationFrame, document: StudioDocument, rasterDataByID: [String: Data]) throws -> CGImage {
+    /// Renders one frame at the plan's output size: the whole output is white,
+    /// the canvas is drawn scaled into the top-left content rectangle and any
+    /// one-pixel padding stays white (see `RenderPlan`).
+    private func render(_ frame: AnimationFrame, document: StudioDocument, plan: RenderPlan, rasterDataByID: [String: Data]) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
+        let content = CGSize(width: plan.contentWidth, height: plan.contentHeight)
+        let output = CGSize(width: plan.outputWidth, height: plan.outputHeight)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
         let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers, canvasSize: size, rasterData: nil, rasterDataByID: rasterDataByID)
         var failure: Error?
         let canvas = Canvas { context, actual in
             context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white))
-            failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
-                canvasSize: size, size: actual, preparedBrushes: brushes, preparedSmudges: smudges,
+            var clipped = context
+            clipped.clip(to: Path(CGRect(origin: .zero, size: content)))
+            failure = StudioFrameRenderer.draw(context: &clipped, frame: frame, layers: document.layers,
+                canvasSize: size, size: content, preparedBrushes: brushes, preparedSmudges: smudges,
                 rasterSources: rasterDataByID)
-        }.frame(width: size.width, height: size.height)
+        }.frame(width: output.width, height: output.height)
         let renderer = ImageRenderer(content: canvas); renderer.scale = 1; renderer.isOpaque = true
-        guard let image = renderer.cgImage, image.width == document.width, image.height == document.height else { throw ExportError.renderFailed }
+        guard let image = renderer.cgImage, image.width == plan.outputWidth, image.height == plan.outputHeight else { throw ExportError.renderFailed }
         if let failure { throw failure }
         return image
     }
@@ -860,19 +970,19 @@ final class StudioMovieExportService {
         }
     }
 
-    private func verify(_ movie: URL, document: StudioDocument, started: TimeInterval) async throws {
+    private func verify(_ movie: URL, document: StudioDocument, plan: RenderPlan, codec: Codec, started: TimeInterval) async throws {
         try checkpoint(started)
         let asset = AVURLAsset(url: movie)
         let tracks = try await asset.loadTracks(withMediaType: .video)
         guard tracks.count == 1, try await asset.loadTracks(withMediaType: .audio).isEmpty else { throw ExportError.verificationFailed }
         let track = tracks[0]
         let descriptions = try await track.load(.formatDescriptions)
-        guard descriptions.count == 1, CMFormatDescriptionGetMediaSubType(descriptions[0]) == kCMVideoCodecType_H264 else { throw ExportError.verificationFailed }
+        guard descriptions.count == 1, CMFormatDescriptionGetMediaSubType(descriptions[0]) == codec.mediaSubType else { throw ExportError.verificationFailed }
         let size = CMVideoFormatDescriptionGetDimensions(descriptions[0])
         let expectedEnd = CMTime(value: Int64(document.totalTimelineTicks), timescale: CMTimeScale(document.fps))
         let duration = try await asset.load(.duration)
         let range = try await track.load(.timeRange)
-        guard size.width == document.width, size.height == document.height,
+        guard size.width == plan.outputWidth, size.height == plan.outputHeight,
               CMTimeCompare(duration, expectedEnd) == 0, CMTimeCompare(range.start, .zero) == 0,
               CMTimeCompare(range.duration, expectedEnd) == 0 else { throw ExportError.verificationFailed }
         // The decompressor legitimately returns invalid sample durations on
@@ -918,7 +1028,7 @@ final class StudioMovieExportService {
             let exists = try autoreleasepool { () throws -> Bool in
                 guard let sample = output.copyNextSampleBuffer() else { return false }
                 guard count < document.frames.count, let buffer = CMSampleBufferGetImageBuffer(sample),
-                      CVPixelBufferGetWidth(buffer) == document.width, CVPixelBufferGetHeight(buffer) == document.height,
+                      CVPixelBufferGetWidth(buffer) == plan.outputWidth, CVPixelBufferGetHeight(buffer) == plan.outputHeight,
                       CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(document.startTick(ofFrame: count)), timescale: CMTimeScale(document.fps))) == 0 else { throw ExportError.verificationFailed }
                 count += 1
                 return true
@@ -939,13 +1049,13 @@ final class StudioMovieExportService {
             case .alreadyExporting: return "A movie export is already running. Wait for it or cancel it."
             case .limitExceeded: return "This movie exceeds the current safe frame, pixel, raster or output limit. No movie was published."
             case .unsafeDestination: return "Movie export requires an existing app-owned directory without symbolic links."
-            case .transparentUnsupported: return "H.264 MP4 cannot retain transparency. Explicitly choose the white background to export."
+            case .transparentUnsupported: return "H.264/HEVC MP4 cannot retain transparency. The movie is exported on a white background."
             case .audioUnsupported: return "This project contains audio. MP4 audio mixing is not available yet; no silent movie was exported."
-            case .oddDimensions: return "This H.264 exporter requires even canvas dimensions. The canvas has not been resized."
+            case .oddDimensions: return "The movie exporter could not derive an even output size for this canvas. The canvas has not been resized."
             case .missingRaster: return "An original project image is missing. No movie was exported."
             case .invalidRaster: return "An original project image is corrupt, incomplete or contains multiple images. No movie was exported."
             case .unsupportedContent: return "A visible tool, color, text or blend effect cannot be faithfully rendered by this movie exporter yet."
-            case .codecUnavailable: return "The H.264 encoder is unavailable for these project settings on this device."
+            case .codecUnavailable: return "The selected video encoder (H.264 or HEVC) is unavailable for these project settings on this device. Choose H.264 or a smaller output size; no movie was published."
             case .renderFailed: return "Studio could not render the complete movie frame. No movie was published."
             case .writerFailed: return "The MP4 encoder could not complete this movie. No movie was published."
             case .verificationFailed: return "The encoded movie did not pass its frame, timing or decoding checks. No movie was published."

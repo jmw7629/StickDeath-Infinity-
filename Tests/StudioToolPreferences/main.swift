@@ -66,6 +66,7 @@ private struct Failure: Error { let message: String }
         constrainedVM.lineRulerEnabled = true; constrainedVM.lineRulerAngle = 30
         constrainedVM.lineRulerFixedLength = true; constrainedVM.lineRulerLength = 48
         constrainedVM.selectedTool = .rectangle; constrainedVM.equalShapeSides = true; constrainedVM.mirrorMode = .both
+        constrainedVM.mirrorAxisX = 0.25; constrainedVM.mirrorAxisY = 0.75
         constrainedVM.selectedTool = .circle
         try require(!constrainedVM.equalShapeSides && constrainedVM.lineAngleSnap == 0, "Constraints leaked to another tool")
         let restoredConstraints = StudioViewModel(toolDefaults: constraintDefaults)
@@ -74,6 +75,9 @@ private struct Failure: Error { let message: String }
         try require(restoredConstraints.lineRulerEnabled && restoredConstraints.lineRulerAngle == 30 && restoredConstraints.lineRulerFixedLength && restoredConstraints.lineRulerLength == 48, "Ruler settings did not survive relaunch")
         restoredConstraints.selectedTool = .rectangle
         try require(restoredConstraints.equalShapeSides && restoredConstraints.mirrorMode == .both, "Square/mirror preference did not survive relaunch")
+        try require(restoredConstraints.mirrorAxisX == 0.25 && restoredConstraints.mirrorAxisY == 0.75, "Mirror axis preference did not survive relaunch")
+        var badAxis = StudioDrawingToolPreferences.Entry(); badAxis.mirrorAxisX = 1.5
+        try require(!badAxis.isValid, "Mirror axis outside the canvas must be an invalid preference")
         var oldConstraintEntry = StudioDrawingToolPreferences.Entry()
         let legacyConstraintData = try JSONEncoder().encode(oldConstraintEntry)
         try require(try JSONDecoder().decode(StudioDrawingToolPreferences.Entry.self, from: legacyConstraintData).isValid, "Legacy preference migration failed")

@@ -125,8 +125,27 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             var badTrack = track; badTrack.legacySourceFilename = "legacy.wav"
             var snapshots = [StudioMovieExportService.Snapshot(document: document, retainedAudioTracks: [], rasterDataByID: [:]), .init(document: document, retainedAudioTracks: [badTrack], rasterDataByID: [:])]
             let extra = AudioTrack(id: UUID(), name: track.name, format: track.format, audioData: track.audioData, startTime: 0, duration: track.duration); snapshots.append(.init(document: document, retainedAudioTracks: [track, extra], rasterDataByID: [:]))
-            var beyond = document; beyond.audioClips[0].startTime = 0.75; snapshots.append(.init(document: beyond, retainedAudioTracks: [track], rasterDataByID: [:]))
+            var farBeyond = document; farBeyond.audioClips[0].startTime = 60; snapshots.append(.init(document: farBeyond, retainedAudioTracks: [track], rasterDataByID: [:]))
             for bad in snapshots { do { _ = try StudioMuxCapture.capture(bad); throw TestError.failed("unresolved audio captured") } catch StudioMuxCapture.CaptureError.unresolvedAudio {} }
+        }
+        try await run("audio ending after the animation holds the last frame instead of rejecting") {
+            var beyond = document; beyond.audioClips[0].startTime = 0.75
+            let held = try StudioMuxCapture.capture(.init(document: beyond, retainedAudioTracks: [track], rasterDataByID: [:]))
+            // 12 fps, clip ends at 1.25 s → 15 ticks; 15 × 48000 is divisible by 12.
+            try require(held.proof.durationNumerator == 15 && held.proof.audioSampleFrames == 60_000 && held.proof.heldLastFrameTicks == 3, "held ticks \(held.proof.durationNumerator)")
+            try require(held.snapshot.document.frames.last?.durationTicks == 4 && held.snapshot.heldLastFrameTicks == 3 && held.proof.frameDurationTicks.last == 4, "captured copy holds the last frame")
+            try require(beyond.frames.last?.durationTicks == 1 && held.snapshot.document.frames.count == 12, "editable document or frame count changed")
+            let v = try await StudioMovieExportService().exportVisualComponent(capture: held, outputParent: videoParent)
+            let a = try await service.mixAudioComponent(capture: held, outputParent: audioParent)
+            let p = try parent("held")
+            let out = try await service.mux(video: v, audio: a, outputParent: p)
+            let asset = AVURLAsset(url: try out.checkedURLs()[0])
+            try require(CMTimeCompare(try await asset.load(.duration), CMTime(value: 15, timescale: 12)) == 0, "movie did not extend to the audio tail")
+            let samples = try await decodeAudio(asset, track: try await asset.loadTracks(withMediaType: .audio)[0])
+            try require(samples.count == 120_000 && out.receipt.heldLastFrameTicks == 3 && out.receipt.audioClipWindowsChecked == 1, "held receipt")
+            var tail: Float = 0; for n in (50_000..<58_000) { tail = max(tail, abs(samples[n * 2])) }
+            try require(tail > 0.05, "audio tail after the original animation end is silent")
+            try out.cleanup(); try v.cleanup(); try a.cleanup(); try empty(p)
         }
         try await run("rational duration rejects fractional audio sample count") {
             var bad = document; bad.fps = 7
@@ -140,7 +159,17 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(a.checkedSource().1.overRangeSampleCount > 0, "actual measured overload")
             let p = try parent("overload")
             do { _ = try await service.mux(video: v, audio: a, outputParent: p); throw TestError.failed("silently normalized overload") } catch StudioAudioVideoMuxService.MuxError.overload {}
-            try v.cleanup(); try a.cleanup(); try empty(p)
+            try a.cleanup(); try empty(p)
+            // Opt-in normalization (#179): the same capture mixes inside full
+            // scale, the mux accepts it and the receipt records the exact gain.
+            let normalized = try await service.mixAudioComponent(capture: loudCapture, outputParent: audioParent, options: .init(normalizeToMinusOneDBFS: true))
+            let receipt = try normalized.checkedSource().1
+            try require(receipt.overRangeSampleCount == 0 && receipt.normalizedToMinusOneDBFS && receipt.appliedGain < 1 && abs(receipt.peakAbsoluteSample - StudioAudioMixService.normalizationTargetPeak) < 0.00001, "normalized mix receipt")
+            let out = try await service.mux(video: v, audio: normalized, outputParent: p, filenameBase: "Loud-Scene")
+            try require(out.receipt.audioAppliedGain == receipt.appliedGain && out.receipt.audioNormalizedToMinusOneDBFS == true && out.receipt.movieFilename == "Loud-Scene.mp4", "mux receipt lost normalization or filename")
+            try require(try out.checkedURLs()[0].lastPathComponent == "Loud-Scene.mp4" && out.receipt.maximumDecodedAudioSample <= 1 && out.receipt.audioClipWindowsChecked == 5, "named normalized output")
+            try require((out.receipt.maximumAudioRMSDeviation ?? 1) < 0.05, "decoded AAC loudness deviates from the mix: \(out.receipt.maximumAudioRMSDeviation ?? -1)")
+            try out.cleanup(); try v.cleanup(); try normalized.cleanup(); try empty(p)
         }
         try await run("output bytes and wall clock bounds clean partial outputs") {
             for limits in [StudioAudioVideoMuxService.Limits(maximumOutputBytes: 1), .init(operationTimeout: 0.000000001)] {

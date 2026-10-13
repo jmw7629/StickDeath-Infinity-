@@ -225,7 +225,12 @@ import Supabase
         let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
             options: .init(auth: .init(storage: AuthFixtureStorage(), autoRefreshToken: false), global: .init(session: session)))
         let service = AuthService(client: client)
-        let model = AuthViewModel(auth: service, initializeOnStart: false)
+        // Sign-out hands the open Studio project back to the library (#172):
+        // flush before the account changes, close after it is gone, delete nothing.
+        var studioEvents: [String] = []
+        let model = AuthViewModel(auth: service, initializeOnStart: false,
+            flushOpenProject: { studioEvents.append("flush:\(service.isAuthenticated)") },
+            closeOpenProject: { studioEvents.append("close:\(service.isAuthenticated)") })
         await service.initialize()
         XCTAssertEqual(model.state, .unauthenticated)
         await model.signIn(email: "first@example.invalid", password: "fixture-password")
@@ -243,6 +248,7 @@ import Supabase
         XCTAssertNil(model.userId)
         XCTAssertNil(model.user)
         XCTAssertNil(client.auth.currentSession)
+        XCTAssertEqual(studioEvents, ["flush:true", "close:false"], "Flush while signed in, close once signed out")
     }
 
     func testDelayedProfileAndOldNotificationsCannotReplaceNewSDKIdentity() async throws {
@@ -346,6 +352,213 @@ import Supabase
         } catch AuthService.AuthError.invalidCallback { }
     }
 
+    func testProviderDenialCallbackIsReportedNotExchangedEvenWithCode() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AuthFixtureTransport.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: AuthFixtureStorage(), flowType: .pkce, autoRefreshToken: false), global: .init(session: session)))
+        let service = AuthService(client: client, oauthConfiguration: .init(enabledProviders: [.google, .microsoft], microsoftTenant: "organizations"))
+        XCTAssertEqual(service.microsoftTenant, "organizations")
+        for callback in ["stickdeath://auth/callback?error=access_denied&error_description=User+declined",
+                         "stickdeath://auth/callback?error=access_denied&code=fixture-code"] {
+            do {
+                try await service.signIn(provider: .google, launch: { _ in URL(string: callback)! })
+                XCTFail("Denied callback exchanged credentials: \(callback)")
+            } catch AuthService.AuthError.providerDenied(let reason) {
+                XCTAssertFalse(reason.isEmpty); XCTAssertFalse(reason.contains("not for StickDeath"))
+            }
+            XCTAssertNil(client.auth.currentSession)
+        }
+        let microsoft = URL(string: "stickdeath://auth/callback?error=invalid_request&error_description=AADSTS50020%3A+User+account+from+identity+provider")!
+        XCTAssertEqual(AuthService.oauthCallbackDenial(microsoft)?.hasPrefix("Microsoft declined"), true)
+        XCTAssertNil(AuthService.oauthCallbackDenial(URL(string: "stickdeath://auth/callback?code=fixture")!))
+        XCTAssertNil(AuthService.oauthCallbackDenial(URL(string: "https://attacker.invalid/auth/callback?error=x")!))
+        // Browser cancellation produces no banner; a denial does.
+        let model = AuthViewModel(auth: service, initializeOnStart: false)
+        let cancelled = await model.signIn(provider: .google, launch: { _ in throw CancellationError() })
+        XCTAssertFalse(cancelled)
+        XCTAssertNil(model.error)
+        let denied = await model.signIn(provider: .google, launch: { _ in URL(string: "stickdeath://auth/callback?error=access_denied")! })
+        XCTAssertFalse(denied)
+        XCTAssertNotNil(model.error)
+    }
+
+    func testAppleUsernameFallsBackForPrivateRelayAndDisplayNameIsBounded() async throws {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let relay = try decoder.decode(User.self, from: Data("""
+        {"id":"\(AuthFixtureTransport.first)","aud":"authenticated","role":"authenticated","email":"abc123@privaterelay.appleid.com","app_metadata":{},"user_metadata":{},"identities":[],"is_anonymous":false,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}
+        """.utf8))
+        XCTAssertEqual(AuthService.appleUsername(for: relay), "Creator_10000000")
+        let direct = try decoder.decode(User.self, from: Data("""
+        {"id":"\(AuthFixtureTransport.second)","aud":"authenticated","role":"authenticated","email":"Joe@example.invalid","app_metadata":{},"user_metadata":{},"identities":[],"is_anonymous":false,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}
+        """.utf8))
+        XCTAssertEqual(AuthService.appleUsername(for: direct), "joe")
+        var name = PersonNameComponents(); name.givenName = " Joe "; name.familyName = "Willis"
+        XCTAssertEqual(AuthService.appleDisplayName(name), "Joe Willis")
+        XCTAssertNil(AuthService.appleDisplayName(nil))
+        XCTAssertNil(AuthService.appleDisplayName(PersonNameComponents()))
+        var control = PersonNameComponents(); control.givenName = "Bad\u{0007}Name"
+        XCTAssertNil(AuthService.appleDisplayName(control))
+        // Apple's subject identifier comes only from the server identity list.
+        XCTAssertNil(AuthService.appleUserIdentifier(for: relay))
+        let linked = try decoder.decode(User.self, from: Data("""
+        {"id":"\(AuthFixtureTransport.first)","aud":"authenticated","role":"authenticated","email":"abc123@privaterelay.appleid.com","app_metadata":{},"user_metadata":{},"identities":[{"identity_id":"30000000-0000-4000-8000-000000000003","id":"001234.fixtureapplesubject.0001","user_id":"\(AuthFixtureTransport.first)","identity_data":{},"provider":"apple","created_at":"2026-10-06T00:00:00Z","last_sign_in_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}],"is_anonymous":false,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}
+        """.utf8))
+        XCTAssertEqual(AuthService.appleUserIdentifier(for: linked), "001234.fixtureapplesubject.0001")
+        XCTAssertTrue(AuthService.appleCredentialRequiresSignOut(.revoked))
+        XCTAssertFalse(AuthService.appleCredentialRequiresSignOut(.authorized))
+        XCTAssertFalse(AuthService.appleCredentialRequiresSignOut(.notFound))
+        XCTAssertFalse(AuthService.appleCredentialRequiresSignOut(.transferred))
+        // Replays Apple's credential-state answer against a real signed-in SDK
+        // session: only `.revoked` clears it, locally, with a notice and no error.
+        let (service, model, transport, _, client) = try await profileFixture()
+        defer { transport.invalidateAndCancel() }
+        await service.handleAppleCredentialState(.authorized)
+        XCTAssertTrue(service.isAuthenticated); XCTAssertNotNil(client.auth.currentSession)
+        await service.handleAppleCredentialState(.notFound)
+        XCTAssertTrue(service.isAuthenticated, "notFound is not a revocation")
+        await service.handleAppleCredentialState(.revoked)
+        XCTAssertEqual(service.state, .unauthenticated); XCTAssertNil(service.currentUser)
+        XCTAssertNil(client.auth.currentSession, "Revoked Apple grant must clear the stored session")
+        XCTAssertEqual(service.restoration, .signInRequired)
+        XCTAssertEqual(model.notice, AuthService.appleRevokedNotice)
+        XCTAssertNil(model.error, "Revocation is a notice, not an error banner")
+        // Already signed out: a second answer changes nothing and throws nothing.
+        await service.handleAppleCredentialState(.revoked)
+        XCTAssertEqual(service.state, .unauthenticated)
+    }
+
+    func testInstallMarkerClearsStoredSessionOnceAfterReinstall() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AuthFixtureTransport.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let suite = "sdi.authtests.install." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let storage = AuthFixtureStorage()
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: storage, autoRefreshToken: false),
+                global: .init(headers: ["X-SDI-Startup-Probe": "true"], session: session)))
+        // A valid session "left in the Keychain" by a previous installation.
+        _ = try await client.auth.signIn(email: "first@example.invalid", password: "fixture-password")
+        XCTAssertNotNil(client.auth.currentSession)
+        XCTAssertNil(defaults.string(forKey: AuthService.installMarkerKey))
+        let fresh = AuthService(client: client, defaults: defaults)
+        await fresh.initialize()
+        XCTAssertEqual(fresh.restoration, .ready, "Reinstall must present as a clean install, not a revoked session")
+        XCTAssertEqual(fresh.state, .unauthenticated); XCTAssertNil(fresh.currentUser)
+        XCTAssertNil(client.auth.currentSession, "Stored session from the previous install was adopted")
+        XCTAssertNotNil(defaults.string(forKey: AuthService.installMarkerKey))
+        // Subsequent launches with the marker keep the session the person creates.
+        try await fresh.signIn(email: "second@example.invalid", password: "fixture-password")
+        let relaunch = AuthService(client: client, defaults: defaults)
+        await relaunch.initialize()
+        XCTAssertTrue(relaunch.isAuthenticated)
+        XCTAssertEqual(relaunch.userId?.lowercased(), AuthFixtureTransport.second)
+    }
+
+    func testDeepLinkRouterClassifiesBeforeNavigation() {
+        // Cold-launch routing (#136): pure decision used by AppFlowView after restoration settles.
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: true, guestChosen: false, guideCompleted: true, onboarded: false), .app)
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: true, guestChosen: false, guideCompleted: false, onboarded: true), .app)
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: true, guestChosen: true, guideCompleted: false, onboarded: false), .onboarding)
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: false, guestChosen: true, guideCompleted: false, onboarded: false), .app)
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: false, guestChosen: false, guideCompleted: true, onboarded: true), .welcome)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://auth/callback?code=abc")!), .authCallback)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "STICKDEATH://auth/callback/")!), .authCallback)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://auth/reset?code=abc")!), .passwordReset)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://auth/reset?code=abc&code=def")!), .unsupported)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://auth/reset?code=")!), .unsupported)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://auth/reset?code=abc&error=access_denied")!), .unsupported)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://auth/reset#access_token=x")!), .unsupported)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://messages/thread/1")!), .unsupported)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://rooms/invite/abcdef")!), .unsupported)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "https://stickdeath.invalid/auth/callback?code=abc")!), .unsupported)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://user:pw@auth/callback")!), .unsupported)
+        XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://")!), .unsupported)
+    }
+
+    func testUnsupportedAndCallbackDeepLinksNeverAuthenticate() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AuthFixtureTransport.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: AuthFixtureStorage(), flowType: .pkce, autoRefreshToken: false), global: .init(session: session)))
+        let service = AuthService(client: client)
+        let model = AuthViewModel(auth: service, initializeOnStart: false)
+        await service.initialize()
+        await model.handleDeepLink(URL(string: "stickdeath://messages/thread/1")!)
+        XCTAssertEqual(model.notice?.hasPrefix("Unsupported link"), true); XCTAssertNil(model.error)
+        model.notice = nil
+        await model.handleDeepLink(URL(string: "stickdeath://auth/callback?code=replayed")!)
+        XCTAssertNotNil(model.error); XCTAssertNil(model.notice)
+        // A recovery link with no matching verifier on this device cannot sign in.
+        await model.handleDeepLink(URL(string: "stickdeath://auth/reset?code=unsolicited")!)
+        XCTAssertFalse(model.isAuthenticated); XCTAssertNil(client.auth.currentSession)
+        XCTAssertNotNil(model.error); XCTAssertFalse(service.passwordRecoveryPending)
+    }
+
+    func testPasswordResetIsNeutralAndRateLimited() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AuthFixtureTransport.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: AuthFixtureStorage(), flowType: .pkce, autoRefreshToken: false), global: .init(session: session)))
+        let model = AuthViewModel(auth: AuthService(client: client), initializeOnStart: false)
+        let invalid = await model.requestPasswordReset(email: "not-an-address")
+        XCTAssertFalse(invalid)
+        XCTAssertNotNil(model.error); XCTAssertNil(model.passwordResetAvailableAt)
+        // The fixture answers /recover with a transport failure for unknown and known
+        // addresses alike; the person sees the same neutral notice either way.
+        _ = await model.requestPasswordReset(email: "unknown@example.invalid")
+        let neutral = model.notice
+        XCTAssertEqual(neutral?.hasPrefix("If an account exists"), true)
+        XCTAssertNil(model.error, "Reset must not reveal whether the address is registered")
+        let availableAt = try XCTUnwrap(model.passwordResetAvailableAt)
+        XCTAssertGreaterThan(availableAt.timeIntervalSinceNow, 50)
+        let blocked = await model.requestPasswordReset(email: "unknown@example.invalid")
+        XCTAssertFalse(blocked)
+        XCTAssertEqual(model.passwordResetAvailableAt, availableAt, "Cooldown restarted by a blocked request")
+        XCTAssertEqual(model.notice?.hasPrefix("Wait"), true)
+        XCTAssertFalse(model.isAuthenticated)
+    }
+
+    func testScheduledChallengeOverlapAcrossDaylightSavingChange() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/New_York"))
+        func challenge(_ id: Int, _ start: String, _ end: String?) -> Challenge {
+            Challenge(id: id, title: "DST \(id)", description: nil, thumbnailURL: nil, startDate: start, endDate: end,
+                      status: nil, submissionCount: nil, prizeDescription: nil)
+        }
+        func day(_ iso: String) -> Date { ISO8601DateFormatter().date(from: iso)! }
+        // 8 March 2026: clocks jump from 02:00 to 03:00 EST→EDT; the civil day is 23 hours.
+        let springForward = day("2026-03-08T12:00:00Z")
+        let spanning = try XCTUnwrap(ScheduledChallenge(challenge(1, "2026-03-08T06:30:00Z", "2026-03-08T07:30:00Z"))) // 01:30 EST → 03:30 EDT
+        XCTAssertTrue(spanning.overlaps(springForward, calendar: calendar))
+        XCTAssertFalse(spanning.overlaps(day("2026-03-07T12:00:00Z"), calendar: calendar))
+        XCTAssertFalse(spanning.overlaps(day("2026-03-09T12:00:00Z"), calendar: calendar))
+        // Ends exactly at local midnight of 9 March (04:00Z after the change): not on the 9th.
+        let untilMidnight = try XCTUnwrap(ScheduledChallenge(challenge(2, "2026-03-08T20:00:00Z", "2026-03-09T04:00:00Z")))
+        XCTAssertTrue(untilMidnight.overlaps(springForward, calendar: calendar))
+        XCTAssertFalse(untilMidnight.overlaps(day("2026-03-09T12:00:00Z"), calendar: calendar))
+        // 1 November 2026: 01:00–02:00 EDT repeats; the civil day is 25 hours.
+        let fallBack = day("2026-11-01T12:00:00Z")
+        let repeated = try XCTUnwrap(ScheduledChallenge(challenge(3, "2026-11-01T05:30:00Z", "2026-11-01T06:30:00Z"))) // 01:30 EDT → 01:30 EST
+        XCTAssertTrue(repeated.overlaps(fallBack, calendar: calendar))
+        XCTAssertFalse(repeated.overlaps(day("2026-10-31T12:00:00Z"), calendar: calendar))
+        let lateEvening = try XCTUnwrap(ScheduledChallenge(challenge(4, "2026-11-02T04:30:00Z", nil))) // 23:30 EST on 1 Nov
+        XCTAssertTrue(lateEvening.overlaps(fallBack, calendar: calendar))
+        XCTAssertFalse(lateEvening.overlaps(day("2026-11-02T12:00:00Z"), calendar: calendar))
+        XCTAssertNil(ScheduledChallenge(challenge(5, "2026-11-01T06:30:00Z", "2026-11-01T05:30:00Z")), "End before start accepted")
+        XCTAssertNil(ScheduledChallenge(challenge(6, "2026-11-01T06:30:00Z", "not a date")), "Malformed end accepted")
+        XCTAssertEqual(ChallengeScheduleCache.monthKey(springForward, calendar: calendar), "2026-03")
+    }
+
     func testWrongCallbackAndUnavailableDeletionNeverMutateAccount() async throws {
         let service = AuthService()
         do {
@@ -447,7 +660,7 @@ private final class AuthFixtureTransport: URLProtocol {
             if mode == "hold" { Self.gate.lock(); Self.patchRequests.append((self,row)); Self.gate.unlock(); return }
             respond(200, row); return
         }
-        if url.path.hasSuffix("/logout") {
+        if url.path.hasSuffix("/logout") || url.path.hasSuffix("/recover") {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return
         }
         if url.path.hasSuffix("/token"), url.query?.contains("grant_type=refresh_token") == true,

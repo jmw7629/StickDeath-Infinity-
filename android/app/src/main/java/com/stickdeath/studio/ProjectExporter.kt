@@ -9,11 +9,14 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import org.json.JSONArray
-import org.json.JSONObject
 
-enum class ExportKind { PNG, SEQUENCE, SPRITESHEET, PROJECT, MP4, GIF, CREDITS }
-data class ExportArtifact(val file: File, val kind: ExportKind, val name: String, val share: Boolean = false)
+/** `SDI` is the iOS portable envelope (supported subset only); `MANIFEST` saves the manifest of the
+ * last MP4/GIF render, since single-file pickers cannot deliver a sidecar. */
+enum class ExportKind { PNG, SEQUENCE, SPRITESHEET, PROJECT, MP4, GIF, CREDITS, SDI, MANIFEST }
+/** [manifest] holds the iOS-layout manifest text for MP4/GIF renders; the caller offers it separately. */
+data class ExportArtifact(val file: File, val kind: ExportKind, val name: String, val share: Boolean = false, val manifest: String? = null)
+/** Render choices beyond the kind. [transparent] applies to PNG, sequence and spritesheet only. */
+data class ExportOptions(val transparent: Boolean = false, val manifestText: String? = null, val manifestName: String? = null)
 
 /** Encodes one bitmap at a time into a bounded, privately owned staging file. */
 object ProjectExporter {
@@ -27,11 +30,23 @@ object ProjectExporter {
             .minWithOrNull(compareBy<Sheet> { maxOf(it.width, it.height) }.thenBy { it.width.toLong() * it.height })
             ?: throw IllegalArgumentException("Spritesheet exceeds 8 megapixels or an 8192-pixel edge. Use PNG sequence for this project; no frames were omitted or resized.")
     }
-    suspend fun prepare(context: Context, document: Document, kind: ExportKind, progress: (Int, Int) -> Unit): ExportArtifact {
+    suspend fun prepare(context: Context, document: Document, kind: ExportKind, progress: (Int, Int) -> Unit): ExportArtifact =
+        prepare(context, document, kind, ExportOptions(), progress)
+    suspend fun prepare(context: Context, document: Document, kind: ExportKind, options: ExportOptions, progress: (Int, Int) -> Unit): ExportArtifact {
         val d = document.validated()
-        if (kind == ExportKind.MP4) return MovieExporter.prepare(context,d,progress)
-        if (kind == ExportKind.GIF) return GifExporter.prepare(context,d,progress)
-        require(kind in setOf(ExportKind.PROJECT, ExportKind.CREDITS) || d.width.toLong() * d.height <= 4_194_304) { "PNG export currently supports canvases up to 4 megapixels. No resized export was created." }
+        val base = ExportManifests.filenameBase(d)
+        if (kind == ExportKind.MP4) {
+            val movie = MovieExporter.prepare(context,d,progress)
+            // The manifest describes the file that was actually written, including its byte count.
+            return movie.copy(manifest = ExportManifests.movie(d, movie.file.length(), movie.name, d.audioClips.isNotEmpty()))
+        }
+        if (kind == ExportKind.GIF) {
+            val gif = GifExporter.prepare(context,d,progress)
+            return gif.copy(manifest = ExportManifests.gif(d, gif.file.length()))
+        }
+        require(kind in setOf(ExportKind.PROJECT, ExportKind.CREDITS, ExportKind.SDI, ExportKind.MANIFEST) || d.width.toLong() * d.height <= 4_194_304) { "PNG export currently supports canvases up to 4 megapixels. No resized export was created." }
+        if (kind == ExportKind.MANIFEST) require(!options.manifestText.isNullOrEmpty() && !options.manifestName.isNullOrEmpty()) { "Render an MP4 or GIF first; its manifest is then available to save." }
+        val transparent = options.transparent && kind in setOf(ExportKind.PNG, ExportKind.SEQUENCE, ExportKind.SPRITESHEET)
         val layout = if (kind == ExportKind.SPRITESHEET) sheet(d) else null
         val coroutine = currentCoroutineContext()
         val check = { coroutine.ensureActive() }
@@ -50,9 +65,11 @@ object ProjectExporter {
                 }
                 fun png(frame: Frame, output: OutputStream) {
                     check()
+                    // A fresh ARGB bitmap is fully transparent; the renderer paints the project
+                    // background only when the export is opaque.
                     val bitmap = Bitmap.createBitmap(d.width, d.height, Bitmap.Config.ARGB_8888)
                     try {
-                        FrameRenderer.draw(Canvas(bitmap), d, frame, checkCancellation = check)
+                        FrameRenderer.draw(Canvas(bitmap), d, frame, background = !transparent, checkCancellation = check)
                         check()
                         require(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) { "PNG encoding failed." }
                         check()
@@ -60,16 +77,17 @@ object ProjectExporter {
                 }
                 if (kind == ExportKind.CREDITS) { bounded.write(AssetCredits.manifest(d).toString(2).toByteArray(Charsets.UTF_8)); progress(1, 1) }
                 else if (kind == ExportKind.PROJECT) { bounded.write(ProjectStore(context).encode(d)); progress(1, 1) }
+                else if (kind == ExportKind.SDI) { bounded.write(SwiftProjectExport.encode(d)); progress(1, 1) }
+                else if (kind == ExportKind.MANIFEST) { bounded.write(requireNotNull(options.manifestText).toByteArray(Charsets.UTF_8)); progress(1, 1) }
                 else if (kind == ExportKind.PNG) { png(d.frame, bounded); progress(1, 1) }
                 else ZipOutputStream(bounded).use { zip ->
-                    val entries = JSONArray()
-                    var tick = 0L
+                    // iOS layout: frame images named <base>_%06d.png / <base>_spritesheet.png beside manifest.json.
                     if (layout != null) {
                         check()
                         val atlas = Bitmap.createBitmap(layout.width, layout.height, Bitmap.Config.ARGB_8888)
                         try {
                             val canvas = Canvas(atlas)
-                            canvas.drawColor(d.backgroundColor)
+                            if (!transparent) canvas.drawColor(d.backgroundColor)
                             d.frames.forEachIndexed { index, frame ->
                                 check()
                                 val x = (index % layout.columns) * d.width
@@ -77,51 +95,38 @@ object ProjectExporter {
                                 val checkpoint = canvas.save()
                                 try {
                                     canvas.translate(x.toFloat(), y.toFloat())
-                                    FrameRenderer.draw(canvas, d, frame, checkCancellation = check)
+                                    FrameRenderer.draw(canvas, d, frame, background = !transparent, checkCancellation = check)
                                 } finally { canvas.restoreToCount(checkpoint) }
-                                entries.put(JSONObject().put("file", "spritesheet.png").put("frameID", frame.id)
-                                    .put("x", x).put("y", y).put("width", d.width).put("height", d.height)
-                                    .put("startTick", tick).put("holdTicks", frame.hold))
-                                tick += frame.hold; progress(index + 1, d.frames.size)
+                                progress(index + 1, d.frames.size)
                             }
                             check()
-                            zip.putNextEntry(ZipEntry("spritesheet.png"))
+                            zip.putNextEntry(ZipEntry(ExportManifests.sheetFilename(base)))
                             require(atlas.compress(Bitmap.CompressFormat.PNG, 100, zip)) { "Spritesheet encoding failed." }
                             check(); zip.closeEntry()
                         } finally { atlas.recycle() }
                     } else d.frames.forEachIndexed { index, frame ->
                         check()
-                        val filename = "frames/frame_${(index + 1).toString().padStart(4, '0')}.png"
-                        zip.putNextEntry(ZipEntry(filename)); png(frame, zip); zip.closeEntry()
-                        entries.put(JSONObject().put("file", filename).put("frameID", frame.id)
-                            .put("startTick", tick).put("holdTicks", frame.hold))
-                        tick += frame.hold; progress(index + 1, d.frames.size)
+                        zip.putNextEntry(ZipEntry(ExportManifests.frameFilename(base, index))); png(frame, zip); zip.closeEntry()
+                        progress(index + 1, d.frames.size)
                     }
                     zip.putNextEntry(ZipEntry("asset-credits.json")); zip.write(AssetCredits.manifest(d).toString(2).toByteArray(Charsets.UTF_8)); zip.closeEntry()
-                    val manifest = JSONObject().put("format", if (layout == null) "sdi-png-sequence" else "sdi-spritesheet").put("version", 1)
-                        .put("projectID", d.id).put("projectName", d.name).put("revision", d.revision)
-                        .put("width", d.width).put("height", d.height).put("fps", d.fps)
-                        .put("background", String.format(java.util.Locale.ROOT, "#%06X", d.backgroundColor and 0x00ffffff)).put("totalTicks", tick)
-                        .put("timing", "Each tick lasts exactly 1/fps seconds; each frame is stored once.")
-                        .put("frames", entries)
-                    if (layout != null) {
-                        manifest.put("imageWidth", layout.width).put("imageHeight", layout.height)
-                            .put("columns", layout.columns).put("rows", layout.rows).put("coordinateOrigin", "top-left")
-                    }
-                    zip.putNextEntry(ZipEntry("manifest.json")); zip.write(manifest.toString(2).toByteArray(Charsets.UTF_8)); zip.closeEntry()
+                    val manifest = ExportManifests.image(d, if (layout == null) ExportManifests.ImageFormat.PngSequence else ExportManifests.ImageFormat.Spritesheet, transparent,
+                        layout?.let { ExportManifests.SheetLayout(it.columns, it.rows, it.width, it.height) })
+                    zip.putNextEntry(ZipEntry("manifest.json")); zip.write(manifest.toByteArray(Charsets.UTF_8)); zip.closeEntry()
                 }
                 check()
             }
-            val stem = d.name.replace(Regex("[^A-Za-z0-9 _-]"), "_").take(80).ifBlank { "animation" }
             complete = true
             return ExportArtifact(file, kind, when (kind) {
-                ExportKind.MP4 -> "$stem.mp4"
-                ExportKind.GIF -> "$stem.gif"
-                ExportKind.CREDITS -> "$stem-asset-credits.json"
-                ExportKind.PROJECT -> "$stem.sdiandroid.json"
-                ExportKind.PNG -> "$stem-frame.png"
-                ExportKind.SEQUENCE -> "$stem-frames.zip"
-                ExportKind.SPRITESHEET -> "$stem-spritesheet.zip"
+                ExportKind.MP4 -> "$base.mp4"
+                ExportKind.GIF -> "$base.gif"
+                ExportKind.CREDITS -> "$base-asset-credits.json"
+                ExportKind.PROJECT -> "$base.sdiandroid.json"
+                ExportKind.SDI -> "$base.sdi"
+                ExportKind.MANIFEST -> requireNotNull(options.manifestName)
+                ExportKind.PNG -> "$base-frame.png"
+                ExportKind.SEQUENCE -> "$base-frames.zip"
+                ExportKind.SPRITESHEET -> "$base-spritesheet.zip"
             })
         } finally { if (!complete) file.delete() }
     }

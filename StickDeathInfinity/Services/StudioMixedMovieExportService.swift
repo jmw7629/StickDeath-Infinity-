@@ -12,10 +12,11 @@ import Darwin
     @MainActor final class Output {
         let receipt: StudioAudioVideoMuxService.Receipt
         let directory: URL
+        let movieURL: URL
         private let owned: StudioAudioVideoMuxService.Output
         private(set) var isCleaned = false
         fileprivate init(_ owned: StudioAudioVideoMuxService.Output) {
-            self.owned = owned; receipt = owned.receipt; directory = owned.directory
+            self.owned = owned; receipt = owned.receipt; directory = owned.directory; movieURL = owned.movieURL
         }
         func checkedURLs() throws -> [URL] {
             guard !isCleaned else { throw ExportError.outputUnavailable }
@@ -65,14 +66,22 @@ import Darwin
             case .busy: return "Another mixed MP4 export is already running."
             case .outputUnavailable: return "The rendered MP4 is no longer available."
             case .recoveryRequired: return "A temporary movie has an ownership conflict. Its files were preserved."
-            case .unresolvedAudio: return "This project contains audio with missing sources or clips outside the animation. Restore the source or trim the clips to the animation before exporting."
-            case .unsupportedSnapshot: return "This project exceeds the current mixed MP4 limits. Use up to 240 frames, 128 clips, 16 audio sources and an even-sized canvas."
+            case .unresolvedAudio: return "This project contains audio with a missing source, or a clip that ends more than 600 frame ticks after the animation (the last frame can be held at most that long). Restore the source or trim the clip before exporting."
+            case .unsupportedSnapshot: return "This project exceeds the current mixed MP4 limits. Use up to 1,440 frames within 120 seconds of audio, 128 clips, 16 audio sources, valid sound credits and an output size within 4.2 million pixels."
             }
         }
     }
 
+    /// Caller choices that are recorded in the receipt and never applied silently.
+    struct Options: Equatable {
+        var audio = StudioAudioMixService.Options()
+        var filenameBase: String? = nil
+        init(audio: StudioAudioMixService.Options = .init(), filenameBase: String? = nil) { self.audio = audio; self.filenameBase = filenameBase }
+    }
+
     func export(snapshot: StudioMovieExportService.Snapshot, outputParent: URL,
                 movieLimits: StudioMovieExportService.Limits = .init(),
+                options: Options = .init(),
                 progress: @escaping Handler = { _ in }) async throws -> Output {
         try Task.checkCancellation()
         guard !Self.active else { throw ExportError.busy }
@@ -96,13 +105,13 @@ import Darwin
                     try report(.init(phase: .rendering, completed: value.completedFrames, total: value.totalFrames))
                 }
             try report(.init(phase: .mixing, completed: 0, total: snapshot.document.audioClips.count))
-            recovery.audio = try await mux.mixAudioComponent(capture: capture, outputParent: outputParent) { value in
+            recovery.audio = try await mux.mixAudioComponent(capture: capture, outputParent: outputParent, options: options.audio) { value in
                 try Task.checkCancellation()
                 try await progress(.init(phase: .mixing, completed: value.completed, total: value.total))
                 try Task.checkCancellation()
             }
             guard let video = recovery.video, let audio = recovery.audio else { throw ExportError.outputUnavailable }
-            recovery.movie = try await mux.mux(video: video, audio: audio, outputParent: outputParent) { value in
+            recovery.movie = try await mux.mux(video: video, audio: audio, outputParent: outputParent, filenameBase: options.filenameBase) { value in
                 try report(.init(phase: value.phase == .verifying || value.phase == .publishing ? .verifying : .muxing,
                                  completed: value.videoFrames, total: snapshot.document.frames.count))
             }

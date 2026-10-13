@@ -2,7 +2,9 @@ package com.stickdeath.studio
 
 import androidx.compose.runtime.*
 import androidx.compose.material3.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
@@ -13,7 +15,7 @@ import androidx.compose.ui.semantics.contentDescription
     var libraryOpen by remember(doc.id) { mutableStateOf(false) }
     TextButton({ vm.stopAudioPreview(); libraryOpen = !libraryOpen }, enabled = enabled) { Text(if (libraryOpen) "Close sound library" else "Browse sound library") }
     if (libraryOpen) BundledSoundControls(vm, doc, enabled)
-    Text("Import audio you have rights to use: PCM WAV or device-supported AAC/M4A, MP3, FLAC, Vorbis or Opus. Mono/stereo, 8–48 kHz, up to 60 s; both the file and decoded PCM must fit 4 MiB. Project limit: 16 clips / 8 MiB. Audio is copied into the local project backup.")
+    Text("Import audio you have rights to use: PCM WAV or device-supported AAC/M4A, MP3, FLAC, Vorbis or Opus. Mono/stereo, 8–48 kHz, up to ${AudioLimits.MAX_CLIP_SECONDS.toInt()} s as on iOS; both the file and decoded PCM must fit 4 MiB, so long clips need mono or a lower sample rate (about ${AudioLimits.secondsFittingSource(48_000, 2).toInt()} s at 48 kHz stereo). Project limit: 16 clips / 8 MiB. Audio is copied into the local project backup.")
     Button(onImport, enabled = enabled && !vm.importingAudio && doc.audioClips.size < 16) { Text("Import audio from Files") }
     if (vm.importingAudio) {
         Text(vm.audioImportStage ?: "Preparing audio…")
@@ -21,18 +23,26 @@ import androidx.compose.ui.semantics.contentDescription
         TextButton({ vm.cancelAudioImport() }) { Text("Cancel audio operation") }
     }
     Text("Placement is in seconds; tracks 1–4 are independent of drawing layers. Clip preview plays only the selected saved trim, volume and mute. MP4 mixes saved clips over the animation duration. Overlapping clips sum, including on the same track; loud sums are limited to the PCM range. Scene playback mixes saved clips from the selected frame through the end, up to 120 seconds.")
-    Text("Track mixer · saved track gain and mute affect clip preview, scene playback and MP4")
+    Text("Track mixer · saved track gain, pan, mute and solo affect clip preview, scene playback and MP4. Solo silences every track that is not soloed; pan is a stereo balance (centre leaves the mix unchanged).")
     doc.audioTracks.forEachIndexed { index, mix -> key(doc.id, doc.revision, index) {
         var gain by remember { mutableStateOf(mix.volume) }
+        var pan by remember { mutableStateOf(mix.pan) }
         Row {
-            Text("Track ${index + 1} · ${(gain * 100).toInt()}%")
+            Text("Track ${index + 1} · ${(gain * 100).toInt()}% · ${StudioCraftAudio.panLabel(pan.toDouble())}")
             FilterChip(mix.muted, { vm.editAudioTrack(doc, index, mix.copy(muted = !mix.muted)) },
                 { Text(if (mix.muted) "Muted" else "Mute") }, enabled = enabled)
+            FilterChip(mix.soloed, { vm.editAudioTrack(doc, index, mix.copy(soloed = !mix.soloed)) },
+                { Text(if (mix.soloed) "Soloed" else "Solo") }, enabled = enabled,
+                modifier = Modifier.semantics { contentDescription = "Track ${index + 1} solo" })
         }
         Slider(gain, { gain = it }, enabled = enabled,
             modifier = Modifier.semantics { contentDescription = "Track ${index + 1} volume" },
             onValueChangeFinished = { vm.editAudioTrack(doc, index, mix.copy(volume = gain)) })
+        Slider(pan, { pan = it }, valueRange = -1f..1f, enabled = enabled,
+            modifier = Modifier.semantics { contentDescription = "Track ${index + 1} pan" },
+            onValueChangeFinished = { vm.editAudioTrack(doc, index, mix.copy(pan = pan)) })
     } }
+    if (doc.audioTracks.any { it.soloed }) Text("Solo active: only soloed tracks play in preview, scene playback and MP4.")
     AudioTimeline(vm, doc, enabled, selected, playbackSeconds) { id -> vm.stopAudioPreview(); selected = id }
     if (doc.audioClips.isEmpty()) Text("No audio clips yet.")
     doc.audioClips.sortedWith(compareBy<AudioClip> { it.track }.thenBy { it.start }).forEach { clip ->
@@ -51,6 +61,8 @@ import androidx.compose.ui.semantics.contentDescription
         var fadeIn by remember { mutableStateOf((clip.fade?.fadeIn ?: 0.0).toString()) }
         var fadeOut by remember { mutableStateOf((clip.fade?.fadeOut ?: 0.0).toString()) }
         var reanchorFades by remember { mutableStateOf(false) }
+        var inShape by remember { mutableStateOf(clip.fade?.inShape ?: FadeShape.Linear) }
+        var outShape by remember { mutableStateOf(clip.fade?.outShape ?: FadeShape.Linear) }
         OutlinedTextField(name, { name = it.take(80) }, label = { Text("Clip name") }, singleLine = true, enabled = enabled)
         OutlinedTextField(start, { start = it.take(20) }, label = { Text("Start on timeline (seconds, 0–3600)") }, singleLine = true, enabled = enabled)
         OutlinedTextField(offset, { offset = it.take(20) }, label = { Text("Source trim start (seconds)") }, singleLine = true, enabled = enabled)
@@ -62,15 +74,29 @@ import androidx.compose.ui.semantics.contentDescription
         OutlinedTextField(fadeIn, { fadeIn = it.take(20) }, label = { Text("Fade in (seconds)") }, singleLine = true, enabled = enabled)
         OutlinedTextField(fadeOut, { fadeOut = it.take(20) }, label = { Text("Fade out (seconds)") }, singleLine = true, enabled = enabled)
         FilterChip(reanchorFades, { reanchorFades = !reanchorFades }, { Text("Reanchor fades to this trim") }, enabled = enabled)
-        Text("Fades use source time: split and trim keep the existing curve. Changing fade lengths or reanchoring starts a new curve on this trim. Zero/zero removes fades.")
+        Text("Fade in shape: ${inShape.label}")
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            FadeShape.entries.forEach { shape ->
+                FilterChip(inShape == shape, { inShape = shape }, { Text(shape.label) }, enabled = enabled,
+                    modifier = Modifier.semantics { contentDescription = "Fade in shape ${shape.label}" })
+            }
+        }
+        Text("Fade out shape: ${outShape.label}")
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            FadeShape.entries.forEach { shape ->
+                FilterChip(outShape == shape, { outShape = shape }, { Text(shape.label) }, enabled = enabled,
+                    modifier = Modifier.semantics { contentDescription = "Fade out shape ${shape.label}" })
+            }
+        }
+        Text("Fades use source time: split and trim keep the existing curve. Changing fade lengths or reanchoring starts a new curve on this trim; changing only the shape keeps the current fade span. Zero/zero removes fades.")
         Button({
             val a = start.toDoubleOrNull(); val b = offset.toDoubleOrNull(); val c = duration.toDoubleOrNull(); val t = track.toIntOrNull()
             val fi = fadeIn.toDoubleOrNull(); val fo = fadeOut.toDoubleOrNull()
             if (a == null || b == null || c == null || t == null || fi == null || fo == null) vm.report("Enter valid numeric timing and track values.")
             else {
-                val envelope = if (fi == 0.0 && fo == 0.0) null
+                val envelope = (if (fi == 0.0 && fo == 0.0) null
                     else if (reanchorFades || fi != clip.fade?.fadeIn || fo != clip.fade?.fadeOut) AudioFade(b, b + c, fi, fo)
-                    else clip.fade
+                    else clip.fade)?.copy(inShape = inShape, outShape = outShape)
                 vm.editAudio(doc, clip.copy(name = name.trim(), start = a, sourceOffset = b, duration = c,
                     track = t, volume = volume, muted = muted, fade = envelope))
             }

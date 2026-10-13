@@ -297,15 +297,17 @@ copy transaction allocate fresh identities. It never changes the supplied backup
 This path imports **descriptor-free historical pen/pencil/brush drawings** and bounded
 **Swift round-brush descriptors** (smoothing and pressure retained),
 frame holds, normal layers, visibility/full locks/opacity and project dimensions/FPS.
-Android-local v24 preserves the historical Swift quadratic path and effective brush
+Android-local v25 preserves the historical Swift quadratic path and effective brush
 width through save/reopen; its renderer uses that path on the canvas and export.
-Other brush descriptors, images, audio, effects, guide configurations, other tools,
-blend modes and unknown populated fields reject the complete import before saving.
+Schema-34 layer blend raw values and four-track mixer state (volume, mute, pan, solo)
+import; see "Schema-34 mixer and blend parity" below. Other brush descriptors, images,
+audio clips, glow, partial lock modes, guide configurations, other tools, blend modes
+Android cannot render and unknown populated fields reject the complete import before saving.
 There is no partial or flattened fallback. Projects using other Swift brush families still require iOS. Android-to-iOS export is not implemented;
 Android backups remain `.sdiandroid.json`. Shared-format completion is not claimed.
 Compilation, actual iOS fixture import, pixel comparison and device cold-reopen checks
-for this bridge are deferred to the integration phase. Existing v1–v23 Android records
-remain readable; do not open a v24 backup with an older Android client.
+for this bridge are deferred to the integration phase. Existing v1–v24 Android records
+remain readable; do not open a v25 backup with an older Android client.
 
 
 Portable-import fixture acceptance (deferred): `app/src/androidTest/assets/swift-legacy.sdi`
@@ -327,3 +329,79 @@ Swift round geometry uses the source smoothing, arc-length spacing and pressure 
 with a retained nib transform for resize/rotation/reflection. v24 persists the descriptor
 and samples. This port has not yet passed Android compilation or same-size native
 pixel comparison; no full interoperability or visual parity claim is made.
+
+### Schema-34 mixer and blend parity (verification deferred)
+
+`LayerBlend` now carries the iOS `StudioLayerBlendMode` raw value (`swiftName`, e.g.
+`color-burn`) with a case-insensitive `fromSwift` lookup that returns null for unknown
+strings; iOS draws those as Normal, Android project transfer rejects them instead of
+guessing. Two PhotoCraft modes were added: **Linear Dodge (Add)** maps to Android
+`BlendMode.PLUS` (API 29+, `min(1, cb + cs)`), while **Linear Burn** has no native
+BlendMode/PorterDuff equivalent and the renderer cannot read its backdrop for a software
+pass, so `FrameRenderer.supports` refuses it on every API level with an explicit message
+and the layer chip stays disabled. Nothing is silently substituted with Normal.
+
+`AudioTrackMix` gained `pan` (-1…1, default 0) and `soloed` (default false), both optional
+on read. `StudioCraftAudio.kt` is a pure-Kotlin port of `StudioCraftAudio.swift`: the
+SoundCraft mute/solo rule (a track is audible iff it is not muted and either no track is
+soloed or it is), the `PanLaw::Zero` balance law (`left = min(1, 1-pan)`,
+`right = min(1, 1+pan)`, so centre is bit-identical to the historical mix) and the five
+`FadeShape` curves (`linear`, `equalPower`, `sCurve`, `exponential`, `logarithmic`) with the
+exact iOS `gain(t)` formulas. `AudioMixer` (scene playback and MP4) and clip preview apply
+the same rule; clip preview balances through `AudioTrack` per-output-channel gains so mono
+sources also pan, whereas the mixer scales each output sample. `AudioFade` has
+`inShape`/`outShape` (default Linear, only non-linear shapes persisted); the clip editor
+offers the shapes, and the track mixer has a pan slider (`Track N pan`) and a solo chip
+(`Track N solo`) beside the existing volume/mute controls.
+
+Android-local **v25** persists blends by iOS raw value and tracks with `pan`/`soloed`;
+v1–v24 records (enum blend names, no pan/solo) still read. A pre-v25 envelope that carries
+pan/solo or fade shapes is rejected with the original preserved. Fade times remain seconds
+on Android where iOS stores 48 kHz frames; the Android clip cap is still 60 s against 300 s
+on iOS. `SwiftProjectImport` accepts schema 1–34, allow-lists `audioTrackPans` and
+`soloedAudioTracks`, validates all four mixer lists like `StudioDocument.validate()`
+(four finite volumes 0…1 / pans -1…1, sorted unique mute/solo track numbers 1…4, schema
+≥ 34 for pans/solos/extended blends) and still rejects audio clips, glow, partial lock
+modes and blends this device cannot render.
+
+Evidence: `app/src/test` holds plain JVM unit tests (`StudioCraftAudioTest`,
+`LayerBlendTest`) for the fade formulas, balance law, mute/solo rule and blend-name round
+trips; CI runs them through `:app:testDebugUnitTest`. `app/src/androidTest/assets/swift-schema34.sdi`
+is an independently constructed schema-34 contract fixture (multiply/color-burn layers,
+pans `[-0.5, 0, 0.25, 1]`, solos `[2, 4]`, mute `[3]`, volumes `[1, 0.5, 1, 0.8]`), not a
+captured iOS export; `SwiftProjectImportTest` covers its import, v25 save/reopen, v24
+enum-name reading, out-of-range pan, unsorted/invalid solos, unknown and Linear Burn blends,
+and the mixer's solo/balance output. None of this has been compiled or run here: the
+container has no Android SDK, emulator or device. Verification is deferred to the CI
+compile/unit-test job and a later emulator run of the instrumented tests.
+
+### Schema-35 parity batch (October 13; compilation and tests deferred to CI)
+
+Android-local **v26** adds, and persists only when used (plain projects still write v25): layer
+`lockMode` (free/full/position/alpha, iOS rules: position accepts new marks only, alpha accepts
+pencil paint rendered `SRC_ATOP` so it never widens coverage, erasing/fills/images/transforms need
+free), PhotoCraft layer `colorLabel` swatches, `SoftEraser` (four stacked destination-out passes,
+`SoftEraser.passes`), `Marker`/`Crayon` brush families, `preservesLayerAlpha`, and image
+`imageCrop`/`imageQuarterTurns` (`ImageGeometry`; the quad shrinks to the kept region, turns use an
+upright box). A `RulerConstraint` (horizontal, vertical, 45°, lock-first-direction) applies to
+pencil/eraser gestures. Audio clips and trims are capped at 300 s like iOS; the 4 MiB per-source /
+8 MiB per-project PCM budgets still bound practical length and the import copy says so.
+
+Exports now use the iOS `StudioExportFilename` base, write `StudioExportService.Manifest` keys into
+ZIP `manifest.json` (`ExportManifests`), offer a transparent-background option for PNG/sequence/
+spritesheet, keep the MP4/GIF manifest (`StudioMovieExportService.Manifest` / `StudioGIFEncoder.Receipt`
+keys) for a separate "Save manifest of last render" action, and can write an iOS `.sdi` for the
+supported subset (`SwiftProjectExport`: Round pencil/line strokes incl. retained round-brush
+descriptors with pressure, layers with lock mode/label/blend, holds, four-track mixer); anything else
+refuses with listed reasons. `SwiftProjectImport` accepts schema 1–35, lock modes, labels and legacy
+lines; shared fixtures are in `Tests/SDIFixtures` (verified here with Python).
+
+Offline scaffolds: `BackendContract` (26 member RPCs cross-checked against `backend/sql` by a JVM
+test), `SessionState`/`AndroidIdentity` (honest "Not connected" account panel; no INTERNET permission),
+`SpatterCommandBridge` (the 31 iOS instruction sentences applied as one Undo step; no assistant
+service), `NotificationPreferences` (local model; no FCM, no POST_NOTIFICATIONS) and
+`LocalCrashReporter` (redacted local reports, five files / 30 days, never uploaded; installed by
+`StudioApplication`). JVM tests under `app/src/test` cover each pure class; `app/src/androidTest`
+gained golden/negative fixture imports, v26 persistence and the export round trip. None of the Kotlin
+has compiled or run in the implementation container (no Android SDK); verification is DEFERRED to the
+CI compile/unit-test job and an emulator/device run.

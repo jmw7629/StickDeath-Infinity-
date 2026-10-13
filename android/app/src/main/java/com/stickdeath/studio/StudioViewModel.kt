@@ -191,15 +191,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun previewAudio(captured: Document, id: String) {
         if (closing || document != captured) return
         val clip = captured.audioClips.firstOrNull { it.id == id } ?: return
-        previewAudioSource(captured) { clip.copy(
-            volume = clip.volume * captured.audioTracks[clip.track - 1].volume,
-            muted = clip.muted || captured.audioTracks[clip.track - 1].muted) }
+        val track = captured.audioTracks[clip.track - 1]
+        // Same SoundCraft mute/solo rule and balance law as AudioMixer, so clip preview matches the mix.
+        previewAudioSource(captured, track.pan) { clip.copy(
+            volume = clip.volume * track.volume,
+            muted = clip.muted || !StudioCraftAudio.isTrackAudible(clip.track, captured.audioTracks)) }
     }
     fun previewBundledSound(captured: Document, sound: BundledSound) {
         if (closing || document != captured) return
         previewAudioSource(captured) { AudioClip(name = sound.title.take(80), source = BundledSounds.source(getApplication<Application>(), sound)) }
     }
-    private fun previewAudioSource(captured: Document, load: suspend () -> AudioClip) {
+    private fun previewAudioSource(captured: Document, pan: Float = 0f, load: suspend () -> AudioClip) {
         stopAudioPreview(); previewingAudio = true
         audioPreviewJob = viewModelScope.launch {
             val owner = currentCoroutineContext()[Job]
@@ -217,7 +219,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             require(document == captured && !closing) { "Project changed before sound preview." }
                         }
                         currentCoroutineContext().ensureActive()
-                        kotlinx.coroutines.withTimeout((clip.duration * 1000).toLong() + 5000) { clip.source.preview(clip) }
+                        kotlinx.coroutines.withTimeout((clip.duration * 1000).toLong() + 5000) { clip.source.preview(clip, pan) }
                     }
                 }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) { report("Audio output timed out. Preview stopped.") }
@@ -254,6 +256,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         BrushFamily.DipPen -> BrushSettings(12f, 1f, 4f)
         BrushFamily.Halftone -> BrushSettings(24f, 1f, 2f)
         BrushFamily.Hatch -> BrushSettings(18f, 0.8f, 2f)
+        BrushFamily.Marker -> BrushSettings(16f, 0.7f, 2f)
+        BrushFamily.Crayon -> BrushSettings(14f, 0.9f, 2f)
     }
     private fun applyBrushSettings(value: BrushSettings) {
         width = value.width; strokeOpacity = value.opacity; smoothing = value.smoothing
@@ -288,11 +292,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     private val drawingSettings = mutableMapOf<Tool, DrawingSettings>()
     private val preferences = application.getSharedPreferences("studio-tool-settings-v1", android.content.Context.MODE_PRIVATE)
-    private fun defaultSettings(tool: Tool) = DrawingSettings(if (tool == Tool.Eraser) 24f else if (tool.isShape) 4f else 8f,
+    private fun defaultSettings(tool: Tool) = DrawingSettings(if (tool.isEraser) 24f else if (tool.isShape) 4f else 8f,
         1f, smoothing = if (tool == Tool.Pencil) 3f else 0f)
+    /** Ruler constraint for pencil and eraser gestures; remembered on this device. */
+    var rulerMode by mutableStateOf(RulerMode.Off); private set
+    fun chooseRuler(mode: RulerMode) { rulerMode = mode; persistToolSettings() }
     fun persistToolSettings() {
         if (tool.isDrawing) drawingSettings[tool] = DrawingSettings(width, strokeOpacity, shapeFilled, shapeEqualSides, smoothing, mirrorMode)
-        val edit = preferences.edit().putInt("fill.tolerance", fillTolerance).putBoolean("fill.contiguous", fillContiguous).putFloat("brush.${brushFamily.name}.angle", nibAngle).putInt("color", color).putFloat("selection.nudge", selectionNudge).putBoolean("selection.preserveAspect", selectionPreservesAspect).putString("pencil.brush", brushFamily.name)
+        val edit = preferences.edit().putInt("fill.tolerance", fillTolerance).putBoolean("fill.contiguous", fillContiguous).putFloat("brush.${brushFamily.name}.angle", nibAngle).putInt("color", color).putFloat("selection.nudge", selectionNudge).putBoolean("selection.preserveAspect", selectionPreservesAspect).putString("pencil.brush", brushFamily.name).putString("ruler", rulerMode.name)
         if (tool == Tool.Pencil) {
             val key = "brush.${brushFamily.name}"
             edit.putFloat("$key.width", width).putFloat("$key.opacity", strokeOpacity)
@@ -310,6 +317,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         try { fillTolerance = preferences.getInt("fill.tolerance", 24).coerceIn(0,255) } catch (_: Exception) { }
         try { fillContiguous = preferences.getBoolean("fill.contiguous", true) } catch (_: Exception) { }
         try { brushFamily = BrushFamily.valueOf(preferences.getString("pencil.brush", "Round") ?: "Round") } catch (_: Exception) { }
+        try { rulerMode = RulerMode.valueOf(preferences.getString("ruler", "Off") ?: "Off") } catch (_: Exception) { }
         restoreNibAngle()
         try { selectionNudge = preferences.getFloat("selection.nudge", 1f).takeIf { it in listOf(1f, 5f, 10f) } ?: 1f } catch (_: Exception) { }
         try { selectionPreservesAspect = preferences.getBoolean("selection.preserveAspect", true) } catch (_: Exception) { }
@@ -352,8 +360,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun fillAt(captured: Document, point: Point) {
         if (document != captured || closing || tool != Tool.Fill) return
         cancelFill()
-        if (captured.layer.locked || !captured.layer.visible || captured.layer.opacity <= 0f) {
-            report("Choose a visible unlocked layer for Fill."); return
+        if (!captured.layer.isEditable || !captured.layer.lockMode.allowsErase) {
+            report(if (captured.layer.isEditable) "Fill needs an unlocked layer; ${captured.layer.lockMode.label} refuses fills (as on iOS)." else "Choose a visible unlocked layer for Fill."); return
         }
         val generation = fillGeneration
         val tolerance = fillTolerance; val contiguous = fillContiguous; val fillColor = color
@@ -377,7 +385,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 // stroke enters the ordinary undo/autosave/export pipeline.
                 fillJob = null
                 if (change { d ->
-                    require(d == captured && !d.layer.locked && d.layer.visible && d.layer.opacity > 0f)
+                    require(d == captured && d.layer.isEditable && d.layer.lockMode.allowsErase)
                     val stroke = Stroke(layerID = d.activeLayerID, points = listOf(point),
                         color = fillColor or 0xff000000.toInt(), width = 1f, tool = Tool.Fill, fill = spans, fillGeometry = FillGeometry(d.width, d.height))
                     d.copy(frames = d.frames.map { if (it.id == d.activeFrameID) it.copy(strokes = it.strokes + stroke) else it })
@@ -399,7 +407,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val d = document ?: return false
         if (closing || importingImage) return false
         if (android.os.Build.VERSION.SDK_INT < 28) { report("Image import requires Android 9 or later."); return false }
-        if (d.layer.locked || !d.layer.visible || d.layer.opacity <= 0f) { report("Choose a visible unlocked layer for the image."); return false }
+        if (!d.layer.isEditable || !d.layer.lockMode.allowsErase) { report("Choose a visible, fully unlocked layer for the image (position and alpha locks refuse new images)."); return false }
         cancelImageImport()
         imageCapture = d; importingImage = true
         return true
@@ -462,7 +470,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 // Detach from cancellation before the single ordinary history transaction.
                 imageJob = null; importingImage = false
                 if (change { d ->
-                    require(d == captured && !d.layer.locked && d.layer.visible && d.layer.opacity > 0f) { "Choose a visible unlocked layer." }
+                    require(d == captured && d.layer.isEditable && d.layer.lockMode.allowsErase) { "Choose a visible unlocked layer." }
                     candidate
                 }) {
                     selectedStrokeIDs = setOf(id); chooseTool(Tool.Move)
@@ -497,7 +505,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             textContent = source.content; textFontSize = source.fontSize; color = it.color
         }
         if (next.isDrawing) {
-            val settings = drawingSettings[next] ?: DrawingSettings(if (next == Tool.Eraser) 24f else if (next.isShape) 4f else 8f, 1f, smoothing = if (next == Tool.Pencil) 3f else 0f)
+            val settings = drawingSettings[next] ?: defaultSettings(next)
             width = settings.width; strokeOpacity = settings.opacity
             shapeFilled = settings.filled; shapeEqualSides = settings.equalSides; smoothing = settings.smoothing; mirrorMode = settings.mirror
             if (next == Tool.Pencil) restoreBrushSettings()
@@ -596,15 +604,54 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             d.copy(frames = frames, activeFrameID = pasted.first().id)
         }) message = "${copy.frames.size} frames pasted after the selected frame. Layer appearance uses the current project settings."
     }
-    val canPasteArtwork get() = artworkClipboard.isNotEmpty() && document?.let { !it.layer.locked && it.layer.visible && it.layer.opacity > 0f } == true && !closing
+    val canPasteArtwork get() = artworkClipboard.isNotEmpty() && document?.let { it.layer.isEditable && it.layer.lockMode.allowsNewMarks } == true && !closing
     fun deselect() { selectedStrokeIDs = emptySet() }
     private fun selectedArtwork(d: Document): List<Stroke> {
         require(selectedStrokeIDs.isNotEmpty()) { "Select artwork first." }
         val selected = d.frame.strokes.filter { it.id in selectedStrokeIDs }
         require(selected.size == selectedStrokeIDs.size && selected.all { s ->
-            s.tool.isSelectable && d.layers.any { it.id == s.layerID && !it.locked && it.visible && it.opacity > 0f }
+            s.tool.isSelectable && d.layers.any { it.id == s.layerID && it.isEditable && it.lockMode.allowsTransform }
         }) { "Select visible unlocked artwork again." }
         return selected
+    }
+    /** Lock mode and colour label are layer settings, changed through the same guarded history path. */
+    fun setLayerLockMode(id: String, mode: LayerLockMode) = change { d ->
+        require(d.layers.any { it.id == id }) { "The layer is unavailable." }
+        d.copy(layers = d.layers.map { if (it.id == id) it.copy(lockMode = mode) else it })
+    }
+    fun setLayerLabel(id: String, label: LayerLabel?) = change { d ->
+        require(d.layers.any { it.id == id }) { "The layer is unavailable." }
+        d.copy(layers = d.layers.map { if (it.id == id) it.copy(label = label) else it })
+    }
+    val selectedImage: Stroke? get() = document?.frame?.strokes?.singleOrNull { it.id in selectedStrokeIDs }
+        ?.takeIf { selectedStrokeIDs.size == 1 && it.tool == Tool.Image }
+    /** Replace the crop of the selected image; the quad shrinks to the kept region so content scale is unchanged. */
+    fun setImageCrop(captured: Document, id: String, crop: ImageCrop) {
+        if (closing) return
+        if (change { d ->
+            require(d == captured && selectedStrokeIDs == setOf(id)) { "Select the image again before cropping." }
+            crop.validate()
+            val original = selectedArtwork(d).single().also { require(it.tool == Tool.Image) { "Choose an image." } }
+            val current = original.imageCrop ?: ImageCrop.full
+            if (current == crop) return@change d
+            val quad = ImageGeometry.recroppedQuad(original.points, current, crop, original.imageQuarterTurns)
+            require(quad.all { it.x in 0f..d.width.toFloat() && it.y in 0f..d.height.toFloat() }) { "The cropped image would leave the canvas. Move it first." }
+            val updated = original.copy(points = quad, imageCrop = if (crop.isFull) null else crop)
+            d.copy(frames = d.frames.map { f -> if (f.id != d.activeFrameID) f else f.copy(strokes = f.strokes.map { s -> if (s.id == id) updated else s }) })
+        }) message = if (crop.isFull) "Image crop removed; the full source is shown again." else "Image cropped without changing its source pixels. Undo restores the previous crop."
+    }
+    /** Turn the image content a quarter turn inside an upright box (iOS rasterQuarterTurns). */
+    fun turnImage(captured: Document, id: String, clockwise: Boolean) {
+        if (closing) return
+        if (change { d ->
+            require(d == captured && selectedStrokeIDs == setOf(id)) { "Select the image again before turning it." }
+            val original = selectedArtwork(d).single().also { require(it.tool == Tool.Image) { "Choose an image." } }
+            val turns = ((original.imageQuarterTurns + if (clockwise) 1 else 3) % 4)
+            val quad = ImageGeometry.turnedQuad(original.points)
+            require(quad.all { it.x in 0f..d.width.toFloat() && it.y in 0f..d.height.toFloat() }) { "The turned image would leave the canvas. Move it toward the centre first." }
+            val updated = original.copy(points = quad, imageQuarterTurns = turns)
+            d.copy(frames = d.frames.map { f -> if (f.id != d.activeFrameID) f else f.copy(strokes = f.strokes.map { s -> if (s.id == id) updated else s }) })
+        }) message = "Image content turned 90° ${if (clockwise) "clockwise" else "counter-clockwise"} inside an upright box. Undo restores it."
     }
     fun setArtworkOpacity(captured: Document, ids: Set<String>, opacity: Float) {
         if (closing) return
@@ -641,8 +688,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         if (closing || source.isEmpty()) return
         val created = source.map { it.copy(id = newID(), layerID = d.activeLayerID) }
         if (change { current ->
-            require(current == d && !current.layer.locked && current.layer.visible && current.layer.opacity > 0f) {
-                "Choose a visible unlocked destination layer."
+            require(current == d && current.layer.isEditable && current.layer.lockMode.allowsNewMarks) {
+                "Choose a visible destination layer that is not locked or alpha-locked."
             }
             current.copy(frames = current.frames.map { f -> if (f.id == current.activeFrameID) f.copy(strokes = f.strokes + created) else f })
         }) { selectedStrokeIDs = created.map { it.id }.toSet(); chooseTool(Tool.Move); message = "Artwork pasted in place. Drag its selection box to move it." }
@@ -700,7 +747,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val selected = selectedArtwork(captured)
             val target = captured.layers.firstOrNull { it.id == targetID }
                 ?: error("The destination layer is unavailable.")
-            require(target.visible && !target.locked && target.opacity > 0f) { "Choose a visible, unlocked destination layer." }
+            require(target.isEditable && target.lockMode.allowsTransform) { "Choose a visible, unlocked destination layer." }
             if (selected.all { it.layerID == targetID }) { message = "Selected artwork is already on this layer."; return }
             val ids = selected.map { it.id }.toSet()
             if (change { current ->
@@ -790,7 +837,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         if (document != captured || ids != selectedStrokeIDs || ids.isEmpty() || closing) return
         val bounds = ArtworkSelection.bounds(captured.frame, ids) ?: return
         change { d ->
-            require(d.frame.strokes.filter { it.id in ids }.all { s -> d.layers.any { it.id == s.layerID && it.visible && !it.locked && it.opacity > 0f } })
+            require(d.frame.strokes.filter { it.id in ids }.all { s -> d.layers.any { it.id == s.layerID && it.isEditable && it.lockMode.allowsTransform } })
             val transformed = transform.apply(d.frame, ids, bounds)
             require(transformed.strokes.filter { it.id in ids }.all { s ->
                 if (s.tool == Tool.Fill) s.fillBounds().let { it.left >= 0f && it.top >= 0f && it.right <= d.width && it.bottom <= d.height }
@@ -805,7 +852,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         if (selectedStrokeIDs.isEmpty()) return
         val ids = selectedStrokeIDs
         change { d ->
-            require(d.frame.strokes.filter { it.id in ids }.all { s -> d.layers.any { it.id == s.layerID && it.visible && !it.locked && it.opacity > 0f } })
+            require(d.frame.strokes.filter { it.id in ids }.all { s -> d.layers.any { it.id == s.layerID && it.isEditable && it.lockMode.allowsDelete } })
             d.copy(frames = d.frames.map { if (it.id == d.activeFrameID) it.copy(strokes = it.strokes.filterNot { s -> s.id in ids }) else it })
         }
         reconcileSelection()
@@ -824,7 +871,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val mutableExportProgress = MutableStateFlow<ExportProgress?>(null)
     val exportProgress = mutableExportProgress.asStateFlow()
     private var exportJob: Job? = null
-    fun prepareExport(kind: ExportKind, share: Boolean = false) {
+    /** Transparent background for PNG, sequence and spritesheet exports (iOS `Background.transparent`). */
+    var exportTransparent by mutableStateOf(false)
+    data class RenderManifest(val name: String, val text: String, val projectID: String, val revision: Long)
+    /** The iOS-layout manifest of the most recent MP4/GIF render, offered as a separate file. */
+    var lastRenderManifest by mutableStateOf<RenderManifest?>(null); private set
+    fun exportLastRenderManifest() {
+        val manifest = lastRenderManifest ?: return
+        prepareExport(ExportKind.MANIFEST, options = ExportOptions(manifestText = manifest.text, manifestName = manifest.name))
+    }
+    /** Reasons the current project cannot become an iOS `.sdi` file; empty when exportable. */
+    val sdiExportBlockers: List<String> get() = document?.let { SwiftProjectExport.unsupportedReasons(it) } ?: emptyList()
+    fun prepareExport(kind: ExportKind, share: Boolean = false, options: ExportOptions = ExportOptions(transparent = exportTransparent)) {
         val snapshot = document ?: return
         if (exporting || exportArtifact != null || closing) return
         exporting = true; message = "Preparing export of revision ${snapshot.revision}…"
@@ -834,7 +892,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             var delivered = false
             try {
                 withContext(Dispatchers.IO) {
-                    owned = ProjectExporter.prepare(getApplication(), snapshot, kind) { completed, total ->
+                    owned = ProjectExporter.prepare(getApplication(), snapshot, kind, options) { completed, total ->
                         if (total > 0) {
                             mutableExportProgress.value = if (completed >= total) ExportProgress("Finalizing export")
                             else ExportProgress("Rendering export", (completed.toLong() * 100 / total).toInt().coerceIn(0, 99))
@@ -850,6 +908,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         owned = shared
                         rendered.file.delete()
                     }
+                }
+                owned?.manifest?.let { text ->
+                    lastRenderManifest = RenderManifest(requireNotNull(owned).name.substringBeforeLast('.') + "-manifest.json", text, snapshot.id, snapshot.revision)
                 }
                 exportArtifact = owned; exportPickerRequested = false; delivered = true
                 message = if (share) "Choose an installed app to share this rendered file." else "Choose where to save the export."
@@ -902,11 +963,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 message = when (artifact.kind) {
                     ExportKind.CREDITS -> "Project asset credits exported; unknown sources remain identified."
                     ExportKind.PROJECT -> "Editable Android project backup exported."
-                    ExportKind.MP4 -> "MP4 video exported from the captured project revision."
-                    ExportKind.GIF -> "Looping GIF exported with 256-color palette and centisecond timing."
+                    ExportKind.SDI -> "iOS project (.sdi) exported for the supported subset. Open it on iOS with Restore project backup; the Android original is unchanged."
+                    ExportKind.MANIFEST -> "Render manifest exported beside your saved MP4/GIF."
+                    ExportKind.MP4 -> "MP4 video exported from the captured project revision. Its manifest can be saved from the Export panel."
+                    ExportKind.GIF -> "Looping GIF exported with 256-color palette and centisecond timing. Its manifest can be saved from the Export panel."
                     ExportKind.PNG -> "PNG exported."
-                    ExportKind.SEQUENCE -> "PNG sequence and timing manifest exported."
-                    ExportKind.SPRITESHEET -> "Spritesheet and frame/timing manifest exported."
+                    ExportKind.SEQUENCE -> "PNG sequence and iOS-layout manifest exported."
+                    ExportKind.SPRITESHEET -> "Spritesheet and iOS-layout manifest exported."
                 }
             } catch (_: CancellationException) {
                 message = if (destinationOpened) "Export cancelled. The selected destination may contain a partial file; remove it in Files." else "Export cancelled."
@@ -1080,7 +1143,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val id = newID()
         if (change { d ->
             require(d == captured) { "The document changed. Add text again." }
-            require(!d.layer.locked && d.layer.visible && d.layer.opacity > 0f) { "Choose a visible unlocked layer." }
+            require(d.layer.isEditable && d.layer.lockMode.allowsNewMarks) { "Choose a visible layer that is not locked or alpha-locked." }
             val source = EditableText(textContent, textFontSize).also { it.validate() }
             val stroke = Stroke(id = id, layerID = d.activeLayerID, points = TextArtwork.corners(source, origin),
                 color = color or 0xff000000.toInt(), width = 1f, tool = Tool.Text, text = source)
@@ -1104,10 +1167,63 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val now = document ?: return
         if (!strokeTool.isDrawing) return
         if (now.id != captured.id || now.revision != captured.revision || closing) return
-        if (now.layer.locked || !now.layer.visible || now.layer.opacity == 0f || points.isEmpty() || opacity == 0f) return
+        if (!now.layer.isEditable || points.isEmpty() || opacity == 0f) return
+        // iOS lock rules: erasers need a free layer; alpha lock accepts only brush paint that keeps
+        // coverage; position lock accepts new marks but no transforms.
+        val mode = now.layer.lockMode
+        if (strokeTool.isEraser && !mode.allowsErase) { report("${mode.label} refuses erasing on ${now.layer.name}. Unlock the layer; nothing changed."); return }
+        val alphaLocked = mode == LayerLockMode.Alpha
+        if (alphaLocked && strokeTool != Tool.Pencil) { report("Alpha lock supports brush painting only. Unlock ${now.layer.name} before adding shapes; nothing changed."); return }
+        if (!alphaLocked && !mode.allowsNewMarks) return
         change { d -> d.copy(frames = d.frames.map { f -> if (f.id != d.activeFrameID) f else
-            f.copy(strokes = f.strokes + Stroke(layerID = d.activeLayerID, points = points.toList(), color = strokeColor, width = strokeWidth, tool = strokeTool, filled = filled, opacity = opacity, brush = if (strokeTool == Tool.Pencil) brush else BrushFamily.Round, brushSeed = brushSeed, nibAngle = nibAngle).mirrored(d.width, d.height, mirror)) }) }
+            f.copy(strokes = f.strokes + Stroke(layerID = d.activeLayerID, points = points.toList(), color = strokeColor, width = strokeWidth, tool = strokeTool, filled = filled, opacity = opacity, brush = if (strokeTool == Tool.Pencil) brush else BrushFamily.Round, brushSeed = brushSeed, nibAngle = nibAngle, preservesLayerAlpha = alphaLocked).mirrored(d.width, d.height, mirror)) }) }
     }
+    /** Apply one parsed Spatter instruction through the ordinary guarded history path. */
+    fun applySpatterCommand(captured: Document, command: SpatterCommand): Boolean {
+        if (closing || document != captured) { report("Project changed; run the instruction again. Nothing changed."); return false }
+        return when (command) {
+            is SpatterCommand.SelectFrame -> captured.frames.getOrNull(command.number - 1)?.let { selectFrame(it.id) } ?: false.also { report("That frame does not exist in the captured project. Nothing changed.") }
+            is SpatterCommand.SelectLayer -> captured.layers.getOrNull(command.number - 1)?.let { selectLayer(it.id) } ?: false.also { report("That layer does not exist in the captured project. Nothing changed.") }
+            is SpatterCommand.AddLayer -> change { d ->
+                require(d.layers.size < 32) { "Layer limit reached." }
+                val layer = Layer(name = command.name)
+                d.copy(layers = listOf(layer) + d.layers, activeLayerID = layer.id)
+            }
+            SpatterCommand.DeleteActiveLayer -> deleteLayer(captured.activeLayerID)
+            SpatterCommand.DuplicateActiveLayer -> duplicateLayer(captured.activeLayerID)
+            is SpatterCommand.UpdateActiveLayer -> {
+                val id = captured.activeLayerID
+                var changed = false
+                command.lock?.let { changed = setLayerLockMode(id, it) || changed }
+                command.name?.let { changed = renameLayer(id, it) || changed }
+                if (command.visible != null || command.opacity != null || command.blend != null) changed = updateLayer(id, visible = command.visible, opacity = command.opacity, blend = command.blend) || changed
+                changed
+            }
+            is SpatterCommand.MoveActiveLayer -> moveLayer(command.up)
+            is SpatterCommand.AudioTrack -> {
+                val index = command.track - 1
+                val mix = captured.audioTracks[index]
+                editAudioTrack(captured, index, mix.copy(volume = command.volume ?: mix.volume, muted = command.muted ?: mix.muted,
+                    pan = command.pan ?: mix.pan, soloed = command.soloed ?: mix.soloed))
+            }
+            is SpatterCommand.FrameExposure -> if (command.first == null) setHold(command.ticks)
+                else editFrameRange(captured, command.first, command.last!! - command.first + 1, command.ticks, false)
+            is SpatterCommand.DuplicateFrames -> duplicateFrameRange(captured, command.first, command.last - command.first + 1)
+            is SpatterCommand.ReverseFrames -> editFrameRange(captured, command.first, command.last - command.first + 1, null, true)
+            is SpatterCommand.RenameProject -> change { d -> d.copy(name = command.name) }
+            // Configuring guides does not implicitly show them (iOS canvasOptions keeps visibility separate).
+            is SpatterCommand.OnionSkin -> updateOnion(command.settings?.copy(enabled = captured.onion.enabled) ?: captured.onion.copy(enabled = requireNotNull(command.visible)))
+            is SpatterCommand.Grid -> updateGrid(command.settings?.copy(enabled = captured.grid.enabled) ?: captured.grid.copy(enabled = requireNotNull(command.visible)))
+        }
+    }
+    /** Local diagnostics: redacted crash reports never leave the device (#291). */
+    fun crashReports(): List<java.io.File> = LocalCrashReporter(getApplication()).reports()
+    fun readCrashReport(file: java.io.File): String = LocalCrashReporter(getApplication()).read(file)
+    fun deleteCrashReports() { val count = LocalCrashReporter(getApplication()).deleteAll(); message = "$count local crash report(s) deleted." }
+    /** Notification preferences are stored locally; no push provider is configured on Android (#290). */
+    fun notificationPreferences(): Result<NotificationPreferences> = NotificationPreferenceStore(getApplication()).load()
+    fun saveNotificationPreferences(value: NotificationPreferences): Boolean = try { NotificationPreferenceStore(getApplication()).save(value); true }
+        catch (e: Exception) { report(e.message ?: "Notification preferences were not saved."); false }
     fun updateGrid(settings: GridSettings) = change { d -> settings.validate(); d.copy(grid = settings) }
     fun updateOnion(settings: OnionSettings) = change { d ->
         settings.validate()
@@ -1192,10 +1308,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun updateLayer(id: String, visible: Boolean? = null, locked: Boolean? = null, opacity: Float? = null, blend: LayerBlend? = null) = change { d ->
         require(d.layers.any { it.id == id }) { "The layer is unavailable." }
-        require(blend == null || FrameRenderer.supports(blend)) { "${blend?.label ?: "This blend"} requires Android 10 or later." }
+        require(blend == null || FrameRenderer.supports(blend)) { blend?.let { FrameRenderer.unavailableReason(it) } ?: "This blend is unavailable." }
         d.copy(layers = d.layers.map { if (it.id != id) it else {
             require(!it.locked || (visible == null && opacity == null && blend == null)) { "Unlock the layer before changing its appearance." }
-            it.copy(visible = visible ?: it.visible, locked = locked ?: it.locked, opacity = opacity ?: it.opacity, blend = blend ?: it.blend)
+            val mode = when (locked) { null -> it.lockMode; true -> LayerLockMode.Full; false -> if (it.locked) LayerLockMode.Free else it.lockMode }
+            it.copy(visible = visible ?: it.visible, lockMode = mode, opacity = opacity ?: it.opacity, blend = blend ?: it.blend)
         } })
     }
     fun moveLayer(up: Boolean) = change { d ->
@@ -1215,7 +1332,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val index = d.layers.indexOfFirst { it.id == id }
         require(index >= 0) { "The selected layer changed." }
         val source = d.layers[index]
-        val copy = source.copy(id = newID(), name = (source.name.take(73) + " copy").take(80), locked = false)
+        val copy = source.copy(id = newID(), name = (source.name.take(73) + " copy").take(80), lockMode = LayerLockMode.Free)
         val layers = d.layers.toMutableList().apply { add(index, copy) }
         // One atomic document revision copies the layer through every frame.
         val frames = d.frames.map { f -> f.copy(strokes = f.strokes + f.strokes.filter { it.layerID == id }

@@ -37,7 +37,15 @@ final class StudioGIFEncoder {
         let audioIncluded: Bool
         let editorGuidesIncluded: Bool
         var imageCredits: [StudioExportService.ImageCredit]? = nil
+        /// Documented format behaviour (#183): the system GIF encoder chooses a
+        /// palette of at most 256 colours per frame; dithering is the encoder's
+        /// default and not configurable; no transparency is written.
+        var colorReduction: String? = nil
+        var dithering: String? = nil
+        var transparency: Bool? = nil
     }
+    static let colorReductionNote = "Image I/O GIF encoder: at most 256 colours per frame chosen by the system quantizer"
+    static let ditheringNote = "system default; Image I/O exposes no dithering control"
     struct Encoded {
         let data: Data
         let receipt: Receipt
@@ -90,7 +98,8 @@ final class StudioGIFEncoder {
         guard !Self.inProgress else { throw Failure.alreadyEncoding }
         Self.inProgress = true
         defer { Self.inProgress = false }
-        let document = snapshot.document
+        // Reference layers (imported video frames for tracing) never render (#200).
+        let document = snapshot.document.hidingReferenceLayers
         let renderer = StudioExportService()
         try renderer.validate(document)
         let delays = try Self.timing(document: document)
@@ -155,9 +164,13 @@ final class StudioGIFEncoder {
         }
         try Task.checkCancellation()
         let credits = try StudioExportService.renderedImageCredits(document: document, creditsByRasterID: snapshot.imageCredits)
-        return Encoded(data: encoded, receipt: Receipt(version: credits.isEmpty ? 1 : 2, projectID: document.id, revision: document.revision,
+        var receipt = Receipt(version: credits.isEmpty ? 1 : 2, projectID: document.id, revision: document.revision,
             frameIDs: document.frames.map(\.id), width: size.width, height: size.height,
             sourceFPS: document.fps, delaysCentiseconds: delays, encodedBytes: encoded.count,
-            background: "white", audioIncluded: false, editorGuidesIncluded: false, imageCredits: credits.isEmpty ? nil : credits))
+            background: "white", audioIncluded: false, editorGuidesIncluded: false, imageCredits: credits.isEmpty ? nil : credits)
+        receipt.colorReduction = Self.colorReductionNote
+        receipt.dithering = Self.ditheringNote
+        receipt.transparency = false
+        return Encoded(data: encoded, receipt: receipt)
     }
 }

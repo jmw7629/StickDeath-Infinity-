@@ -21,19 +21,6 @@ targets:
     platform: iOS
     sources:
       - path: StickDeathInfinity
-        excludes:
-          # Retired user messaging/calls are retained as history, never app code.
-          - Services/LiveKitService.swift
-          - Services/LiveKit
-          - Services/Message
-          - ViewModels/MessagesViewModel.swift
-          - Views/Messages/MessagesView.swift
-          - Views/Messages/ChatRoomView.swift
-          - Views/Messages/CallsView.swift
-          - Views/Messages/ContactsView.swift
-          - Views/Messages/VideoCall
-          - Views/Messages/WatchParty
-          - Views/Collab/CreatorRoomView.swift
     settings:
       base:
         INFOPLIST_FILE: StickDeathInfinity/Info.plist

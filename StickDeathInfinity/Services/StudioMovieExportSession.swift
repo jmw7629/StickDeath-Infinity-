@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 import Darwin
 
 /// Private MP4 session foundation. The panel must report its scalar scope and
@@ -11,18 +12,29 @@ final class StudioMovieExportSession: ObservableObject {
         case animation(Service.Output)
         case mixed(StudioMixedMovieExportService.Output)
         var isCleaned: Bool { switch self { case .animation(let v): return v.isCleaned; case .mixed(let v): return v.isCleaned } }
-        var movieURL: URL { switch self { case .animation(let v): return v.movieURL; case .mixed(let v): return v.directory.appendingPathComponent("animation.mp4") } }
+        var movieURL: URL { switch self { case .animation(let v): return v.movieURL; case .mixed(let v): return v.movieURL } }
         var manifestURL: URL { switch self { case .animation(let v): return v.manifestURL; case .mixed(let v): return v.directory.appendingPathComponent("manifest.json") } }
         var manifest: Service.Manifest {
             switch self {
             case .animation(let v): return v.manifest
             case .mixed(let v):
                 let r=v.receipt, p=r.captureProof
-                return Service.Manifest(version:r.version, projectID:p.projectID, documentRevision:p.revision,
+                let codec = Service.Codec(rawValue: p.codec ?? "h264") ?? .h264
+                var manifest = Service.Manifest(version:r.version, projectID:p.projectID, documentRevision:p.revision,
                     frameIDs:p.frameIDs, fps:p.durationDenominator, width:r.width, height:r.height,
                     durationNumerator:r.durationNumerator, durationDenominator:r.durationDenominator,
-                    codec:"H.264 + AAC", background:.white, audioIncluded:true, editorGuidesIncluded:false, encodedBytes:r.encodedBytes, imageCredits:r.imageCredits)
+                    codec:codec.label + " + AAC", background:.white, audioIncluded:true, editorGuidesIncluded:false, encodedBytes:r.encodedBytes, imageCredits:r.imageCredits)
+                manifest.canvasWidth = p.renderPlan?.canvasWidth; manifest.canvasHeight = p.renderPlan?.canvasHeight
+                manifest.renderPlan = p.renderPlan; manifest.renderRule = p.renderPlan?.rule
+                manifest.heldLastFrameTicks = p.heldLastFrameTicks; manifest.movieFilename = r.movieFilename
+                manifest.soundCredits = r.soundCredits
+                return manifest
             }
+        }
+        /// Gain the mixer applied when normalization was requested; nil without audio or when off.
+        var audioAppliedGain: Float? {
+            if case .mixed(let v) = self, v.receipt.audioNormalizedToMinusOneDBFS == true { return v.receipt.audioAppliedGain }
+            return nil
         }
         func checkedURLs() throws -> [URL] { switch self { case .animation(let v): return try v.checkedURLs(); case .mixed(let v): return try v.checkedURLs() } }
         func cleanup() throws { switch self { case .animation(let v): try v.cleanup(); case .mixed(let v): try v.cleanup() } }
@@ -31,6 +43,13 @@ final class StudioMovieExportSession: ObservableObject {
         let isStudioVisible: Bool
         let isForeground: Bool
         let accountID: String?
+    }
+    /// User choices for one export. Defaults reproduce the historical output:
+    /// H.264, original canvas size, no level change.
+    struct ExportOptions: Equatable {
+        var render = Service.RenderOptions()
+        var normalizeAudio = false
+        init(render: Service.RenderOptions = .init(), normalizeAudio: Bool = false) { self.render = render; self.normalizeAudio = normalizeAudio }
     }
     struct Source {
         let projectID: UUID
@@ -52,6 +71,8 @@ final class StudioMovieExportSession: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var notice: String?
     @Published private(set) var needsCleanup = false
+    /// Why library sound credits could not be resolved for the last export, if so (#191).
+    @Published private(set) var soundCreditNotice: String?
 
     private let outputParent: URL
     private let limits: Service.Limits
@@ -79,7 +100,7 @@ final class StudioMovieExportSession: ObservableObject {
 
     @discardableResult
     func start(from vm: StudioViewModel, background: Service.Background, scope: Scope,
-               expectedRequest: StudioMovieExportRequest? = nil) -> Bool {
+               expectedRequest: StudioMovieExportRequest? = nil, options: ExportOptions = .init()) -> Bool {
         guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isBeginningConsumer else { return false }
         isStarting = true
         defer { isStarting = false }
@@ -135,11 +156,22 @@ final class StudioMovieExportSession: ObservableObject {
             errorMessage = error.localizedDescription; return false
         }
         let snapshot = Service.Snapshot(document: document,
-            retainedAudioTracks: vm.projectAudioTracks, rasterDataByID: rasters, imageCredits: credits)
+            retainedAudioTracks: vm.projectAudioTracks, rasterDataByID: rasters, imageCredits: credits, render: options.render)
+        // Preflight (#202): refuse before rendering when the device is critically
+        // hot or the destination volume lacks twice the estimated output.
+        do {
+            let plan = try Service.RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: options.render.preset)
+            let estimate = StudioExportPreflight.estimatedMovieBytes(width: plan.outputWidth, height: plan.outputHeight,
+                fps: document.fps, durationSeconds: document.durationSeconds, includesAudio: !document.audioClips.isEmpty)
+            try StudioExportPreflight.check(estimatedOutputBytes: estimate, destination: outputParent)
+        } catch {
+            errorMessage = error.localizedDescription; return false
+        }
+        let filenameBase = StudioExportFilename.base(for: document.name)
         editor = vm; capturedAccountID = scope.accountID
         source = Source(projectID: document.id, revision: document.revision,
                         name: document.name, frameCount: document.frames.count)
-        errorMessage = nil; notice = nil; phase = nil; audioProgressText = nil
+        errorMessage = nil; notice = nil; phase = nil; audioProgressText = nil; soundCreditNotice = nil
         completedFrames = 0; totalFrames = document.frames.count
         cancellationRequested = false
         let runID = UUID(); activeRunID = runID
@@ -147,10 +179,19 @@ final class StudioMovieExportSession: ObservableObject {
         task = Task { [self, snapshot] in
             do {
                 try checkRunningContext()
+                var snapshot = snapshot
                 if !snapshot.document.audioClips.isEmpty {
                     guard background == .white else { throw Service.ExportError.transparentUnsupported }
+                    // Library attribution travels with the mixed movie (#191).
+                    audioProgressText = "Resolving sound credits…"
+                    let resolved = await Self.resolveSoundCredits(for: snapshot.retainedAudioTracks)
+                    try checkRunningContext()
+                    snapshot.soundCredits = resolved.credits
+                    soundCreditNotice = resolved.notice
+                    let mixedOptions = StudioMixedMovieExportService.Options(
+                        audio: .init(normalizeToMinusOneDBFS: options.normalizeAudio), filenameBase: filenameBase)
                     let result = try await StudioMixedMovieExportService().export(snapshot: snapshot,
-                        outputParent: outputParent, movieLimits: limits) { [self] progress in
+                        outputParent: outputParent, movieLimits: limits, options: mixedOptions) { [self] progress in
                             try checkRunningContext()
                             switch progress.phase {
                             case .rendering:
@@ -165,7 +206,7 @@ final class StudioMovieExportSession: ObservableObject {
                     output = .mixed(result)
                 } else {
                     let result = try await Service(limits: limits).export(snapshot: snapshot,
-                        outputParent: outputParent, background: background) { [self] progress in
+                        outputParent: outputParent, background: background, filenameBase: filenameBase) { [self] progress in
                             try checkRunningContext()
                             phase = progress.phase
                             completedFrames = progress.completedFrames; totalFrames = progress.totalFrames
@@ -176,8 +217,18 @@ final class StudioMovieExportSession: ObservableObject {
                 try checkRunningContext()
                 guard let output else { throw Service.ExportError.outputUnavailable }
                 _ = try output.checkedURLs()
-                notice = "MP4 ready on this device from revision \(output.manifest.documentRevision). " +
+                var text = "MP4 ready on this device from revision \(output.manifest.documentRevision). " +
                     (output.manifest.audioIncluded ? "Project audio is included as stereo AAC." : "No audio was included.")
+                if let gain = output.audioAppliedGain {
+                    text += String(format: " Audio was normalized to -1 dBFS (gain ×%.3f); clip volumes are unchanged.", gain)
+                }
+                if let held = output.manifest.heldLastFrameTicks, held > 0 {
+                    text += " The last frame is held \(held) extra tick\(held == 1 ? "" : "s") so the audio tail fits."
+                }
+                if let credits = output.manifest.soundCredits, !credits.isEmpty {
+                    text += " \(credits.count) library sound credit\(credits.count == 1 ? " is" : "s are") recorded in the manifest."
+                }
+                notice = text
                 audioProgressText = nil
             } catch is CancellationError {
                 notice = "MP4 export cancelled."
@@ -199,6 +250,27 @@ final class StudioMovieExportSession: ObservableObject {
             }
         }
         return true
+    }
+
+    /// Library credits for the captured audio assets (#191). Digests and the
+    /// bundled catalogue load off the main actor. An unavailable library yields
+    /// no credits plus a notice, never a failed export: every library sound is
+    /// CC0 and audio imported from Files has no library attribution anyway.
+    static func resolveSoundCredits(for tracks: [AudioTrack]) async -> (credits: [StudioSoundCredit], notice: String?) {
+        let assets = await Task.detached(priority: .userInitiated) { () -> [StudioSoundCreditResolver.Asset] in
+            tracks.compactMap { track in
+                guard track.legacySourceFilename == nil, let data = track.audioData, !data.isEmpty else { return nil }
+                return .init(id: track.id, sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+            }
+        }.value
+        guard !assets.isEmpty else { return ([], nil) }
+        do {
+            let catalogue = try await StudioSoundCatalogue.loadBundled()
+            let table = catalogue.attributionsByDigest
+            return (try StudioSoundCreditResolver.credits(for: assets) { table[$0] }, nil)
+        } catch {
+            return ([], "Library sound credits were not resolved (\(error.localizedDescription)). The MP4 manifest lists no sound credits.")
+        }
     }
 
     func refreshScope(_ scope: Scope) {

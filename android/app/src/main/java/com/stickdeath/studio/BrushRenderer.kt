@@ -5,7 +5,11 @@ import android.graphics.Paint
 import android.graphics.Path
 import kotlin.math.*
 
-enum class BrushFamily { Round, Stipple, Grain, RoughPen, Calligraphy, DipPen, Halftone, Hatch }
+/** Marker (chisel nib, flat ink) and Crayon (grainy wax) are Android-local v26 families matching the
+ * iOS `marker`/`crayon` tools; older envelopes cannot carry them. */
+enum class BrushFamily { Round, Stipple, Grain, RoughPen, Calligraphy, DipPen, Halftone, Hatch, Marker, Crayon;
+    val needsV26 get() = this == Marker || this == Crayon
+}
 
 /** Linear nib transform; translation follows the stroke's first point. */
 data class BrushTransform(val a: Float = 1f, val b: Float = 0f, val c: Float = 0f, val d: Float = 1f) {
@@ -29,6 +33,8 @@ object BrushRenderer {
         BrushFamily.Stipple -> 0.35f
         BrushFamily.Halftone -> 0.7f
         BrushFamily.Hatch -> 0.5f
+        BrushFamily.Marker -> 0.1f
+        BrushFamily.Crayon -> 0.2f
         else -> 0.14f
     })
     private fun original(stroke: Stroke): Stroke {
@@ -50,7 +56,7 @@ object BrushRenderer {
         require(length.isFinite())
         val stamps = ceil(length / spacing(stroke)) + 1
         require(stamps <= 16_384) { "This textured stroke is too long. Use a larger brush or shorter strokes." }
-        return stamps.toInt() * if (stroke.brush == BrushFamily.Grain) 8 else 3
+        return stamps.toInt() * when (stroke.brush) { BrushFamily.Grain -> 8; BrushFamily.Crayon -> 5; else -> 3 }
     }
     fun draw(canvas: Canvas, stroke: Stroke, paint: Paint, checkCancellation: () -> Unit) {
         val source = original(stroke)
@@ -93,6 +99,13 @@ object BrushRenderer {
                 BrushFamily.DipPen -> dot(0f,0f,r*(0.25f+0.75f*abs(sin(direction-nibAngle))))
                 BrushFamily.Halftone -> dot(0f,0f,r*0.48f)
                 BrushFamily.Hatch -> nib(stroke.width, max(0.5f,stroke.width*0.08f),nibAngle)
+                // Marker: a fixed chisel tip; one path keeps the ink flat even where stamps overlap.
+                BrushFamily.Marker -> nib(stroke.width, max(0.75f, stroke.width*0.35f), nibAngle)
+                // Crayon: five jittered wax grains per stamp leave paper showing through.
+                BrushFamily.Crayon -> repeat(5) {
+                    val angle = unit()*2*PI.toFloat(); val distance = sqrt(unit())*r*0.9f
+                    dot(cos(angle)*distance, sin(angle)*distance, r*(0.12f+0.2f*unit()))
+                }
                 BrushFamily.Round -> dot(0f,0f,r)
             }
         }

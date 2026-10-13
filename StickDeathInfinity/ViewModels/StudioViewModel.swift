@@ -158,6 +158,9 @@ final class StudioViewModel: ObservableObject {
     @Published var dodgeBurnRange: StudioDodgeBurn.TonalRange = .midtones { didSet { rememberDrawingToolPreferences() } }
     @Published var dodgeBurnProtectTones = true { didSet { rememberDrawingToolPreferences() } }
     @Published var mirrorMode: StudioMirrorMode = .off { didSet { rememberDrawingToolPreferences() } }
+    /// Normalised mirror lines (0…1 of the canvas). 0.5 is the historical canvas centre.
+    @Published var mirrorAxisX: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
+    @Published var mirrorAxisY: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
     @Published var lineRulerEnabled = false { didSet { rememberDrawingToolPreferences() } }
     @Published var lineRulerAngle: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     @Published var lineRulerFixedLength = false { didSet { rememberDrawingToolPreferences() } }
@@ -165,7 +168,13 @@ final class StudioViewModel: ObservableObject {
     @Published var lineAngleSnap: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     @Published var equalShapeSides = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeFilled = false { didSet { rememberDrawingToolPreferences() } }
+    /// nil fills shapes with the stroke colour (historical behaviour); a value
+    /// is an independent PhotoCraft-style fill colour.
+    @Published var shapeFillColor: Color? = nil { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
+    /// PhotoCraft eyedropper: point sample or N×N average, all layers or the active layer.
+    @Published var eyedropperSampleSize = 1 { didSet { rememberDrawingToolPreferences() } }
+    @Published var eyedropperActiveLayerOnly = false { didSet { rememberDrawingToolPreferences() } }
     @Published var lineArrowEnds: StudioArrowEnds = .none { didSet { rememberDrawingToolPreferences() } }
     @Published var lineArrowLength: Double = 16 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
@@ -231,42 +240,44 @@ final class StudioViewModel: ObservableObject {
     @Published var exportFormat: ExportFormat = .mp4
     @Published var exportQuality: ExportQuality = .standard
     @Published var currentStroke: [StrokePoint] = []
-    var showOnionSkin: Bool { get { document.onionEnabled } set { change { $0.onionEnabled = newValue } } }
+    var showOnionSkin: Bool { get { document.onionEnabled } set { changeViewSettings { $0.onionEnabled = newValue } } }
     var gridSpacing: Double {
         get { (document.gridSettings ?? .init()).spacing }
-        set { var value = document.gridSettings ?? .init(); value.spacing = newValue; change { $0.gridSettings = value } }
+        set { var value = document.gridSettings ?? .init(); value.spacing = newValue; changeViewSettings { $0.gridSettings = value } }
     }
     var gridOpacity: Double {
         get { (document.gridSettings ?? .init()).opacity }
-        set { var value = document.gridSettings ?? .init(); value.opacity = newValue; change { $0.gridSettings = value } }
+        set { var value = document.gridSettings ?? .init(); value.opacity = newValue; changeViewSettings { $0.gridSettings = value } }
     }
     var gridTint: StudioGridSettings.Tint {
         get { (document.gridSettings ?? .init()).tint }
-        set { var value = document.gridSettings ?? .init(); value.tint = newValue; change { $0.gridSettings = value } }
+        set { var value = document.gridSettings ?? .init(); value.tint = newValue; changeViewSettings { $0.gridSettings = value } }
     }
     var visibleOnionGhosts: [StudioOnionGhost] { isPlaying ? [] : document.onionGhosts }
     var onionPreviousCount: Int {
         get { (document.onionSettings ?? .init()).previousCount }
-        set { var value = document.onionSettings ?? .init(); value.previousCount = newValue; change { $0.onionSettings = value } }
+        set { var value = document.onionSettings ?? .init(); value.previousCount = newValue; changeViewSettings { $0.onionSettings = value } }
     }
     var onionNextCount: Int {
         get { (document.onionSettings ?? .init()).nextCount }
-        set { var value = document.onionSettings ?? .init(); value.nextCount = newValue; change { $0.onionSettings = value } }
+        set { var value = document.onionSettings ?? .init(); value.nextCount = newValue; changeViewSettings { $0.onionSettings = value } }
     }
     var onionOpacity: Double {
         get { (document.onionSettings ?? .init()).opacity }
-        set { var value = document.onionSettings ?? .init(); value.opacity = newValue; change { $0.onionSettings = value } }
+        set { var value = document.onionSettings ?? .init(); value.opacity = newValue; changeViewSettings { $0.onionSettings = value } }
     }
     var onionTinted: Bool {
         get { (document.onionSettings ?? .init()).tinted }
-        set { var value = document.onionSettings ?? .init(); value.tinted = newValue; change { $0.onionSettings = value } }
+        set { var value = document.onionSettings ?? .init(); value.tinted = newValue; changeViewSettings { $0.onionSettings = value } }
     }
 
-    var gridEnabled: Bool { get { document.gridEnabled } set { change { $0.gridEnabled = newValue } } }
+    var gridEnabled: Bool { get { document.gridEnabled } set { changeViewSettings { $0.gridEnabled = newValue } } }
     var audioClips: [AudioClip] { get { document.audioClips } set { change { $0.audioClips = newValue } } }
     var audioDuration: Double { max(document.durationSeconds, document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
     var brushGradientEndColorHex: String { Self.hex(brushGradientEndColor) }
+    /// The colour a filled shape will use right now.
+    var shapeFillColorHex: String { shapeFillColor.map(Self.hex) ?? strokeColorHex }
     // Text stores RGB and opacity separately. Keep the native color picker's
     // alpha control synchronized with the same opacity used by Apply/Undo/export.
     var textPickerColor: Color {
@@ -317,6 +328,25 @@ final class StudioViewModel: ObservableObject {
         activePanel = .toolSettings; message = nil
         return true
     }
+    /// DesignCraft-style placement: a Type-tool tap starts a new text box
+    /// centred on the tapped document point, kept inside the canvas.
+    @discardableResult
+    func beginTextEditing(at point: CGPoint) -> Bool {
+        let width = Double(canvasWidth), height = Double(canvasHeight)
+        guard point.x.isFinite, point.y.isFinite, point.x >= 0, point.y >= 0,
+              Double(point.x) < width, Double(point.y) < height else {
+            message = "Tap inside the canvas to place a text box."; return false
+        }
+        guard textDraft == nil else {
+            message = "Apply or cancel the current text first. Use Move to reposition an existing text box."; return false
+        }
+        guard beginTextEditing(), let draft = textDraft else { return false }
+        let origin = CGPoint(x: min(max(0, Double(point.x) - textStyle.boxWidth / 2), max(0, width - textStyle.boxWidth)),
+                             y: min(max(0, Double(point.y) - textStyle.boxHeight / 2), max(0, height - textStyle.boxHeight)))
+        textDraft = TextDraft(projectID: draft.projectID, revision: draft.revision, frameID: draft.frameID,
+                              layerID: draft.layerID, elementID: nil, origin: origin)
+        return true
+    }
     func cancelTextEditing() { textDraft = nil; textInput = ""; message = nil }
     @discardableResult
     func applyTextEditing() -> Bool {
@@ -353,7 +383,7 @@ final class StudioViewModel: ObservableObject {
             try value.validate(tool: .line); return value
         }
         guard [.rectangle, .circle].contains(selectedTool) else { return nil }
-        let value = StudioShapeDescriptor(fillColor: shapeFilled ? strokeColorHex : nil,
+        let value = StudioShapeDescriptor(fillColor: shapeFilled ? shapeFillColorHex : nil,
             cornerRadius: selectedTool == .rectangle ? shapeCornerRadius : 0)
         try value.validate(tool: selectedTool)
         return value
@@ -444,10 +474,12 @@ final class StudioViewModel: ObservableObject {
             dodgeBurnRange: dodgeBurnRange, dodgeBurnProtectTones: dodgeBurnProtectTones,
             lineAngleSnap: lineAngleSnap, equalShapeSides: equalShapeSides,
             lineRulerEnabled: lineRulerEnabled, lineRulerAngle: lineRulerAngle,
-            lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode, pressureSensitivity: pressureSensitivity, pencilTiltEnabled: pencilTiltEnabled, lineArrowEnds: lineArrowEnds, lineArrowLength: lineArrowLength,
+            lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode, mirrorAxisX: mirrorAxisX, mirrorAxisY: mirrorAxisY, pressureSensitivity: pressureSensitivity, pencilTiltEnabled: pencilTiltEnabled, lineArrowEnds: lineArrowEnds, lineArrowLength: lineArrowLength,
             selectionPreservesAspect: selectionPreservesAspect, selectionNudgeDistance: selectionNudgeDistance,
             wandTolerance: wandTolerance, wandContiguous: wandContiguous,
-            wandSampleVisibleCanvas: wandSampleVisibleCanvas, wandMode: wandMode)
+            wandSampleVisibleCanvas: wandSampleVisibleCanvas, wandMode: wandMode,
+            shapeFill: shapeFillColor.map(Self.preferenceRGB),
+            eyedropperSampleSize: eyedropperSampleSize, eyedropperActiveLayerOnly: eyedropperActiveLayerOnly)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -469,10 +501,14 @@ final class StudioViewModel: ObservableObject {
         brushGradientEndColor = Color(red: value.gradientEnd.red, green: value.gradientEnd.green,
                                      blue: value.gradientEnd.blue)
         mirrorMode = value.mirrorMode ?? .off
+        mirrorAxisX = value.mirrorAxisX ?? 0.5; mirrorAxisY = value.mirrorAxisY ?? 0.5
         lineRulerEnabled = value.lineRulerEnabled ?? false; lineRulerAngle = value.lineRulerAngle ?? 0
         lineRulerFixedLength = value.lineRulerFixedLength ?? false; lineRulerLength = value.lineRulerLength ?? 100
         lineAngleSnap = value.lineAngleSnap ?? 0; equalShapeSides = value.equalShapeSides ?? false
         shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
+        shapeFillColor = value.shapeFill.map { Color(red: $0.red, green: $0.green, blue: $0.blue) }
+        eyedropperSampleSize = value.eyedropperSampleSize ?? 1
+        eyedropperActiveLayerOnly = value.eyedropperActiveLayerOnly ?? false
         lineArrowEnds = value.lineArrowEnds ?? .none; lineArrowLength = value.lineArrowLength ?? 16
         selectionMode = value.selectionMode ?? .new
         selectionPreservesAspect = value.selectionPreservesAspect ?? true
@@ -814,11 +850,12 @@ final class StudioViewModel: ObservableObject {
         toolDefaults?.set(next, forKey: Self.recentColorsKey)
     }
     @discardableResult
-    func applyCustomColorHex(_ input: String, gradientEnd: Bool = false) -> Bool {
+    func applyCustomColorHex(_ input: String, gradientEnd: Bool = false, shapeFill: Bool = false) -> Bool {
         guard let hex = Self.normalizedColorHex(input), let rgb = UInt32(hex.dropFirst(), radix: 16) else { return false }
         let color = Color(.sRGB, red: Double((rgb >> 16) & 255) / 255,
                           green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
         if gradientEnd { brushGradientEndColor = color; rememberRecentColor(hex) }
+        else if shapeFill { shapeFillColor = color; rememberRecentColor(hex) }
         else { strokeColor = color }
         return true
     }
@@ -853,12 +890,15 @@ final class StudioViewModel: ObservableObject {
         recentColorHexes = restoredColors
         restoreDrawingToolPreferences()
     }
+    /// Library entries that could not be read; each keeps its original on disk.
+    @Published private(set) var unreadableProjects: [AnimationStorageFailure] = []
     func loadProjects() async {
         do {
             let listing = try storage.listAnimationsReportingFailures()
             savedProjects = listing.animations.sorted { $0.modifiedAt > $1.modifiedAt }
+            unreadableProjects = listing.failures.sorted { $0.entryName < $1.entryName }
             if !listing.failures.isEmpty { message = "Some projects could not be read. Their original files have been preserved." }
-        } catch { message = "Projects could not be listed: \(error.localizedDescription)" }
+        } catch { message = "Projects could not be listed: \(DeviceStorageManager.userMessage(for: error))" }
     }
     @Published private(set) var isManagingProjects = false
     func duplicateProject(_ metadata: AnimationMetadata) async {
@@ -874,7 +914,38 @@ final class StudioViewModel: ObservableObject {
             let project = try source.storageProject(copy, rasters: source.retainedRasterFrames)
             try storage.saveNewAnimation(project)
             message = nil; await loadProjects()
-        } catch { message = "Copy could not be saved. Original preserved: \(error.localizedDescription)" }
+        } catch { message = "Copy could not be saved. Original preserved: \(DeviceStorageManager.userMessage(for: error))" }
+    }
+    /// Renames a saved project from the library without opening it in this
+    /// session. The record is loaded with the same archive/asset validation as
+    /// opening, renamed through the document editor and written through the
+    /// normal save path, so lineage, revision and receipts match an open save.
+    /// The project open in this editor, an invalid name and concurrent library
+    /// operations are refused; the stored original is untouched on any failure.
+    @discardableResult
+    func renameSavedProject(_ metadata: AnimationMetadata, to proposed: String) async -> Bool {
+        guard !isEditing else {
+            message = document.id == metadata.id
+                ? "This project is open. Rename it from Project Settings instead."
+                : "Save and return to projects before renaming another animation."
+            return false
+        }
+        guard !isSaving, !isManagingProjects else { message = "Another project operation is running."; return false }
+        let title: String
+        do { title = try StudioDocument.validatedProjectName(proposed) }
+        catch { message = error.localizedDescription; return false }
+        isManagingProjects = true; defer { isManagingProjects = false }
+        // A temporary editor never replaces or changes the user's current session.
+        let source = StudioViewModel(storage: storage)
+        guard await source.openProject(metadata) else { message = source.message; return false }
+        guard source.renameProject(title, expectedProjectID: source.document.id, expectedRevision: source.document.revision) else {
+            message = source.message; return false
+        }
+        guard await source.save() else {
+            message = source.message ?? "The renamed project could not be saved. Original preserved."; return false
+        }
+        message = nil; await loadProjects()
+        return true
     }
     private func requirePortableLibrary() throws {
         guard !isEditing, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil else {
@@ -895,7 +966,7 @@ final class StudioViewModel: ObservableObject {
         await Task.yield(); try checkCancellation(); try Task.checkCancellation(); try requirePortableLibrary()
         return data
     }
-    func importPortableProject(from url: URL,
+    func importPortableProject(from url: URL, droppingMissingAudio: Bool = false,
                                checkCancellation: () throws -> Void = { try Task.checkCancellation() }) async throws -> AnimationMetadata {
         try requirePortableLibrary()
         guard !isManagingProjects else { throw StudioDocumentError.unavailable("Another project operation is running.") }
@@ -906,15 +977,25 @@ final class StudioViewModel: ObservableObject {
         let data = try await withTaskCancellationHandler(operation: { try await reader.value }, onCancel: { reader.cancel() })
         try checkCancellation(); try Task.checkCancellation()
         isManagingProjects = false
-        return try await importPortableProject(data, checkCancellation: checkCancellation)
+        return try await importPortableProject(data, droppingMissingAudio: droppingMissingAudio, checkCancellation: checkCancellation)
     }
     /// Same production entry point is exercised by transport/collision tests.
     /// The fresh identity is allocated locally; imported IDs never replace files.
-    func importPortableProject(_ data: Data, newProjectID: UUID = UUID(),
+    /// Editable-archive failures keep their own fixed text; everything else is path-free storage text.
+    private static func openFailureText(_ error: Error) -> String {
+        if let documentError = error as? StudioDocumentError { return documentError.localizedDescription }
+        return DeviceStorageManager.userMessage(for: error)
+    }
+    /// Per-clip notes from the last `importPortableProject(_:droppingMissingAudio:)`; empty when nothing was dropped.
+    @Published private(set) var lastImportWarnings: [String] = []
+    /// `droppingMissingAudio` removes only clips whose managed asset bytes are absent
+    /// from the backup, through the document editor, and reports each by name.
+    func importPortableProject(_ data: Data, newProjectID: UUID = UUID(), droppingMissingAudio: Bool = false,
                                checkCancellation: () throws -> Void = { try Task.checkCancellation() }) async throws -> AnimationMetadata {
         try requirePortableLibrary()
         guard !isManagingProjects else { throw StudioDocumentError.unavailable("Another project operation is running.") }
         isManagingProjects = true; defer { isManagingProjects = false }
+        lastImportWarnings = []
         try checkCancellation()
         let original = try storage.projectFromPortableBundle(data, checkCancellation: checkCancellation)
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-project-validation-" + UUID().uuidString, isDirectory: true)
@@ -930,7 +1011,23 @@ final class StudioViewModel: ObservableObject {
         // Opening validates raster pixels; managed audio also needs the same
         // actual bounded decoder used by Files import before it becomes playable.
         // Unreferenced historical audio remains opaque and byte-preserved.
-        let referencedAudio = validator.document.referencedAudioAssetIDs
+        var validatedDocument = validator.document
+        var warnings: [String] = []
+        let missing = validatedDocument.referencedAudioAssetIDs.subtracting(original.audioTracks.map(\.id))
+        if !missing.isEmpty {
+            guard droppingMissingAudio else { throw StudioDocumentError.invalid("The backup is missing referenced managed audio.") }
+            // Drop only clips whose asset bytes are absent, through the editor so
+            // the imported document stays consistent; every other clip is kept.
+            var editor = try StudioDocumentEditor(document: validatedDocument)
+            let orphaned = validatedDocument.audioClips.filter { $0.assetID.map(missing.contains) == true }
+            for clip in orphaned { try checkCancellation(); try editor.deleteAudioClip(clip.id) }
+            validatedDocument = editor.document
+            guard validatedDocument.referencedAudioAssetIDs.isDisjoint(with: missing) else {
+                throw StudioDocumentError.invalid("Missing audio could not be removed from the backup.")
+            }
+            warnings = orphaned.map { "Dropped missing sound \"\($0.soundName)\" (track \($0.track))." }
+        }
+        let referencedAudio = validatedDocument.referencedAudioAssetIDs
         let managed = original.audioTracks.filter { referencedAudio.contains($0.id) }
             .sorted { $0.id.uuidString < $1.id.uuidString }
         guard Set(managed.map(\.id)) == referencedAudio else {
@@ -960,7 +1057,7 @@ final class StudioViewModel: ObservableObject {
             }
             try FileManager.default.removeItem(at: file)
         }
-        let document = try validator.document.duplicated(name: validator.document.name, id: newProjectID)
+        let document = try validatedDocument.duplicated(name: validatedDocument.name, id: newProjectID)
         let imported = try validator.storageProject(document, rasters: validator.retainedRasterFrames)
         try FileManager.default.removeItem(at: scratch)
         await Task.yield()
@@ -968,6 +1065,7 @@ final class StudioViewModel: ObservableObject {
         // No suspension between final eligibility/cancellation and collision-safe
         // creation. All decoding and asset validation happened in private staging.
         try storage.saveNewAnimation(imported)
+        lastImportWarnings = warnings
         await loadProjects()
         return imported.metadata
     }
@@ -1010,21 +1108,21 @@ final class StudioViewModel: ObservableObject {
             let listing = try storage.listRecoverableAnimations()
             recoverableProjects = listing.animations.sorted { $0.modifiedAt > $1.modifiedAt }
             if !listing.failures.isEmpty { message = "Some recovered projects need repair. Their original files remain preserved." }
-        } catch { message = "Recently Deleted could not be read: \(error.localizedDescription)" }
+        } catch { message = "Recently Deleted could not be read: \(DeviceStorageManager.userMessage(for: error))" }
     }
     func moveProjectToRecovery(_ id: UUID) async {
         guard !isEditing, !isSaving, !isManagingProjects else { message = "Save and return to projects before removing an animation."; return }
         do {
             try storage.recoverableDeleteAnimation(id: id)
             message = nil; await loadProjects(); loadRecoverableProjects()
-        } catch { message = "Project was not removed: \(error.localizedDescription)" }
+        } catch { message = "Project was not removed: \(DeviceStorageManager.userMessage(for: error))" }
     }
     func restoreProject(_ id: UUID) async {
         guard !isEditing, !isSaving, !isManagingProjects else { return }
         do {
             try storage.restoreAnimation(id: id)
             message = nil; await loadProjects(); loadRecoverableProjects()
-        } catch { message = "Project could not be restored. Both copies remain preserved: \(error.localizedDescription)" }
+        } catch { message = "Project could not be restored. Both copies remain preserved: \(DeviceStorageManager.userMessage(for: error))" }
     }
     @discardableResult
     func createProject(name: String, width: Int, height: Int, fps: Int) async -> Bool {
@@ -1137,12 +1235,13 @@ final class StudioViewModel: ObservableObject {
             managedAudioTracks = Dictionary(uniqueKeysWithValues: managed.map { ($0.id, $0) })
             savedRevision = decoded.revision; lastSaveTime = decoded.modifiedAt
             resetSession(); isEditing = true
-            if stored.editableDocumentData == nil { message = "Original frame records, images and audio are preserved. Imported images are flattened; metadata without image pixels stays preserved but cannot be rendered. Draw editable strokes on Layer 1. Audio playback is unfinished." }
+            if stored.editableDocumentData == nil { message = "Original frame records, images and audio are preserved. Imported images are flattened; metadata without image pixels stays preserved but cannot be rendered. Draw editable strokes on Layer 1." }
             return true
-        } catch { message = "Project could not be opened: \(error.localizedDescription)"; return false }
+        } catch { message = "Project could not be opened: \(Self.openFailureText(error))"; return false }
     }
     @discardableResult
     func updateProjectSettings(name: String, width: Int, height: Int, fps: Int,
+                               anchor: StudioCanvasAnchor = .topLeading,
                                expectedProjectID: UUID, expectedRevision: Int) -> Bool {
         do {
             try requireOpenCommandEditor()
@@ -1151,7 +1250,7 @@ final class StudioViewModel: ObservableObject {
                 throw StudioDocumentError.unavailable("The project changed. Reload its settings before applying.")
             }
             var candidate = editor
-            try candidate.updateProjectSettings(name: name, width: width, height: height, fps: fps)
+            try candidate.updateProjectSettings(name: name, width: width, height: height, fps: fps, anchor: anchor)
             guard candidate.document != document else { message = nil; return true }
             try preflightRasterDocument(candidate.document)
             editor = candidate; scheduleSave(); message = nil
@@ -1205,7 +1304,7 @@ final class StudioViewModel: ObservableObject {
                 return false
             }
             return true
-        } catch { message = "Save failed. Your edits are still open: \(error.localizedDescription)"; return false }
+        } catch { message = "Save failed. Your edits are still open: \(DeviceStorageManager.userMessage(for: error))"; return false }
     }
     func backToProjects() async {
         let leavingProjectID = document.id
@@ -1264,6 +1363,11 @@ final class StudioViewModel: ObservableObject {
         return true
     }
     private func change(_ operation: (inout StudioDocument) throws -> Void) { command { try $0.change(operation) } }
+    /// Grid and onion-skin overlays persist with the project without entering Undo history.
+    private func changeViewSettings(_ operation: (inout StudioDocument) -> Void) {
+        guard allowDocumentEditDuringInput() else { return }
+        if editor.changeViewSettings(operation) { scheduleSave() }
+    }
     func addFrame() { stopPlayback(); command { try $0.addFrame() } }
     func duplicateFrame() { stopPlayback(); command { try $0.duplicateFrame() } }
     /// Timeline actions retain identity even when their visible position changes.
@@ -1414,6 +1518,18 @@ final class StudioViewModel: ObservableObject {
     }
     func deleteFrame(_ id: String) { stopPlayback(); command { try $0.deleteFrame(id) } }
     func moveFrame(_ id: String, offset: Int) { stopPlayback(); command { try $0.moveFrame(id, offset: offset) } }
+    /// Explicit timeline position (0-based) for a contiguous frame range; one Undo.
+    /// Returns false, with `message`, when the project changed since `expectedRevision` or the move is invalid.
+    @discardableResult
+    func moveFrames(_ ids: [String], toPosition position: Int, expectedRevision: Int) -> Bool {
+        stopPlayback()
+        guard document.revision == expectedRevision else {
+            message = "The project changed. Reopen frame timing before moving frames."; return false
+        }
+        let before = document.revision
+        command { try $0.moveFrames(ids, toPosition: position) }
+        return message == nil || document.revision != before
+    }
     func nextFrame() { if currentFrameIndex + 1 < frames.count { currentFrameIndex += 1 } }
     func prevFrame() { if currentFrameIndex > 0 { currentFrameIndex -= 1 } }
     /// Existing local sticker/emoji shelf insertion. Rejection retains the chooser.
@@ -2738,6 +2854,9 @@ final class StudioViewModel: ObservableObject {
             if let strength { layer.glowStrength = strength }
         } }
     }
+    func setLayerLabel(_ id: String, label: StudioLayerLabelColor) {
+        command { try $0.updateLayer(id) { $0.colorLabel = label.hex } }
+    }
     func setLayerColor(_ id: String, color: Color) {
         let hex = Self.hex(color); command { try $0.updateLayer(id) { $0.colorLabel = hex } }
     }
@@ -2857,7 +2976,17 @@ final class StudioViewModel: ObservableObject {
     func zoomIn() { canvasScale = min(canvasScale * 1.25, 5) }
     func zoomOut() { canvasScale = max(canvasScale / 1.25, 0.25) }
     func zoomFit() { canvasScale = 1; canvasOffset = .zero }
-    func addAudioClip(sound: SoundEffect, track: Int) { message = "Sound playback and licensed asset import are unfinished. No audio clip was added." }
+    /// PhotoCraft Zoom tool tap: scale about the tapped point (viewport-local
+    /// coordinates of the untransformed canvas) so that point stays put.
+    func zoom(by factor: CGFloat, anchor: CGPoint, viewport: CGSize) {
+        guard factor.isFinite, factor > 0, anchor.x.isFinite, anchor.y.isFinite,
+              viewport.width > 0, viewport.height > 0 else { return }
+        let scale = min(5, max(0.25, canvasScale * factor))
+        let delta = canvasScale - scale
+        canvasOffset = CGSize(width: canvasOffset.width + (anchor.x - viewport.width / 2) * delta,
+                              height: canvasOffset.height + (anchor.y - viewport.height / 2) * delta)
+        canvasScale = scale
+    }
     /// The Files session must decode with StudioAudioImportService first. These
     /// are ownership/metadata checks, not an independent codec validation claim.
     @discardableResult
@@ -3085,6 +3214,7 @@ final class StudioViewModel: ObservableObject {
     }
     /// Apply/reset one immutable envelope in one reversible document command.
     func setAudioFades(_ capture: AudioFadeCapture, fadeIn: Double, fadeOut: Double,
+                       fadeInShape: StudioFadeShape = .linear, fadeOutShape: StudioFadeShape = .linear,
                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         try checkCancellation()
         guard prepareAudioFades() == capture else {
@@ -3095,7 +3225,8 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.unavailable("The selected audio clip is no longer available.")
         }
         var candidate = editor
-        try candidate.updateAudioClip(clip.id, settings: .init(fades: .init(fadeIn: fadeIn, fadeOut: fadeOut)))
+        try candidate.updateAudioClip(clip.id, settings: .init(fades: .init(fadeIn: fadeIn, fadeOut: fadeOut,
+            fadeInShape: fadeInShape, fadeOutShape: fadeOutShape)))
         guard candidate.document != document else { return }
         try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
         try checkCancellation()
@@ -3208,6 +3339,43 @@ final class StudioViewModel: ObservableObject {
         guard document.isAudioTrackMuted(track) != muted else { return }
         _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
             expectedRevision: expectedRevision, action: .apply([.updateAudioTrack(.init(track: track, muted: muted))])),
+            checkCancellation: checkCancellation)
+        message = nil
+    }
+    /// SoundCraft solo: any soloed track silences every other unsoloed track.
+    func setAudioTrackSoloed(_ track: Int, soloed: Bool, expectedRevision: Int,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        guard canMutateAudioDocument,
+              expectedRevision == document.revision, (1...4).contains(track) else {
+            throw StudioDocumentError.unavailable("Stop playback before soloing this track.")
+        }
+        guard document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else {
+            throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
+        }
+        guard document.isAudioTrackSoloed(track) != soloed else { return }
+        _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+            expectedRevision: expectedRevision, action: .apply([.updateAudioTrack(.init(track: track, soloed: soloed))])),
+            checkCancellation: checkCancellation)
+        message = nil
+    }
+    /// One balance change per finished gesture; -1 is hard left, 1 hard right.
+    func setAudioTrackPan(_ track: Int, pan: Double, expectedRevision: Int,
+                          checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        guard pan.isFinite, (-1...1).contains(pan) else {
+            throw StudioDocumentError.invalid("Track pan must be between L100 and R100.")
+        }
+        guard canMutateAudioDocument,
+              expectedRevision == document.revision, (1...4).contains(track) else {
+            throw StudioDocumentError.unavailable("The project or track changed. Stop playback before panning this track.")
+        }
+        guard document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else {
+            throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
+        }
+        guard document.audioTrackPan(track) != pan else { return }
+        _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+            expectedRevision: expectedRevision, action: .apply([.updateAudioTrack(.init(track: track, pan: pan))])),
             checkCancellation: checkCancellation)
         message = nil
     }
@@ -3342,7 +3510,7 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.locked
         }
         let clipboardVersion = editor.clipboardVersion, selectedIDs = editor.selectedElementIDs
-        let imageLayer = CanvasLayer(id: UUID().uuidString, name: "Video reference")
+        let imageLayer = CanvasLayer(id: UUID().uuidString, name: "Video reference", isReference: true)
         var records: [String: StoredAnimationFrame] = [:], frames: [AnimationFrame] = []
         var pngBytes = 0, pixels = 0
         for imported in imports {
@@ -3758,6 +3926,9 @@ final class StudioViewModel: ObservableObject {
                 value.schemaVersion = max(value.schemaVersion, (layer.glowRadius != nil || layer.glowStrength != nil) ? 28 : 22)
                 if copied.rasterRotationDegrees != nil { value.schemaVersion = max(value.schemaVersion, 30) }
                 if let primary = value.frames[index].rasterAssetID { value.schemaVersion = max(value.schemaVersion, primary == assetID ? 27 : 31) }
+                // Appended, not inserted on top: complementary Wand fragments are
+                // reconstructed exactly only while they sit adjacent to their source
+                // layer (StudioFrameRenderer.imageRegionReconstructionPairs).
                 value.layers.append(layer)
                 value.activeLayerID = layer.id
                 try value.frames[index].appendRasterInstance(.init(layerID: layer.id,
@@ -4054,12 +4225,18 @@ final class StudioViewModel: ObservableObject {
     func undo() {
         stopPlayback(); let before = document
         command { $0.undo() }
-        if document != before { clearElementSelection() }
+        if document != before { settleSelectionAfterHistoryStep() }
     }
     func redo() {
         stopPlayback(); let before = document
         command { $0.redo() }
-        if document != before { clearElementSelection() }
+        if document != before { settleSelectionAfterHistoryStep() }
+    }
+    /// The editor keeps the drawing selection when every selected element
+    /// survived the history step; image/pixel selections are rebuilt from scratch.
+    private func settleSelectionAfterHistoryStep() {
+        if selectedElementIDs.isEmpty { clearElementSelection() }
+        else { areaSelectionGeneration = UUID(); imageMoveTarget = nil; cancelPolygonSelection() }
     }
     func togglePlayback() { if isPlaying { stopPlayback() } else { startPlayback() } }
     private var playbackTick: Int?
@@ -4133,7 +4310,7 @@ final class StudioViewModel: ObservableObject {
 }
 
 enum StudioPanelType: String {
-    case none, colorPicker, gradientEndColor, toolSettings, projectSettings, layers, export, framesViewer, audioTimeline
+    case none, colorPicker, gradientEndColor, shapeFillColor, toolSettings, projectSettings, layers, export, framesViewer, audioTimeline
     case soundLibrary, stickerEmoji, addImage, backgroundLibrary, menu, aiVoice, spatterAI, magicCut, rotoscope
 }
 extension Array {
@@ -4531,6 +4708,10 @@ struct StudioSelectionHandleGeometry {
 /// captured stroke/shape settings, so changing these never changes existing art.
 struct StudioDrawingToolPreferences: Codable, Equatable {
     static let maximumBytes = 32_768
+    /// PhotoCraft eyedropper sample sizes; StudioColorSamplingService.sampleSizes
+    /// must stay identical (the colour-sampling test asserts it) because this
+    /// file compiles without the service in several native test builds.
+    static let eyedropperSampleSizes = [1, 3, 5, 11, 31, 51, 101]
     var version = 1
     var values: [String: Entry] = [:]
 
@@ -4573,6 +4754,8 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var lineRulerFixedLength: Bool? = nil
         var lineRulerLength: Double? = nil
         var mirrorMode: StudioMirrorMode? = nil
+        var mirrorAxisX: Double? = nil
+        var mirrorAxisY: Double? = nil
         var pressureSensitivity: Bool? = nil
         var pencilTiltEnabled: Bool? = nil
         var lineArrowEnds: StudioArrowEnds? = nil
@@ -4583,8 +4766,13 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var wandContiguous: Bool? = nil
         var wandSampleVisibleCanvas: Bool? = nil
         var wandMode: StudioImageRegionService.Mode? = nil
+        var shapeFill: StudioBrushColor? = nil
+        var eyedropperSampleSize: Int? = nil
+        var eyedropperActiveLayerOnly: Bool? = nil
 
         var isValid: Bool {
+            (shapeFill.map { (try? $0.validate()) != nil && $0.alpha == 1 } ?? true) &&
+            (eyedropperSampleSize.map { StudioDrawingToolPreferences.eyedropperSampleSizes.contains($0) } ?? true) &&
             (wandTolerance.map { $0.isFinite && (0...128).contains($0) } ?? true) &&
             (selectionNudgeDistance.map { [1.0, 10, 100].contains($0) } ?? true) &&
             (areaSelectionSmoothing.map { $0.isFinite && (0...10).contains($0) } ?? true) &&
@@ -4595,6 +4783,8 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
             (lineRulerAngle.map { $0.isFinite && (-180...180).contains($0) } ?? true) &&
             (lineRulerLength.map { $0.isFinite && (1...4096).contains($0) } ?? true) &&
             (lineAngleSnap.map { [0.0, 15, 45, 90].contains($0) } ?? true) &&
+            (mirrorAxisX.map(StudioMirrorCapture.isValidAxis) ?? true) &&
+            (mirrorAxisY.map(StudioMirrorCapture.isValidAxis) ?? true) &&
             width.isFinite && (0.25...512).contains(width) &&
             opacity.isFinite && (0...1).contains(opacity) &&
             smoothing.isFinite && (0...10).contains(smoothing) &&

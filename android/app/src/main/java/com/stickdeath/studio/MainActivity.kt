@@ -26,6 +26,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -55,6 +57,7 @@ class MainActivity : ComponentActivity() {
     val gifPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/gif")) { vm.finishExport(it) }
     val pngPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { vm.finishExport(it) }
     val projectPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { vm.finishExport(it) }
+    val sdiPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { vm.finishExport(it) }
     val zipPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { vm.finishExport(it) }
     val artifact = vm.exportArtifact
     LaunchedEffect(artifact, vm.exportPickerRequested) {
@@ -68,8 +71,9 @@ class MainActivity : ComponentActivity() {
                     ExportKind.MP4 -> moviePicker.launch(artifact.name)
                     ExportKind.GIF -> gifPicker.launch(artifact.name)
                     ExportKind.PNG -> pngPicker.launch(artifact.name)
-                    ExportKind.PROJECT, ExportKind.CREDITS -> projectPicker.launch(artifact.name)
-                    else -> zipPicker.launch(artifact.name)
+                    ExportKind.PROJECT, ExportKind.CREDITS, ExportKind.MANIFEST -> projectPicker.launch(artifact.name)
+                    ExportKind.SDI -> sdiPicker.launch(artifact.name)
+                    ExportKind.SEQUENCE, ExportKind.SPRITESHEET -> zipPicker.launch(artifact.name)
                 }
             } catch (e: Exception) { vm.cancelExport(); vm.report(e.message ?: "No compatible export or sharing app is available.") }
         }
@@ -289,7 +293,9 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
         Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xff303034)).padding(12.dp), contentAlignment = Alignment.Center) {
             DrawingSurface(vm, doc, if (playing) doc.frames[previewIndex.coerceIn(doc.frames.indices)] else doc.frame, playing, doc.onion.enabled)
             StudioFloatingToolbar {
-            Tool.entries.filter { it != Tool.Image }.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(tool.name) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
+            Tool.entries.filter { it != Tool.Image }.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(toolLabel(tool)) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
+            TextButton({ panel = "spatter" }, enabled = !playing && !vm.closing) { Text("Spatter") }
+            TextButton({ panel = "account" }, enabled = !vm.closing) { Text("Account") }
             TextButton({
                 if (vm.beginImageImport()) {
                     try { imageImporter.launch(arrayOf("image/png", "image/jpeg")) }
@@ -353,17 +359,19 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.moveFrame(doc.activeFrameID, false) }, enabled = !playing && !vm.closing && doc.frames.last().id != doc.activeFrameID) { Text("Later") }
         }
     }
-    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "status" -> "Studio status"; "videoFrame" -> "Video frame at playhead"; "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; else -> "Tool settings" }) },
+    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "status" -> "Studio status"; "videoFrame" -> "Video frame at playhead"; "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; "spatter" -> "Spatter (local commands)"; "account" -> "Account, notifications & diagnostics"; else -> "Tool settings" }) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (panel) {
                     "status" -> {
                         Text(doc.name)
                         Text("${doc.width} × ${doc.height} · ${doc.fps} FPS · ${doc.frames.size} frames")
-                        Text("Layer: ${doc.layer.name}")
+                        Text("Layer: ${doc.layer.name} · ${doc.layer.lockMode.label}")
                         Text(if (vm.dirty) "Unsaved changes" else "Project saved")
                         Text(vm.message.ifBlank { "No current notice." })
                     }
+                    "spatter" -> SpatterPanel(vm, doc, enabled = !playing && !vm.closing)
+                    "account" -> AccountPanel(vm)
                     "videoFrame" -> {
                         val sourceSeconds = doc.frames.takeWhile { it.id != doc.activeFrameID }.sumOf { it.hold.toLong() }.toDouble() / doc.fps
                         Text("Extract the nearest video frame at %.3f seconds into the selected animation frame. Move the animation playhead to choose a different source time.".format(sourceSeconds))
@@ -392,10 +400,20 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                         if (vm.message.isNotEmpty()) Text(vm.message)
                     }
                     "export" -> {
-                        Text("Export the current saved-or-unsaved project snapshot with its project background. ZIP stores each frame once with FPS and exposure ticks in manifest.json.")
+                        Text("Export the current saved-or-unsaved project snapshot. ZIP exports use the iOS layout: frame images named after the project plus manifest.json with the same keys as the iOS export manifest.")
+                        FilterChip(vm.exportTransparent, { vm.exportTransparent = !vm.exportTransparent }, { Text("Transparent background (PNG, sequence, spritesheet)") })
+                        Text(if (vm.exportTransparent) "Frames render without the project background; MP4 and GIF stay opaque." else "Frames render over the project background.")
                         Button({ vm.prepareExport(ExportKind.CREDITS); panel = null }) { Text("Project asset credits JSON") }
                         Button({ vm.prepareExport(ExportKind.PROJECT); panel = null }) { Text("Editable Android project backup") }
                         Text("Restore this backup from the Android project library. It is not the iOS .sdi format.")
+                        val blockers = vm.sdiExportBlockers
+                        Button({ vm.prepareExport(ExportKind.SDI); panel = null }, enabled = blockers.isEmpty()) { Text("iOS project (.sdi) — supported subset") }
+                        if (blockers.isEmpty()) Text("Pencil and line strokes, layers (order, visibility, opacity, blend, lock mode, label), frame holds and the four-track mixer travel to iOS. Open the file there with Restore project backup.")
+                        else { Text("This project cannot be written as an iOS .sdi file yet:"); blockers.forEach { Text("• $it") } }
+                        vm.lastRenderManifest?.let { manifest ->
+                            Button({ vm.exportLastRenderManifest(); panel = null }, enabled = manifest.projectID == doc.id) { Text("Save manifest of last render (${manifest.name})") }
+                            Text("The iOS-layout manifest (frame IDs, timing, codec, byte count) of the MP4/GIF rendered from revision ${manifest.revision}. Save it beside that file.")
+                        }
                         Button({ vm.prepareExport(ExportKind.MP4); panel = null }) { Text("MP4 video + project audio") }
                         Text("MP4 uses the exact canvas, FPS and frame holds. Requires a compatible device encoder, even dimensions, and at most 120 seconds / 4 megapixels. Saved clips are mixed to stereo AAC across the animation duration, including overlaps, trim, volume and mute. Audio outside that duration is excluded. AAC may add up to four codec frames (about 85 ms) of priming/tail padding; this is not a sample-exact audio master. Encoder failure never falls back to silent output.")
                         Button({ vm.prepareExport(ExportKind.GIF); panel = null }) { Text("Animated GIF (looping)") }
@@ -517,14 +535,24 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                                     doc.layers.forEach { target ->
                                         TextButton({ vm.moveArtworkToLayer(target.id) },
-                                            enabled = target.visible && !target.locked && target.opacity > 0f) { Text(target.name) }
+                                            enabled = target.isEditable && target.lockMode.allowsTransform) { Text(target.name) }
                                     }
                                 }
+                                vm.selectedImage?.let { image -> ImageContentControls(vm, doc, image) }
                             }
                             TextButton({ vm.deselect() }) { Text("Deselect") }
                             TextButton({ panel = "deleteSelection" }, enabled = vm.selectedStrokeIDs.isNotEmpty()) { Text("Delete selected artwork") }
                         } else {
-                        if (vm.tool.isDrawing && vm.tool != Tool.Eraser) {
+                        if (vm.tool == Tool.Pencil || vm.tool.isEraser) {
+                            Text("Ruler · ${vm.rulerMode.label}")
+                            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                RulerMode.entries.forEach { mode ->
+                                    FilterChip(vm.rulerMode == mode, { vm.chooseRuler(mode) }, { Text(mode.label) })
+                                }
+                            }
+                            Text("The ruler keeps the stroke on a straight line through its first point; Lock first direction snaps to 15° steps once you move.")
+                        }
+                        if (vm.tool.isDrawing && !vm.tool.isEraser) {
                             Text("Mirror around canvas center")
                             Row(Modifier.horizontalScroll(rememberScrollState())) {
                                 MirrorMode.entries.forEach { mode ->
@@ -552,9 +580,9 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                         }
                         Text("Width: ${vm.width.toInt()} pixels")
                         Slider(vm.width, { vm.width = it }, valueRange = 1f..128f)
-                        Text("${if (vm.tool == Tool.Eraser) "Erase strength" else "Opacity"}: ${(vm.strokeOpacity * 100).toInt()}%")
+                        Text("${if (vm.tool.isEraser) "Erase strength" else "Opacity"}: ${(vm.strokeOpacity * 100).toInt()}%")
                         Slider(vm.strokeOpacity, { vm.strokeOpacity = it }, valueRange = 0f..1f)
-                        if (vm.tool == Tool.Pencil || vm.tool == Tool.Eraser) {
+                        if (vm.tool == Tool.Pencil || vm.tool.isEraser) {
                             Text("Smoothing: ${vm.smoothing.toInt()}")
                             Slider(vm.smoothing, { vm.smoothing = it }, valueRange = 0f..10f, steps = 9)
                             Text("Higher smoothing steadies the stroke with more pointer lag. Zero follows your input directly.")
@@ -563,7 +591,10 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             TextButton({ vm.color = value.toInt() }) { Text(if (vm.color == value.toInt()) "● Selected color" else "Choose color", color = Color(value)) }
                         }
                         if (vm.tool.isSelectable) StudioColorPicker("Drawing color", vm.color) { vm.color = it }
-                        if (vm.tool == Tool.Eraser) Text("Erases drawing marks on the active layer only.")
+                        if (vm.tool == Tool.Eraser) Text("Erases drawing marks on the active layer only. Position and alpha locks refuse erasing, as on iOS.")
+                        if (vm.tool == Tool.SoftEraser) Text("Soft eraser feathers its edge with four stacked passes (full strength at the centre, lighter toward the rim). Same result on canvas and in exports; layer locks apply.")
+                        if (doc.layer.lockMode == LayerLockMode.Alpha) Text("Alpha lock on ${doc.layer.name}: pencil paint stays inside the layer's existing coverage; shapes, erasers, fills, text and images are refused.")
+                        if (doc.layer.lockMode == LayerLockMode.Position) Text("Position lock on ${doc.layer.name}: new marks are allowed; moving, resizing, erasing and filling are refused.")
                         if (vm.tool.isClosedShape) {
                             FilterChip(vm.shapeFilled, { vm.shapeFilled = !vm.shapeFilled }, { Text("Filled shape") })
                             FilterChip(vm.shapeEqualSides, { vm.shapeEqualSides = !vm.shapeEqualSides },
@@ -578,6 +609,22 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             TextButton({ vm.selectLayer(layer.id) }) { Text((if (layer.id == doc.activeLayerID) "● " else "") + layer.name) }
                             Row { TextButton({ vm.updateLayer(layer.id, visible = !layer.visible) }, enabled = !layer.locked) { Text(if (layer.visible) "Hide" else "Show") }
                                 TextButton({ vm.updateLayer(layer.id, locked = !layer.locked) }) { Text(if (layer.locked) "Unlock" else "Lock") } }
+                            Text("Lock mode: ${layer.lockMode.label}")
+                            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                LayerLockMode.entries.forEach { mode ->
+                                    FilterChip(layer.lockMode == mode, { vm.setLayerLockMode(layer.id, mode) }, { Text(mode.label) },
+                                        modifier = Modifier.padding(end = 4.dp).semantics { contentDescription = "${layer.name} lock ${mode.label}" })
+                                }
+                            }
+                            Text("Label: ${layer.label?.title ?: "None"}")
+                            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                FilterChip(layer.label == null, { vm.setLayerLabel(layer.id, null) }, { Text("None") }, modifier = Modifier.padding(end = 4.dp))
+                                LayerLabel.entries.forEach { label ->
+                                    FilterChip(layer.label == label, { vm.setLayerLabel(layer.id, label) }, { Text(label.title) },
+                                        leadingIcon = { Box(Modifier.size(12.dp).background(Color(label.argb))) },
+                                        modifier = Modifier.padding(end = 4.dp).semantics { contentDescription = "${layer.name} label ${label.title}" })
+                                }
+                            }
                             Row(Modifier.horizontalScroll(rememberScrollState())) {
                                 TextButton({ selectedLayerAction = layer.id; layerName = layer.name; panel = "renameLayer" }) { Text("Rename") }
                                 TextButton({ vm.duplicateLayer(layer.id) }, enabled = doc.layers.size < 32) { Text("Duplicate layer") }
@@ -593,6 +640,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                                 }
                             }
                             if (!FrameRenderer.supports(LayerBlend.Multiply)) Text("Disabled blend modes require Android 10 or later.")
+                            Text("Linear Burn has no exact Android compositing mode yet, so it stays disabled and iOS projects using it are rejected with the original preserved.")
                             var opacity by remember(layer.id, layer.opacity) { mutableFloatStateOf(layer.opacity) }
                             Slider(opacity, { opacity = it }, enabled = !layer.locked, onValueChangeFinished = { vm.updateLayer(layer.id, opacity = opacity) })
                         }
@@ -663,6 +711,85 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
         })
 }
 
+private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft eraser"; else -> tool.name }
+
+/** Crop and quarter turns of the single selected image (iOS rasterCrop / rasterQuarterTurns). */
+@Composable private fun ImageContentControls(vm: StudioViewModel, doc: Document, image: Stroke) {
+    val crop = image.imageCrop ?: ImageCrop.full
+    var left by remember(doc.revision, image.id) { mutableFloatStateOf(crop.x.toFloat()) }
+    var top by remember(doc.revision, image.id) { mutableFloatStateOf(crop.y.toFloat()) }
+    var right by remember(doc.revision, image.id) { mutableFloatStateOf((crop.x + crop.width).toFloat()) }
+    var bottom by remember(doc.revision, image.id) { mutableFloatStateOf((crop.y + crop.height).toFloat()) }
+    Text("Image content · ${image.imageQuarterTurns * 90}° turned${if (crop.isFull) "" else " · cropped"}")
+    Row {
+        TextButton({ vm.turnImage(doc, image.id, clockwise = false) }) { Text("Turn ⟲ 90°") }
+        TextButton({ vm.turnImage(doc, image.id, clockwise = true) }) { Text("Turn ⟳ 90°") }
+    }
+    Text("Turns rotate the picture inside an upright box; the source pixels are untouched.")
+    listOf("Crop left" to left, "Crop top" to top, "Crop right" to right, "Crop bottom" to bottom).forEachIndexed { index, (label, value) ->
+        Text("$label: ${(value * 100).toInt()}%")
+        Slider(value, { next -> when (index) { 0 -> left = next; 1 -> top = next; 2 -> right = next; else -> bottom = next } }, valueRange = 0f..1f,
+            modifier = Modifier.semantics { contentDescription = label })
+    }
+    val proposed = ImageCrop.fromEdges(left.toDouble(), top.toDouble(), right.toDouble(), bottom.toDouble())
+    val valid = runCatching { proposed.validate() }.isSuccess
+    if (!valid) Text("Keep at least 1% of the image between opposite edges.")
+    Row {
+        Button({ vm.setImageCrop(doc, image.id, proposed) }, enabled = valid) { Text("Apply crop") }
+        TextButton({ vm.setImageCrop(doc, image.id, ImageCrop.full) }, enabled = !crop.isFull) { Text("Reset crop") }
+    }
+    Text("Crops are fractions of the upright source; the visible box shrinks to the kept region so the picture is not stretched. One Undo restores the previous crop.")
+}
+
+/** The local Spatter grammar. No assistant service is connected on Android; see BackendContract. */
+@Composable private fun SpatterPanel(vm: StudioViewModel, doc: Document, enabled: Boolean) {
+    var instruction by remember(doc.id) { mutableStateOf("") }
+    val parsed = remember(instruction) { runCatching { SpatterCommandBridge.parse(instruction) } }
+    Text("Spatter runs one complete instruction from this fixed grammar on your open project, as one Undo step. ${AndroidIdentity.currentState().summary} Free-form requests, generation and daily drafts are unavailable on Android.")
+    OutlinedTextField(instruction, { instruction = it.take(1024) }, label = { Text("Instruction") }, maxLines = 3, modifier = Modifier.fillMaxWidth(), enabled = enabled)
+    if (instruction.isNotBlank()) Text(parsed.fold({ "Will: ${SpatterCommandBridge.describe(it)}" }, { it.message ?: "Unsupported instruction." }))
+    Button({
+        parsed.onSuccess { command -> if (!vm.applySpatterCommand(doc, command) && vm.message.isBlank()) vm.report("Nothing changed.") }
+            .onFailure { vm.report(it.message ?: "Unsupported instruction. Nothing changed.") }
+    }, enabled = enabled && parsed.isSuccess) { Text("Apply instruction") }
+    if (vm.message.isNotEmpty()) Text(vm.message)
+    Text("Examples (tap to fill)")
+    SpatterCommandBridge.examples.forEach { example -> TextButton({ instruction = example }) { Text(example) } }
+}
+
+/** Honest connection state, local notification preferences and local crash diagnostics. */
+@Composable private fun AccountPanel(vm: StudioViewModel) {
+    val session = remember { AndroidIdentity.currentState() }
+    Text(session.summary)
+    Text(BackendContract.IDENTITY)
+    Text("Planned server contract: ${BackendContract.rpcs.size} member RPCs across " +
+        BackendArea.entries.filter { BackendContract.rpcs(it).isNotEmpty() }.joinToString { "${it.label} (${BackendContract.rpcs(it).size})" } +
+        ". Transport: ${BackendContract.TRANSPORT}")
+    Text("No user-to-user messaging or calls exist in this contract.")
+    Text("Notifications", style = MaterialTheme.typography.titleMedium)
+    Text("No push provider is configured on Android and nothing is sent. These choices are stored on this device so delivery honours them once the owner enables it. Account, billing and moderation notices cannot be turned off.")
+    var preferences by remember { mutableStateOf(vm.notificationPreferences()) }
+    preferences.fold({ current ->
+        NotificationKind.entries.forEach { kind ->
+            Text(kind.label)
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                NotificationCategory.entries.filter { it.kind == kind }.forEach { category ->
+                    FilterChip(current.isEnabled(category), {
+                        val next = current.setting(category, !current.isEnabled(category))
+                        if (vm.saveNotificationPreferences(next)) preferences = Result.success(next)
+                    }, { Text(category.label) }, enabled = category.canDisable, modifier = Modifier.padding(end = 4.dp))
+                }
+            }
+        }
+        Text("Daily cap for Studio/community and announcement notices: ${current.dailyCap} per day.")
+    }, { error -> Text("Saved notification preferences could not be read (${error.message}). They were preserved, not overwritten.") })
+    Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
+    val reports = remember(vm.message) { vm.crashReports() }
+    Text("${reports.size} local crash report(s). Reports are redacted (no names, paths, project contents or identifiers), kept at most 30 days / five files, and never uploaded. No analytics SDK is installed.")
+    reports.firstOrNull()?.let { latest -> Text(vm.readCrashReport(latest).lineSequence().take(12).joinToString("\n"), style = MaterialTheme.typography.bodySmall) }
+    if (reports.isNotEmpty()) TextButton({ vm.deleteCrashReports() }) { Text("Delete local crash reports") }
+}
+
 private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, radius: Float): List<Pair<String, Point>> {
     fun clipped(x: Float, y: Float) = Point(x.coerceIn(radius, width-radius), y.coerceIn(radius, height-radius))
     return listOf("rotate" to clipped(bounds.center.x, if (bounds.top > radius*3) bounds.top-radius*2 else bounds.bottom+radius*2),
@@ -696,7 +823,7 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
         Canvas(Modifier.size(canvasWidth, canvasHeight).graphicsLayer {
             scaleX = vm.viewportZoom; scaleY = vm.viewportZoom
             translationX = vm.viewportX; translationY = vm.viewportY
-        }.clipToBounds().pointerInput(doc.id, doc.revision, vm.tool, vm.width, vm.color, vm.strokeOpacity, vm.smoothing, vm.mirrorMode, vm.shapeFilled, vm.shapeEqualSides, playing, vm.closing, vm.selectedStrokeIDs, vm.selectionMode, vm.selectionShape, vm.selectionPreservesAspect, vm.brushFamily, vm.nibAngle) {
+        }.clipToBounds().pointerInput(doc.id, doc.revision, vm.tool, vm.width, vm.color, vm.strokeOpacity, vm.smoothing, vm.mirrorMode, vm.shapeFilled, vm.shapeEqualSides, playing, vm.closing, vm.selectedStrokeIDs, vm.selectionMode, vm.selectionShape, vm.selectionPreservesAspect, vm.brushFamily, vm.nibAngle, vm.rulerMode) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
                 if (playing || vm.closing || vm.tool == Tool.Hand) return@awaitEachGesture
@@ -710,7 +837,9 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                 fun point(x: Float, y: Float) = Point((x * doc.width / size.width).coerceIn(0f, doc.width.toFloat()), (y * doc.height / size.height).coerceIn(0f, doc.height.toFloat()))
                 val first = point(down.position.x, down.position.y)
                 val points = mutableListOf(first)
-                val smoother = StrokeSmoother(first, if (tool == Tool.Pencil || tool == Tool.Eraser) vm.smoothing else 0f)
+                val smoother = StrokeSmoother(first, if (tool == Tool.Pencil || tool.isEraser) vm.smoothing else 0f)
+                // Ruler applies to freehand pencil/eraser gestures only; shapes already have straight geometry.
+                val ruler = RulerConstraint(first, if (tool == Tool.Pencil || tool.isEraser) vm.rulerMode else RulerMode.Off)
                 val ids = vm.selectedStrokeIDs
                 val selectionMode = vm.selectionMode
                 val selectionShape = vm.selectionShape
@@ -762,14 +891,15 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                         else if (tool.isShape) pending = ShapePath.points(tool, first, current, equalSides)
                         else {
                             val cap = if (tool == Tool.Lasso) 1024 else 8192
-                            val next = smoother.next(current)
+                            val ruled = ruler.constrain(current)
+                            val next = smoother.next(ruled)
                             if (points.last() != next) {
                                 if (points.size < cap) points.add(next) else overflow = true
                             }
                             // Preserve the actual lift-off endpoint. This same
                             // final path is previewed and then committed once.
-                            if (!change.pressed && points.last() != current) {
-                                if (points.size < cap) points.add(current) else overflow = true
+                            if (!change.pressed && points.last() != ruled) {
+                                if (points.size < cap) points.add(ruled) else overflow = true
                             }
                             pending = points.toList()
                         }

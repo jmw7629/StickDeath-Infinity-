@@ -8,12 +8,19 @@ import kotlinx.coroutines.ensureActive
 
 /** Deterministic 48 kHz stereo PCM16 mix, computed by absolute output frame.
  * Linear interpolation, mono duplication and final saturating sum; no full-song cache.
- * Track is a grouping label: all unmuted clips, including same-track overlaps, sum. */
+ * Track is a grouping label: all audible clips, including same-track overlaps, sum.
+ * SoundCraft rule: a clip is audible iff it is not muted, its track is not muted and
+ * either no track is soloed or its track is. The track's balance law (left = min(1, 1-pan),
+ * right = min(1, 1+pan)) scales each output channel; centre is bit-identical to the unpanned mix. */
 class AudioMixer(document: Document) {
-    private val clips = document.audioClips.sortedBy { it.id }.map { clip ->
+    private class Voice(val clip: AudioClip, val left: Double, val right: Double)
+    private val clips = document.audioClips.sortedBy { it.id }.mapNotNull { clip ->
         val track = document.audioTracks.getOrNull(clip.track - 1) ?: error("Missing audio track.")
-        clip.copy(volume = clip.volume * track.volume, muted = clip.muted || track.muted)
-    }.filter { !it.muted && it.volume > 0f }
+        val gain = clip.volume * track.volume
+        if (clip.muted || gain <= 0f || !StudioCraftAudio.isTrackAudible(clip.track, document.audioTracks)) return@mapNotNull null
+        val balance = StudioCraftAudio.balanceGains(track.pan.toDouble())
+        Voice(clip.copy(volume = gain, muted = false), balance.left, balance.right)
+    }
     val frameCount = (document.frames.sumOf { it.hold.toLong() } * RATE + document.fps - 1) / document.fps
     init { document.validated(); require(frameCount in 1..RATE * 120L) }
     fun write(first: Long, count: Int, output: ByteBuffer, check: () -> Unit) {
@@ -23,7 +30,8 @@ class AudioMixer(document: Document) {
             if (index % 128 == 0) check()
             val time = (first + index).toDouble() / RATE
             var left = 0.0; var right = 0.0
-            for (clip in clips) {
+            for (voice in clips) {
+                val clip = voice.clip
                 val elapsed = time - clip.start
                 if (elapsed < 0.0 || elapsed >= clip.duration) continue
                 val position = (clip.sourceOffset + elapsed) * clip.source.rate
@@ -37,7 +45,7 @@ class AudioMixer(document: Document) {
                     return (a + (clip.source.sample(next, channel) - a) * fraction) * clip.volume *
                         (clip.fade?.gain(clip.sourceOffset + elapsed) ?: 1.0)
                 }
-                left += value(0); right += value(1)
+                left += value(0) * voice.left; right += value(1) * voice.right
             }
             output.putShort(left.roundToInt().coerceIn(-32768, 32767).toShort())
             output.putShort(right.roundToInt().coerceIn(-32768, 32767).toShort())

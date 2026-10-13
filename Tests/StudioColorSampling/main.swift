@@ -78,6 +78,34 @@ private struct TestFailure: Error { let message: String }
         try require(fractional.x == 12 && fractional.y == 12 && fractional.hex == "#FF0000", "Containing pixel")
         for (x,y) in [(0.0,0.0),(63.99,0),(0,47.99),(63.99,47.99)] { try require(try read(d,x,y).hex == "#FFFFFF", "Boundary white") }
         pass("fractional and all four canvas edge coordinates")
+        // PhotoCraft eyedropper: N×N averages and active-layer sampling.
+        try require(StudioColorSamplingService.sampleSizes == StudioDrawingToolPreferences.eyedropperSampleSizes, "Sample size catalogues diverged")
+        let point = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 12, y: 12), sampleSize: 1)
+        try require(point.hex == "#FF0000", "Point sample equals the historical result")
+        let dotEdge = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 18, y: 12), sampleSize: 11)
+        try require(dotEdge.red == 255 && dotEdge.green > 0 && dotEdge.green == dotEdge.blue && dotEdge.green < 255,
+            "11×11 average across the red dot's edge mixes red with white: \(dotEdge.hex)")
+        // The block is clipped to the canvas rather than shifted inward: a 3×3
+        // block at the corner sees only white, while a 31×31 block reaches the
+        // red dot (centre 12,12, 12 px wide) without ever leaving the canvas.
+        let cornerSmall = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 0, y: 0), sampleSize: 3)
+        try require(cornerSmall.hex == "#FFFFFF" && cornerSmall.x == 0 && cornerSmall.y == 0, "Clipped corner block stays white")
+        let cornerLarge = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 0, y: 0), sampleSize: 31)
+        try require(cornerLarge.red == 255 && cornerLarge.green < 255 && cornerLarge.green == cornerLarge.blue,
+            "Clipped corner block averages the red dot with white: \(cornerLarge.hex)")
+        do { _ = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 12, y: 12), sampleSize: 7)
+            throw TestFailure(message: "non-PhotoCraft sample size accepted") } catch StudioColorSamplingService.Failure.renderFailed {}
+        var layered = d
+        let upper = CanvasLayer(id: "upper", name: "Upper")
+        layered.layers.insert(upper, at: 0); layered.activeLayerID = upper.id
+        layered.frames[0].elements.append(dot("cover", upper.id, "#000000", 12, 12))
+        try require(try StudioColorSamplingService.sample(document: layered, frameID: layered.activeFrameID, point: CGPoint(x: 12, y: 12)).hex == "#000000", "Composite shows the covering layer")
+        try require(try StudioColorSamplingService.sample(document: layered, frameID: layered.activeFrameID, point: CGPoint(x: 12, y: 12), layerID: d.activeLayerID).hex == "#FF0000", "Active-layer sampling ignores other layers")
+        try require(try StudioColorSamplingService.sample(document: layered, frameID: layered.activeFrameID, point: CGPoint(x: 48, y: 12), layerID: upper.id).hex == "#FFFFFF", "Active-layer sampling reads the layer over white")
+        try require(layered.layers.allSatisfy(\.visible), "Layer sampling never mutates the caller's document")
+        do { _ = try StudioColorSamplingService.sample(document: layered, frameID: layered.activeFrameID, point: CGPoint(x: 12, y: 12), layerID: "absent")
+            throw TestFailure(message: "unknown layer accepted") } catch StudioColorSamplingService.Failure.unavailableFrame {}
+        pass("PhotoCraft sample sizes average the clipped block and active-layer sampling isolates one layer")
         for (x,y) in [(-0.01,0.0),(0,-0.01),(64,0),(0,48),(Double.nan,0),(0,Double.infinity)] {
             try rejects("invalid point", .outsideCanvas) { _ = try read(d,x,y) }
         }

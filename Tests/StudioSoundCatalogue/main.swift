@@ -180,6 +180,40 @@ func require(_ test: @autoclosure () throws -> Bool, _ message: String) throws {
             catch is StudioSoundCatalogue.CatalogueError { }
             try require(try Data(contentsOf: resource.url) == resource.data, "original asset changed")
         }
+        try await test("library attribution resolves by shipped digest into verified sound credits") {
+            let first = catalogue.sounds[0]
+            let attribution = try require2(catalogue.attribution(forSHA256: first.sha256))
+            try require(attribution.title == first.title && attribution.author == first.author && attribution.catalogueSoundID == first.sha256
+                        && attribution.originalSHA256 == first.originalSHA256 && attribution.license == "CC0-1.0", "attribution fields differ from the catalogue")
+            try require(catalogue.attribution(forSHA256: String(repeating: "0", count: 64)) == nil, "unknown digest produced an attribution")
+            try require(catalogue.attributionsByDigest.count == catalogue.sounds.count, "digest table lost entries")
+            // A project asset made from the checked resource credits exactly that sound; foreign bytes credit nothing.
+            let checked = try catalogue.checkedResource(first)
+            let foreign = UUID(), library = UUID()
+            let credits = try StudioSoundCreditResolver.credits(for: [
+                .init(id: library, sha256: first.sha256),
+                .init(id: foreign, sha256: String(repeating: "f", count: 64))
+            ]) { catalogue.attribution(forSHA256: $0) }
+            try require(credits.count == 1 && credits[0].assetID == library && credits[0].title == first.title && checked.data.count == first.byteCount, "credit resolution wrong")
+            try credits[0].validate()
+            // Optional RMS bins are accepted when consistent and refused when they exceed the peaks.
+            let copy = root.appendingPathComponent("rms-library")
+            try fm.createDirectory(at: copy, withIntermediateDirectories: false)
+            var object = try JSONSerialization.jsonObject(with: Data(contentsOf: bundle.appendingPathComponent("catalogue.json"))) as! [String: Any]
+            var entries = object["sounds"] as! [[String: Any]]
+            entries[0]["waveformRMS"] = (entries[0]["waveformPeaks"] as! [Double]).map { $0 / 2 }; object["sounds"] = entries
+            try JSONSerialization.data(withJSONObject: object).write(to: copy.appendingPathComponent("catalogue.json"))
+            let withRMS = try StudioSoundCatalogue(directory: copy)
+            try require(withRMS.sounds[0].waveformRMS?.count == 256 && withRMS.sounds[1].waveformRMS == nil, "optional RMS not decoded")
+            entries[0]["waveformRMS"] = (entries[0]["waveformPeaks"] as! [Double]).map { min(1, $0 + 0.5) }; object["sounds"] = entries
+            try JSONSerialization.data(withJSONObject: object).write(to: copy.appendingPathComponent("catalogue.json"))
+            do { _ = try StudioSoundCatalogue(directory: copy); throw CatalogueFailure(message: "RMS above peak accepted") }
+            catch is StudioSoundCatalogue.CatalogueError { }
+        }
         print("STUDIO_SOUND_CATALOGUE_TESTS=PASS \(count)/\(count) with \(catalogue.sounds.count) real bundled decodes")
+    }
+    static func require2<T>(_ value: T?) throws -> T {
+        guard let value else { throw CatalogueFailure(message: "unexpected nil") }
+        return value
     }
 }

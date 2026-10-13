@@ -59,7 +59,8 @@ enum class SelectionShape { Freehand, Rectangle }
 enum class SelectionMode { Replace, Add, Subtract }
 object ArtworkSelection {
     fun eligible(frame: Frame, layers: List<Layer>): Set<String> {
-        val editable = layers.filter { it.visible && !it.locked && it.opacity > 0f }.map { it.id }.toSet()
+        // Selection drives move/resize/delete, which iOS allows only on free layers.
+        val editable = layers.filter { it.isEditable && it.lockMode.allowsTransform }.map { it.id }.toSet()
         return frame.strokes.filter { it.layerID in editable && it.tool.isSelectable && it.opacity > 0f && (it.color ushr 24) > 0 }
             .map { it.id }.toSet()
     }

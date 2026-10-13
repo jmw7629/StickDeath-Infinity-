@@ -42,31 +42,23 @@ object GifExporter {
                 }
                 val encoder = GifEncoder(bounded, d.width, d.height, check)
                 encoder.begin()
-                var ticks = 0L
-                var previousEnd = 0L
+                // Centisecond boundaries shared with the GIF receipt manifest (GifTiming).
+                val delays = GifTiming.delaysCentiseconds(d.frames.map { it.hold }, d.fps)
                 d.frames.forEachIndexed { index, frame ->
                     check()
-                    ticks += frame.hold
-                    // Round each cumulative boundary to the nearest centisecond,
-                    // ties upward. Differences preserve total duration within 5 ms
-                    // instead of accumulating independent per-frame rounding errors.
-                    val end = (ticks * 100 + d.fps / 2) / d.fps
-                    val delay = (end - previousEnd).toInt()
                     val bitmap = Bitmap.createBitmap(d.width, d.height, Bitmap.Config.ARGB_8888)
                     try {
                         FrameRenderer.draw(Canvas(bitmap), d, frame, checkCancellation = check)
-                        encoder.frame(delay) { y, row -> bitmap.getPixels(row, 0, d.width, 0, y, d.width, 1) }
+                        encoder.frame(delays[index]) { y, row -> bitmap.getPixels(row, 0, d.width, 0, y, d.width, 1) }
                     } finally { bitmap.recycle() }
-                    previousEnd = end
                     progress(index + 1, d.frames.size)
                 }
                 encoder.finish()
             }
             check()
             require(file.length() in 1..256L * 1024 * 1024) { "GIF output is empty or too large." }
-            val stem = d.name.replace(Regex("[^A-Za-z0-9 _-]"), "_").take(80).ifBlank { "animation" }
             complete = true
-            return ExportArtifact(file, ExportKind.GIF, "$stem.gif")
+            return ExportArtifact(file, ExportKind.GIF, "${ExportManifests.filenameBase(d)}.gif")
         } finally { if (!complete) file.delete() }
     }
 }

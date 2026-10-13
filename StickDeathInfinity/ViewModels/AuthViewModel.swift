@@ -1,8 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
 // AuthViewModel — Auth state for SwiftUI views
-// Matches: src/contexts/AuthContext.tsx useAuth()
 //
-// Handles: Email/Password, Apple, Google, Guest, Sign Out
+// Handles: Email/Password, Apple, Google/GitHub/Microsoft, Guest, Sign Out,
+// password recovery, deep-link classification and account notices.
+// Sign-out closes the open Studio project back to the library (#172); it
+// never deletes anything on the device.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
@@ -14,23 +16,45 @@ final class AuthViewModel: ObservableObject {
     @Published var user: UserProfile?
     @Published var isLoading = false
     @Published var error: String?
+    /// Non-failure information (sign-up confirmation pending, taken username,
+    /// unsupported link). Shown as a dismissible notice, never as an error.
+    @Published var notice: String?
     @Published private(set) var restoration: AuthService.Restoration = .restoring
+    @Published private(set) var passwordRecoveryPending = false
+    /// Earliest time another reset email may be requested (60 s cooldown).
+    @Published private(set) var passwordResetAvailableAt: Date?
 
     private let auth: AuthService
     private var subscriptions = Set<AnyCancellable>()
+    static let passwordResetCooldown: TimeInterval = 60
+    /// Studio hand-offs around sign-out. The defaults use the shared editor's
+    /// own flush/save and back-to-library paths, so no edit is discarded and no
+    /// file is deleted; tests inject counters instead of touching the editor.
+    private let flushOpenProject: @MainActor () async -> Void
+    private let closeOpenProject: @MainActor () async -> Void
 
     var isAuthenticated: Bool { state == .authenticated }
     var isSuperAdmin: Bool { auth.isSuperAdmin }
     var userId: String? { auth.userId }
     var displayName: String? { auth.displayName }
+    var microsoftTenant: String? { auth.microsoftTenant }
+    var appleSignInUnavailableReason: String? { auth.appleSignInUnavailableReason }
 
-    init(auth: AuthService? = nil, initializeOnStart: Bool = true) {
+    init(auth: AuthService? = nil, initializeOnStart: Bool = true,
+         flushOpenProject: @escaping @MainActor () async -> Void = { await StudioViewModel.shared.flush() },
+         closeOpenProject: @escaping @MainActor () async -> Void = { await StudioViewModel.shared.backToProjects() }) {
         let auth = auth ?? .shared
         self.auth = auth
+        self.flushOpenProject = flushOpenProject
+        self.closeOpenProject = closeOpenProject
         auth.$restoration.sink { [weak self] in self?.restoration = $0 }.store(in: &subscriptions)
         auth.$state.sink { [weak self] in self?.state = $0 }.store(in: &subscriptions)
         auth.$currentProfile.sink { [weak self] in self?.user = $0 }.store(in: &subscriptions)
         auth.$currentUser.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
+        auth.$passwordRecoveryPending.sink { [weak self] in self?.passwordRecoveryPending = $0 }.store(in: &subscriptions)
+        auth.$profileNotice.sink { [weak self] value in
+            if let value { self?.notice = value }
+        }.store(in: &subscriptions)
         auth.$configurationError.sink { [weak self] value in
             if let value { self?.error = value }
         }.store(in: &subscriptions)
@@ -83,7 +107,56 @@ final class AuthViewModel: ObservableObject {
             let completed = try await auth.signUp(email: email, password: password, username: username)
             state = auth.state
             user = auth.currentProfile
+            if !completed {
+                // The server created the account but returned no session: the
+                // address must be confirmed first. This is not a failure.
+                notice = "Check your email to confirm your account, then sign in."
+            }
             return completed && auth.state == .authenticated
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Neutral by design: the same confirmation is shown whether or not an
+    /// account exists, so this screen cannot be used to enumerate addresses.
+    @discardableResult
+    func requestPasswordReset(email: String) async -> Bool {
+        guard !isLoading else { return false }
+        if let availableAt = passwordResetAvailableAt, availableAt > Date() {
+            let seconds = Int(availableAt.timeIntervalSinceNow.rounded(.up))
+            notice = "Wait \(seconds) s before requesting another reset email."
+            return false
+        }
+        isLoading = true; error = nil
+        defer { isLoading = false }
+        do {
+            try await auth.resetPassword(email: email)
+            passwordResetAvailableAt = Date().addingTimeInterval(Self.passwordResetCooldown)
+            notice = "If an account exists for that email, a password reset link has been sent. Open it on this device."
+            return true
+        } catch AuthService.AuthError.invalidEmail {
+            self.error = AuthService.AuthError.invalidEmail.localizedDescription
+            return false
+        } catch {
+            // Do not reveal whether the address is registered; a transport
+            // failure still starts the cooldown so the button cannot be hammered.
+            passwordResetAvailableAt = Date().addingTimeInterval(Self.passwordResetCooldown)
+            notice = "If an account exists for that email, a password reset link has been sent. Open it on this device."
+            return false
+        }
+    }
+
+    @discardableResult
+    func updatePassword(_ password: String) async -> Bool {
+        guard !isLoading else { return false }
+        isLoading = true; error = nil
+        defer { isLoading = false }
+        do {
+            try await auth.updatePassword(password)
+            notice = "Your password was updated."
+            return true
         } catch {
             self.error = error.localizedDescription
             return false
@@ -120,13 +193,13 @@ final class AuthViewModel: ObservableObject {
             state = auth.state
             user = auth.currentProfile
             return auth.state == .authenticated
-        } catch {
-            self.error = error.localizedDescription
-            return false
         }
+        catch is CancellationError { error = nil } // Closed sheet: no banner.
+        catch { self.error = error.localizedDescription }
+        return false
     }
 
-    // MARK: - Google Sign In (Supabase OAuth flow)
+    // MARK: - Google / GitHub / Microsoft (Supabase OAuth flow)
 
     func providerUnavailableReason(_ provider: AppConfig.OAuthProvider) -> String? { auth.providerUnavailableReason(provider) }
     @discardableResult
@@ -140,22 +213,59 @@ final class AuthViewModel: ObservableObject {
             try await auth.signIn(provider: provider, launch: launch)
             return auth.state == .authenticated
         }
-        catch is CancellationError { error = "Sign-in was cancelled." }
+        catch is CancellationError { error = nil } // Closed browser sheet: no banner.
         catch { self.error = error.localizedDescription }
         return false
     }
     func rejectUnsolicitedOAuthCallback() { error = "This sign-in link has expired or was not requested. Start sign-in again." }
 
+    /// Classifies first, acts second. Only a recovery link can perform work, and
+    /// only through the SDK verifier stored by this device's own reset request.
+    func handleDeepLink(_ url: URL) async {
+        switch DeepLinkRouter.route(url) {
+        case .authCallback:
+            rejectUnsolicitedOAuthCallback()
+        case .passwordReset:
+            guard !isLoading else { return }
+            isLoading = true; error = nil
+            defer { isLoading = false }
+            do {
+                try await auth.completePasswordRecovery(url: url)
+                notice = "Set a new password to finish recovering your account."
+            } catch {
+                self.error = "This password reset link could not be used on this device. Request a new link from Forgot Password."
+            }
+        case .unsupported:
+            notice = "Unsupported link. StickDeath Infinity only opens its own sign-in and password reset links."
+        }
+    }
+
+    // MARK: - Account deletion (not available yet)
+
+    /// Reports the real outcome: nothing is deleted. Local projects stay on device.
+    func requestAccountDeletion() async {
+        error = nil
+        do { try await auth.deleteAccount() }
+        catch { self.error = error.localizedDescription }
+    }
+
     // MARK: - Sign Out
 
     func signOut() async {
+        guard !isLoading else { return }
         isLoading = true
         error = nil
         defer { isLoading = false }
+        // Persist the open document before the account changes. A dirty project
+        // is saved through the normal revision path; nothing is removed.
+        await flushOpenProject()
         do { try await auth.signOut() }
         catch { self.error = error.localizedDescription }
         state = auth.state
         user = auth.currentProfile
+        // Once the account is gone, leave the editor for the library. The
+        // project stays on the device and reopens from the same library.
+        if state != .authenticated { await closeOpenProject() }
     }
 
     // MARK: - Onboarding

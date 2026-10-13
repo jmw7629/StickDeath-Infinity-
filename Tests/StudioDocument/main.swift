@@ -80,6 +80,95 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
         print("PASS atomic project settings fill extension fixed coordinates timing Undo Redo archive and rejected lossy crop")
     }
 
+    /// #157 resize anchor, #163 history-free overlays and retained selection, #161 explicit frame position.
+    private static func resizeAnchorOverlaysAndFrameOrder() throws {
+        var original = try StudioDocument.new(name: "Anchor", width: 64, height: 64, fps: 12)
+        original.schemaVersion = 14
+        let layer = original.activeLayerID
+        var fill = DrawnElement(id: "fill", tool: .fill, points: [.init(x: 0, y: 0), .init(x: 64, y: 64)],
+                                color: "#00FF00", width: 1, opacity: 1, layerID: layer)
+        fill.fillMask = .init(width: 64, height: 64, spans: [.init(row: 20, start: 10, end: 50, alpha: 255)])
+        var moved = stroke(layer: layer, id: "moved"); moved.translation = .init(x: 3, y: 4)
+        original.frames[0].elements = [stroke(layer: layer, id: "plain"), fill, moved]
+        original.frames[0].rasterAssetID = "asset"; original.frames[0].rasterLayerID = layer
+        original.frames[0].rasterPlacement = .init(x: 8, y: 8, width: 48, height: 48)
+        var editor = try StudioDocumentEditor(document: original)
+        try editor.updateProjectSettings(name: original.name, width: 96, height: 80, fps: 12, anchor: .center)
+        let centred = editor.document
+        try require(centred.frames[0].elements[0].points == [StrokePoint(x: 46, y: 48), StrokePoint(x: 116, y: 158)] &&
+            centred.frames[0].elements[1].fillMask == StudioFillMask(width: 96, height: 80, spans: [.init(row: 28, start: 26, end: 66, alpha: 255)]) &&
+            centred.frames[0].elements[2].points == moved.points && centred.frames[0].elements[2].translation == .init(x: 19, y: 12) &&
+            centred.frames[0].rasterPlacement == .init(x: 24, y: 16, width: 48, height: 48) && centred.revision == original.revision + 1,
+            "Centre anchor must offset strokes, translations, fill spans and image placement by +16,+8 in one revision")
+        editor.undo(); try require(editor.document.frames == original.frames && editor.document.width == 64, "Anchored resize was not one Undo")
+        editor.redo(); try require(editor.document.frames == centred.frames, "Anchored resize Redo")
+        var historical = try StudioDocumentEditor(document: original)
+        try historical.updateProjectSettings(name: original.name, width: 96, height: 80, fps: 12)
+        try require(historical.document.frames[0].elements[0].points == original.frames[0].elements[0].points &&
+            historical.document.frames[0].rasterPlacement == original.frames[0].rasterPlacement, "Default anchor changed historical top-left behaviour")
+        var corner = try StudioDocumentEditor(document: original)
+        try corner.updateProjectSettings(name: original.name, width: 96, height: 80, fps: 12, anchor: .bottomTrailing)
+        try require(corner.document.frames[0].rasterPlacement == .init(x: 40, y: 24, width: 48, height: 48), "Bottom-right anchor offset")
+        var rejected = try StudioDocumentEditor(document: original)
+        do { try rejected.updateProjectSettings(name: original.name, width: 40, height: 40, fps: 12, anchor: .center); throw Failure(text: "Lossy anchored shrink accepted") }
+        catch StudioDocumentError.unavailable { }
+        do { try rejected.updateProjectSettings(name: original.name, width: 96, height: 80, fps: 12, anchor: .init(x: 2, y: 0)); throw Failure(text: "Anchor outside the canvas accepted") }
+        catch StudioDocumentError.invalid { }
+        try require(rejected.document == original && !rejected.canUndo, "Rejected anchored resize changed content or history")
+        var commanded = try StudioDocumentEditor(document: original)
+        let wire = try JSONEncoder().encode(StudioCommandRequest(requestID: UUID(), projectID: original.id, expectedRevision: original.revision,
+            action: .apply([.updateProjectSettings(.init(width: 96, height: 80, anchorX: 0.5, anchorY: 0.5))])))
+        _ = try StudioCommandExecutor.execute(try StudioCommandExecutor.decode(wire), editor: &commanded)
+        try require(commanded.document.frames == centred.frames, "Typed anchorX/anchorY diverged from the editor")
+        do { _ = try StudioCommandExecutor.execute(.init(requestID: UUID(), projectID: commanded.document.id, expectedRevision: commanded.document.revision,
+                action: .apply([.updateProjectSettings(.init(width: 100, anchorX: 1.5))])), editor: &commanded); throw Failure(text: "Malformed anchor accepted") }
+        catch StudioCommandError.malformed { }
+        print("PASS resize anchor offsets content by whole pixels with one Undo, default stays top-left, lossy or invalid anchors change nothing")
+
+        var overlays = try StudioDocumentEditor(document: .new(name: "Overlays", width: 64, height: 64, fps: 12))
+        let overlayLayer = overlays.document.activeLayerID, overlayFrame = overlays.document.activeFrameID
+        try overlays.commit(stroke(layer: overlayLayer, id: "a"), frameID: overlayFrame)
+        try overlays.commit(stroke(layer: overlayLayer, id: "b"), frameID: overlayFrame)
+        overlays.selectedElementIDs = ["a"]
+        let drawn = overlays.document
+        try require(overlays.changeViewSettings { $0.gridEnabled = true; $0.gridSettings = .init(spacing: 24, opacity: 0.4, tint: .red) } &&
+            overlays.changeViewSettings { $0.onionEnabled = true; $0.onionSettings = .init(previousCount: 2, nextCount: 1, opacity: 0.35, tinted: true) } &&
+            overlays.document.revision == drawn.revision + 2 && overlays.document.frames == drawn.frames && !overlays.canRedo, "Overlay settings must persist without history entries")
+        let configured = overlays.document
+        overlays.undo()
+        try require(overlays.document.frames[0].elements.map(\.id) == ["a"] && overlays.document.gridSettings == configured.gridSettings &&
+            overlays.document.onionSettings == configured.onionSettings && overlays.document.onionEnabled && overlays.selectedElementIDs == ["a"],
+            "Undo must revert the stroke, keep the overlays and keep the still-existing selection")
+        overlays.undo(); try require(overlays.document.frames[0].elements.isEmpty && overlays.selectedElementIDs.isEmpty && overlays.document.gridEnabled, "Selection clears once its element is gone")
+        overlays.redo(); overlays.selectedElementIDs = ["a"]; overlays.redo()
+        try require(overlays.document.frames == drawn.frames && overlays.selectedElementIDs == ["a"] && overlays.document.gridSettings == configured.gridSettings, "Redo keeps selection and overlays")
+        let frozen = overlays.document
+        try require(!overlays.changeViewSettings { $0.frames[0].elements.removeAll() } && !overlays.changeViewSettings { $0.gridSettings = .init(spacing: 0) } &&
+            overlays.document == frozen, "Overlay path must refuse artwork edits and invalid settings")
+        let overlayRequest = StudioCommandRequest(requestID: UUID(), projectID: frozen.id, expectedRevision: frozen.revision,
+            action: .apply([.canvasOptions(.init(grid: false, onion: false))]))
+        let overlayReceipt = try StudioCommandExecutor.execute(overlayRequest, editor: &overlays)
+        try require(overlayReceipt.outcome == .applied && !overlays.document.gridEnabled && overlays.selectedElementIDs == ["a"], "Typed overlay request")
+        overlays.undo(); try require(overlays.document.frames[0].elements.map(\.id) == ["a"] && !overlays.document.gridEnabled, "Typed overlay-only request must not be an Undo step")
+        print("PASS grid/onion overlays bypass history, survive Undo/Redo and element selection persists while elements exist")
+
+        var order = try StudioDocumentEditor(document: .new(name: "Order", width: 64, height: 64, fps: 12))
+        for _ in 0..<4 { try order.addFrame() }
+        let ids = order.document.frames.map(\.id), ordered = order.document
+        try order.moveFrames([ids[1], ids[2]], toPosition: 3)
+        try require(order.document.frames.map(\.id) == [ids[0], ids[3], ids[4], ids[1], ids[2]] && order.document.revision == ordered.revision + 1, "Range to explicit position")
+        order.undo(); try require(order.document.frames == ordered.frames, "Explicit move is one Undo")
+        try order.moveFrames([ids[4]], toPosition: 0)
+        try require(order.document.frames.map(\.id) == [ids[4], ids[0], ids[1], ids[2], ids[3]], "Single frame to the front")
+        order.undo(); let stable = order.document
+        try order.moveFrames([ids[2]], toPosition: 2); try require(order.document == stable, "Same position is a no-op")
+        for (bad, position) in [([ids[0], ids[2]], 0), ([ids[1], ids[2]], 4), (["missing"], 0), ([String](), 0)] {
+            do { try order.moveFrames(bad, toPosition: position); throw Failure(text: "Accepted invalid frame move") } catch StudioDocumentError.invalid { }
+        }
+        try require(order.document == stable, "Invalid frame move mutated the document")
+        print("PASS contiguous frame ranges move to an explicit position in one Undo and invalid ranges change nothing")
+    }
+
     private static func mixedImageOrdering() throws {
         func requireOrder(_ frame: AnimationFrame, _ layer: String, _ expected: [LayerContentToken], _ message: String) throws {
             let actual = try frame.orderedContent(on: layer)
@@ -855,7 +944,14 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
             let beforeSettings = onion.document
             _ = try onion.applyStudioCommands(decodedSettings)
             try require(onion.document.revision == beforeSettings.revision + 1 && onion.gridSpacing == 32 && onion.onionNextCount == 1 && onion.frames == beforeSettings.frames, "Typed editor settings failed atomic artwork-preserving update")
-            onion.undo(); try require(onion.document.gridSettings == beforeSettings.gridSettings && onion.document.onionSettings == beforeSettings.onionSettings, "One undo did not restore both settings")
+            // Overlays are editor state, not artwork: the typed settings request adds no
+            // history entry, and Undo of earlier artwork keeps the current overlays.
+            let afterSettings = onion.document
+            try require(onion.canUndo && !onion.canRedo, "Overlay settings fixture lost its artwork history")
+            onion.undo()
+            try require(onion.document.gridSettings == afterSettings.gridSettings && onion.document.onionSettings == afterSettings.onionSettings
+                        && onion.document.frames != afterSettings.frames && onion.canRedo, "Undo reverted overlay settings instead of the previous artwork step")
+            onion.redo(); try require(onion.document.frames == afterSettings.frames && onion.gridSpacing == 32, "Redo lost overlay settings")
             var malformed = try JSONSerialization.jsonObject(with: wire) as! [String: Any]
             var action = malformed["action"] as! [String: Any]
             var commands = action["apply"] as! [[String: Any]]
@@ -879,6 +975,7 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
             try require(openedGrid && gridReopened.document.gridSettings == onion.document.gridSettings, "Grid cold reopen lost controls")
             print("PASS bounded grid geometry typed settings strict decoding atomic rollback undo and cold reopen")
             try projectConfiguration()
+            try resizeAnchorOverlaysAndFrameOrder()
             try mixedImageOrdering()
             try imageMaskHistoryBudget()
             try linkedRasterJourneys()

@@ -7,10 +7,21 @@ import Darwin
 /// Clip start/end round to the nearest 48 kHz frame (at most half a sample).
 /// Output duration must be sample-aligned and contain every whole clip. Each
 /// clip reads its canonical sourceOffset; muted clips contribute zero gain.
-/// Track numbers identify additive lanes. No limiter or normalization is applied.
+/// Track numbers identify additive lanes. No limiter is applied; peak
+/// normalization runs only when the caller opts in and is recorded in the receipt.
 actor StudioAudioMixService {
     static let sampleRate = StudioAudioTimelineGeometry.sampleRate
     static let channels = 2
+    /// -1 dBFS as a linear sample value: 10^(-1/20).
+    static let normalizationTargetPeak: Float = 0.8912509
+    struct Options: Sendable, Equatable {
+        /// Opt-in (#179): measure the summed mix first, then scale every sample
+        /// by one gain so its absolute peak sits at -1 dBFS. Off by default;
+        /// levels are never changed without this flag and the receipt records
+        /// the exact gain that was applied.
+        var normalizeToMinusOneDBFS = false
+        init(normalizeToMinusOneDBFS: Bool = false) { self.normalizeToMinusOneDBFS = normalizeToMinusOneDBFS }
+    }
     struct Limits: Sendable {
         var maximumDuration = 120.0
         var maximumClips = 128
@@ -39,6 +50,11 @@ actor StudioAudioMixService {
         let overRangeSampleCount: Int
         let bytes: Int
         let sha256: String
+        /// 1 unless normalization was requested; then target / measured peak.
+        var appliedGain: Float = 1
+        /// Measured absolute peak of the unscaled sum (equals `peakAbsoluteSample` when `appliedGain == 1`).
+        var measuredPeakBeforeGain: Float = 0
+        var normalizedToMinusOneDBFS = false
         var duration: Double { Double(frameCount) / sampleRate }
     }
     final class Output: @unchecked Sendable {
@@ -90,12 +106,14 @@ actor StudioAudioMixService {
 
     func mix(document: StudioDocument, retainedAudioTracks: [AudioTrack], durationSeconds: Double,
              outputParent: URL = FileManager.default.temporaryDirectory, limits: Limits = .init(),
+             options: Options = .init(),
              progress: @Sendable (Progress) async throws -> Void = { _ in }) async throws -> Output {
         try Task.checkCancellation()
         try await MixLease.shared.acquire()
         do {
             let result = try await perform(document: document, tracks: retainedAudioTracks,
-                                           duration: durationSeconds, parent: outputParent, limits: limits, progress: progress)
+                                           duration: durationSeconds, parent: outputParent, limits: limits,
+                                           options: options, progress: progress)
             await MixLease.shared.release()
             return result
         } catch { await MixLease.shared.release(); throw error }
@@ -107,10 +125,13 @@ actor StudioAudioMixService {
         var end: Int
         let sourceStart: Int
         let volume: Float
+        /// SoundCraft balance-law channel gains for the clip's track pan.
+        let left: Float
+        let right: Float
         let fadeEnvelope: AudioFadeEnvelope?
     }
     private func perform(document: StudioDocument, tracks: [AudioTrack], duration: Double,
-                         parent: URL, limits: Limits,
+                         parent: URL, limits: Limits, options: Options,
                          progress: @Sendable (Progress) async throws -> Void) async throws -> Output {
         let hard = Limits()
         guard limits.maximumDuration.isFinite, limits.maximumDuration > 0, limits.maximumDuration <= hard.maximumDuration,
@@ -155,9 +176,11 @@ actor StudioAudioMixService {
                     throw MixError.invalidTimeline
                 }
             }
+            let balance = StudioCraftAudio.balanceGains(pan: document.audioTrackPan(clip.track))
             clips.append(.init(assetID: id, start: start, end: end, sourceStart: sourceStart,
-                               volume: clip.isMuted || document.isAudioTrackMuted(clip.track) ? 0
+                               volume: clip.isMuted || !document.isAudioTrackAudible(clip.track) ? 0
                                    : Float(clip.volume * document.audioTrackVolume(clip.track)),
+                               left: Float(balance.left), right: Float(balance.right),
                                fadeEnvelope: clip.fadeEnvelope))
         }
         guard Set(clips.map(\.assetID)) == Set(trackMap.keys) else { throw MixError.unresolvedLegacyAudio }
@@ -188,6 +211,42 @@ actor StudioAudioMixService {
             }
         }
         try Task.checkCancellation()
+        // Deterministic summation of one chunk; the same code produces the
+        // measurement pass and the written pass so normalization cannot drift.
+        func sum(offset: Int, count: Int) throws -> [Float] {
+            var buffer = [Float](repeating: 0, count: count * 2)
+            for clip in clips {
+                let first = max(offset, clip.start), end = min(offset + count, clip.end)
+                if first >= end { continue }
+                let source = assets[clip.assetID]!
+                for frame in first..<end {
+                    let src = (clip.sourceStart + frame - clip.start) * 2, dst = (frame - offset) * 2
+                    let gain = clip.volume * Float(clip.fadeEnvelope?.gain(atSourceFrame: clip.sourceStart + frame - clip.start) ?? 1)
+                    buffer[dst] += source[src] * gain * clip.left
+                    buffer[dst + 1] += source[src + 1] * gain * clip.right
+                }
+            }
+            for sample in buffer { guard sample.isFinite else { throw MixError.invalidSamples } }
+            return buffer
+        }
+        // Opt-in normalization (#179): a first pass measures the real summed
+        // peak; one gain then places that peak at -1 dBFS. Silence keeps gain 1.
+        var appliedGain: Float = 1, measuredPeak: Float = 0
+        if options.normalizeToMinusOneDBFS {
+            var measuring = 0
+            while measuring < totalFrames {
+                try Task.checkCancellation()
+                let count = min(4096, totalFrames - measuring)
+                for sample in try sum(offset: measuring, count: count) { measuredPeak = max(measuredPeak, abs(sample)) }
+                measuring += count
+                try await progress(.init(phase: .mixing, completed: measuring / 2, total: totalFrames))
+                await Task.yield()
+            }
+            if measuredPeak > 0 {
+                appliedGain = Self.normalizationTargetPeak / measuredPeak
+                guard appliedGain.isFinite, appliedGain > 0 else { throw MixError.invalidSamples }
+            }
+        }
         let owner = try MixOwnedFile(parent: parent)
         do {
             let writer = try MixCAFWriter(owner: owner, maximumBytes: limits.maximumOutputBytes)
@@ -197,26 +256,17 @@ actor StudioAudioMixService {
                 while offset < totalFrames {
                     try Task.checkCancellation(); try owner.check()
                     let count = min(4096, totalFrames - offset)
-                    var buffer = [Float](repeating: 0, count: count * 2)
-                    for clip in clips {
-                        let first = max(offset, clip.start), end = min(offset + count, clip.end)
-                        if first >= end { continue }
-                        let source = assets[clip.assetID]!
-                        for frame in first..<end {
-                            let src = (clip.sourceStart + frame - clip.start) * 2, dst = (frame - offset) * 2
-                            let gain = clip.volume * Float(clip.fadeEnvelope?.gain(atSourceFrame: clip.sourceStart + frame - clip.start) ?? 1)
-                            buffer[dst] += source[src] * gain
-                            buffer[dst + 1] += source[src + 1] * gain
-                        }
-                    }
+                    var buffer = try sum(offset: offset, count: count)
+                    if appliedGain != 1 { for index in buffer.indices { buffer[index] *= appliedGain } }
                     for sample in buffer {
                         guard sample.isFinite else { throw MixError.invalidSamples }
                         peak = max(peak, abs(sample)); if abs(sample) > 1 { overRange += 1 }
                     }
+                    if !options.normalizeToMinusOneDBFS { measuredPeak = peak }
                     buffer.withUnsafeBytes { expectedPCM.update(bufferPointer: $0) }
                     try writer.write(buffer, frames: count)
                     offset += count
-                    try await progress(.init(phase: .mixing, completed: offset, total: totalFrames))
+                    try await progress(.init(phase: .mixing, completed: options.normalizeToMinusOneDBFS ? totalFrames / 2 + offset / 2 : offset, total: totalFrames))
                     await Task.yield()
                 }
                 try writer.finish()
@@ -238,7 +288,9 @@ actor StudioAudioMixService {
             data = Data()
             let output = Output(receipt: .init(projectID: document.id, revision: document.revision, frameCount: totalFrames,
                                          sampleRate: Self.sampleRate, channels: 2, clipCount: clips.count, assetCount: assets.count,
-                                         peakAbsoluteSample: peak, overRangeSampleCount: overRange, bytes: byteCount, sha256: digest), owner: owner)
+                                         peakAbsoluteSample: peak, overRangeSampleCount: overRange, bytes: byteCount, sha256: digest,
+                                         appliedGain: appliedGain, measuredPeakBeforeGain: measuredPeak,
+                                         normalizedToMinusOneDBFS: options.normalizeToMinusOneDBFS), owner: owner)
             _ = try output.checkedURL()
             return output
         } catch let original {

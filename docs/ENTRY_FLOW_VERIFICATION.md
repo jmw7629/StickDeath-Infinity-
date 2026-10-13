@@ -8,12 +8,28 @@ guessed asset counts and provider claims are not shipped as facts.
 
 ## Behavior
 
-- Splash follows the existing authentication restoration state. It has no fixed
-  loading timer, and Open Studio Offline remains available during restoration.
-  A late result cannot navigate away from an explicit offline choice.
+- Splash shows the actual authentication restoration state (restoring, retryable
+  failure, sign-in required, ready). It holds for a minimum of one second as
+  intentional branding (`AppFlowView.minimumBrandingPresentation`, #136); this
+  is a presentation floor, not a fake loading indicator: Open Studio Offline,
+  Retry and Sign In are enabled throughout, an explicit action cancels the hold,
+  and restoration itself is never delayed by it. A late result cannot navigate
+  away from an explicit offline choice.
 - Guest access opens the existing Studio tab directly without requesting an anonymous
   cloud account or swallowing a failed sign-in. Projects use the existing local
-  production storage; no data migration or deletion is introduced.
+  production storage; no data migration or deletion is introduced. The guest
+  choice is remembered (`sdi.guest.chosen.v1`): later launches skip Welcome and
+  open the app, where Rooms, Calendar and Profile offer a Sign In button for
+  guests. That button flushes the open Studio project, presents Login, and Back
+  or success returns to the app with the same project (#137).
+- Deep links are classified by `DeepLinkRouter` before any navigation (#138):
+  `stickdeath://auth/callback` is rejected as unsolicited, `stickdeath://auth/reset`
+  is completed only when this device holds the matching reset verifier, and every
+  other URL shows an "Unsupported link" notice. No messaging, call or invite links exist.
+- The first-run tutorial reads and writes the same `tutorial_completed` key, so
+  completing or skipping it once persists. Tutorial and guide copy describe only
+  shipped behavior: Rooms are invitation-based, both creators approve, sign-in is
+  required, and there are no chat, call, comment or prize claims.
 - Missing account configuration is disclosed on Welcome. Existing sign-in and
   signup forms remain reachable, with accessible Back controls.
 - Studio Guide can be opened again from Welcome. Back, Next, page dots, Skip and
@@ -25,6 +41,50 @@ guessed asset counts and provider claims are not shipped as facts.
 - Welcome and guide content scroll on short displays. Navigation and decorative
   animations respect Reduce Motion; the previous unowned repeating welcome timer
   and delayed splash callbacks are removed.
+
+- Cold-launch routing is a pure function, `AppFlowView.startupDestination(
+  isAuthenticated:guestChosen:guideCompleted:onboarded:)`: signed-in accounts go
+  to the app (or to the guide when neither the local preference nor the server
+  profile marks it complete), a remembered guest opens the app, everyone else
+  sees Welcome. Every branch is pinned in `Tests/AuthState`
+  (`testDeepLinkRouterClassifiesBeforeNavigation`, deferred native execution).
+- The skull on Splash, Welcome, Login and the tutorial is `SDIBrandMark`: it
+  renders the owner's artwork when an asset named `SDIBrandSkull` exists in the
+  catalogue and otherwise shows the emoji as a clearly temporary placeholder.
+  Supplying the approved artwork is an owner gate; the red glow, near-black
+  background and white wordmark are in place and respect Reduce Motion.
+- Leaving Studio is safe by construction: switching tabs or backgrounding runs
+  the shared editor's flush (`BackgroundTaskScope.run` provides the
+  background-task assertion; wiring it into `StudioView`'s scene-phase handler
+  is a coordinator patch in this wave), sign-out flushes first and returns to
+  the library only after the account is gone, and the in-app Sign In route
+  flushes before presenting Login. The editor refuses to
+  leave while a stroke or text draft is uncommitted and tells the person why.
+
+## Epic #8 evidence (splash, welcome, truthful onboarding)
+
+Splash shows the real restoration state with Retry, Sign In and Open Studio
+Offline always enabled, holds one second as documented branding, and routes by
+the pure function above (#136). Welcome, the five-page guide and the first-run
+tutorial advertise only shipped behaviour: local Studio, invitation-based Rooms
+with mutual approval and no chat or calls, War Room voting, licensed assets and
+local Spatter help; completion is a device preference (`sdi.guide.completed.v1`,
+`tutorial_completed`), the guest choice is remembered (`sdi.guest.chosen.v1`),
+and guests can create, save and reopen offline projects and sign in later from
+Rooms, Calendar or Profile (#137). Native journey evidence is recorded below;
+the current revision has not been re-run natively.
+
+## Epic #11 evidence (navigation, Rooms, protected routes)
+
+`MainTabView` exposes Home, Challenges, Studio, Rooms and Profile only; the
+Rooms tab hosts Calendar and the no-chat Watch Together route, and Profile hosts
+the admin entry, which is server-authorised. There are no messaging or call
+routes (`scripts/verify_retired_communications.py` passes). `DeepLinkRouter`
+accepts only the auth callback (rejected as unsolicited) and the password-reset
+link (completed only with this device's verifier); everything else is
+"Unsupported link" (#138). Leave-Studio safety is described above. A native
+UI journey through Rooms → Calendar → back and Rooms → Watch Together → back
+that asserts the open project's revision is unchanged remains deferred.
 
 ## Verification boundaries
 

@@ -169,7 +169,8 @@ object MovieExporter {
                 require(extracted == total) { "MP4 is missing animation frames. No file was offered for saving." }
                 check()
             } finally { extractor.release() }
-            val stem = d.name.replace(Regex("[^A-Za-z0-9 _-]"),"_").take(80).ifBlank { "animation" }
+            // Same ASCII base as iOS StudioExportFilename (#185); the manifest keeps the project identity.
+            val stem = ExportManifests.filenameBase(d)
             val result = if (d.audioClips.isEmpty()) file else AudioMovieMuxer.add(context, file, d)
             if (result !== file) file.delete()
             complete = true

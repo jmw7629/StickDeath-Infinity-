@@ -6,24 +6,48 @@ struct StudioFrameThumbnail: View {
     let frame: AnimationFrame
     var isolatedLayerID: String? = nil
     var body: some View {
+        // Only this thin wrapper observes the view model. The compositing canvas
+        // below is Equatable on its inputs, so a published change elsewhere in
+        // Studio (zoom, tool settings, messages) does not re-prepare every
+        // timeline and Frames Viewer thumbnail.
         let content = StudioFrameRenderer.thumbnailContent(frame: frame, layers: vm.layers, isolatedLayerID: isolatedLayerID)
-        let frame = content.frame, layers = content.layers
+        StudioFrameThumbnailCanvas(frame: content.frame, layers: content.layers,
+            canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight),
+            legacyRaster: vm.rasterData(content.frame.rasterAssetID), sources: vm.rasterSources(for: content.frame))
+            .equatable()
+    }
+}
+
+private struct StudioFrameThumbnailCanvas: View, Equatable {
+    let frame: AnimationFrame
+    let layers: [CanvasLayer]
+    let canvasSize: CGSize
+    let legacyRaster: Data?
+    let sources: [String: Data]
+    /// Raster bytes are immutable per asset identity; comparing identities and
+    /// byte counts (which change when an asset finishes loading) avoids
+    /// byte-for-byte comparison of large images on every update.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.frame == rhs.frame && lhs.layers == rhs.layers && lhs.canvasSize == rhs.canvasSize &&
+        lhs.legacyRaster?.count == rhs.legacyRaster?.count &&
+        lhs.sources.mapValues(\.count) == rhs.sources.mapValues(\.count)
+    }
+    var body: some View {
         let prepared = Result { try StudioFrameRenderer.prepare(frame: frame) }
-        let sources = vm.rasterSources(for: frame)
         let raster = Result { try StudioFrameRenderer.prepareRasters(frame: frame, layers: layers,
             sourceData: sources, maximumDimension: 128) }
         let smudges = Result { try StudioSmudgeReplay.viewCache.prepare(frame: frame, layers: layers,
-            canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), rasterData: vm.rasterData(frame.rasterAssetID), rasterDataByID: sources) }
+            canvasSize: canvasSize, rasterData: legacyRaster, rasterDataByID: sources) }
         Canvas { context, size in
-            let scale = min(size.width / CGFloat(vm.canvasWidth), size.height / CGFloat(vm.canvasHeight))
-            let fitted = CGSize(width: CGFloat(vm.canvasWidth) * scale, height: CGFloat(vm.canvasHeight) * scale)
+            let scale = min(size.width / canvasSize.width, size.height / canvasSize.height)
+            let fitted = CGSize(width: canvasSize.width * scale, height: canvasSize.height * scale)
             context.translateBy(x: (size.width - fitted.width) / 2, y: (size.height - fitted.height) / 2)
             context.fill(Path(CGRect(origin: .zero, size: fitted)), with: .color(.white))
             switch (prepared, raster, smudges) {
             case (.success(let brushes), .success(let image), .success(let effects)):
                 if let error = StudioFrameRenderer.draw(context: &context, frame: frame, layers: layers,
-                    canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: fitted,
-                    rasterData: vm.rasterData(frame.rasterAssetID), preparedBrushes: brushes, preparedSmudges: effects, rasterSources: sources, preparedRasters: image) {
+                    canvasSize: canvasSize, size: fitted,
+                    rasterData: legacyRaster, preparedBrushes: brushes, preparedSmudges: effects, rasterSources: sources, preparedRasters: image) {
                     StudioFrameRenderer.drawFailure(error, context: &context, size: fitted)
                 }
             case (.failure(let error), _, _), (_, .failure(let error), _), (_, _, .failure(let error)):
@@ -466,14 +490,28 @@ struct StudioFrameRenderer {
         context.draw(Text("Render unavailable: \(error.localizedDescription)").font(.system(size: 11)).foregroundColor(.red),
                      in: CGRect(origin: .zero, size: size))
     }
-    private static func blend(_ name: String) -> GraphicsContext.BlendMode {
-        switch name.lowercased() {
-        case "multiply": return .multiply
-        case "screen": return .screen
-        case "overlay": return .overlay
-        case "darken": return .darken
-        case "lighten": return .lighten
-        default: return .normal
+    /// PhotoCraft layer modes on the native compositor. Unknown historical
+    /// strings keep drawing as Normal.
+    static func blend(_ name: String) -> GraphicsContext.BlendMode {
+        switch StudioLayerBlendMode(stored: name) {
+        case .normal, .none: return .normal
+        case .darken: return .darken
+        case .multiply: return .multiply
+        case .colorBurn: return .colorBurn
+        case .linearBurn: return .plusDarker
+        case .lighten: return .lighten
+        case .screen: return .screen
+        case .colorDodge: return .colorDodge
+        case .linearDodge: return .plusLighter
+        case .overlay: return .overlay
+        case .softLight: return .softLight
+        case .hardLight: return .hardLight
+        case .difference: return .difference
+        case .exclusion: return .exclusion
+        case .hue: return .hue
+        case .saturation: return .saturation
+        case .color: return .color
+        case .luminosity: return .luminosity
         }
     }
     private static func drawElement(context: inout GraphicsContext, element: DrawnElement, size: CGSize, canvasSize: CGSize,
@@ -507,8 +545,15 @@ struct StudioFrameRenderer {
             context.rotate(by: .degrees(style.rotation))
             let box = CGRect(x: -style.boxWidth/2, y: -style.boxHeight/2, width: style.boxWidth, height: style.boxHeight)
             context.clip(to: Path(box))
-            let design: Font.Design = style.font == .monospaced ? .monospaced : style.font == .serif ? .serif : .default
-            var font = Font.system(size: style.size, weight: style.bold ? .bold : .regular, design: design)
+            var font: Font
+            if style.font == .specialElite {
+                // Bundled SpecialElite-Regular.ttf; weight and slant are synthesised.
+                font = Font.custom("SpecialElite-Regular", fixedSize: style.size)
+                if style.bold { font = font.bold() }
+            } else {
+                let design: Font.Design = style.font == .monospaced ? .monospaced : style.font == .serif ? .serif : .default
+                font = Font.system(size: style.size, weight: style.bold ? .bold : .regular, design: design)
+            }
             if style.italic { font = font.italic() }
             // Resolve each actual shaped line using the same font engine used
             // to draw it. Alignment applies per wrapped line, not just to the

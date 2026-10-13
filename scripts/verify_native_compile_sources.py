@@ -8,12 +8,53 @@ ROOT = Path(__file__).resolve().parents[1]
 # These production types refer to each other directly. Keep the real catalogue
 # in tests that compile preview sessions; a test-only stand-in would hide wiring.
 DEPENDENCIES = {
+    # Community clients share one model file and one transport protocol.
+    "StickDeathInfinity/Services/Social/CommunityTransport.swift": {"StickDeathInfinity/Models/CommunityModels.swift"},
+    "StickDeathInfinity/Services/Social/FeedClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Social/ProfileClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Social/AdminOperationsClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Rooms/RoomsClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Rooms/RoomSessionCoordinator.swift": {"StickDeathInfinity/Services/Rooms/RoomsClient.swift"},
+    "StickDeathInfinity/Services/WarRoom/WarRoomClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Challenge/ChallengeLifecycleClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    # The motion-recipe suite checks every catalogued instruction example.
+    "Tests/SpatterMotionRecipe/main.swift": {
+        "StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift",
+    },
     "StickDeathInfinity/Services/StudioAudioPreviewSession.swift": {
         "StickDeathInfinity/Services/StudioSoundCatalogue.swift",
         "StickDeathInfinity/Services/StudioAudioImportService.swift",
     },
+    # AudioFadeEnvelope, CanvasLayer and their consumers use the ArtCraft ports.
+    "StickDeathInfinity/Models/Models.swift": {
+        "StickDeathInfinity/Models/StudioCraftAudio.swift",
+        "StickDeathInfinity/Models/StudioCraftLayers.swift",
+    },
     "StickDeathInfinity/Services/StudioSoundCatalogue.swift": {
         "StickDeathInfinity/Services/StudioAudioImportService.swift",
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+    },
+    # Wave 3 media logic (#191, #192, #177, #180): Foundation-only files that the
+    # AVFoundation services now call. A step that compiles the service without
+    # them fails on macOS, so the dependency is declared here.
+    "StickDeathInfinity/Services/StudioAudioImportService.swift": {
+        "StickDeathInfinity/Services/StudioAudioWaveformCache.swift",
+    },
+    "StickDeathInfinity/Services/StudioAudioTimelineSession.swift": {
+        "StickDeathInfinity/Services/StudioAudioTimelineLogic.swift",
+    },
+    "StickDeathInfinity/Services/StudioMovieExportService.swift": {
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+    },
+    "StickDeathInfinity/Services/StudioMuxCapture.swift": {
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+    },
+    "StickDeathInfinity/Services/StudioAudioVideoMuxService.swift": {
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+    },
+    "StickDeathInfinity/Services/StudioMovieExportSession.swift": {
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+        "StickDeathInfinity/Services/StudioSoundCatalogue.swift",
     },
 }
 

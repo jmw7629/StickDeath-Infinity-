@@ -100,18 +100,24 @@ private actor DecodePause {
                         && result.sampleRate == 8192 && result.channelCount == 1, "Incorrect decoded audio identity or timing")
             try require(result.originalData == signal && result.track.audioData == signal && result.track.id == result.id
                         && result.track.startTime == 0 && result.track.legacySourceFilename == nil, "Original bytes or stable track identity changed")
-            try require(result.waveformPeaks.count == 256, "Wrong measured envelope size")
+            try require(result.waveformPeaks.count == 256 && result.waveformRMS.count == 256, "Wrong measured envelope size")
             for index in 0..<256 {
                 let expected: Float = [0.5, 0, 0.25, 32767.0 / 32768.0][index / 64]
                 try require(abs(result.waveformPeaks[index] - expected) < 0.00001, "Wrong measured peak at \(index)")
+                // A constant-valued interval has RMS equal to its magnitude (#192).
+                try require(abs(result.waveformRMS[index] - expected) < 0.00001, "Wrong measured RMS at \(index)")
             }
+            let record = result.waveformRecord
+            try record.validate()
+            try require(record.sha256.count == 64 && record.byteCount == signal.count && record.peaks == result.waveformPeaks
+                        && record.rms == result.waveformRMS && record.duration == result.duration, "Waveform record does not describe the import")
             try require(!result.hasClippedSamples && (try Data(contentsOf: signalURL)) == signal, "Import changed original or invented clipping")
         }
         try await test("silence is exactly zero and very short files keep a bounded envelope") {
             for count in [4, 5000] {
                 let source = try file(root, "silence-\(count).wav", wave(frames: count) { _, _ in 0 })
                 let result = try await service.importAudio(from: source, scratchParent: scratch)
-                try require(result.waveformPeaks == [Float](repeating: 0, count: 256), "Silence has invented waveform values")
+                try require(result.waveformPeaks == [Float](repeating: 0, count: 256) && result.waveformRMS == [Float](repeating: 0, count: 256), "Silence has invented waveform values")
                 try require(result.decodedFrameCount == count, "Short source was padded or truncated")
             }
         }
@@ -122,6 +128,11 @@ private actor DecodePause {
             let result = try await service.importAudio(from: source, scratchParent: scratch)
             try require(result.channelCount == 2 && result.duration == 1, "Stereo duration/channels wrong")
             for bin in 0..<256 { try require(result.waveformPeaks[bin] == (bin < 128 ? 0.75 : 0.25), "Stereo peak omitted a channel") }
+            // RMS spans both channels: sqrt((0.25² + 0.75²) / 2) then sqrt((0.25² + 0²) / 2).
+            for bin in 0..<256 {
+                let expected: Float = bin < 128 ? (0.5590169943749475) : (0.1767766952966369)
+                try require(abs(result.waveformRMS[bin] - expected) < 0.0001 && result.waveformRMS[bin] <= result.waveformPeaks[bin], "Stereo RMS wrong at \(bin): \(result.waveformRMS[bin])")
+            }
         }
         try await test("floating PCM clipping is measured and nonfinite samples are rejected") {
             let source = try file(root, "float.wav", wave(frames: 4096, float: true) { _, _ in 1.5 })

@@ -68,7 +68,18 @@ struct StudioToolbarLayout: Equatable {
     /// The sole tool popup opens below a horizontal rail, or beside an edge rail.
     /// Near the bottom edge it uses the larger space above and scrolls its content.
     static func settingsFrame(in bounds: CGRect, toolbar: Placement) -> CGRect {
+        settingsFrame(in: bounds, toolbar: toolbar, anchor: nil)
+    }
+
+    /// Same popup, slid along the rail so it sits beside the selected tool's
+    /// button (`anchor`, in stage coordinates) and clamped inside the stage. A
+    /// missing, non-finite or off-rail anchor keeps the historical placement.
+    static func settingsFrame(in bounds: CGRect, toolbar: Placement, anchor: CGRect?) -> CGRect {
         let inner = usable(bounds)
+        let anchor = anchor.flatMap { rect -> CGRect? in
+            guard valid(rect), rect.width > 0 || rect.height > 0, rect.intersects(toolbar.frame.insetBy(dx: -1, dy: -1)) else { return nil }
+            return rect
+        }
         var area = inner
         if toolbar.vertical {
             if toolbar.dock == .trailing { area.size.width = max(0, toolbar.frame.minX - margin - inner.minX) }
@@ -90,7 +101,17 @@ struct StudioToolbarLayout: Equatable {
         let x = toolbar.vertical
             ? (toolbar.dock == .trailing ? area.maxX - width : area.minX)
             : area.midX - width / 2
-        return CGRect(x: x, y: area.minY, width: width, height: height)
+        var frame = CGRect(x: x, y: area.minY, width: width, height: height)
+        if let anchor {
+            // Slide along the rail only: beside the selected tool's row on an
+            // edge rail, centred under (or over) its column on a horizontal rail.
+            if toolbar.vertical {
+                frame.origin.y = min(max(area.minY, anchor.minY), max(area.minY, area.maxY - height))
+            } else {
+                frame.origin.x = min(max(area.minX, anchor.midX - width / 2), max(area.minX, area.maxX - width))
+            }
+        }
+        return frame
     }
 
     /// Preserve the original clear canvas beneath the default top rail and

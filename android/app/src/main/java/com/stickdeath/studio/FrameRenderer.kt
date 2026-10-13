@@ -9,10 +9,20 @@ import android.graphics.RectF
 
 /** Shared viewport/export drawing path. Erasers remove alpha from a layer, never the white background. */
 object FrameRenderer {
-    fun supports(blend: LayerBlend): Boolean = !blend.needsModernBlend || android.os.Build.VERSION.SDK_INT >= 29
+    /** Linear Burn (max(0, cb + cs - 1)) has no native BlendMode/PorterDuff equivalent and this
+     * renderer cannot read its backdrop for a software pass, so it is refused on every API level
+     * rather than drawn as Normal. */
+    fun supports(blend: LayerBlend): Boolean =
+        blend != LayerBlend.LinearBurn && (!blend.needsModernBlend || android.os.Build.VERSION.SDK_INT >= 29)
+    /** Honest user-facing reason a blend cannot be drawn here, or null when it can. */
+    fun unavailableReason(blend: LayerBlend): String? = when {
+        blend == LayerBlend.LinearBurn -> "Linear Burn layers have no exact Android compositing mode yet. The original project is preserved."
+        !supports(blend) -> "${blend.label} layers require Android 10 or later. The original project is preserved."
+        else -> null
+    }
     private fun layerPaint(layer: Layer): Paint = Paint().apply {
         alpha = (layer.opacity * 255).toInt()
-        require(supports(layer.blend)) { "${layer.blend.label} layers require Android 10 or later. The original project is preserved." }
+        require(supports(layer.blend)) { unavailableReason(layer.blend) ?: "Unsupported blend: ${layer.blend.label}" }
         if (android.os.Build.VERSION.SDK_INT >= 29) {
             blendMode = when (layer.blend) {
                 LayerBlend.Normal -> android.graphics.BlendMode.SRC_OVER
@@ -31,6 +41,9 @@ object FrameRenderer {
                 LayerBlend.Saturation -> android.graphics.BlendMode.SATURATION
                 LayerBlend.Color -> android.graphics.BlendMode.COLOR
                 LayerBlend.Luminosity -> android.graphics.BlendMode.LUMINOSITY
+                // PLUS sums premultiplied source and destination and saturates: min(1, cb + cs).
+                LayerBlend.LinearDodge -> android.graphics.BlendMode.PLUS
+                LayerBlend.LinearBurn -> error("Linear Burn has no exact Android compositing mode.")
             }
         } else {
             // Legacy MULTIPLY modulates alpha and is not equivalent to the
@@ -77,11 +90,22 @@ object FrameRenderer {
                         checkCancellation()
                         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                             color = stroke.color; strokeWidth = stroke.width
-                            this.alpha = ((if (stroke.tool == Tool.Eraser) 255 else android.graphics.Color.alpha(stroke.color)) * stroke.opacity).toInt().coerceIn(0, 255)
+                            this.alpha = ((if (stroke.tool.isEraser) 255 else android.graphics.Color.alpha(stroke.color)) * stroke.opacity).toInt().coerceIn(0, 255)
                             strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
-                            if (stroke.tool == Tool.Eraser) xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+                            if (stroke.tool.isEraser) xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+                            // Alpha lock: paint only where this layer already has coverage (iOS preservesLayerAlpha).
+                            else if (stroke.preservesLayerAlpha) xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
                         }
-                        if (stroke.tool == Tool.Fill) {
+                        if (stroke.tool == Tool.SoftEraser) {
+                            // Feathered edge from stacked destination-out passes; see SoftEraser.
+                            val fullAlpha = paint.alpha
+                            SoftEraser.passes(stroke.opacity).forEach { pass ->
+                                paint.strokeWidth = stroke.width * pass.widthFactor
+                                paint.alpha = (pass.alpha * 255).toInt().coerceIn(0, 255)
+                                drawPolyline(canvas, stroke, paint)
+                            }
+                            paint.alpha = fullAlpha
+                        } else if (stroke.tool == Tool.Fill) {
                             paint.isAntiAlias = false
                             val fillCheckpoint = canvas.save()
                             try {
@@ -117,21 +141,26 @@ object FrameRenderer {
                                 }
                                 canvas.drawPath(path, paint)
                             }
-                        } else if (stroke.points.size == 1 || stroke.points.all { it == stroke.points.first() }) {
-                            canvas.drawCircle(stroke.points.first().x, stroke.points.first().y, stroke.width / 2, paint)
-                        } else {
-                            paint.style = if (stroke.filled) Paint.Style.FILL else Paint.Style.STROKE
-                            val path = Path().apply {
-                                moveTo(stroke.points.first().x, stroke.points.first().y)
-                                stroke.points.drop(1).forEach { lineTo(it.x, it.y) }
-                                if (stroke.tool.isClosedShape) close()
-                            }
-                            canvas.drawPath(path, paint)
-                        }
+                        } else drawPolyline(canvas, stroke, paint)
                     }
                 } finally { canvas.restoreToCount(checkpoint) }
             }
         } finally { canvas.restoreToCount(outer) }
+    }
+    /** Android's native round-capped polyline (or filled closed shape); a lone point is a dot. */
+    private fun drawPolyline(canvas: Canvas, stroke: Stroke, paint: Paint) {
+        if (stroke.points.size == 1 || stroke.points.all { it == stroke.points.first() }) {
+            paint.style = Paint.Style.FILL
+            canvas.drawCircle(stroke.points.first().x, stroke.points.first().y, paint.strokeWidth / 2, paint)
+        } else {
+            paint.style = if (stroke.filled) Paint.Style.FILL else Paint.Style.STROKE
+            val path = Path().apply {
+                moveTo(stroke.points.first().x, stroke.points.first().y)
+                stroke.points.drop(1).forEach { lineTo(it.x, it.y) }
+                if (stroke.tool.isClosedShape) close()
+            }
+            canvas.drawPath(path, paint)
+        }
     }
     /** Ghosts are an editor overlay only; exports call draw directly. Each ghost
      * has its own composite layer so an eraser cannot cut into another frame. */

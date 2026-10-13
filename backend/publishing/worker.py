@@ -14,6 +14,10 @@ from .youtube_withdraw import withdraw
 
 
 class JobAPI:
+    PREFIX = 'sdi_publish_'
+    PERMITTED = frozenset({'claim','renew','finish','progress','uncertain',
+                           'removal_claim','removal_renew','removal_finish'})
+
     def __init__(self, base_url: str, service_key: str):
         parsed = urllib.parse.urlsplit(base_url)
         if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
@@ -25,11 +29,9 @@ class JobAPI:
         self.key = service_key
 
     def call(self, operation: str, **payload):
-        permitted = {'claim','renew','finish','progress','uncertain',
-                     'removal_claim','removal_renew','removal_finish'}
-        if operation not in permitted: raise ValueError('Unsupported worker operation.')
+        if operation not in self.PERMITTED: raise ValueError('Unsupported worker operation.')
         body = json.dumps(payload).encode()
-        request = urllib.request.Request(self.base+'/rest/v1/rpc/sdi_publish_'+operation,
+        request = urllib.request.Request(self.base+'/rest/v1/rpc/'+self.PREFIX+operation,
             data=body,method='POST',headers={'apikey':self.key,'Authorization':'Bearer '+self.key,
                                             'Content-Type':'application/json'})
         try:

@@ -32,6 +32,65 @@ import Darwin
         let sourceAudioSHA256: String
         let maximumDecodedAudioSample: Float
         var imageCredits: [StudioExportService.ImageCredit]? = nil
+        /// The movie's actual filename inside the output directory.
+        var movieFilename: String? = nil
+        /// Opt-in normalization applied by the mixer (#179); 1 when off.
+        var audioAppliedGain: Float? = nil
+        var audioNormalizedToMinusOneDBFS: Bool? = nil
+        /// Per-clip RMS comparison between the mixer PCM and the decoded AAC (#181).
+        var audioClipWindowsChecked: Int? = nil
+        var maximumAudioRMSDeviation: Float? = nil
+        var heldLastFrameTicks: Int? = nil
+        var renderPlan: StudioMovieExportService.RenderPlan? = nil
+        /// Library attribution for the mixed audio assets, verified by the capture proof (#191).
+        var soundCredits: [StudioSoundCredit]? = nil
+    }
+    /// Sum-of-squares accumulator over the clip windows of one capture. The same
+    /// code measures the mixer PCM while muxing and the decoded AAC afterwards.
+    struct ClipWindowRMS {
+        struct Window { let start: Int; let end: Int }
+        let windows: [Window]
+        private(set) var sums: [Double]
+        init(document: StudioDocument, totalFrames: Int) {
+            windows = document.audioClips.compactMap { clip in
+                let start = Int((clip.startTime * 48_000).rounded()), end = min(totalFrames, Int(((clip.startTime + clip.duration) * 48_000).rounded()))
+                return end > start && start >= 0 ? Window(start: start, end: end) : nil
+            }
+            sums = Array(repeating: 0, count: windows.count)
+        }
+        /// `values` are interleaved stereo frames beginning at absolute frame `offset`.
+        mutating func add(frameOffset offset: Int, values: [Float]) {
+            let count = values.count / 2
+            for (index, window) in windows.enumerated() {
+                let first = max(offset, window.start), last = min(offset + count, window.end)
+                guard first < last else { continue }
+                var total = 0.0
+                for frame in first..<last {
+                    let base = (frame - offset) * 2
+                    total += Double(values[base]) * Double(values[base]) + Double(values[base + 1]) * Double(values[base + 1])
+                }
+                sums[index] += total
+            }
+        }
+        func rms(_ index: Int) -> Float {
+            let frames = windows[index].end - windows[index].start
+            return frames > 0 ? Float((sums[index] / Double(frames * 2)).squareRoot()) : 0
+        }
+        /// Tolerance for 192 kb/s AAC: absolute 0.01 plus 15 % of the louder
+        /// window. A clearly audible source window must not decode as silence.
+        static func compare(source: ClipWindowRMS, decoded: ClipWindowRMS) throws -> Float {
+            guard source.windows.count == decoded.windows.count else { throw MuxError.verificationFailed }
+            var worst: Float = 0
+            for index in source.windows.indices {
+                let a = source.rms(index), b = decoded.rms(index)
+                guard a.isFinite, b.isFinite else { throw MuxError.verificationFailed }
+                let deviation = abs(a - b)
+                guard deviation <= 0.01 + 0.15 * max(a, b) else { throw MuxError.audioLoudness(index, a, b) }
+                if a > 0.01 { guard b > 0.001 else { throw MuxError.audioLoudness(index, a, b) } }
+                worst = max(worst, deviation)
+            }
+            return worst
+        }
     }
     @MainActor final class AudioComponent {
         let capture: StudioMuxCapture
@@ -44,10 +103,14 @@ import Darwin
         let receipt: Receipt
         private let owner: StudioMuxOutputOwnership
         let directory: URL
-        fileprivate init(receipt: Receipt, owner: StudioMuxOutputOwnership, directory: URL) { self.receipt = receipt; self.owner = owner; self.directory = directory }
+        let movieFilename: String
+        fileprivate init(receipt: Receipt, owner: StudioMuxOutputOwnership, directory: URL, movieFilename: String) {
+            self.receipt = receipt; self.owner = owner; self.directory = directory; self.movieFilename = movieFilename
+        }
+        var movieURL: URL { directory.appendingPathComponent(movieFilename) }
         func checkedURLs() throws -> [URL] {
             try owner.validateForUse()
-            return [directory.appendingPathComponent("animation.mp4"), directory.appendingPathComponent("manifest.json")]
+            return [movieURL, directory.appendingPathComponent("manifest.json")]
         }
         func cleanup() throws { try owner.cleanup() }
     }
@@ -65,28 +128,52 @@ import Darwin
         }
     }
     struct Failure: Error { let underlying: Error; let recovery: Recovery }
-    enum MuxError: Error {
+    enum MuxError: Error, LocalizedError {
         case mismatchedCapture, unsupportedSource, overload, limitExceeded, busy
         case timing(String)
         case writerFailed, verificationFailed, outputUnavailable, unsafeDestination, cleanupFailed(URL)
+        /// Decoded AAC loudness of one clip window differs from the mixer PCM (clip index, source RMS, decoded RMS).
+        case audioLoudness(Int, Float, Float)
+        var errorDescription: String? {
+            switch self {
+            case .mismatchedCapture: return "The video and audio components came from different captures. Nothing was muxed."
+            case .unsupportedSource: return "A rendered component uses a stream this muxer does not accept."
+            case .overload: return "The mixed audio exceeds full scale. Lower clip or track volume, or enable Normalize to -1 dBFS, then export again."
+            case .limitExceeded: return "The mixed MP4 exceeded its size or time limit. No movie was published."
+            case .busy: return "Another mixed MP4 is still being written."
+            case .timing(let what): return "Mixed MP4 timing check failed (\(what)). No movie was published."
+            case .writerFailed: return "The MP4 muxer could not write this movie. No movie was published."
+            case .verificationFailed: return "The mixed MP4 did not pass its decode checks. No movie was published."
+            case .outputUnavailable: return "The mixed MP4 files are no longer available at their verified location."
+            case .unsafeDestination: return "Mixed MP4 export requires an existing app-owned directory without symbolic links."
+            case .cleanupFailed: return "Temporary mixed MP4 files could not be safely removed; they were preserved."
+            case .audioLoudness(let clip, let source, let decoded):
+                return String(format: "Decoded audio loudness for clip %d (RMS %.4f) does not match the mix (RMS %.4f). No movie was published.", clip + 1, decoded, source)
+            }
+        }
     }
     private let limits: Limits
     private static var active = false
     init(limits: Limits = Limits()) { self.limits = limits }
 
     func mixAudioComponent(capture: StudioMuxCapture, outputParent: URL,
+                           options: StudioAudioMixService.Options = .init(),
                            progress: @Sendable (StudioAudioMixService.Progress) async throws -> Void = { _ in }) async throws -> AudioComponent {
         let proof = capture.proof
         let output = try await StudioAudioMixService().mix(document: capture.snapshot.document,
             retainedAudioTracks: capture.snapshot.retainedAudioTracks,
-            durationSeconds: Double(proof.audioSampleFrames) / 48_000, outputParent: outputParent, progress: progress)
+            durationSeconds: Double(proof.audioSampleFrames) / 48_000, outputParent: outputParent, options: options, progress: progress)
         return AudioComponent(capture: capture, output: output)
     }
 
     func mux(video: StudioMovieExportService.VisualComponent, audio: AudioComponent, outputParent: URL,
+             filenameBase: String? = nil,
              progress: (Progress) throws -> Void = { _ in }) async throws -> Output {
         try Task.checkCancellation()
         guard video.capture === audio.capture, video.capture.proof == audio.capture.proof else { throw MuxError.mismatchedCapture }
+        if let filenameBase { guard StudioExportFilename.isValid(filenameBase) else { throw MuxError.unsafeDestination } }
+        let movieFilename = (filenameBase ?? StudioExportFilename.fallback) + ".mp4"
+        let codec = StudioMovieExportService.Codec(rawValue: video.capture.proof.codec ?? "h264") ?? .h264
         guard !Self.active else { throw MuxError.busy }; Self.active = true; defer { Self.active = false }
         let hard = Limits()
         guard (1...hard.maximumOutputBytes).contains(limits.maximumOutputBytes),
@@ -105,7 +192,10 @@ import Darwin
               am.sampleRate == 48_000, am.channels == 2,
               am.clipCount == video.capture.snapshot.document.audioClips.count,
               am.assetCount == video.capture.snapshot.retainedAudioTracks.count else { throw MuxError.mismatchedCapture }
-        guard am.overRangeSampleCount == 0, am.peakAbsoluteSample.isFinite, am.peakAbsoluteSample <= 1 else { throw MuxError.overload }
+        // A mix the user chose to normalize arrives already inside full scale and
+        // passes this gate; an unnormalized over-range mix is still refused (#179).
+        guard am.overRangeSampleCount == 0, am.peakAbsoluteSample.isFinite, am.peakAbsoluteSample <= 1,
+              am.appliedGain.isFinite, am.appliedGain > 0 else { throw MuxError.overload }
         let sourceVideoHash = try fingerprint(videoURL, maximum: 64 * 1024 * 1024, started: started)
         let vAsset = AVURLAsset(url: videoURL), aAsset = AVURLAsset(url: audioURL)
         let vTracks = try await vAsset.loadTracks(withMediaType: .video), aTracks = try await aAsset.loadTracks(withMediaType: .audio)
@@ -113,7 +203,7 @@ import Darwin
               try await aAsset.loadTracks(withMediaType: .video).isEmpty else { throw MuxError.unsupportedSource }
         let vt = vTracks[0], at = aTracks[0]
         let vFormats = try await vt.load(.formatDescriptions), aFormats = try await at.load(.formatDescriptions)
-        guard vFormats.count == 1, aFormats.count == 1, CMFormatDescriptionGetMediaSubType(vFormats[0]) == kCMVideoCodecType_H264,
+        guard vFormats.count == 1, aFormats.count == 1, CMFormatDescriptionGetMediaSubType(vFormats[0]) == codec.mediaSubType,
               CMFormatDescriptionGetMediaSubType(aFormats[0]) == kAudioFormatLinearPCM,
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(aFormats[0]),
               asbd.pointee.mSampleRate == 48_000, asbd.pointee.mChannelsPerFrame == 2 else { throw MuxError.unsupportedSource }
@@ -132,7 +222,7 @@ import Darwin
         var videoReader: AVAssetReader?, audioReader: AVAssetReader?
         do {
             encoding = try StudioMuxEncodingOwnership(parent: parent, staging: staging)
-            let movie = staging.appendingPathComponent("animation.mp4")
+            let movie = staging.appendingPathComponent(movieFilename)
             writer = try AVAssetWriter(outputURL: movie, fileType: .mp4)
             writer!.movieTimeScale = 48_000
             let vi = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: vFormats[0])
@@ -155,10 +245,11 @@ import Darwin
             guard videoReader!.canAdd(vo), audioReader!.canAdd(ao) else { throw MuxError.unsupportedSource }
             videoReader!.add(vo); audioReader!.add(ao)
             guard writer!.startWriting() else { throw MuxError.writerFailed }
-            try encoding!.captureStartedMovie(); writer!.startSession(atSourceTime: .zero)
+            try encoding!.captureStartedMovie(named: movieFilename); writer!.startSession(atSourceTime: .zero)
             guard videoReader!.startReading(), audioReader!.startReading() else { throw MuxError.unsupportedSource }
             var vDone = false, aDone = false, frames = 0, audioFrames = 0, videoMarkers = 0
             var sourceVideoPCM = SHA256(), stalled = ProcessInfo.processInfo.systemUptime
+            var sourceLoudness = ClipWindowRMS(document: video.capture.snapshot.document, totalFrames: proof.audioSampleFrames)
             while !vDone || !aDone {
                 try checkpoint(started); try encoding!.validateKnownFiles(); try checkSize(movie)
                 var advanced = false
@@ -181,6 +272,7 @@ import Darwin
                         let count = CMSampleBufferGetNumSamples(sample)
                         guard count > 0, count <= 65_536, count <= proof.audioSampleFrames - audioFrames,
                               CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(audioFrames), timescale: 48_000)) == 0 else { throw MuxError.timing("source audio sample timing") }
+                        sourceLoudness.add(frameOffset: audioFrames, values: try pcmValues(sample, frames: count))
                         guard ai.append(sample) else { throw MuxError.writerFailed }; audioFrames += count
                     } else { aDone = true; ai.markAsFinished() }
                     advanced = true
@@ -211,11 +303,12 @@ import Darwin
             let beforeHash = try fingerprint(movie, maximum: limits.maximumOutputBytes, started: started)
             try progress(.init(phase: .verifying, videoFrames: frames, audioSamples: audioFrames)); try checkpoint(started)
             try encoding!.validateKnownFiles()
-            let decoded = try await verify(movie, proof: proof, expectedVideo: sourceVideoPCM.finalize(), started: started)
+            let decoded = try await verify(movie, proof: proof, codec: codec, expectedVideo: sourceVideoPCM.finalize(),
+                                           sourceLoudness: sourceLoudness, document: video.capture.snapshot.document, started: started)
             _ = try video.checkedSource(); _ = try audio.checkedSource()
             guard try fingerprint(videoURL, maximum: 64 * 1024 * 1024, started: started) == sourceVideoHash else { throw MuxError.outputUnavailable }
             let bytes = try checkSize(movie, nonempty: true)
-            var receipt = Receipt(version: expectedCredits.isEmpty ? 1 : 2, captureProof: proof, videoCodec: "H.264 passthrough", audioCodec: "AAC",
+            var receipt = Receipt(version: expectedCredits.isEmpty ? 1 : 2, captureProof: proof, videoCodec: codec.label + " passthrough", audioCodec: "AAC",
                 audioSampleRate: 48_000, audioChannels: 2, width: proof.width, height: proof.height,
                 videoFrames: frames, decodedAudioFrames: decoded.frames,
                 durationNumerator: proof.durationNumerator, durationDenominator: proof.durationDenominator,
@@ -223,6 +316,14 @@ import Darwin
                 sourceAudioSHA256: am.sha256, maximumDecodedAudioSample: decoded.peak)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
             receipt.imageCredits = vm.imageCredits
+            receipt.movieFilename = movieFilename
+            receipt.audioAppliedGain = am.appliedGain
+            receipt.audioNormalizedToMinusOneDBFS = am.normalizedToMinusOneDBFS
+            receipt.audioClipWindowsChecked = sourceLoudness.windows.count
+            receipt.maximumAudioRMSDeviation = decoded.rmsDeviation
+            receipt.heldLastFrameTicks = proof.heldLastFrameTicks
+            receipt.renderPlan = proof.renderPlan
+            receipt.soundCredits = video.capture.snapshot.soundCredits.isEmpty ? nil : video.capture.snapshot.soundCredits
             let data = try encoder.encode(receipt)
             guard data.count <= 128 * 1024, data.count <= limits.maximumOutputBytes - bytes else { throw MuxError.limitExceeded }
             try encoding!.writeManifest(data)
@@ -230,9 +331,9 @@ import Darwin
             try encoding!.validateKnownFiles()
             _ = try video.checkedSource(); _ = try audio.checkedSource()
             guard try fingerprint(movie, maximum: limits.maximumOutputBytes, started: started) == beforeHash else { throw MuxError.verificationFailed }
-            let final = try StudioMuxOutputOwnership(parent: parent, staging: staging, movieDigest: beforeHash, movieBytes: bytes, manifestData: data, original: try encoding!.publicationIdentity())
+            let final = try StudioMuxOutputOwnership(parent: parent, staging: staging, movieFilename: movieFilename, movieDigest: beforeHash, movieBytes: bytes, manifestData: data, original: try encoding!.publicationIdentity(movieFilename: movieFilename))
             owned = final; try final.validateForUse()
-            return Output(receipt: receipt, owner: final, directory: staging)
+            return Output(receipt: receipt, owner: final, directory: staging, movieFilename: movieFilename)
         } catch let original {
             videoReader?.cancelReading(); audioReader?.cancelReading()
             videoReader = nil; audioReader = nil; writer = nil
@@ -286,6 +387,15 @@ import Darwin
         digest.update(data: Data(bytes))
     }
     private func hex(_ value: SHA256.Digest) -> String { value.map { String(format: "%02x", $0) }.joined() }
+    /// Interleaved float stereo samples of one PCM sample buffer (8 bytes per frame).
+    private func pcmValues(_ sample: CMSampleBuffer, frames: Int) throws -> [Float] {
+        guard frames > 0, frames <= 65_536, let block = CMSampleBufferGetDataBuffer(sample),
+              CMBlockBufferGetDataLength(block) == frames * 8 else { throw MuxError.verificationFailed }
+        var values = [Float](repeating: 0, count: frames * 2)
+        guard values.withUnsafeMutableBytes({ CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: frames * 8, destination: $0.baseAddress!) }) == noErr else { throw MuxError.verificationFailed }
+        for value in values { guard value.isFinite else { throw MuxError.verificationFailed } }
+        return values
+    }
 
     private func validateEmptyMarker(_ sample: CMSampleBuffer, count: inout Int) throws {
         // The actual production H.264 reader emits an initial zero-sample,
@@ -297,15 +407,16 @@ import Darwin
         count += 1
     }
 
-    private func verify(_ url: URL, proof: StudioMuxCapture.Proof, expectedVideo: SHA256.Digest,
-                        started: TimeInterval) async throws -> (frames: Int, peak: Float) {
+    private func verify(_ url: URL, proof: StudioMuxCapture.Proof, codec: StudioMovieExportService.Codec, expectedVideo: SHA256.Digest,
+                        sourceLoudness: ClipWindowRMS, document: StudioDocument,
+                        started: TimeInterval) async throws -> (frames: Int, peak: Float, rmsDeviation: Float) {
         let asset = AVURLAsset(url: url), duration = CMTime(value: Int64(proof.durationNumerator), timescale: CMTimeScale(proof.durationDenominator))
         let video = try await asset.loadTracks(withMediaType: .video), audio = try await asset.loadTracks(withMediaType: .audio)
         guard video.count == 1, audio.count == 1, CMTimeCompare(try await asset.load(.duration), duration) == 0,
               try await video[0].load(.naturalSize) == CGSize(width: proof.width, height: proof.height),
               try await video[0].load(.preferredTransform) == .identity else { throw MuxError.verificationFailed }
         let vf = try await video[0].load(.formatDescriptions), af = try await audio[0].load(.formatDescriptions)
-        guard vf.count == 1, af.count == 1, CMFormatDescriptionGetMediaSubType(vf[0]) == kCMVideoCodecType_H264,
+        guard vf.count == 1, af.count == 1, CMFormatDescriptionGetMediaSubType(vf[0]) == codec.mediaSubType,
               CMFormatDescriptionGetMediaSubType(af[0]) == kAudioFormatMPEG4AAC,
               let ab = CMAudioFormatDescriptionGetStreamBasicDescription(af[0]), ab.pointee.mChannelsPerFrame == 2,
               ab.pointee.mSampleRate == 48_000 else { throw MuxError.verificationFailed }
@@ -338,19 +449,22 @@ import Darwin
             AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2])
         ar.add(ao); guard ar.startReading() else { throw MuxError.verificationFailed }
         var audioFrames = 0, peak: Float = 0
+        var decodedLoudness = ClipWindowRMS(document: document, totalFrames: proof.audioSampleFrames)
         while let sample = ao.copyNextSampleBuffer() {
             try checkpoint(started)
             let n = CMSampleBufferGetNumSamples(sample)
             guard n > 0, n <= 65_536, n <= proof.audioSampleFrames - audioFrames,
-                  CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(audioFrames), timescale: 48_000)) == 0,
-                  let block = CMSampleBufferGetDataBuffer(sample), CMBlockBufferGetDataLength(block) == n * 8 else { throw MuxError.verificationFailed }
-            var values = [Float](repeating: 0, count: n * 2)
-            guard values.withUnsafeMutableBytes({ CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: n * 8, destination: $0.baseAddress!) }) == noErr else { throw MuxError.verificationFailed }
-            for value in values { guard value.isFinite else { throw MuxError.verificationFailed }; peak = max(peak, abs(value)) }
+                  CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(audioFrames), timescale: 48_000)) == 0 else { throw MuxError.verificationFailed }
+            let values = try pcmValues(sample, frames: n)
+            for value in values { peak = max(peak, abs(value)) }
+            decodedLoudness.add(frameOffset: audioFrames, values: values)
             audioFrames += n; await Task.yield()
         }
         guard ar.status == .completed, audioFrames == proof.audioSampleFrames else { throw MuxError.verificationFailed }
         guard peak <= 1 else { throw MuxError.overload }
-        return (audioFrames, peak)
+        // Per-clip loudness (#181): the decoded AAC must carry each clip's
+        // energy, so a silent or mislevelled track cannot pass on timing alone.
+        let deviation = try ClipWindowRMS.compare(source: sourceLoudness, decoded: decodedLoudness)
+        return (audioFrames, peak, deviation)
     }
 }

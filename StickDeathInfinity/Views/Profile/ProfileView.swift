@@ -1,13 +1,16 @@
 import SwiftUI
+import AVKit
 import Supabase
 import UniformTypeIdentifiers
 
 /// Reference-shaped profile. Connected facts remain unavailable until verified.
 struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
+    @Environment(\.requestSignIn) private var requestSignIn
     let onOpenProjects: () -> Void
     @State private var destination: Destination?
     @State private var localProjectCount: Int?
+    @State private var publishedCount: Int?
 
     private enum Destination: String, Identifiable {
         case account, analytics, subscription, publishing, records, admin
@@ -73,16 +76,28 @@ struct ProfileView: View {
                 }
                 HStack(spacing: 0) {
                     statistic(localProjectCount.map(String.init) ?? "—", "Projects")
-                    statistic("—", "Published")
+                    statistic(publishedCount.map(String.init) ?? "—", "Published")
                     statistic("—", "Followers")
                     statistic("—", "Likes")
                 }
                 .padding(.vertical, 14).background(Color(hex: "141414"))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                Text("Projects counts saved animations on this device. Published, followers and likes are unavailable.")
+                .accessibilityIdentifier("profile.statistics")
+                Text("Projects counts saved animations on this device. Published counts your approved renditions returned by the service. Follower and like totals have no service contract yet, so nothing is estimated.")
                     .font(.specialElite(11)).foregroundStyle(.secondary)
+                if authVM.isAuthenticated {
+                    ProfilePortfolioSection(onCount: { publishedCount = $0 })
+                }
 
                 VStack(spacing: 8) {
+                    if !authVM.isAuthenticated {
+                        Button { requestSignIn() } label: {
+                            rowLabel("Sign in or create an account", icon: "person.crop.circle.badge.plus")
+                        }.buttonStyle(.plain)
+                            .accessibilityIdentifier("profile.sign-in")
+                        Text("Your device projects stay here whether or not you sign in.")
+                            .font(.specialElite(11)).foregroundStyle(.secondary)
+                    }
                     Button(action: onOpenProjects) {
                         rowLabel("Projects on this device", icon: "folder")
                     }.buttonStyle(.plain)
@@ -113,7 +128,7 @@ struct ProfileView: View {
         .foregroundStyle(.white)
         .task(id: authVM.userId) {
             // Device-level inventory, never presented as a server/account portfolio.
-            localProjectCount = nil
+            localProjectCount = nil; publishedCount = nil
             if let listing = try? DeviceStorageManager.shared.listAnimationsReportingFailures(), listing.failures.isEmpty {
                 localProjectCount = listing.animations.count
             }
@@ -175,6 +190,7 @@ struct ProfileSettingsView: View {
     @State private var showingProfileEditor = false
     @State private var showingMFA = false
     @State private var showingAppeals = false
+    @State private var showingRemovalAppeals = false
     private var accountEmail: String {
         guard authVM.isAuthenticated, let user = authVM.user,
               let id = UUID(uuidString: user.id), let current = authVM.userId,
@@ -188,6 +204,8 @@ struct ProfileSettingsView: View {
                 if authVM.isAuthenticated {
                     Button("Authenticator security") { showingMFA = true }
                     Button("Account status and appeals") { showingAppeals = true }
+                    Button("Removed video appeals") { showingRemovalAppeals = true }
+                        .accessibilityIdentifier("profile.removal-appeals.open")
                 }
                 if authVM.captureProfileEdit() != nil {
                     Button("Edit username and bio") { showingProfileEditor = true }
@@ -203,14 +221,26 @@ struct ProfileSettingsView: View {
                 Section {
                     Button("Sign Out", role: .destructive) { Task { await authVM.signOut() } }
                         .disabled(authVM.isLoading)
+                    Text("Signing out closes the open project and returns to the library. Nothing on this device is deleted.")
+                        .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
                     if let error = authVM.error { Text(error).foregroundStyle(.red) }
+                }
+                Section("Account deletion") {
+                    Button("Delete account", role: .destructive) { Task { await authVM.requestAccountDeletion() } }
+                        .disabled(authVM.isLoading)
+                        .accessibilityIdentifier("profile.delete-account")
+                    // The service refuses deletion (AuthError.accountDeletionUnavailable) and
+                    // the refusal text is shown above through authVM.error. Say so up front.
+                    Text("Deletion is not available in this build yet: removing the profile row would not revoke sessions or erase related records, so nothing is deleted. Your local projects stay on this device either way.")
+                        .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
                 }
             }
         }
         .sheet(isPresented: $showingProfileEditor) { EditProfileView() }
         .sheet(isPresented: $showingMFA) { NavigationStack { AccountAuthenticatorView() } }
         .sheet(isPresented: $showingAppeals) { AccountAppealsView() }
-        .onChange(of: authVM.userId) { _ in showingProfileEditor = false }
+        .sheet(isPresented: $showingRemovalAppeals) { RemovalAppealsView() }
+        .onChange(of: authVM.userId) { _ in showingProfileEditor = false; showingRemovalAppeals = false }
     }
 }
 
@@ -227,7 +257,7 @@ private struct PublishingJobsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Publishing activity").font(.specialElite(22))
                 Text("Only an approved render with destination consent can enter this queue. Cancelling an upload may require removal from the destination after transfer.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.specialElite(15, relativeTo: .callout)).foregroundStyle(.secondary)
                 if let error { Text(error).foregroundStyle(.red) }
                 if busy { ProgressView() }
                 Button("Refresh") { Task { await load() } }.disabled(busy)
@@ -237,9 +267,9 @@ private struct PublishingJobsView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(job.destination.capitalized).font(.specialElite(18))
                         Text(job.state.replacingOccurrences(of: "_", with: " ").capitalized)
-                        Text("Render \(job.render_digest.prefix(12)) · Attempt \(job.attempts)").font(.caption)
-                        Text(job.updated_at, style: .relative).font(.caption)
-                        if let issue = job.last_error { Text(issue).font(.caption).foregroundStyle(.red) }
+                        Text("Render \(job.render_digest.prefix(12)) · Attempt \(job.attempts)").font(.specialElite(12, relativeTo: .caption))
+                        Text(job.updated_at, style: .relative).font(.specialElite(12, relativeTo: .caption))
+                        if let issue = job.last_error { Text(issue).font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.red) }
                         if job.state == "published", let raw = job.result_url, let parts = URLComponents(string: raw),
                            parts.scheme == "https", parts.host != nil, parts.user == nil, parts.password == nil, let url = parts.url {
                             Link("Open published video", destination: url)
@@ -296,21 +326,34 @@ private struct CreatorReviewsView: View {
     @State private var requestID = UUID()
     @State private var message: String?
     @State private var pending: CreatorReview?
+    @State private var pendingFeed: CreatorReview?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Submitted renders").font(.specialElite(20))
-            Text("Only submitted and approved renders appear here. Your local drafts are not uploaded automatically.").font(.caption)
+            Text("Only submitted and approved renders appear here. Your local drafts are not uploaded automatically.").font(.specialElite(12, relativeTo: .caption))
             Button("Refresh submissions") { Task { await request("list") } }.disabled(busy)
             if busy { ProgressView() }
-            if let message { Text(message).font(.caption) }
+            if let message { Text(message).font(.specialElite(12, relativeTo: .caption)) }
             ForEach(reviews) { review in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(review.title).font(.specialElite(17))
-                    Text("\(review.state.capitalized) · Version \(review.version)").font(.caption)
-                    Text("Render: \(review.render_digest.prefix(16))").font(.caption.monospaced())
-                    Text("Permissions: \(review.destinations.isEmpty ? "None" : review.destinations.joined(separator: ", "))").font(.caption)
+                    Text("\(review.state.capitalized) · Version \(review.version)").font(.specialElite(12, relativeTo: .caption))
+                    Text("Render: \(review.render_digest.prefix(16))").font(.specialElite(12, relativeTo: .caption).monospaced())
+                    Text("Permissions: \(review.destinations.isEmpty ? "None" : review.destinations.joined(separator: ", "))").font(.specialElite(12, relativeTo: .caption))
                     if review.can_publish {
                         Button("Publish approved video to SDI YouTube") { pending = review }.disabled(busy)
+                    }
+                    if review.can_publish_feed == true {
+                        Button("Publish approved video to the SDI feed") { pendingFeed = review }.disabled(busy)
+                            .accessibilityIdentifier("profile.reviews.publish-feed")
+                    }
+                    if let allowExport = review.allow_export {
+                        Toggle("Allow viewers to save this video file", isOn: Binding(get: { allowExport }, set: { value in
+                            Task { await setExport(review, value) }
+                        })).disabled(busy)
+                            .accessibilityIdentifier("profile.reviews.allow-export")
+                        Text("Sharing links is always allowed for approved videos; this permits file export only. It is not part of approval evidence.")
+                            .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
                     }
                     if !review.consent_version.isEmpty {
                         Button("Withdraw publication permissions", role: .destructive) {
@@ -327,12 +370,29 @@ private struct CreatorReviewsView: View {
             }
             Button("Cancel", role: .cancel) { pending = nil }
         } message: { Text("This queues the exact reviewed video and its existing permissions. It does not publish any other draft.") }
+        .confirmationDialog("Publish this approved render to the StickDeath Infinity feed?", isPresented: Binding(get: { pendingFeed != nil }, set: { if !$0 { pendingFeed = nil } })) {
+            if let review = pendingFeed {
+                Button("Queue for the feed") { pendingFeed = nil; Task { await request("publish_feed", review) } }
+            }
+            Button("Cancel", role: .cancel) { pendingFeed = nil }
+        } message: { Text("The publishing service re-checks the owner's approval of this exact render, your consent and rights before any copy appears in the feed.") }
         .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
             clear(); if auth.isAuthenticated && phase == .active { await request("list") }
         }
         .onDisappear { clear() }
     }
-    private func clear() { requestID = UUID(); busy = false; reviews = []; message = nil; pending = nil }
+    private func clear() { requestID = UUID(); busy = false; reviews = []; message = nil; pending = nil; pendingFeed = nil }
+    private func setExport(_ review: CreatorReview, _ allowed: Bool) async {
+        guard !busy, auth.isAuthenticated, phase == .active else { return }
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let confirmed = try await CommunityServices.profile.setExportPermission(review: review.id, version: review.version, allowed: allowed)
+            guard !Task.isCancelled, requestID == id else { return }
+            message = confirmed ? (allowed ? "File export permitted for this render." : "File export withdrawn for this render.") : "Export permission was not confirmed."
+            busy = false; await request("list")
+        } catch { if requestID == id { message = CommunityGateway.normalize(error).errorDescription } }
+    }
     private func request(_ action: String, _ review: CreatorReview? = nil) async {
         guard !busy, auth.isAuthenticated, phase == .active else { return }
         let id = UUID(); requestID = id; busy = true
@@ -344,7 +404,7 @@ private struct CreatorReviewsView: View {
             if let problem = result.error { message = problem; if action == "list" { reviews = [] }; return }
             if action == "list", let items = result.reviews { reviews = items; message = items.isEmpty ? "No submitted renders." : nil }
             else if result.status == "queued" || result.status == "consent_withdrawn" {
-                reviews = []; message = result.status == "queued" ? "Queued. Refresh Publishing activity for status." : "Permissions withdrawn. Existing releases may remain visible until provider withdrawal is confirmed."
+                reviews = []; message = result.status == "queued" ? "Queued. Refresh Publishing activity for status; nothing is public until the publishing service confirms." : "Permissions withdrawn. Existing releases may remain visible until provider withdrawal is confirmed."
             } else { message = "Response incomplete. Refresh before retrying." }
         } catch { if requestID == id { message = "Submission service unavailable. Refresh before retrying."; if action == "list" { reviews = [] } } }
     }
@@ -354,6 +414,9 @@ private struct CreatorReviewResponse: Decodable { let error: String?; let status
 private struct CreatorReview: Decodable, Identifiable {
     let id: UUID; let title: String; let render_digest: String; let version: Int; let state: String
     let consent_version: String; let destinations: [String]; let can_publish: Bool
+    /// Present once feed-publication.sql is applied; absent on older services.
+    var allow_export: Bool? = nil
+    var can_publish_feed: Bool? = nil
 }
 
 @MainActor
@@ -363,68 +426,230 @@ private struct ProfileRecordsView: View {
     @State private var data: ProfileRecordsResponse?
     @State private var showRecords = false
     @State private var showBadges = false
+    @State private var groups: [AchievementGroup] = []
+    @State private var achievementsProblem: String?
     @State private var busy = false
     @State private var requestID = UUID()
     @State private var message: String?
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Records & badges").font(.specialElite(22))
-                Text("Both public displays start off. Hiding your profile totals does not hide videos, match participation or individual match results.").font(.callout)
-                if busy { ProgressView() }
-                if let message { Text(message).font(.caption) }
-                Button("Refresh") { Task { await load(save: false) } }.disabled(busy)
+                Text("Records & badges").communityHeading()
+                Text("Both public displays start off. Hiding your profile totals does not hide videos, match participation or individual match results.")
+                    .font(.specialElite(15, relativeTo: .callout)).foregroundStyle(StudioCraftTheme.textDim)
+                if !CommunityServices.isConfigured { CommunityMessage(text: CommunityServices.notConfiguredText, kind: .info) }
+                if busy { ProgressView().tint(StudioCraftTheme.accent) }
+                if let message { CommunityMessage(text: message, kind: message.hasSuffix("saved.") ? .success : .error).accessibilityIdentifier("profile.records.message") }
+                Button("Refresh") { Task { await load(save: false) } }
+                    .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                    .accessibilityIdentifier("profile.records.refresh")
                 if let data {
-                    Text("Your private record").font(.specialElite(18))
-                    Text("\(data.wins ?? 0) wins · \(data.losses ?? 0) losses · \(data.ties ?? 0) ties")
-                    Toggle("Show my win/loss record publicly", isOn: $showRecords)
-                    Toggle("Show my earned badges publicly", isOn: $showBadges)
-                    Button("Save display preferences") { Task { await load(save: true) } }
-                        .disabled(busy || (showRecords == data.show_records && showBadges == data.show_badges))
-                    Text("Earned badges").font(.specialElite(18))
-                    ForEach(data.badges ?? []) { badge in
-                        VStack(alignment: .leading) {
-                            Text(badge.title).font(.specialElite(16))
-                            Text("\(badge.earned_at.formatted()) · Criteria \(badge.criterion_version)").font(.caption)
-                        }
+                    CommunityCard {
+                        Text("Your private record").communitySubheading()
+                        Text("\(data.wins ?? 0) wins · \(data.losses ?? 0) losses · \(data.ties ?? 0) ties").font(.specialElite(16, relativeTo: .body)).monospacedDigit()
+                        Toggle("Show my win/loss record publicly", isOn: $showRecords).font(.specialElite(14, relativeTo: .body))
+                            .accessibilityIdentifier("profile.records.show-records")
+                        Toggle("Show my earned badges publicly", isOn: $showBadges).font(.specialElite(14, relativeTo: .body))
+                            .accessibilityIdentifier("profile.records.show-badges")
+                        Button("Save display preferences") { Task { await load(save: true) } }
+                            .buttonStyle(CommunityPrimaryButtonStyle())
+                            .disabled(busy || (showRecords == data.show_records && showBadges == data.show_badges))
+                            .accessibilityIdentifier("profile.records.save")
+                        Text("Preferences are enforced by the server in profiles, the leaderboard and API replies, not only in this screen.").communityCaption()
                     }
-                    if data.badges?.isEmpty == true { Text("No verified badges awarded.").font(.caption) }
                 }
+                Text("Achievements").communitySubheading()
+                Text("Badges are awarded by the server from finalised War Room and challenge results against versioned criteria. Nothing here is estimated.").communityCaption()
+                if let achievementsProblem { CommunityMessage(text: achievementsProblem, kind: .info) }
+                ForEach(groups) { group in
+                    CommunityCard {
+                        Text(group.category).communitySubheading()
+                        if group.earned.isEmpty && group.locked.isEmpty { Text("No criteria configured.").communityCaption() }
+                        ForEach(group.earned) { item in achievementRow(item) }
+                        ForEach(group.locked) { item in achievementRow(item) }
+                    }.accessibilityIdentifier("profile.achievements.group")
+                }
+                if groups.isEmpty && achievementsProblem == nil && !busy { Text("No achievement criteria were returned.").communityCaption() }
             }.padding()
-        }.background(Color.sdBackground).foregroundStyle(Color.sdTextPrimary)
+        }
+        .communityScreen()
         .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
             clear(); if auth.isAuthenticated && phase == .active { await load(save: false) }
         }
         .onDisappear { clear() }
     }
-    private func clear() { requestID = UUID(); busy = false; data = nil; message = nil; showRecords = false; showBadges = false }
+    private func achievementRow(_ item: AchievementItem) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: item.isEarned ? "seal.fill" : "lock")
+                .foregroundStyle(item.isEarned ? StudioCraftTheme.accentText : StudioCraftTheme.textFaint)
+                .frame(width: 24).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title).font(.specialElite(15, relativeTo: .body))
+                Text(item.description).communityCaption()
+                Text(item.isEarned ? "Earned \(item.earned_at?.formatted(date: .abbreviated, time: .omitted) ?? "") · criteria \(item.criterion_version)" : "Locked · requires \(item.threshold) · criteria \(item.criterion_version)")
+                    .communityCaption()
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(item.isEarned ? "Earned" : "Locked")
+    }
+    private func clear() { requestID = UUID(); busy = false; data = nil; message = nil; showRecords = false; showBadges = false; groups = []; achievementsProblem = nil }
     private func load(save: Bool) async {
         guard !busy, auth.isAuthenticated, phase == .active, !save || data?.revision != nil else { return }
         let id = UUID(); requestID = id; busy = true
         defer { if requestID == id { busy = false } }
         do {
-            let client = try SupabaseManager.shared.client
-            let params = ProfileRecordsRequest(action: save ? "save" : "read", revision: save ? data?.revision : nil,
-                records: save ? showRecords : nil, badges: save ? showBadges : nil)
-            let result: ProfileRecordsResponse = try await client.rpc("sdi_profile_records", params: params).execute().value
-            guard !Task.isCancelled, requestID == id else { return }
-            guard result.error == nil, let records = result.show_records, let badges = result.show_badges,
-                  result.revision != nil, result.wins != nil, result.losses != nil, result.ties != nil, result.badges != nil else {
-                message = result.error ?? "Records response incomplete. Refresh before saving."; data = nil; return
+            let result: ProfileRecordsResponse
+            if save, let revision = data?.revision {
+                result = try await CommunityServices.profile.saveRecords(revision: revision, showRecords: showRecords, showBadges: showBadges)
+            } else {
+                result = try await CommunityServices.profile.readRecords()
             }
-            data = result; showRecords = records; showBadges = badges; message = save ? "Display preferences saved." : nil
-        } catch { if requestID == id { data = nil; message = "Records unavailable. Your display preferences were not confirmed." } }
+            guard !Task.isCancelled, requestID == id else { return }
+            data = result; showRecords = result.show_records ?? false; showBadges = result.show_badges ?? false
+            message = save ? "Display preferences saved." : nil
+        } catch { if requestID == id { data = nil; message = CommunityGateway.normalize(error).errorDescription } }
+        guard requestID == id, !save else { return }
+        do {
+            let catalogue = try await CommunityServices.profile.achievements()
+            guard !Task.isCancelled, requestID == id else { return }
+            groups = catalogue; achievementsProblem = nil
+        } catch { if requestID == id { groups = []; achievementsProblem = CommunityGateway.normalize(error).errorDescription } }
     }
 }
-private struct ProfileRecordsRequest: Encodable { let action: String; let revision: Int?; let records: Bool?; let badges: Bool? }
-private struct ProfileRecordsResponse: Decodable {
-    let error: String?; let show_records: Bool?; let show_badges: Bool?; let revision: Int?
-    let wins: Int?; let losses: Int?; let ties: Int?; let badges: [ProfileEarnedBadge]?
+
+/// Approved renditions owned by the account, played from their HTTPS address.
+@MainActor
+private struct ProfilePortfolioSection: View {
+    let onCount: (Int?) -> Void
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var items: [ApprovedMedia] = []
+    @State private var loaded = false
+    @State private var problem: String?
+    @State private var playback: ProfilePlayback?
+    @State private var requestID = UUID()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Portfolio").font(.specialElite(16)).foregroundStyle(.secondary)
+            if let problem { CommunityMessage(text: problem, kind: .info) }
+            if loaded && items.isEmpty && problem == nil {
+                Text("No approved renditions yet. Submit an exported MP4 for review from Publishing.").font(.specialElite(12)).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("profile.portfolio.empty")
+            }
+            ForEach(items) { item in
+                Button {
+                    guard let url = CommunityMediaURL.checked(item.url) else { return }
+                    playback?.player.pause(); playback = ProfilePlayback(player: AVPlayer(url: url), title: item.title)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "play.rectangle.fill").foregroundStyle(Color.sdRed)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title).font(.specialElite(15))
+                            Text(item.duration.map { "\(Int($0.rounded())) s" } ?? "Duration unavailable").font(.specialElite(11)).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if let expiry = item.expires_at { Text("Until \(expiry.formatted(date: .abbreviated, time: .omitted))").font(.specialElite(11)).foregroundStyle(.secondary) }
+                    }.padding(12).background(Color(hex: "141414")).clipShape(RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(.plain).accessibilityLabel("Play \(item.title)").accessibilityIdentifier("profile.portfolio.play")
+            }
+        }
+        .accessibilityIdentifier("profile.portfolio")
+        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
+            requestID = UUID(); items = []; loaded = false; problem = nil; onCount(nil)
+            guard auth.isAuthenticated, phase == .active, let account = auth.userId.flatMap(UUID.init(uuidString:)) else { return }
+            let id = requestID
+            do {
+                let rows = try await CommunityServices.profile.portfolio(account: account)
+                guard !Task.isCancelled, requestID == id else { return }
+                items = rows; loaded = true; onCount(rows.count)
+            } catch { if requestID == id { loaded = true; problem = CommunityGateway.normalize(error).errorDescription } }
+        }
+        .sheet(item: $playback) { item in
+            VideoPlayer(player: item.player).onAppear { item.player.play() }.onDisappear { item.player.pause() }
+        }
+        .onDisappear { playback?.player.pause(); playback = nil }
+    }
 }
-private struct ProfileEarnedBadge: Decodable, Identifiable { let id: UUID; let title: String; let criterion_version: String; let earned_at: Date }
+private struct ProfilePlayback: Identifiable { let id = UUID(); let player: AVPlayer; let title: String }
+
+/// Member side of feed removal appeals: own appeals and a bounded submission.
+/// Structured review only; this is not a message to anyone.
+@MainActor
+private struct RemovalAppealsView: View {
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @Environment(\.dismiss) private var dismiss
+    @State private var appeals: [ModerationAppeal] = []
+    @State private var mediaID = ""
+    @State private var explanation = ""
+    @State private var busy = false
+    @State private var problem: String?
+    @State private var requestID = UUID()
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Appeal a removed video") {
+                    Text("Enter the video identifier from your removal notice and explain why the removal should be reviewed. An uninvolved administrator decides within the 30-day window; the decision appears here.")
+                    TextField("Video identifier", text: $mediaID).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityIdentifier("profile.removal-appeals.media")
+                    TextField("Explanation (up to 2000 characters)", text: $explanation, axis: .vertical).lineLimit(3...8)
+                        .accessibilityIdentifier("profile.removal-appeals.explanation")
+                    Button("Submit appeal") { Task { await submit() } }
+                        .disabled(busy || UUID(uuidString: mediaID) == nil || explanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || explanation.count > 2000)
+                        .accessibilityIdentifier("profile.removal-appeals.submit")
+                    if let problem { Text(problem).foregroundStyle(StudioCraftTheme.accentText) }
+                }
+                Section("Your appeals") {
+                    if busy { ProgressView() }
+                    if appeals.isEmpty && !busy && problem == nil { Text("No removal appeals.") }
+                    ForEach(appeals) { appeal in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(appeal.title).font(.headline)
+                            Text("\(appeal.state?.capitalized ?? "Pending") · \(appeal.created_at.formatted())").font(.caption)
+                            Text(appeal.explanation)
+                            if let reply = appeal.reply { Text("Decision: \(reply)") }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Removed video appeals")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) { Button("Refresh") { Task { await load() } }.disabled(busy) }
+            }
+            .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") { await load() }
+            .onDisappear { requestID = UUID(); appeals = [] }
+        }.preferredColorScheme(.dark)
+    }
+    private func load() async {
+        requestID = UUID(); appeals = []; problem = nil; busy = false
+        guard auth.isAuthenticated, phase == .active else { return }
+        let id = requestID; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let items = try await CommunityServices.admin.myAppeals()
+            guard !Task.isCancelled, requestID == id else { return }
+            appeals = items
+        } catch { if requestID == id { problem = CommunityGateway.normalize(error).errorDescription } }
+    }
+    private func submit() async {
+        guard !busy, let media = UUID(uuidString: mediaID) else { return }
+        let id = requestID; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let items = try await CommunityServices.admin.submitAppeal(media: media, explanation: explanation)
+            guard requestID == id else { return }
+            appeals = items; explanation = ""; mediaID = ""; problem = nil
+        } catch { if requestID == id { problem = CommunityGateway.normalize(error).errorDescription } }
+    }
+}
 
 @MainActor
 struct AccountAuthenticatorView: View {
+    /// Called after the server confirms a code, so privileged screens can
+    /// record the recent re-authentication window (#210).
+    var onVerified: (() -> Void)? = nil
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
     @Environment(\.dismiss) private var dismiss
@@ -446,8 +671,8 @@ struct AccountAuthenticatorView: View {
             if let totp = enrollment?.totp {
                 Section("Set up your authenticator") {
                     Text("Enter this setup key in your authenticator app, then enter its current code below. Keep the key private.")
-                    Text(totp.secret).font(.body.monospaced()).textSelection(.enabled).privacySensitive()
-                    Text("The setup key is cleared when you leave this screen or background the app. An unfinished factor can be removed below and set up again.").font(.caption)
+                    Text(totp.secret).font(.specialElite(16, relativeTo: .body).monospaced()).textSelection(.enabled).privacySensitive()
+                    Text("The setup key is cleared when you leave this screen or background the app. An unfinished factor can be removed below and set up again.").font(.specialElite(12, relativeTo: .caption))
                 }
             }
             Section("Verify this session") {
@@ -467,7 +692,7 @@ struct AccountAuthenticatorView: View {
                 ForEach(factors.filter { $0.status == .unverified && $0.id != enrollment?.id }) { factor in
                     Button("Remove unfinished setup", role: .destructive) { Task { await perform("remove", factor: factor.id) } }.disabled(busy)
                 }
-                Text("Verified factors cannot be removed here. Account recovery requires the protected recovery process.").font(.caption)
+                Text("Verified factors cannot be removed here. Account recovery requires the protected recovery process.").font(.specialElite(12, relativeTo: .caption))
             }
         }.navigationTitle("Authenticator security")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
@@ -499,6 +724,7 @@ struct AccountAuthenticatorView: View {
                 enrollment = value; selected = value.id; message = "Verify a code to finish enrollment."
             } else if action == "verify" {
                 enrollment = nil; message = "Authenticator verified. Return to the admin screen and refresh its data."
+                onVerified?()
             } else if action == "remove" {
                 message = "Unfinished setup removed."
             }
@@ -596,10 +822,10 @@ struct SDIRenderUploadView: View {
                 Toggle("StickDeath Infinity home feed", isOn: $feed)
                 Toggle("Official SDI YouTube channel", isOn: $youtube)
                 Toggle("SDI social marketing reuse", isOn: $social)
-                Text("Only selected destinations may be reviewed. Channel and social versions may include SDI branding. Private drafts and unselected files are not submitted.").font(.caption)
+                Text("Only selected destinations may be reviewed. Channel and social versions may include SDI branding. Private drafts and unselected files are not submitted.").font(.specialElite(12, relativeTo: .caption))
                 if let consent = AppConfig.publishingConsent {
                     Link("Read publishing terms", destination: consent.termsURL)
-                    Text("Terms version: \(consent.version)").font(.caption)
+                    Text("Terms version: \(consent.version)").font(.specialElite(12, relativeTo: .caption))
                 }
                 Toggle("I have the necessary rights and contributor permissions and agree to the current terms for these destinations.", isOn: $accepted)
                 if let exportedMovie {
@@ -616,15 +842,15 @@ struct SDIRenderUploadView: View {
                 }
             }
             Section("Private upload copies") {
-                Text("Copies remain on this device for resume until you remove them. Your original exported file and editable project are preserved.").font(.caption)
+                Text("Copies remain on this device for resume until you remove them. Your original exported file and editable project are preserved.").font(.specialElite(12, relativeTo: .caption))
                 Button("Refresh uploads") { Task { await reload() } }.disabled(busy)
                 ForEach(jobs) { job in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(job.metadata.title).font(.specialElite(17))
-                        Text("\(job.offset) / \(job.metadata.size) bytes · \(job.state)").font(.caption)
+                        Text("\(job.offset) / \(job.metadata.size) bytes · \(job.state)").font(.specialElite(12, relativeTo: .caption))
                         if let review = job.reviewID {
-                            Text("Submitted for review: \(review.uuidString)").font(.caption).textSelection(.enabled)
-                            Text("Manage approval and destination permissions in Publishing. This receipt is not publication confirmation.").font(.caption)
+                            Text("Submitted for review: \(review.uuidString)").font(.specialElite(12, relativeTo: .caption)).textSelection(.enabled)
+                            Text("Manage approval and destination permissions in Publishing. This receipt is not publication confirmation.").font(.specialElite(12, relativeTo: .caption))
                         } else {
                             Button("Resume upload") { transfer(job) }.disabled(busy || !configured || !auth.isAuthenticated)
                         }

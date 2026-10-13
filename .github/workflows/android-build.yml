@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'android/**'
+      - 'Tests/SDIFixtures/**'
       - 'StickDeathInfinity/Resources/StudioSounds/**'
       - 'StickDeathInfinity/Resources/StudioImages/**'
       - 'scripts/verify_android_sound_assets.py'
@@ -16,12 +17,19 @@ concurrency:
 jobs:
   android-debug-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify shared .sdi fixtures match their generator and expectations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p android-build-evidence
+          python3 -I Tests/SDIFixtures/verify_fixtures.py | tee android-build-evidence/sdi-fixtures.txt
+          python3 -m unittest discover -s Tests/SDIFixtures -p 'test_*.py'
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
@@ -37,13 +45,16 @@ jobs:
           set -euo pipefail
           test -n "${ANDROID_HOME:-}"
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'platforms;android-35' 'build-tools;34.0.0'
-      - name: Compile debug application and instrumentation APK
+      - name: Compile debug application and instrumentation APK, run JVM unit tests
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p android-build-evidence
           git rev-parse HEAD > android-build-evidence/source-commit.txt
-          gradle --project-dir android --no-daemon --max-workers=2 --console=plain :app:assembleDebug :app:assembleDebugAndroidTest 2>&1 | tee android-build-evidence/build.log
+          # testDebugUnitTest runs app/src/test on the JVM: fade shapes, balance law, mute/solo, blend names,
+          # lock modes/labels/crop geometry, soft eraser, ruler, GIF timing, iOS-layout manifests, the .sdi
+          # export contract, the Spatter grammar, the backend RPC catalogue, notification preferences and
+          # crash-report redaction/retention. Instrumented tests (app/src/androidTest) are only compiled here.
+          gradle --project-dir android --no-daemon --max-workers=2 --console=plain :app:assembleDebug :app:assembleDebugAndroidTest :app:testDebugUnitTest 2>&1 | tee android-build-evidence/build.log
           sha256sum android/app/build/outputs/apk/debug/*.apk > android-build-evidence/apk-sha256.txt
           python3 scripts/verify_android_sound_assets.py android/app/build/outputs/apk/debug/app-debug.apk > android-build-evidence/sound-assets.json
       - name: Preserve compiler evidence and debug APK
@@ -55,5 +66,7 @@ jobs:
             android-build-evidence/
             android/app/build/outputs/apk/debug/*.apk
             android/app/build/outputs/apk/androidTest/debug/*.apk
+            android/app/build/test-results/testDebugUnitTest/
+            android/app/build/reports/tests/testDebugUnitTest/
           retention-days: 7
           if-no-files-found: warn

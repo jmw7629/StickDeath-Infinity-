@@ -120,7 +120,7 @@ object AudioDecoder {
             check()
             require(pcm.size() > 0 && pcm.size() % (channels * 2) == 0) { "Decoder produced incomplete PCM frames." }
             val duration = pcm.size().toDouble() / (rate * channels * 2)
-            require(duration > 0 && duration <= 60.0) { "Use nonempty audio up to 60 seconds." }
+            require(duration > 0 && duration <= AudioLimits.MAX_CLIP_SECONDS) { AudioLimits.durationMessage() }
             val wav = ByteBuffer.allocate(44 + pcm.size()).order(ByteOrder.LITTLE_ENDIAN)
             wav.put("RIFF".toByteArray(Charsets.US_ASCII)).putInt(36 + pcm.size())
                 .put("WAVEfmt ".toByteArray(Charsets.US_ASCII)).putInt(16).putShort(1)

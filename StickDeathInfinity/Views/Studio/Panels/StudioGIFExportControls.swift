@@ -25,6 +25,7 @@ struct StudioGIFExportControls: View {
     @State private var previewError: String?
     @State private var shareAccountID: String?
     @State private var shareRequest: StudioGIFExportSession.ShareRequest?
+    @State private var saveRequest: StudioGIFExportSession.ShareRequest?
 
     private var session: StudioGIFExportSession { gif.session }
     private var scope: StudioGIFExportSession.Scope {
@@ -76,7 +77,7 @@ struct StudioGIFExportControls: View {
             }
             Text("Original canvas · \(vm.document.width) × \(vm.document.height)")
                 .font(.specialElite(12))
-            Text("\(vm.document.frames.count) frames · \(vm.document.fps) fps · \(String(format: "%.2f", vm.document.durationSeconds))s with frame exposures. Loops continuously, with a white background and no audio. GIF reduces colors; use MP4 for sound or longer animations. Grid and onion skin are not exported.")
+            Text("\(vm.document.frames.count) frames · \(vm.document.fps) fps · \(String(format: "%.2f", vm.document.durationSeconds))s with frame exposures. Loops continuously, with a white background and no audio. The system GIF encoder reduces each frame to at most 256 colours with its default dithering; no transparency is written. Use MP4 for sound or longer animations. Grid, onion skin and video reference layers are not exported.")
                 .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
             Text("Up to 240 frames at 1–50 fps, within 8.4 million total frame pixels. Original 1080 × 1920 fits four frames; 320 px output fits up to 145. Choose a smaller output for longer sequences. Limits never drop frames.")
                 .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
@@ -159,7 +160,17 @@ struct StudioGIFExportControls: View {
                     }
                     .disabled(gif.isBusy || session.isClosed || session.needsCleanup || shareLifetime.isReserved || previewImage == nil)
                     .accessibilityIdentifier("studio.export.share")
-                    Text("Share the animated GIF or save it to Files.")
+                    Button {
+                        saveRequest = session.beginSharing(scope: scope)
+                    } label: {
+                        Label("Save to Files", systemImage: "folder")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .frame(maxWidth: .infinity).padding(12)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
+                    }
+                    .disabled(gif.isBusy || session.isClosed || session.needsCleanup || shareLifetime.isReserved || previewImage == nil)
+                    .accessibilityIdentifier("studio.export.gif.save-files")
+                    Text("Share hands the animated GIF to the share sheet; Save to Files copies it into a folder you choose.")
                         .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                 }
                 .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#12121a")))
@@ -180,6 +191,17 @@ struct StudioGIFExportControls: View {
                 }) { id in if binding.wrappedValue?.id == id { binding.wrappedValue = nil } }
                     .id(request.id)
             }
+            if let request = saveRequest {
+                let binding = $saveRequest, holder = presentationScope
+                let projectID = session.source?.projectID
+                let capturedSession = session
+                StudioFilesSavePresenter(request: request, isAllowed: { [weak vm, weak capturedSession] in
+                    guard let vm, let capturedSession else { return false }
+                    return !capturedSession.isClosed && holder.value.isStudioVisible && holder.value.isForeground
+                        && vm.isEditing && vm.activePanel == .export && vm.exportFormat == .gif && vm.document.id == projectID
+                }) { id in if binding.wrappedValue?.id == id { binding.wrappedValue = nil } }
+                    .id(request.id)
+            }
         }
         .task(id: PreviewPlaybackKey(url: session.output?.gifURL, playing: previewPlaying,
                                     foreground: scope.isForeground && scope.isStudioVisible)) {
@@ -195,7 +217,7 @@ struct StudioGIFExportControls: View {
             if phase != .active { previewPlaying = false }
             refreshScope()
         }
-        .onChange(of: authVM.userId) { previewPlaying = false; refreshScope(); session.close(); shareRequest = nil }
+        .onChange(of: authVM.userId) { previewPlaying = false; refreshScope(); session.close(); shareRequest = nil; saveRequest = nil }
         .onChange(of: vm.document.id) { refreshScope() }
         .onChange(of: vm.isEditing) { refreshScope() }
         .onChange(of: vm.activePanel) { refreshScope() }

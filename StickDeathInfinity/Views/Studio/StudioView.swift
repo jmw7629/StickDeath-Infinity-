@@ -46,7 +46,7 @@ struct StudioView: View {
             bottomImageDeletion = nil; showingBottomImageDeletion = false
         }
         .onChange(of: scenePhase) { phase in
-            if phase != .active { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); Task { await vm.flush() } }
+            if phase != .active { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); BackgroundTaskScope.run("studio.flush") { await vm.flush() } }
         }
         .onChange(of: vm.document.id) { _ in vm.cancelMenuHandoff(); menuRequest = nil }
         .onChange(of: vm.isEditing) { editing in if !editing { vm.cancelMenuHandoff(); menuRequest = nil } }
@@ -65,6 +65,7 @@ struct StudioView: View {
             // Full-screen panels
             if vm.activePanel == .colorPicker { ColorPickerPanel(vm: vm) }
             if vm.activePanel == .gradientEndColor { ColorPickerPanel(vm: vm, target: .gradientEnd) }
+            if vm.activePanel == .shapeFillColor { ColorPickerPanel(vm: vm, target: .shapeFill) }
             if vm.activePanel == .projectSettings { ProjectSettingsPanel(vm: vm) }
             if vm.activePanel == .layers { LayerPanel(vm: vm) }
             if vm.activePanel == .export { ExportPanel(vm: vm, directRequest: spatterMovieRequest, onDirectRequestConsumed: { spatterMovieRequest = nil }) }
@@ -162,6 +163,8 @@ struct StudioEditorWorkspace: View {
     let onImageDelete: (StudioViewModel.ImageMoveCapture) -> Void
     @State private var toolbar = StudioToolbarLayout()
     @State private var dragOrigin: CGRect?
+    /// Stage-space frame of the selected tool button while it is visible in the rail.
+    @State private var selectedToolFrame: CGRect?
     @GestureState private var dragTranslation: CGSize = .zero
 
     var body: some View {
@@ -171,15 +174,21 @@ struct StudioEditorWorkspace: View {
                 if vm.showToolbar {
                     StudioHeaderBar(vm: vm, onDismiss: onDismiss)
                 }
-                if let message = vm.message {
-                    Text(message).font(.caption).foregroundColor(.white).padding(8)
-                        .frame(maxWidth: .infinity).background(Color.red.opacity(0.2))
-                        .accessibilityIdentifier("studio.status")
-                }
                 canvasStage(compactHeight: compact)
                 if vm.showToolbar {
                     StudioTimeline(vm: vm)
                     StudioBottomBar(vm: vm, onImageDelete: onImageDelete)
+                }
+            }
+            // The status banner floats over the stage so showing or clearing a
+            // message never changes canvas geometry or toolbar placement.
+            .overlay(alignment: .top) {
+                if let message = vm.message {
+                    Text(message).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white).padding(8)
+                        .frame(maxWidth: .infinity).background(Color.red.opacity(0.85))
+                        .padding(.top, vm.showToolbar ? 44 : 0)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("studio.status")
                 }
             }
         }
@@ -194,7 +203,8 @@ struct StudioEditorWorkspace: View {
             let bounds = CGRect(x: 0, y: top, width: geometry.size.width, height: max(0, geometry.size.height - top))
             let placement = toolbar.placement(in: bounds, compactHeight: compactHeight)
             let railFrame = dragOrigin.map { toolbar.draggingFrame(from: $0, translation: dragTranslation, in: bounds) } ?? placement.frame
-            let popupFrame = StudioToolbarLayout.settingsFrame(in: bounds, toolbar: placement)
+            let popupFrame = StudioToolbarLayout.settingsFrame(in: bounds, toolbar: placement,
+                                                               anchor: dragOrigin == nil ? selectedToolFrame : nil)
             let canvasFrame = StudioToolbarLayout.canvasFrame(in: bounds, toolbar: placement)
             ZStack(alignment: .topLeading) {
                 StudioCanvasView(vm: vm)
@@ -215,6 +225,11 @@ struct StudioEditorWorkspace: View {
                     onDock: { dock in toolbar.choose(dock, in: bounds); dragOrigin = nil })
                     .frame(width: railFrame.width, height: railFrame.height)
                     .position(x: railFrame.midX, y: railFrame.midY)
+                    .onPreferenceChange(StudioSelectedToolFrameKey.self) { frame in
+                        // The rail clips scrolled-out tools; only a button that still
+                        // overlaps the visible rail anchors the popup.
+                        selectedToolFrame = frame.flatMap { $0.intersects(railFrame) ? $0 : nil }
+                    }
 
                 if vm.activePanel == .toolSettings && FloatingToolSettingsPanel.hasSettings(vm.selectedTool) {
                     FloatingToolSettingsPanel(vm: vm,
@@ -254,7 +269,7 @@ struct ZoomButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(label == "FIT" ? .specialElite(9) : .system(size: 16, weight: .bold, design: .monospaced))
+                .font(label == "FIT" ? .specialElite(9) : .specialElite(16))
                 .foregroundColor(.white)
                 .frame(width: 32, height: 32)
                 .background(Circle().fill(Color(hex: "1E1E2A")))
@@ -323,7 +338,7 @@ struct StudioBottomBar: View {
                     .foregroundColor(.white.opacity(0.5))
                     
                     Text("\(vm.studioLayers.count)")
-                        .font(.system(size: 7, weight: .bold))
+                        .font(.specialElite(7)).fontWeight(.bold)
                         .foregroundColor(.white)
                         .padding(2)
                         .background(Color.red)
@@ -355,7 +370,8 @@ struct BottomBarButton: View {
                     .font(.specialElite(7)).fontWeight(.bold)
             }
             .foregroundColor(enabled ? .white.opacity(0.5) : .white.opacity(0.2))
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
         }
         .disabled(!enabled)
     }
@@ -391,6 +407,15 @@ struct FramesViewerPanel: View {
                                         StudioFrameThumbnail(vm: vm, frame: frame)
                                         .frame(height: 80)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        if frame.durationTicks > 1 {
+                                            Text("×\(frame.durationTicks)")
+                                                .font(.specialElite(9)).foregroundColor(.white)
+                                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                                .background(Color.black.opacity(0.65), in: Capsule())
+                                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                                .padding(4)
+                                                .accessibilityHidden(true)
+                                        }
                                     }
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
@@ -398,13 +423,40 @@ struct FramesViewerPanel: View {
                                     )
                                     
                                     Text("Frame \(i + 1)")
-                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .font(.specialElite(9))
                                         .foregroundColor(vm.currentFrame.id == frame.id ? .red : .white.opacity(0.5))
                                 }
                             }
                             .accessibilityIdentifier("studio.frames-viewer.frame." + frame.id)
                             .accessibilityLabel("Frame \(i + 1)")
                             .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
+                            .accessibilityHint("Exposure: \(frame.durationTicks) ticks")
+                            .contextMenu {
+                                // The same document operations the timeline strip offers.
+                                Button("Copy frame") { vm.copyFrame(frame.id) }
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.copy")
+                                Button("Paste frame after this") { vm.pasteFrame(after: frame.id) }
+                                    .disabled(!vm.canPasteTimelineFrame)
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.paste-after")
+                                Button("Duplicate frame") { vm.duplicateFrame(frame.id) }
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.duplicate")
+                                Button("Move earlier") { vm.moveFrame(frame.id, offset: -1) }
+                                    .disabled(i == 0)
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.move-earlier")
+                                Button("Move later") { vm.moveFrame(frame.id, offset: 1) }
+                                    .disabled(i + 1 >= vm.frames.count)
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.move-later")
+                                Menu("Frame exposure") {
+                                    ForEach([1, 2, 3, 6, 12, 24, 60], id: \.self) { ticks in
+                                        Button("\(ticks) ticks (\(String(format: "%.2f", Double(ticks) / Double(vm.fps)))s)") {
+                                            vm.setFrameHold(frame.id, ticks: ticks)
+                                        }.accessibilityIdentifier("studio.frames-viewer.menu.hold.\(ticks)")
+                                    }
+                                }
+                                Button("Delete frame", role: .destructive) { vm.deleteFrame(frame.id) }
+                                    .disabled(vm.frames.count <= 1)
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.delete")
+                            }
                         }
                         
                         // Add frame button
@@ -418,7 +470,7 @@ struct FramesViewerPanel: View {
                                             .foregroundColor(.white.opacity(0.3))
                                     )
                                 Text("Add")
-                                    .font(.system(size: 9, design: .monospaced))
+                                    .font(.specialElite(9))
                                     .foregroundColor(.white.opacity(0.3))
                             }
                         }
@@ -463,7 +515,7 @@ struct BackgroundLibraryPanel: View {
                             ForEach(categories, id: \.self) { category in
                                 Button(action: { selectedCategory = category }) {
                                     Text("\(category) (\(presets.filter { $0.category == category }.count))")
-                                        .font(.specialElite(10)).fontWeight(.bold)
+                                        .font(.specialElite(10))
                                         .foregroundColor(selectedCategory == category ? .white : .white.opacity(0.4))
                                         .frame(maxWidth: .infinity).padding(.vertical, 8)
                                         .background(selectedCategory == category ? Color.red : Color(hex: "1A1A24"))
@@ -480,7 +532,7 @@ struct BackgroundLibraryPanel: View {
                                         RoundedRectangle(cornerRadius: 8)
                                             .fill(LinearGradient(colors: [Color(hex: preset.startHex), Color(hex: preset.endHex)],
                                                 startPoint: .topLeading, endPoint: .bottomTrailing)).frame(height: 80)
-                                        Text(preset.name).font(.specialElite(10)).fontWeight(.medium)
+                                        Text(preset.name).font(.specialElite(10))
                                             .foregroundColor(.white.opacity(0.6))
                                     }
                                 }.disabled(requestID != nil)
@@ -550,10 +602,10 @@ struct AddImageOption: View {
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .font(.specialElite(14))
                         .foregroundColor(.white)
                     Text(subtitle)
-                        .font(.system(size: 11))
+                        .font(.specialElite(11, relativeTo: .caption))
                         .foregroundColor(.white.opacity(0.4))
                 }
                 
@@ -761,7 +813,7 @@ struct AIVoiceMakerSheet: View {
             Color(hex: "1A0A2E").ignoresSafeArea()
             VStack(spacing: 16) {
                 HStack {
-                    Text("Voice Maker").font(.specialElite(18)).fontWeight(.bold)
+                    Text("Voice Maker").font(.specialElite(18))
                     Spacer()
                     Button("Done") { invalidate(); dismiss() }.font(.specialElite(17))
                 }
@@ -771,9 +823,9 @@ struct AIVoiceMakerSheet: View {
                         Text("On-device system voices · no microphone or cloud AI")
                             .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.7))
                         Text("Script / Dialogue · \(scriptText.count)/1,500")
-                            .font(.specialElite(12)).fontWeight(.bold)
+                            .font(.specialElite(12))
                         TextEditor(text: $scriptText)
-                            .font(.system(size: 14)).foregroundColor(.white)
+                            .font(.specialElite(14)).foregroundColor(.white)
                             .scrollContentBackground(.hidden).frame(height: 110)
                             .padding(12).background(Color(hex: "2A1A3E")).cornerRadius(12)
                             .accessibilityLabel("Voiceover script")
@@ -792,12 +844,12 @@ struct AIVoiceMakerSheet: View {
                             Text("Speed").font(.specialElite(12, relativeTo: .caption))
                             Slider(value: $speed, in: 0.5...2).tint(Color(hex: "A78BFA"))
                             Text(String(format: "%.1fx", speed))
-                        }.font(.caption)
+                        }.font(.specialElite(12, relativeTo: .caption))
                         HStack {
                             Text("Pitch").font(.specialElite(12, relativeTo: .caption))
                             Slider(value: $pitch, in: 0.5...2).tint(Color(hex: "A78BFA"))
                             Text(String(format: "%.1fx", pitch))
-                        }.font(.caption)
+                        }.font(.specialElite(12, relativeTo: .caption))
                         Picker("Audio track", selection: $track) {
                             ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
                         }.tint(Color(hex: "A78BFA"))
@@ -831,7 +883,7 @@ struct AIVoiceMakerSheet: View {
                         .disabled(voice.prepared == nil || !targetIsCurrent)
                         .accessibilityIdentifier("studio.voice.add")
                 }
-                .font(.specialElite(14)).fontWeight(.bold)
+                .font(.specialElite(14))
                 .buttonStyle(.borderedProminent).tint(Color(hex: "7C3AED"))
             }
             .foregroundColor(.white).padding(16)
@@ -873,9 +925,9 @@ struct SpatterAISheet: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("🎨 Spatter AI")
-                            .font(.system(size: 18, weight: .bold, design: .monospaced))
+                            .font(.specialElite(18))
                             .foregroundColor(.red)
-                        Text(spatterVM.statusText).font(.caption).foregroundColor(.white.opacity(0.6))
+                        Text(spatterVM.statusText).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("spatter.studio.status")
                     }
                     Spacer()
@@ -885,24 +937,33 @@ struct SpatterAISheet: View {
                 .padding(16)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(SpatterAIViewModel.capabilityNotice).font(.caption2).foregroundColor(.white.opacity(0.6))
+                    Text(SpatterAIViewModel.capabilityNotice).font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
                     Button("Local Studio edits…") { showLocalRecipe = true }
-                        .font(.caption).foregroundColor(.red)
+                        .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
                         .disabled(spatterVM.isThinking)
                         .accessibilityIdentifier("spatter.studio.local-motion")
                     Button("Local memory preferences…") { showingPersonalMemory = true }
-                        .font(.caption).foregroundColor(.red).disabled(spatterVM.isThinking || authVM.state == .loading)
+                        .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red).disabled(spatterVM.isThinking || authVM.state == .loading)
                         .accessibilityIdentifier("spatter.studio.memory")
-                    if let error = spatterVM.memoryError { Text(error).font(.caption).foregroundColor(.red) }
-                    Toggle("Cloud advice", isOn: $spatterVM.useCloud).font(.caption)
+                    if let error = spatterVM.memoryError { Text(error).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red) }
+                    Toggle("Cloud advice", isOn: $spatterVM.useCloud).font(.specialElite(12, relativeTo: .caption))
                         .disabled(spatterVM.isThinking)
                         .accessibilityIdentifier("spatter.studio.cloud")
                     if spatterVM.useCloud {
                         Text("Sends your message, this sheet's earlier cloud messages and a limited project/tool/layer/frame/audio summary to the configured authenticated backend. Drawings, audio files and file paths are not sent.")
-                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                            .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
+                        Toggle("Include project and layer names", isOn: $spatterVM.shareProjectNames).font(.specialElite(12, relativeTo: .caption))
+                            .disabled(spatterVM.isThinking)
+                            .accessibilityIdentifier("spatter.studio.cloud.share-names")
+                        Text(spatterVM.shareProjectNames ? "Your project and layer names are included in the cloud summary." : "The cloud summary says “Current project” and “Layer N” instead of your names.")
+                            .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
+                        if let budget = spatterVM.budgetText {
+                            Text(budget).font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
+                                .accessibilityIdentifier("spatter.studio.cloud.budget")
+                        }
                     }
                     if let notice = contextError ?? spatterVM.notice {
-                        Text(notice).font(.caption).foregroundColor(.white.opacity(0.8))
+                        Text(notice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.8))
                             .accessibilityIdentifier("spatter.studio.notice")
                     }
                     if spatterVM.isThinking {
@@ -920,9 +981,9 @@ struct SpatterAISheet: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     if let origin = message.origin {
                                         Text(origin == .local ? "LOCAL GUIDE" : "CLOUD ADVICE")
-                                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                                            .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
                                     }
-                                    Text(message.content).font(.system(size: 13)).foregroundColor(.white)
+                                    Text(message.content).font(.specialElite(13)).foregroundColor(.white)
                                 }
                                 .padding(12)
                                 .background(message.role == .user ? Color.red : Color(hex: "1A1A24"))
@@ -937,7 +998,7 @@ struct SpatterAISheet: View {
 
                 HStack(spacing: 8) {
                     TextField("Ask Spatter for advice...", text: $prompt)
-                        .font(.system(size: 14)).foregroundColor(.white)
+                        .font(.specialElite(14)).foregroundColor(.white)
                         .padding(12).background(Color(hex: "1A1A24")).cornerRadius(12)
                         .accessibilityIdentifier("spatter.studio.input")
                     Button(action: sendMessage) {
@@ -1074,15 +1135,15 @@ struct MagicCutSheet: View {
             Color(hex: "0A0A0F").ignoresSafeArea()
             VStack(spacing: 16) {
                 HStack {
-                    Text("Magic Cut").font(.system(size: 18, weight: .bold, design: .monospaced))
+                    Text("Magic Cut").font(.specialElite(18))
                     Spacer()
                     Button("Done") { cancel(); dismiss() }
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Edge-connected color removal").font(.headline)
+                        Text("Edge-connected color removal").font(.specialElite(17, relativeTo: .headline))
                         Text("Removes the chosen color from the imported image's edges. When a frame has different images, select the image layer to cut. Linked copies of that source update together; other images, enclosed areas, drawings and original files stay unchanged. This is color-based removal, not AI subject recognition.")
-                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                            .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.7))
                         Picker("Scope", selection: $allFrames) {
                             Text("Current frame").tag(false)
                             Text("All imported frames").tag(true)
@@ -1094,7 +1155,7 @@ struct MagicCutSheet: View {
                             Text("\(Int(tolerance))%").monospacedDigit()
                         }
                         Text("Higher tolerance removes a wider color range. Transparent squares below show the removed area. Preview shows the source image before canvas crop or rotation.")
-                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                            .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.7))
                         if let preview {
                             ZStack {
                                 Canvas { context, size in
@@ -1109,9 +1170,9 @@ struct MagicCutSheet: View {
                                 Image(uiImage: preview).resizable().scaledToFit()
                             }.frame(height: 200).clipped().accessibilityLabel("Background removal preview")
                         }
-                        if let notice { Text(notice).font(.caption).accessibilityIdentifier("studio.cut.notice") }
+                        if let notice { Text(notice).font(.specialElite(12, relativeTo: .caption)).accessibilityIdentifier("studio.cut.notice") }
                         Text("Limit: 64 image frames, 16 selected sources / 16 megapixels per batch; 4 megapixels per image. Show and unlock the selected source’s linked layers. All imported frames requires the selected image layer in each frame containing different sources.")
-                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                            .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
                     }
                 }
                 HStack {
@@ -1214,9 +1275,9 @@ private struct SpatterPersonalMemorySheet: View {
             Form {
                 Section("Personal preferences · device only") {
                     Text("Off by default. Save only choices you select here. Spatter does not learn from transcripts, infer emotions or save secrets. These preferences add local guidance hints and are never included automatically in cloud requests.")
-                        .font(.caption)
+                        .font(.specialElite(12, relativeTo: .caption))
                     Text(capturedAccount == nil ? "Guest preferences on this device" : "Preferences for the signed-in account on this device")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.secondary)
                     Toggle("Use my local preferences", isOn: $draft.enabled).accessibilityIdentifier("spatter.memory.enabled")
                     Picker("Guidance", selection: $draft.guidance) {
                         ForEach(SpatterPersonalPreferences.Guidance.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
@@ -1229,14 +1290,14 @@ private struct SpatterPersonalMemorySheet: View {
                         if vm.savePersonalPreferences(draft) { notice = "Saved on this device. Cloud advice is unchanged." }
                     }.accessibilityIdentifier("spatter.memory.save")
                     Text("Turning off stops using the saved choices. Reset deletes them. Each account and guest has a separate record; signing out never transfers preferences to another account. App-managed preferences are excluded from device backup. Explicitly exported files remain wherever you save them.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.secondary)
                 }
                 Section("Inspect and transfer") {
                     Text((try? String(decoding: vm.personalPreferences.encoded(), as: UTF8.self)) ?? "Preferences unavailable")
                         .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                         .accessibilityIdentifier("spatter.memory.inspect")
                     Button("Import preference JSON…") { showingImport = true }.accessibilityIdentifier("spatter.memory.import")
-                    Text("Import loads choices into this form only. Review them and explicitly Save to enable them for this account.").font(.caption)
+                    Text("Import loads choices into this form only. Review them and explicitly Save to enable them for this account.").font(.specialElite(12, relativeTo: .caption))
                     Button("Export saved preferences…") {
                         guard current else { return }
                         do { exportDocument = try .init(vm.personalPreferences); showingExport = true }
@@ -1245,7 +1306,7 @@ private struct SpatterPersonalMemorySheet: View {
                     Button("Reset saved preferences", role: .destructive) { confirmingReset = true }
                         .accessibilityIdentifier("spatter.memory.reset")
                 }
-                if let message = vm.memoryError ?? notice { Text(message).font(.caption).accessibilityIdentifier("spatter.memory.notice") }
+                if let message = vm.memoryError ?? notice { Text(message).font(.specialElite(12, relativeTo: .caption)).accessibilityIdentifier("spatter.memory.notice") }
             }
             .navigationTitle("Local Memory")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }

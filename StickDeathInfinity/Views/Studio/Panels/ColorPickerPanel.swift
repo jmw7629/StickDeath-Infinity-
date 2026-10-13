@@ -2,16 +2,38 @@ import SwiftUI
 
 struct ColorPickerPanel: View {
     @ObservedObject var vm: StudioViewModel
-    enum Target: Equatable { case drawing, gradientEnd }
+    enum Target: Equatable { case drawing, gradientEnd, shapeFill }
     var target: Target = .drawing
     @State private var selectedPaletteIndex: Int = 0
     @State private var customHex = ""
     @FocusState private var customHexFocused: Bool
-    private var selectedColor: Color { target == .drawing ? vm.strokeColor : vm.brushGradientEndColor }
-    private var selectedHex: String { target == .drawing ? vm.strokeColorHex : vm.brushGradientEndColorHex }
+    private var selectedColor: Color {
+        switch target {
+        case .drawing: return vm.strokeColor
+        case .gradientEnd: return vm.brushGradientEndColor
+        case .shapeFill: return vm.shapeFillColor ?? vm.strokeColor
+        }
+    }
+    private var selectedHex: String {
+        switch target {
+        case .drawing: return vm.strokeColorHex
+        case .gradientEnd: return vm.brushGradientEndColorHex
+        case .shapeFill: return vm.shapeFillColorHex
+        }
+    }
+    private var title: String {
+        switch target {
+        case .drawing: return "Color"
+        case .gradientEnd: return "Gradient end color"
+        case .shapeFill: return "Shape fill color"
+        }
+    }
     private func setColor(_ color: Color) {
-        if target == .drawing { vm.strokeColor = color }
-        else { vm.brushGradientEndColor = color; vm.rememberRecentColor(vm.brushGradientEndColorHex) }
+        switch target {
+        case .drawing: vm.strokeColor = color
+        case .gradientEnd: vm.brushGradientEndColor = color; vm.rememberRecentColor(vm.brushGradientEndColorHex)
+        case .shapeFill: vm.shapeFillColor = color; vm.rememberRecentColor(vm.shapeFillColorHex)
+        }
     }
     private var validCustomHex: String? { StudioViewModel.normalizedColorHex(customHex) }
 
@@ -40,7 +62,7 @@ struct ColorPickerPanel: View {
                 .frame(width: 36, height: 4)
                 .padding(.top, 8)
 
-            PanelHeader(title: target == .drawing ? "Color" : "Gradient end color", icon: "🎨", onClose: { customHexFocused = false; vm.activePanel = target == .drawing ? .none : .toolSettings })
+            PanelHeader(title: title, icon: "🎨", onClose: { customHexFocused = false; vm.activePanel = target == .drawing ? .none : .toolSettings })
 
             ScrollView {
             VStack(spacing: 0) {
@@ -71,11 +93,11 @@ struct ColorPickerPanel: View {
                         .font(.specialElite(13))
                         .textInputAutocapitalization(.characters).autocorrectionDisabled()
                         .keyboardType(.asciiCapable).focused($customHexFocused)
-                        .accessibilityLabel(target == .drawing ? "Custom drawing color hex" : "Custom gradient end color hex")
+                        .accessibilityLabel("Custom " + title.lowercased() + " hex")
                         .accessibilityIdentifier("studio.color.hex")
                     Button("Apply") {
                         guard let hex = validCustomHex else { return }
-                        guard vm.applyCustomColorHex(hex, gradientEnd: target == .gradientEnd) else { return }
+                        guard vm.applyCustomColorHex(hex, gradientEnd: target == .gradientEnd, shapeFill: target == .shapeFill) else { return }
                         customHex = ""; customHexFocused = false
                     }
                     .disabled(validCustomHex == nil)
@@ -152,7 +174,7 @@ struct ColorPickerPanel: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(vm.recentColorHexes, id: \.self) { hex in
-                                Button { _ = vm.applyCustomColorHex(hex, gradientEnd: target == .gradientEnd) } label: {
+                                Button { _ = vm.applyCustomColorHex(hex, gradientEnd: target == .gradientEnd, shapeFill: target == .shapeFill) } label: {
                                     Circle().fill(Color(hex: hex)).frame(width: 30, height: 30)
                                         .overlay(Circle().stroke(.white.opacity(0.4), lineWidth: 1))
                                         .frame(width: 44, height: 44)

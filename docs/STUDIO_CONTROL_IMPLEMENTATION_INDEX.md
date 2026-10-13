@@ -1,5 +1,23 @@
 # Studio control implementation index
 
+## October 13 wave-3 batch (Studio canvas and tools) — evidence summary for epics #18, #19, #29
+
+Source mapping for the wave-3 canvas/tool batch. Every native (SwiftUI, UIKit, CoreGraphics) behaviour below is **deferred / not run** on this Linux host; only the listed Foundation checks ran. Nothing here is release acceptance.
+
+| Epic | Area | Production code | History / persistence | Evidence available here |
+| --- | --- | --- | --- | --- |
+| #18 | Canvas resize anchor (#157) | `StudioCanvasAnchor`, `StudioDocumentEditor.updateProjectSettings(…anchor:)`, `anchorFrameContent`, `StudioCanvasAnchorPicker` (Project Settings, existing projects only), typed `updateProjectSettings.anchorX/anchorY` | One revision, one Undo; default anchor keeps historical top-left bytes; lossy or off-canvas results change nothing | Linux harness on the production editor/executor (centre, bottom-right, rounding, rejection, wire); `Tests/StudioDocument` `resizeAnchorOverlaysAndFrameOrder` (macOS, deferred) |
+| #18 | Mirror axes (#150) | `StudioMirrorCapture.axisX/axisY`, `StudioStrokeInput.mirrorTools`, `mirrorAxisX/Y` tool preference, Mirror settings sliders, `MirrorAxisOverlay` guide | Copies keep deterministic IDs/samples; axes persist per tool; overlay never exported | Linux harness (translation 2·axis·size, invalid axes refused); `Tests/StudioShapeSettings` off-centre pixels and `Tests/StudioToolPreferences` relaunch (deferred) |
+| #19 | Popup beside the selected tool (#139) | `StudioSelectedToolFrameKey` preference from `StudioToolStrip`, `StudioToolbarLayout.settingsFrame(in:toolbar:anchor:)` | No document history | `Tests/StudioToolbar` 17/17 PASS on Linux (anchored slide, clamp, off-rail/non-finite fallback) |
+| #29 | Overlay toggles outside history (#163) | `StudioDocumentEditor.changeViewSettings`, `carryViewSettings`, `retainSelectionAfterHistoryStep`, VM `changeViewSettings`, executor overlay-only batches | Grid/onion settings bump revision and save but add no Undo entry; Undo/Redo keep current overlays and a still-valid element selection | Linux harness (3 cases); `Tests/StudioDocument` (deferred); contract change noted for `Tests/SpatterStudioEditSession` and Spatter copy (coordinator) |
+| #29 | Explicit frame position (#161) | `StudioDocumentEditor.moveFrames(_:toPosition:)`, VM `moveFrames(_:toPosition:expectedRevision:)`, Frame range / timing sheet `studio.frame-timing.position` / `.move-to` | One Undo; stale revision or non-contiguous range refused | Linux harness; `Tests/StudioDocument` (deferred) |
+| #29 | Tween "Hold" easing (#166) | `StudioTweenEasing.hold` beside `easyEase` | Baked in-betweens repeat the start pose | Linux harness; `Tests/StudioTween` explicit Hold render equality (deferred) |
+| #18 | Navigation (#151) | Double tap with Hand/Zoom → `zoomFit()`; Zoom tap 1.25× about the point; two-finger pan/pinch for every tool via `StudioTouchView` | No document history | Native only (deferred); rotation not implemented |
+| #29 | Bottom bar / typography (#164, #294) | `BottomBarButton` 44-pt minimum height; Special Elite on remaining Studio text (`StudioView`, `StudioTimeline`, `LayerPanel`, `ToolSettingsPanel`, `StudioCanvasView`, image library, sticker panel) | — | `swiftc -parse` only; SF Symbol icon sizes intentionally stay `.system(size:)` |
+
+Still open in this area (honest gaps): effects do not yet clip to an element selection and still refuse it (#149); no gradient fill for shapes; Wand selects image regions only, not drawn elements (#153); timeline drag-reorder is not implemented (#161 keeps ±1, range moves and explicit position); neon halo has no additive-blend option (#142).
+
+
 ## October 9 implementation batch
 
 This index maps the current selection, audio and asset-library controls to production code. It supplements the existing tool/export acceptance documents; it is not a complete inventory of every app screen. Source baseline: `2100cfb` and its ancestors. Build, simulator, device, accessibility, persistence and export verification for this batch are **deferred / not run** under the owner's implementation-first direction. Earlier successful tests do not cover these changes.

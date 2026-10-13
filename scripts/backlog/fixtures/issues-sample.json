@@ -1,0 +1,11 @@
+[
+  {"number": 3, "title": "[SDI epic] Delivery inventory, acceptance traceability and backlog maintenance", "state": "OPEN", "labels": [{"name": "sdi:epic"}, {"name": "P1"}], "body": "Epic.", "url": "https://example.invalid/issues/3"},
+  {"number": 123, "title": "[SDI F01] Rebuild the native acceptance matrix", "state": "CLOSED", "labels": [{"name": "sdi:next"}, {"name": "P0"}], "body": "Part of #3.\n\n**Dependencies:** No child-task dependency; inspect current state first.", "url": "https://example.invalid/issues/123"},
+  {"number": 125, "title": "[SDI F03] Map every visible control to implementation and acceptance evidence", "state": "OPEN", "labels": [{"name": "sdi:next"}, {"name": "P0"}], "body": "Part of #3 and the authoritative delivery tracker #116.\n\n**Dependencies:** #123", "url": "https://example.invalid/issues/125"},
+  {"number": 126, "title": "[SDI F04] Publish current source-labelled SwiftUI captures and a native review route", "state": "OPEN", "labels": [{"name": "sdi:next"}, {"name": "P0"}], "body": "Part of #13 and the authoritative delivery tracker #116.\n\n**Dependencies:** #124", "url": "https://example.invalid/issues/126"},
+  {"number": 124, "title": "[SDI F02] Run the native regression at the exact head", "state": "OPEN", "labels": [{"name": "sdi:next"}, {"name": "P0"}], "body": "Part of #4. Execute after #123 passes.", "url": "https://example.invalid/issues/124"},
+  {"number": 200, "title": "[SDI A1] Cyclic alpha", "state": "OPEN", "labels": [{"name": "sdi:later"}], "body": "Depends on #201.", "url": "https://example.invalid/issues/200"},
+  {"number": 201, "title": "[SDI A2] Cyclic beta", "state": "OPEN", "labels": [{"name": "sdi:later"}], "body": "Depends on #200.", "url": "https://example.invalid/issues/201"},
+  {"number": 300, "title": "[SDI dup] Verify accessibility and adaptive layouts across the native app", "state": "OPEN", "labels": [{"name": "sdi:next"}], "body": "Part of #12.", "url": "https://example.invalid/issues/300"},
+  {"number": 264, "title": "[SDI QA01] Verify accessibility and adaptive layouts across the native app", "state": "OPEN", "labels": [{"name": "sdi:later"}, {"name": "P1"}], "body": "Part of #12 and the authoritative delivery tracker #116.\n\n**Dependencies:** #127, #164, #177", "url": "https://example.invalid/issues/264"}
+]

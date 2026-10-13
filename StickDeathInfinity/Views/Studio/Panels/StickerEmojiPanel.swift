@@ -46,7 +46,7 @@ struct StickerEmojiPanel: View {
             .padding(.bottom, 8)
 
             if let insertionNotice {
-                Text(insertionNotice).font(.caption).foregroundColor(.red)
+                Text(insertionNotice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
                     .accessibilityIdentifier("studio.sticker.result")
                     .padding(.horizontal, 12)
             }
@@ -61,7 +61,7 @@ struct StickerEmojiPanel: View {
                     .submitLabel(.search)
                     .onSubmit { searchFocused = false }
                     .accessibilityIdentifier("studio.sticker.search")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.specialElite(11))
                     .foregroundColor(.white)
             }
             .padding(.horizontal, 12)
@@ -82,7 +82,7 @@ struct StickerEmojiPanel: View {
                             ForEach(Array(StickerLibrary.categories.enumerated()), id: \.offset) { index, cat in
                                 Button(action: { selectedCategoryIndex = index }) {
                                     Text(cat.name)
-                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .font(.specialElite(9))
                                         .foregroundColor(selectedCategoryIndex == index ? Color(hex: "DC2626") : .white.opacity(0.4))
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 5)
@@ -107,7 +107,7 @@ struct StickerEmojiPanel: View {
                                     Text(sticker.emoji)
                                         .font(.system(size: 28))
                                     Text(sticker.name)
-                                        .font(.system(size: 7, weight: .medium, design: .monospaced))
+                                        .font(.specialElite(7))
                                         .foregroundColor(.white.opacity(0.5))
                                         .lineLimit(1)
                                 }
@@ -131,7 +131,7 @@ struct StickerEmojiPanel: View {
                             ForEach(Array(Self.emojiSets.enumerated()), id: \.offset) { index, cat in
                                 Button(action: { selectedEmojiCatIndex = index }) {
                                     Text(cat.name)
-                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .font(.specialElite(9))
                                         .foregroundColor(selectedEmojiCatIndex == index ? Color(hex: "DC2626") : .white.opacity(0.4))
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 5)
@@ -182,7 +182,7 @@ struct StickerTabButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .font(.specialElite(9))
                 .tracking(0.5)
                 .foregroundColor(isActive ? Color(hex: "DC2626") : .white.opacity(0.4))
                 .frame(maxWidth: .infinity)

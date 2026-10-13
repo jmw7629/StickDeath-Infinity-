@@ -341,6 +341,11 @@ struct StudioCanvasView: View {
                         }
                     }
                     if vm.gridEnabled { GridOverlay(settings: vm.document.gridSettings ?? .init()).allowsHitTesting(false) }
+                    if vm.mirrorMode != .off, vm.selectedTool != .eraser, StudioStrokeInput.mirrorTools.contains(vm.selectedTool) {
+                        MirrorAxisOverlay(mode: vm.mirrorMode, axisX: vm.mirrorAxisX, axisY: vm.mirrorAxisY)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
                 }
                 .frame(width: size.width, height: size.height)
                 .clipped()
@@ -370,7 +375,7 @@ struct StudioCanvasView: View {
                             if vm.beginSelectionHandle() != nil { _ = vm.positionSelected(dx: dx, dy: dy) }
                         default: break
                         }
-                    }, navigationEnabled: [.hand, .zoom].contains(vm.selectedTool) && scenePhase == .active,
+                    }, navigationEnabled: scenePhase == .active,
                     onNavigation: { factor, translation, anchor, began in
                         if began { navigationOrigin = (vm.canvasScale, vm.canvasOffset) }
                         guard let origin = navigationOrigin, factor.isFinite, factor > 0 else { return }
@@ -536,10 +541,11 @@ struct StudioCanvasView: View {
                             startedAt: value.time, shape: shape, eraser: eraser,
                             angleSnapDegrees: vm.selectedTool == .line && !vm.lineRulerEnabled ? vm.lineAngleSnap : 0,
                             equalShapeSides: [.rectangle, .circle].contains(vm.selectedTool) && vm.equalShapeSides,
-                            rulerAngleDegrees: vm.selectedTool == .line && vm.lineRulerEnabled ? vm.lineRulerAngle : nil,
+                            rulerAngleDegrees: StudioStrokeInput.rulerTools.contains(vm.selectedTool) && vm.lineRulerEnabled ? vm.lineRulerAngle : nil,
                             rulerLength: vm.selectedTool == .line && vm.lineRulerEnabled && vm.lineRulerFixedLength ? vm.lineRulerLength : nil,
                             mirror: vm.selectedTool != .eraser && vm.mirrorMode != .off ?
-                                .init(mode: vm.mirrorMode, width: Double(vm.canvasWidth), height: Double(vm.canvasHeight)) : nil,
+                                .init(mode: vm.mirrorMode, width: Double(vm.canvasWidth), height: Double(vm.canvasHeight),
+                                      axisX: vm.mirrorAxisX, axisY: vm.mirrorAxisY) : nil,
                             preservesLayerAlpha: styled && layer.lockMode == "alpha")
                     } catch { vm.message = error.localizedDescription; return }
                 }
@@ -723,7 +729,20 @@ struct StudioCanvasView: View {
                     }
                     return
                 }
-                if vm.selectedTool == .zoom { vm.zoomIn(); return }
+                // Navigation tools: a double tap fits the canvas (zoom 1×, no offset);
+                // the Zoom tool's single tap scales 1.25× about the tapped point.
+                // Neither touches the document or its history.
+                if value.tapCount >= 2, vm.selectedTool == .zoom || vm.selectedTool == .hand,
+                   hypot(value.location.x - value.startLocation.x, value.location.y - value.startLocation.y) <= 8 {
+                    vm.zoomFit(); return
+                }
+                if vm.selectedTool == .zoom { vm.zoom(by: 1.25, anchor: value.location, viewport: size); return }
+                if vm.selectedTool == .text, size.width > 0, size.height > 0 {
+                    // SwiftUI reports the location in this untransformed local view.
+                    _ = vm.beginTextEditing(at: CGPoint(x: value.location.x / size.width * CGFloat(vm.canvasWidth),
+                                                        y: value.location.y / size.height * CGFloat(vm.canvasHeight)))
+                    return
+                }
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
     }
     @ViewBuilder private var inputStatusOverlay: some View {
@@ -786,7 +805,7 @@ struct StudioCanvasView: View {
                 } else if let pending = vm.pendingBrushStroke {
                     VStack(spacing: 6) {
                         Text("Brush draft not saved").font(.specialElite(12)).foregroundColor(.red)
-                        Text(pending.reason).font(.system(size: 10)).foregroundColor(.white)
+                        Text(pending.reason).font(.specialElite(10, relativeTo: .caption2)).foregroundColor(.white)
                             .lineLimit(4)
                         HStack(spacing: 12) {
                             Button("Retry with settings") { vm.retryRejectedBrush() }
@@ -794,7 +813,7 @@ struct StudioCanvasView: View {
                                 .accessibilityIdentifier("studio.brush-retry")
                             Button("Discard draft") { vm.discardRejectedBrush() }
                                 .accessibilityIdentifier("studio.brush-discard")
-                        }.font(.system(size: 11, weight: .bold))
+                        }.font(.specialElite(11)).fontWeight(.bold)
                     }.padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
                         .padding(8)
                 }
@@ -1045,6 +1064,28 @@ struct GridOverlay: View {
     }
 }
 
+/// Editor-only dashed guide along the active mirror line(s). Never exported;
+/// the line positions are the same normalised axes `StudioMirrorCapture` reflects across.
+struct MirrorAxisOverlay: View {
+    var mode: StudioMirrorMode
+    var axisX: Double
+    var axisY: Double
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            if mode != .horizontal, StudioMirrorCapture.isValidAxis(axisX) {
+                let x = CGFloat(axisX) * size.width
+                path.move(to: CGPoint(x: x, y: 0)); path.addLine(to: CGPoint(x: x, y: size.height))
+            }
+            if mode != .vertical, StudioMirrorCapture.isValidAxis(axisY) {
+                let y = CGFloat(axisY) * size.height
+                path.move(to: CGPoint(x: 0, y: y)); path.addLine(to: CGPoint(x: size.width, y: y))
+            }
+            context.stroke(path, with: .color(Color.red.opacity(0.55)), style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+        }
+    }
+}
+
 // UIKit provides real coalesced Pencil samples; SwiftUI's DragGesture does not
 // expose pressure. Both Pencil and finger now use the same Studio transaction.
 private struct StudioTouchValue {
@@ -1057,6 +1098,8 @@ private struct StudioTouchValue {
     let time: Date
     let pressure: CGFloat?
     let tilt: StudioPencilTilt?
+    /// UIKit tap count of the finishing touch (2 for a double tap); 1 when unknown.
+    var tapCount = 1
     var translation: CGSize { CGSize(width: location.x-startLocation.x, height: location.y-startLocation.y) }
 }
 
@@ -1241,6 +1284,7 @@ private final class StudioTouchView: UIView {
             expectsUpdates: !touch.estimatedPropertiesExpectingUpdates.isEmpty,
             location: touch.preciseLocation(in: self), startLocation: start,
             windowTranslation: CGSize(width: windowPoint.x-startInWindow.x, height: windowPoint.y-startInWindow.y),
-            time: startDate.addingTimeInterval(max(0, touch.timestamp-startTime)), pressure: pressure, tilt: tilt)
+            time: startDate.addingTimeInterval(max(0, touch.timestamp-startTime)), pressure: pressure, tilt: tilt,
+            tapCount: max(1, touch.tapCount))
     }
 }

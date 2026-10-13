@@ -4,9 +4,87 @@ import Combine
 import CryptoKit
 import Darwin
 
+/// One process-wide owner of the system audio session for Studio playback (#180).
+/// Playback sets `.playback`/`.default` and activates the session so the ring
+/// switch does not silence previews; interruptions and a lost output route stop
+/// every registered owner honestly instead of letting a stalled player poll.
+/// The session is deactivated with `notifyOthersOnDeactivation` when the last
+/// owner ends. On platforms without AVAudioSession this is a no-op.
+@MainActor
+final class StudioAudioSessionController {
+    enum Event: Equatable { case interruptionBegan, routeLost }
+    static let shared = StudioAudioSessionController()
+    private var owners: [UUID: @MainActor (Event) -> Void] = [:]
+    private var observers: [NSObjectProtocol] = []
+    private(set) var isActive = false
+    private(set) var lastEvent: Event?
+    private init() {}
+    var activeOwnerCount: Int { owners.count }
+
+    enum Failure: LocalizedError {
+        case unavailable(String)
+        var errorDescription: String? {
+            if case .unavailable(let detail) = self { return "The audio session could not be activated for playback: \(detail)" }
+            return nil
+        }
+    }
+
+    /// Register `owner` and make the shared session active for playback.
+    func begin(owner: UUID, onEvent: @escaping @MainActor (Event) -> Void) throws {
+        #if os(iOS) || os(tvOS)
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true, options: [])
+        } catch { throw Failure.unavailable(error.localizedDescription) }
+        if observers.isEmpty {
+            let center = NotificationCenter.default
+            observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
+                guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+                Task { @MainActor in self?.dispatch(.interruptionBegan) }
+            })
+            observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] note in
+                guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                      AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+                Task { @MainActor in self?.dispatch(.routeLost) }
+            })
+        }
+        #endif
+        owners[owner] = onEvent
+        isActive = true
+    }
+
+    /// Unregister `owner`; the last owner deactivates the session.
+    func end(owner: UUID) {
+        guard owners.removeValue(forKey: owner) != nil else { return }
+        guard owners.isEmpty else { return }
+        #if os(iOS) || os(tvOS)
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers.removeAll()
+        // Deactivation can legitimately fail while another app's audio is
+        // still being torn down; the next `begin` re-activates regardless.
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
+        isActive = false
+    }
+
+    /// Test and system entry point: stops every owner with the given event.
+    func dispatch(_ event: Event) {
+        lastEvent = event
+        for handler in owners.values { handler(event) }
+    }
+    static func message(for event: Event) -> String {
+        switch event {
+        case .interruptionBegan: return "Audio playback was interrupted by another app or a call and has stopped. Play again when ready."
+        case .routeLost: return "The audio output device was disconnected, so playback stopped."
+        }
+    }
+}
+
 /// Owns one panel's Files import, derived waveform cache and single-clip audition.
 /// No microphone, cloud, mixed timeline or export operation is implemented here.
-/// The app's existing audio-session policy remains in charge of audible routing.
+/// `StudioAudioSessionController` owns the playback category and interruption policy.
 @MainActor
 final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayerDelegate {
     struct Measurement: Equatable {
@@ -14,11 +92,19 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
         let sampleRate: Double
         let channels: Int
         let peaks: [Float]
+        /// Measured RMS per bin (#192); empty only for records older than RMS support.
+        let rms: [Float]
         let clipped: Bool
+        /// True when the values came from the persistent cache instead of a fresh decode.
+        let restoredFromCache: Bool
         init(_ imported: StudioAudioImportService.ImportedAudio) {
             duration = imported.duration; sampleRate = imported.sampleRate
-            channels = imported.channelCount; peaks = imported.waveformPeaks
-            clipped = imported.hasClippedSamples
+            channels = imported.channelCount; peaks = imported.waveformPeaks; rms = imported.waveformRMS
+            clipped = imported.hasClippedSamples; restoredFromCache = false
+        }
+        init(record: StudioWaveformRecord) {
+            duration = record.duration; sampleRate = record.sampleRate; channels = record.channels
+            peaks = record.peaks; rms = record.rms; clipped = record.clipped; restoredFromCache = true
         }
     }
     enum State: Equatable {
@@ -42,11 +128,19 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
     private var playbackTimer: Timer?
     private let importer: StudioAudioImportService
     private let scratchParent: URL
+    private let sessionOwnerID = UUID()
+    /// Digest-keyed persistent waveform records (#192/#193); in-memory LRU above.
+    private let waveformCache: StudioWaveformCache
+    private var pendingRestore: [AudioTrack] = []
+    private var pendingRestoreStillCurrent: (() -> Bool)?
+    @Published private(set) var restoredFromCacheCount = 0
     static let maximumCachedMeasurements = 32
+    static let maximumRestoreAnalyses = 16
 
     init(importer: StudioAudioImportService = .shared,
-         scratchParent: URL = FileManager.default.temporaryDirectory) {
-        self.importer = importer; self.scratchParent = scratchParent
+         scratchParent: URL = FileManager.default.temporaryDirectory,
+         waveformCache: StudioWaveformCache = .shared) {
+        self.importer = importer; self.scratchParent = scratchParent; self.waveformCache = waveformCache
         super.init()
     }
     var notice: String? {
@@ -118,7 +212,10 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
               data.count <= StudioAudioImportService.maximumEncodedBytes else {
             state = .failed("This audio asset is missing or exceeds the 16 MB preview limit."); return false
         }
-        if measurements[track.id] != nil, fingerprints[track.id] == SHA256.hash(data: data) { onReady?(); return true }
+        let digest = SHA256.hash(data: data)
+        if measurements[track.id] != nil, fingerprints[track.id] == digest { onReady?(); return true }
+        // A persisted record for exactly these bytes needs no decode (#192).
+        if restoreFromCache(track, data: data, digest: digest) { state = .ready; onReady?(); return true }
         stop()
         let id = UUID(); generation = id
         isBusy = true; state = .analyzing; progress = 0
@@ -144,6 +241,54 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
             }
         }
         return true
+    }
+
+    /// Load a cached record for `track` into the in-memory measurements.
+    private func restoreFromCache(_ track: AudioTrack, data: Data, digest: SHA256.Digest) -> Bool {
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        guard let record = waveformCache.record(forSHA256: hex, byteCount: data.count),
+              abs(record.duration - track.duration) <= 0.001 else { return false }
+        cacheOrder.removeAll { $0 == track.id }; cacheOrder.append(track.id)
+        measurements[track.id] = Measurement(record: record); fingerprints[track.id] = digest
+        restoredFromCacheCount += 1
+        trimMemory()
+        return true
+    }
+
+    /// Restore every project waveform on open (#192/#193): cached records load
+    /// synchronously; the remaining assets (at most `maximumRestoreAnalyses`)
+    /// are decoded one at a time in the background while `stillCurrent` holds.
+    /// Returns how many waveforms came straight from the persistent cache.
+    @discardableResult
+    func restoreMeasurements(for tracks: [AudioTrack], stillCurrent: @escaping () -> Bool) -> Int {
+        guard stillCurrent() else { return 0 }
+        var restored = 0, missing: [AudioTrack] = []
+        for track in tracks {
+            guard track.legacySourceFilename == nil, let data = track.audioData, !data.isEmpty,
+                  data.count <= StudioAudioImportService.maximumEncodedBytes else { continue }
+            let digest = SHA256.hash(data: data)
+            if measurements[track.id] != nil, fingerprints[track.id] == digest { continue }
+            if restoreFromCache(track, data: data, digest: digest) { restored += 1 } else { missing.append(track) }
+        }
+        pendingRestore = Array(missing.prefix(Self.maximumRestoreAnalyses))
+        pendingRestoreStillCurrent = stillCurrent
+        continueRestore()
+        return restored
+    }
+    private func continueRestore() {
+        guard !isBusy, let stillCurrent = pendingRestoreStillCurrent, stillCurrent() else {
+            if pendingRestoreStillCurrent?() != true { pendingRestore.removeAll(); pendingRestoreStillCurrent = nil }
+            return
+        }
+        guard !pendingRestore.isEmpty else { pendingRestoreStillCurrent = nil; return }
+        let next = pendingRestore.removeFirst()
+        // The next analysis starts on a later actor turn so the finishing task's
+        // deferred `task = nil` cannot clear the new task's cancellation handle.
+        if !analyze(next, stillCurrent: stillCurrent, onReady: { [weak self] in
+            Task { @MainActor [weak self] in self?.continueRestore() }
+        }) {
+            pendingRestore.removeAll(); pendingRestoreStillCurrent = nil
+        }
     }
 
     @discardableResult
@@ -228,6 +373,12 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
             state = .failed("Analyze this saved audio before previewing it. Its data may be unavailable."); return false
         }
         do {
+            // Playback category + activation before the player (#180); an
+            // interruption or lost route stops this audition with a notice.
+            try StudioAudioSessionController.shared.begin(owner: sessionOwnerID) { [weak self] event in
+                guard let self, self.player != nil else { return }
+                self.stop(); self.state = .failed(StudioAudioSessionController.message(for: event))
+            }
             let next = try AVAudioPlayer(data: data)
             guard next.duration.isFinite, next.duration > 0,
                   abs(next.duration - measurement.duration) <= max(0.1, measurement.duration * 0.01) else { throw SessionError.invalidPlayback }
@@ -240,6 +391,9 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
                 Task { @MainActor in self?.readPlaybackTime() }
             }
             return true
+        } catch let failure as StudioAudioSessionController.Failure {
+            stop(); state = .failed(failure.localizedDescription)
+            return false
         } catch {
             stop(); state = .failed("Audio preview could not start on this device. No playback success was recorded.")
             return false
@@ -252,15 +406,18 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
     func stop() {
         playbackTimer?.invalidate(); playbackTimer = nil
         player?.stop(); player?.delegate = nil; player = nil; playerIdentity = nil
+        StudioAudioSessionController.shared.end(owner: sessionOwnerID)
         playingClipID = nil; currentTime = 0; playbackDuration = 0
         if state == .playing { state = .stopped }
     }
     func cancel() {
         generation = UUID(); task?.cancel(); stop()
+        pendingRestore.removeAll(); pendingRestoreStillCurrent = nil
         if isBusy { state = .cancelled }
     }
     func close() {
         cancel(); measurements.removeAll(); cacheOrder.removeAll(); fingerprints.removeAll(); lastImportedClipID = nil
+        restoredFromCacheCount = 0
         if !isBusy { state = .idle }
     }
     private func updateProgress(_ value: StudioAudioImportService.Progress, generation id: UUID) {
@@ -271,6 +428,13 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
     private func remember(_ value: StudioAudioImportService.ImportedAudio, for id: UUID) {
         cacheOrder.removeAll { $0 == id }; cacheOrder.append(id); measurements[id] = Measurement(value)
         fingerprints[id] = SHA256.hash(data: value.originalData)
+        // Persist the measured record so the next open of this project (or any
+        // project using the same bytes) restores its waveform without decoding.
+        // A full or unwritable cache only costs a later re-analysis.
+        try? waveformCache.store(value.waveformRecord)
+        trimMemory()
+    }
+    private func trimMemory() {
         while cacheOrder.count > Self.maximumCachedMeasurements {
             let removed = cacheOrder.removeFirst(); measurements.removeValue(forKey: removed); fingerprints.removeValue(forKey: removed)
         }

@@ -54,11 +54,49 @@ final class SpatterStudioEditSession: ObservableObject {
         var audioTrackInstruction: SpatterAudioTrackInstruction? = nil
         var cutFrameCount: Int = 0
         var duplicatedDrawingCount: Int = 0
+        var selectionTranslate: SpatterSelectionTranslateInstruction? = nil
+        var selectionTransform: SpatterSelectionTransformInstruction? = nil
+        var selectionReflectAxis: StudioReflectionAxis? = nil
+        var imageRotation: StudioImageQuarterTurn? = nil
+        var imageCrop: StudioImageCrop? = nil
+        var imagePlacement: SpatterImagePlacementInstruction? = nil
+        var textUpdate: SpatterTextUpdateInstruction? = nil
         var summary: String {
             if let edit = audioTrackInstruction {
                 if receipt.outcome == .unchanged { return "Audio track \(edit.track) already has this setting. Nothing changed." }
                 if let volume = edit.volume { return "Set audio track \(edit.track) volume to \(String(format: "%.6g", volume * 100))% in one Undo step. Clip volumes and original audio are unchanged." }
+                if let pan = edit.pan {
+                    let position = pan == 0 ? "center" : (pan < 0 ? "L" : "R") + String(format: "%.6g", abs(pan) * 100)
+                    return "Panned audio track \(edit.track) to \(position) in one Undo step. Clip gains and original audio are unchanged."
+                }
+                if let soloed = edit.soloed { return "\(soloed ? "Soloed" : "Unsoloed") audio track \(edit.track) in one Undo step. Other tracks keep their own settings." }
                 return "\(edit.muted == true ? "Muted" : "Unmuted") audio track \(edit.track) in one Undo step. Clips and original audio are preserved."
+            }
+            if let selectionTranslate {
+                return receipt.outcome == .unchanged ? "The selected drawings did not move. Nothing changed."
+                    : "Moved the selected drawings by (\(String(format: "%.6g", selectionTranslate.dxPercent))%, \(String(format: "%.6g", selectionTranslate.dyPercent))%) of the canvas in one Undo step. Original geometry stays editable."
+            }
+            if let selectionTransform {
+                return receipt.outcome == .unchanged ? "The selected drawings already have this scale and rotation. Nothing changed."
+                    : "Scaled the selected drawings to \(String(format: "%.6g", selectionTransform.scalePercent))% and rotated \(String(format: "%.6g", selectionTransform.rotationDegrees))° around their center in one Undo step."
+            }
+            if let selectionReflectAxis {
+                return "Flipped the selected drawings \(selectionReflectAxis == .horizontal ? "horizontally" : "vertically") around their combined bounds in one Undo step. Stroke geometry stays editable."
+            }
+            if let imageRotation {
+                return "Rotated the selected image one quarter turn \(imageRotation == .clockwise ? "clockwise" : "counterclockwise") in one Undo step. Original image bytes are unchanged."
+            }
+            if let imageCrop {
+                return receipt.outcome == .unchanged ? "The selected image already has this crop. Nothing changed."
+                    : "Cropped the selected image to \(String(format: "%.6g", imageCrop.width * 100))% × \(String(format: "%.6g", imageCrop.height * 100))% of its source in one Undo step. Original image bytes are unchanged."
+            }
+            if let imagePlacement {
+                return receipt.outcome == .unchanged ? "The selected image already has this placement. Nothing changed."
+                    : "Placed the selected image at (\(String(format: "%.6g", imagePlacement.xPercent))%, \(String(format: "%.6g", imagePlacement.yPercent))%) with size \(String(format: "%.6g", imagePlacement.widthPercent))% × \(String(format: "%.6g", imagePlacement.heightPercent))%\(imagePlacement.angleDegrees.map { " and angle \(String(format: "%.6g", $0))°" } ?? "") in one Undo step. Original image bytes are unchanged."
+            }
+            if textUpdate != nil {
+                return receipt.outcome == .unchanged ? "The selected text already has this content and color. Nothing changed."
+                    : "Updated the selected text box content\(textUpdate?.colorHex != nil ? " and color" : "") in one Undo step. Typography and position are unchanged."
             }
             if cutFrameCount > 0 {
                 return "Cut the captured frame into the frame clipboard. Paste frame after this inserts an editable copy; Undo restores the removed frame. Audio timing is unchanged."
@@ -313,6 +351,22 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isFrameAction = !isLayerUpdate && !isRename && SpatterFrameActionInstruction.isInstruction(draft)
                 let isOnion = !isLayerUpdate && !isRename && SpatterOnionInstruction.isInstruction(draft)
                 let isGrid = !isLayerUpdate && !isRename && SpatterGridInstruction.isInstruction(draft)
+                // Selection, image and text grammars are classified before the broad
+                // audio first-word classifier ("move", "set", ...) can claim them.
+                let isSelectionTranslate = SpatterSelectionTranslateInstruction.isInstruction(draft)
+                let isSelectionTransform = SpatterSelectionTransformInstruction.isInstruction(draft)
+                let isSelectionReflect = SpatterSelectionReflectInstruction.isInstruction(draft)
+                let isImageRotation = SpatterImageRotationInstruction.isInstruction(draft)
+                let isImageCrop = SpatterImageCropInstruction.isInstruction(draft)
+                let isImagePlacement = SpatterImagePlacementInstruction.isInstruction(draft)
+                let isTextUpdate = SpatterTextUpdateInstruction.isInstruction(draft)
+                var selectionTranslate: SpatterSelectionTranslateInstruction?
+                var selectionTransform: SpatterSelectionTransformInstruction?
+                var selectionReflectAxis: StudioReflectionAxis?
+                var imageRotation: StudioImageQuarterTurn?
+                var imageCrop: StudioImageCrop?
+                var imagePlacement: SpatterImagePlacementInstruction?
+                var textUpdate: SpatterTextUpdateInstruction?
                 var exposureInstruction: SpatterFrameExposureInstruction?
                 var reverseInstruction: SpatterFrameReverseInstruction?
                 var duplicateRangeInstruction: SpatterFrameDuplicateRangeInstruction?
@@ -415,6 +469,60 @@ final class SpatterStudioEditSession: ObservableObject {
                         layerID: image.placement.layerID, assetID: image.placement.assetID,
                         requestID: submissionID, checkCancellation: check)
                     imageReflectionAxis = instruction.axis
+                } else if isSelectionTranslate || isSelectionTransform || isSelectionReflect {
+                    // Same captured-selection authority as drawing duplication: Move tool,
+                    // drawings only, no image or mixed artwork, playback stopped.
+                    guard captured.selectedTool == .move, !captured.isPlaying, !captured.mixedArtwork,
+                          captured.selectedImage == nil, captured.selectedArtwork != nil, !captured.selectedElementIDs.isEmpty else {
+                        throw SessionError.unavailable("Select 1–1,024 drawings with Move before opening Spatter; images and mixed artwork use their own instructions. Stop playback. Nothing changed.")
+                    }
+                    if isSelectionTranslate {
+                        let instruction = try SpatterSelectionTranslateInstruction.parse(draft)
+                        preparedRequest = try instruction.prepare(in: document, selectedElementIDs: captured.selectedElementIDs, requestID: submissionID, checkCancellation: check)
+                        selectionTranslate = instruction
+                    } else if isSelectionTransform {
+                        let instruction = try SpatterSelectionTransformInstruction.parse(draft)
+                        preparedRequest = try instruction.prepare(in: document, selectedElementIDs: captured.selectedElementIDs, requestID: submissionID, checkCancellation: check)
+                        selectionTransform = instruction
+                    } else {
+                        let instruction = try SpatterSelectionReflectInstruction.parse(draft)
+                        preparedRequest = try instruction.prepare(in: document, selectedElementIDs: captured.selectedElementIDs, requestID: submissionID, checkCancellation: check)
+                        selectionReflectAxis = instruction.axis
+                    }
+                } else if isImageRotation || isImageCrop || isImagePlacement {
+                    guard captured.selectedTool == .move, captured.selectedElementIDs.isEmpty,
+                          !captured.isPlaying, let image = captured.selectedImage,
+                          image.placement.projectID == captured.projectID,
+                          image.placement.revision == captured.revision,
+                          image.placement.frameID == captured.activeFrameID,
+                          image.placement.layerID == captured.activeLayerID else {
+                        throw SessionError.unavailable("Select one visible, unlocked image with Move before editing it. Deselect drawings and stop playback.")
+                    }
+                    let frameID = image.placement.frameID, layerID = image.placement.layerID, assetID = image.placement.assetID
+                    if isImageRotation {
+                        let instruction = try SpatterImageRotationInstruction.parse(draft)
+                        preparedRequest = try instruction.prepare(in: document, frameID: frameID, layerID: layerID, assetID: assetID, requestID: submissionID, checkCancellation: check)
+                        imageRotation = instruction.direction
+                    } else if isImageCrop {
+                        let instruction = try SpatterImageCropInstruction.parse(draft)
+                        preparedRequest = try instruction.prepare(in: document, frameID: frameID, layerID: layerID, assetID: assetID, requestID: submissionID, checkCancellation: check)
+                        imageCrop = instruction.crop
+                    } else {
+                        let instruction = try SpatterImagePlacementInstruction.parse(draft)
+                        preparedRequest = try instruction.prepare(in: document, frameID: frameID, layerID: layerID, assetID: assetID, requestID: submissionID, checkCancellation: check)
+                        imagePlacement = instruction
+                    }
+                } else if isTextUpdate {
+                    let instruction = try SpatterTextUpdateInstruction.parse(draft)
+                    // Exactly one captured selected element that is a real text box on the active frame.
+                    guard !captured.isPlaying, captured.selectedElementIDs.count == 1, let elementID = captured.selectedElementIDs.first,
+                          captured.selectedImage == nil, !captured.mixedArtwork,
+                          let frame = studio.document.frames.first(where: { $0.id == captured.activeFrameID }),
+                          let element = frame.elements.first(where: { $0.id == elementID }), element.tool == .text, element.text != nil else {
+                        throw SpatterTextUpdateInstruction.Failure.selection
+                    }
+                    preparedRequest = try instruction.prepare(in: document, element: element, requestID: submissionID, checkCancellation: check)
+                    textUpdate = instruction
                 } else if isErasure {
                     preparedRequest = try SpatterSelectedErasureInstruction.parse(draft).prepare(in: document,
                         selectedElementIDs: captured.selectedElementIDs, requestID: submissionID, checkCancellation: check)
@@ -476,7 +584,9 @@ final class SpatterStudioEditSession: ObservableObject {
                     changedExistingAudioClipCount: studio.audioClips.filter { new in document.editableAudioClips.contains { $0.id == new.id && $0 != new } }.count,
                     addedFrameCount: receipt.createdFrameIDs.count,
                     fps: studio.fps, addedDurationSeconds: Double(addedTicks) / Double(studio.fps),
-                    audioTrackInstruction: audioTrackInstruction, cutFrameCount: isFrameCut ? document.frames.filter { old in !studio.frames.contains { $0.id == old.id } }.count : 0, duplicatedDrawingCount: isDrawingDuplicate ? receipt.createdElementIDs.count : 0)
+                    audioTrackInstruction: audioTrackInstruction, cutFrameCount: isFrameCut ? document.frames.filter { old in !studio.frames.contains { $0.id == old.id } }.count : 0, duplicatedDrawingCount: isDrawingDuplicate ? receipt.createdElementIDs.count : 0,
+                    selectionTranslate: selectionTranslate, selectionTransform: selectionTransform, selectionReflectAxis: selectionReflectAxis,
+                    imageRotation: imageRotation, imageCrop: imageCrop, imagePlacement: imagePlacement, textUpdate: textUpdate)
                 self.appliedAccountID = captured.accountID
                 self.appliedEdit = result; self.status = .applied; self.notice = result.summary
             } catch is CancellationError {
@@ -544,6 +654,43 @@ final class SpatterStudioEditSession: ObservableObject {
         return .init(editRequestID: edit.receipt.requestID, projectID: edit.receipt.projectID,
             revision: edit.receipt.revision, accountID: currentScope.accountID)
     }
+    /// Linear history: the applied edit is the top undo entry only while the
+    /// document revision still equals the receipt revision. Any later edit, undo
+    /// or save-with-change makes the offer unavailable with an explanation.
+    func canUndoAppliedEdit(in studio: StudioViewModel, currentScope: Scope) -> Bool {
+        guard !isClosed, !isWorking, currentScope.isStudioVisible, studio.isEditing,
+              currentScope.accountID == appliedAccountID, let edit = appliedEdit,
+              edit.receipt.outcome == .applied, studio.document.id == edit.receipt.projectID,
+              studio.document.revision == edit.receipt.revision, studio.canUndo,
+              !studio.isPlaying, !studio.isSaving, studio.textDraft == nil,
+              studio.activeStrokeID == nil, studio.pendingBrushStroke == nil else { return false }
+        return true
+    }
+    /// Reverts exactly the applied Spatter edit through the same typed undo
+    /// transaction (revision-checked), never a blind history pop.
+    @discardableResult
+    func undoAppliedEdit(in studio: StudioViewModel, currentScope: Scope) -> Bool {
+        guard let edit = appliedEdit, !isClosed, !isWorking else { return false }
+        guard canUndoAppliedEdit(in: studio, currentScope: currentScope) else {
+            if studio.document.id != edit.receipt.projectID || studio.document.revision != edit.receipt.revision {
+                notice = "The document changed after this Spatter edit (revision \(studio.document.revision) vs \(edit.receipt.revision)), so Undo Spatter edit is unavailable. Use Studio's own Undo history to step back through later changes first."
+            } else {
+                notice = "Undo Spatter edit is unavailable right now. Stop playback, finish drafts and wait for saving, then try again."
+            }
+            return false
+        }
+        do {
+            let receipt = try studio.applyStudioCommands(.init(requestID: UUID(), projectID: edit.receipt.projectID,
+                expectedRevision: edit.receipt.revision, action: .undo))
+            guard receipt.outcome == .undone else { throw StudioCommandError.noHistory }
+            appliedEdit = nil; appliedAccountID = nil; status = .idle
+            notice = "Reverted the Spatter edit in one step. Studio's Redo restores it; nothing was saved by this action."
+            return true
+        } catch {
+            notice = error.localizedDescription
+            return false
+        }
+    }
     @discardableResult
     func cancel() -> Bool {
         guard isWorking else { return false }
@@ -594,5 +741,192 @@ final class SpatterPictureImportHandoff: ObservableObject {
     private func eligible(_ studio: StudioViewModel) -> Bool {
         studio.isEditing && !studio.isSaving && !studio.isPlaying && studio.textDraft == nil
             && studio.activeStrokeID == nil && studio.pendingBrushStroke == nil
+    }
+}
+
+// MARK: - Export receipt (#215)
+
+/// Factual description of one completed direct export that a Spatter edit handed
+/// off. Every field is measured from the real output; nothing is estimated. The
+/// builder that reads the movie session lives in the SwiftUI panel because the
+/// export service is not part of the Foundation-only edit-session test build.
+struct SpatterExportReceipt: Codable, Equatable {
+    let editRequestID: UUID
+    let revision: Int
+    let byteCount: Int
+    let durationSeconds: Double
+    let frameCount: Int
+    let sha256: String
+    enum Failure: LocalizedError {
+        case missingFile, mismatch, unreadable
+        var errorDescription: String? {
+            switch self {
+            case .missingFile: return "The exported file is no longer available, so no export receipt was produced."
+            case .mismatch: return "The export output does not match its manifest; no receipt was produced."
+            case .unreadable: return "The exported file could not be read for verification; no receipt was produced."
+            }
+        }
+    }
+    /// Reads the actual file bytes (bounded) and hashes them. `byteCount` must equal
+    /// the manifest's encoded byte count or the receipt is refused.
+    static func make(editRequestID: UUID, revision: Int, fileURL: URL, expectedByteCount: Int,
+                     durationSeconds: Double, frameCount: Int, byteLimit: Int = 512 * 1024 * 1024) throws -> SpatterExportReceipt {
+        guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+              values.isRegularFile == true, let size = values.fileSize else { throw Failure.missingFile }
+        guard size == expectedByteCount, size > 0, size <= byteLimit, durationSeconds.isFinite, durationSeconds > 0, frameCount > 0 else { throw Failure.mismatch }
+        guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]), data.count == size else { throw Failure.unreadable }
+        return .init(editRequestID: editRequestID, revision: revision, byteCount: size,
+                     durationSeconds: durationSeconds, frameCount: frameCount, sha256: SpatterSHA256.hexDigest(of: data))
+    }
+    var summary: String {
+        "Spatter edit \(editRequestID.uuidString) · revision \(revision) · \(byteCount) bytes · \(String(format: "%.3f", durationSeconds)) s · \(frameCount) frames · SHA-256 \(sha256.prefix(16))…"
+    }
+}
+
+/// Foundation-only SHA-256 (FIPS 180-4) so receipts hash identically on every
+/// platform the tests run on. Not a general crypto library; digest only.
+enum SpatterSHA256 {
+    private static let k: [UInt32] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]
+    static func digest(of data: Data) -> [UInt8] {
+        var h: [UInt32] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+        var message = [UInt8](data)
+        let bitLength = UInt64(message.count) * 8
+        message.append(0x80)
+        while message.count % 64 != 56 { message.append(0) }
+        for shift in stride(from: 56, through: 0, by: -8) { message.append(UInt8((bitLength >> UInt64(shift)) & 0xff)) }
+        var w = [UInt32](repeating: 0, count: 64)
+        func rotr(_ x: UInt32, _ n: UInt32) -> UInt32 { (x >> n) | (x << (32 - n)) }
+        for chunk in stride(from: 0, to: message.count, by: 64) {
+            for i in 0..<16 {
+                let j = chunk + i * 4
+                w[i] = UInt32(message[j]) << 24 | UInt32(message[j + 1]) << 16 | UInt32(message[j + 2]) << 8 | UInt32(message[j + 3])
+            }
+            for i in 16..<64 {
+                let s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)
+                let s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10)
+                w[i] = w[i - 16] &+ s0 &+ w[i - 7] &+ s1
+            }
+            var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7]
+            for i in 0..<64 {
+                let S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
+                let ch = (e & f) ^ (~e & g)
+                let t1 = hh &+ S1 &+ ch &+ k[i] &+ w[i]
+                let S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
+                let maj = (a & b) ^ (a & c) ^ (b & c)
+                let t2 = S0 &+ maj
+                hh = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
+            }
+            h[0] = h[0] &+ a; h[1] = h[1] &+ b; h[2] = h[2] &+ c; h[3] = h[3] &+ d
+            h[4] = h[4] &+ e; h[5] = h[5] &+ f; h[6] = h[6] &+ g; h[7] = h[7] &+ hh
+        }
+        return h.flatMap { [UInt8($0 >> 24 & 0xff), UInt8($0 >> 16 & 0xff), UInt8($0 >> 8 & 0xff), UInt8($0 & 0xff)] }
+    }
+    static func hexDigest(of data: Data) -> String {
+        digest(of: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+// MARK: - Quality report scaffold (#213)
+
+/// Deterministic measurements over an editable document. These are findings for
+/// a human reviewer, not an automatic pass/fail verdict; owner approval of the
+/// exact render stays required. Audio alignment and decoded MP4 counts are not
+/// measured here (they need the export pipeline) and are reported as unmeasured.
+struct SpatterQualityReport: Equatable {
+    struct Finding: Equatable {
+        enum Kind: String { case blankFrame, frozenFrame, outOfCanvas, limbVariance, timingMismatch }
+        let kind: Kind
+        let frameIndex: Int?
+        let detail: String
+    }
+    let frameCount: Int
+    let fps: Int
+    let actualTicks: Int
+    let requestedTicks: Int?
+    let findings: [Finding]
+    let unmeasured: [String]
+    var blankFrameCount: Int { findings.filter { $0.kind == .blankFrame }.count }
+    var frozenFrameCount: Int { findings.filter { $0.kind == .frozenFrame }.count }
+    var outOfCanvasCount: Int { findings.filter { $0.kind == .outOfCanvas }.count }
+    var durationSeconds: Double { fps > 0 ? Double(actualTicks) / Double(fps) : 0 }
+
+    /// `requestedTicks` is the tick count a brief or recipe asked for, if any.
+    /// `generatedLayerIDs` marks stick-figure layers whose limb lengths should be stable.
+    static func analyze(_ document: StudioDocument, requestedTicks: Int? = nil,
+                        generatedLayerIDs: Set<String> = [], limbVarianceTolerance: Double = 0.15) -> SpatterQualityReport {
+        var findings: [Finding] = []
+        let width = Double(document.width), height = Double(document.height)
+        var actualTicks = 0
+        var previousSignature: [String]?
+        for (index, frame) in document.frames.enumerated() {
+            actualTicks += frame.durationTicks
+            let visibleElements = frame.elements.filter { element in
+                guard let layerID = element.layerID, let layer = document.layers.first(where: { $0.id == layerID }) else { return true }
+                return layer.visible && layer.opacity > 0
+            }
+            let hasImage = frame.rasterAssetID != nil && frame.rasterPlacement != nil
+            if visibleElements.isEmpty && !hasImage {
+                findings.append(.init(kind: .blankFrame, frameIndex: index, detail: "Frame \(index + 1) has no visible drawings or image."))
+            }
+            // A deliberate hold uses holdTicks on one frame; identical consecutive
+            // frames without a hold are an unintended freeze.
+            let signature = visibleElements.map { element in
+                element.id + "|" + element.tool.rawValue + "|" + element.points.map { "\($0.x),\($0.y)" }.joined(separator: ";")
+                    + "|" + (element.translation.map { "\($0.x),\($0.y)" } ?? "") + "|" + (element.transform.map { "\($0.a),\($0.b),\($0.c),\($0.d),\($0.tx),\($0.ty)" } ?? "")
+            }
+            let geometry = visibleElements.map { element in
+                element.tool.rawValue + "|" + element.points.map { "\($0.x),\($0.y)" }.joined(separator: ";")
+                    + "|" + (element.translation.map { "\($0.x),\($0.y)" } ?? "") + "|" + (element.transform.map { "\($0.a),\($0.b),\($0.c),\($0.d),\($0.tx),\($0.ty)" } ?? "")
+            }
+            if let previous = previousSignature, !geometry.isEmpty, previous == geometry, frame.holdTicks == nil,
+               document.frames[index - 1].holdTicks == nil {
+                findings.append(.init(kind: .frozenFrame, frameIndex: index, detail: "Frame \(index + 1) repeats frame \(index) exactly without a frame hold."))
+            }
+            previousSignature = geometry
+            _ = signature
+            for element in visibleElements {
+                let offsetX = element.translation?.x ?? 0, offsetY = element.translation?.y ?? 0
+                if element.points.contains(where: { point in
+                    let x = Double(point.x) + Double(offsetX), y = Double(point.y) + Double(offsetY)
+                    return !x.isFinite || !y.isFinite || x < -0.5 || y < -0.5 || x > width + 0.5 || y > height + 0.5
+                }) {
+                    findings.append(.init(kind: .outOfCanvas, frameIndex: index, detail: "Frame \(index + 1) element \(element.id.prefix(8)) has points outside the \(document.width)×\(document.height) canvas."))
+                }
+            }
+        }
+        // Limb-length variance: for generated stick layers, every line element on
+        // the layer should keep a stable length across frames (per ordinal position).
+        for layerID in generatedLayerIDs.sorted() {
+            var lengthsByPosition: [Int: [Double]] = [:]
+            for frame in document.frames {
+                let lines = frame.elements.filter { $0.layerID == layerID && $0.tool == .line && $0.points.count == 2 }
+                for (position, line) in lines.enumerated() {
+                    let dx = Double(line.points[1].x - line.points[0].x), dy = Double(line.points[1].y - line.points[0].y)
+                    lengthsByPosition[position, default: []].append((dx * dx + dy * dy).squareRoot())
+                }
+            }
+            for (position, lengths) in lengthsByPosition.sorted(by: { $0.key < $1.key }) where lengths.count > 1 {
+                let mean = lengths.reduce(0, +) / Double(lengths.count)
+                guard mean > 0 else { continue }
+                let maxDeviation = lengths.map { abs($0 - mean) / mean }.max() ?? 0
+                if maxDeviation > limbVarianceTolerance {
+                    findings.append(.init(kind: .limbVariance, frameIndex: nil,
+                        detail: "Layer \(layerID.prefix(8)) limb \(position + 1) length varies \(Int((maxDeviation * 100).rounded()))% from its mean across frames."))
+                }
+            }
+        }
+        if let requestedTicks, requestedTicks != actualTicks {
+            findings.append(.init(kind: .timingMismatch, frameIndex: nil, detail: "Requested \(requestedTicks) ticks but the document holds \(actualTicks) ticks at \(document.fps) FPS."))
+        }
+        return .init(frameCount: document.frames.count, fps: document.fps, actualTicks: actualTicks, requestedTicks: requestedTicks,
+                     findings: findings, unmeasured: ["decodedMovieFrameCount", "decodedMovieDuration", "audioOffsetSeconds"])
     }
 }

@@ -34,6 +34,10 @@ private struct StudioAudioWorkspace: View {
     @State private var fadeCapture: StudioViewModel.AudioFadeCapture?
     @State private var focusedEditorField: String?
     @State private var timelineZoom = 1.0
+    @State private var pendingDeleteClipID: String?
+    /// Track whose volume/pan/solo strip is open without a selected clip (#179).
+    @State private var mixerTrack: Int?
+    private let selectionMemory = StudioAudioSelectionMemory()
     private let background = Color(hex: "0D0D12")
 
     var body: some View {
@@ -83,6 +87,7 @@ private struct StudioAudioWorkspace: View {
         .background(background)
         .onAppear {
             showingLibrary = opensLibrary
+            restoreProjectAudioState()
         }
         .task(id: catalogueLoadID) {
             guard catalogue == nil else { return }
@@ -100,17 +105,43 @@ private struct StudioAudioWorkspace: View {
         }
         .onChange(of: search) { if search.count > 256 { search = String(search.prefix(256)) } }
         .onDisappear { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
-        .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close(); trimCapture = nil; fadeCapture = nil }
+        .onChange(of: vm.document.id) { _, _ in
+            audio.close(); timeline.close(); trimCapture = nil; fadeCapture = nil; pendingDeleteClipID = nil; mixerTrack = nil
+            restoreProjectAudioState()
+        }
         .onChange(of: vm.playbackLoops) { _, _ in timeline.stop() }
         .onChange(of: vm.document.revision) { _, _ in
             timeline.stop(); audio.stop()
+            // A new asset (import, library add) gets its waveform without a tap.
+            restoreWaveforms()
         }
-        .onChange(of: vm.selectedCurrentAudioClip?.id) { _, _ in
+        .onChange(of: vm.selectedCurrentAudioClip?.id) { _, id in
             trimCapture = nil; fadeCapture = nil
+            // The selection survives closing and reopening the project (#177).
+            if let id { selectionMemory.remember(id, for: vm.document.id) }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
         }
+    }
+    /// Reopen state for the current project: the remembered clip selection and
+    /// every measured waveform (from the persistent cache first) (#177, #192, #193).
+    private func restoreProjectAudioState() {
+        let project = vm.document.id
+        if vm.selectedAudioClip == nil, let remembered = selectionMemory.selectedClipID(for: project),
+           let clip = vm.document.audioClips.first(where: { $0.id == remembered }) {
+            vm.selectedAudioClip = clip
+        }
+        restoreWaveforms()
+    }
+    private func restoreWaveforms() {
+        let project = vm.document.id
+        _ = audio.restoreMeasurements(for: vm.projectAudioTracks, stillCurrent: { vm.isEditing && vm.document.id == project })
+    }
+    private var overlappingClipIDs: Set<String> {
+        StudioAudioClipOverlap.overlappingIDs(vm.audioClips.map {
+            .init(id: $0.id, track: $0.track, start: $0.startTime, end: $0.startTime + $0.duration)
+        })
     }
     private func workspace(height: CGFloat) -> some View {
             VStack(spacing: 0) {
@@ -133,6 +164,7 @@ private struct StudioAudioWorkspace: View {
                         .padding(.horizontal, 16).accessibilityIdentifier("studio.audio.timelineNotice")
                 }
                 timelineControls
+                if let track = mixerTrack { trackMixer(track) }
                 timelineGrid
                     .frame(height: 306, alignment: .top)
                 Spacer(minLength: 0)
@@ -173,6 +205,20 @@ private struct StudioAudioWorkspace: View {
             Text("\(vm.audioClips.count) clips").font(.specialElite(10))
                 .padding(5).background(Color.white.opacity(0.05)).clipShape(Capsule())
                 .accessibilityIdentifier("studio.audio.clip-count")
+            let overlapping = overlappingClipIDs.count
+            if overlapping > 0 {
+                // Overlapping clips on one track are summed by the mixer (#177);
+                // this names the condition instead of hiding it.
+                Text("\(overlapping) overlap").font(.specialElite(10))
+                    .padding(5).background(StudioCraftTheme.solo.opacity(0.18)).clipShape(Capsule())
+                    .accessibilityLabel("\(overlapping) clips overlap another clip on the same track and play mixed together")
+                    .accessibilityIdentifier("studio.audio.overlap-count")
+            }
+            if audio.restoredFromCacheCount > 0 {
+                Text("\(audio.restoredFromCacheCount) waveforms from cache").font(.specialElite(9))
+                    .foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.audio.waveforms-restored")
+            }
             Spacer(minLength: 0)
             Button(vm.snapEnabled ? "Snap: ON" : "Snap: OFF") { vm.snapEnabled.toggle() }
                 .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
@@ -367,7 +413,7 @@ private struct StudioAudioWorkspace: View {
                         Text(sound.title).font(.specialElite(14)).lineLimit(1)
                         HStack {
                             Text(String(format: "%.2fs", sound.duration)).font(.specialElite(11))
-                            MeasuredAudioWaveform(peaks: sound.waveformPeaks).frame(width: 56, height: 14)
+                            MeasuredAudioWaveform(peaks: sound.waveformPeaks, rms: sound.waveformRMS ?? []).frame(width: 56, height: 14)
                         }.foregroundColor(.sdStudioSecondaryText)
                         if let tags = sound.tags, !tags.isEmpty {
                             Text(tags.prefix(3).joined(separator: " · "))
@@ -443,19 +489,52 @@ private struct StudioAudioWorkspace: View {
         }.font(.specialElite(11)).foregroundColor(.white.opacity(0.75))
             .padding(.horizontal, 12)
     }
+    /// Volume, pan and solo for one track, reachable from the track label
+    /// without selecting a clip (#179). Mute stays on the label itself.
+    private func trackMixer(_ track: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Track \(track) mixer").font(.specialElite(12))
+                Spacer()
+                Button { mixerTrack = nil } label: {
+                    Image(systemName: "xmark").font(.system(size: 10)).frame(width: 44, height: 44)
+                }.accessibilityLabel("Close track \(track) mixer")
+                    .accessibilityIdentifier("studio.audio.track-mixer.close")
+            }
+            StudioAudioTrackVolumeControl(vm: vm, track: track) { timeline.stop(); audio.stop(); vm.stopPlayback() }
+                .id("mixer-volume:\(vm.document.id):\(vm.document.revision):\(track)")
+            StudioAudioTrackMixControl(vm: vm, track: track) { timeline.stop(); audio.stop(); vm.stopPlayback() }
+                .id("mixer-pan:\(vm.document.id):\(vm.document.revision):\(track)")
+            Text("Track settings apply to every clip on the track in preview and export. Fades belong to a selected clip.")
+                .font(.custom("SpecialElite-Regular", size: 10, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(Color.white.opacity(0.03))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("studio.audio.track-mixer")
+    }
     private var timelineGrid: some View {
         GeometryReader { geometry in
             let pps = 110.0 * timelineZoom
             let length = max(5, min(1300, vm.audioDuration + 1))
             let width = max(geometry.size.width - 44, length * pps)
             let rowHeight = 70.0
+            let overlapping = overlappingClipIDs
             HStack(alignment: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     Color.clear.frame(width: 44, height: 26)
                     ForEach(1...4, id: \.self) { track in
                         let muted = vm.document.isAudioTrackMuted(track)
+                        let soloed = vm.document.isAudioTrackSoloed(track)
                         VStack(spacing: 0) {
-                            Text("\(track)").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                            Button { mixerTrack = mixerTrack == track ? nil : track } label: {
+                                Text(soloed ? "\(track) S" : "\(track)").font(.specialElite(10))
+                                    .foregroundColor(soloed ? StudioCraftTheme.solo : .sdStudioSecondaryText)
+                                    .frame(width: 44, height: 22)
+                                    .background(mixerTrack == track ? Color.white.opacity(0.08) : Color.clear)
+                            }.accessibilityLabel(mixerTrack == track ? "Hide track \(track) mixer" : "Show track \(track) mixer")
+                                .accessibilityValue(soloed ? "Soloed" : "")
+                                .accessibilityIdentifier("studio.audio.track-number.\(track)")
                             Button {
                                 timeline.stop(); audio.stop(); vm.stopPlayback()
                                 do { try vm.setAudioTrackMuted(track, muted: !muted, expectedRevision: vm.document.revision) }
@@ -502,6 +581,7 @@ private struct StudioAudioWorkspace: View {
                                 ForEach(vm.audioClips.filter { $0.track == track }) { clip in
                                     StudioAudioTimelineClip(vm: vm, clip: clip, pointsPerSecond: pps,
                                         measurement: clip.assetID.flatMap { audio.measurements[$0] },
+                                        overlaps: overlapping.contains(clip.id),
                                         stop: { timeline.stop(); audio.stop(); vm.stopPlayback() })
                                         .frame(width: clip.duration * pps, height: 58)
                                         .offset(x: clip.startTime * pps, y: 6)
@@ -523,6 +603,11 @@ private struct StudioAudioWorkspace: View {
         let duplication = vm.prepareAudioDuplication()
         let split = vm.prepareAudioSplit()
         return VStack(spacing: 6) {
+            if !vm.document.isAudioTrackMuted(clip.track) && !vm.document.isAudioTrackAudible(clip.track) {
+                Text("Another track is soloed, so track \(clip.track) is silent")
+                    .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(StudioCraftTheme.solo)
+                    .accessibilityIdentifier("studio.audio.selected-track-solo-silenced")
+            }
             if vm.document.isAudioTrackMuted(clip.track) {
                 Text("Track \(clip.track) is muted")
                     .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioActionText)
@@ -538,13 +623,31 @@ private struct StudioAudioWorkspace: View {
                     timeline.stop(); audio.stop(); vm.stopPlayback()
                 }
                 .id("\(vm.document.id):\(vm.document.revision):\(clip.id)")
-                Button("Delete") { timeline.stop(); audio.stop(); vm.stopPlayback(); vm.deleteAudioClip(clip.id) }
+                // Deleting a clip is reversible through Undo but still asks first
+                // (#178): the sheet names the clip and nothing changes on Cancel.
+                Button("Delete") { timeline.stop(); audio.stop(); vm.stopPlayback(); pendingDeleteClipID = clip.id }
                     .foregroundColor(.sdStudioActionText).font(.specialElite(11)).frame(minHeight: 44)
                     .accessibilityIdentifier("studio.audio.delete")
+                    .confirmationDialog("Delete \"\(clip.soundName)\" from track \(clip.track)?",
+                                        isPresented: Binding(get: { pendingDeleteClipID == clip.id },
+                                                             set: { if !$0 && pendingDeleteClipID == clip.id { pendingDeleteClipID = nil } }),
+                                        titleVisibility: .visible) {
+                        Button("Delete clip", role: .destructive) {
+                            pendingDeleteClipID = nil
+                            guard vm.audioClips.contains(where: { $0.id == clip.id }) else { return }
+                            selectionMemory.remember(nil, for: vm.document.id)
+                            vm.deleteAudioClip(clip.id)
+                        }.accessibilityIdentifier("studio.audio.delete-clip.confirm")
+                        Button("Cancel", role: .cancel) { pendingDeleteClipID = nil }
+                            .accessibilityIdentifier("studio.audio.delete-clip.cancel")
+                    } message: {
+                        Text("The saved sound stays in the project library; only this placement is removed. Undo restores it.")
+                    }
             }
             if let id = clip.assetID, let measurement = audio.measurements[id] {
-                MeasuredAudioWaveform(peaks: measurement.peaks, sourceDuration: measurement.duration,
+                MeasuredAudioWaveform(peaks: measurement.peaks, rms: measurement.rms, sourceDuration: measurement.duration,
                     sourceOffset: clip.sourceOffset, duration: clip.duration).frame(height: 28)
+                    .accessibilityValue(measurement.restoredFromCache ? "Measured earlier and restored from the waveform cache" : "Measured from the decoded audio")
                     .accessibilityIdentifier("studio.audio.selected-waveform")
             } else if let id = clip.assetID, let track = vm.audioTrack(forAssetID: id) {
                 Button("Load measured waveform") {
@@ -561,6 +664,10 @@ private struct StudioAudioWorkspace: View {
                 timeline.stop(); audio.stop(); vm.stopPlayback()
             }
             .id("\(vm.document.id):\(vm.document.revision):\(clip.track)")
+            StudioAudioTrackMixControl(vm: vm, track: clip.track) {
+                timeline.stop(); audio.stop(); vm.stopPlayback()
+            }
+            .id("mix:\(vm.document.id):\(vm.document.revision):\(clip.track)")
             HStack {
                 Text(String(format: "Start %.2fs · Source %.2fs · %.2fs", clip.startTime, clip.sourceOffset, clip.duration))
                     .font(.specialElite(11)).foregroundColor(.sdStudioSecondaryText)
@@ -745,6 +852,74 @@ private struct StudioAudioTrackVolumeControl: View {
     }
 }
 
+/// SoundCraft-style mixer strip for one track: balance pan and solo.
+private struct StudioAudioTrackMixControl: View {
+    @ObservedObject var vm: StudioViewModel
+    let track: Int
+    let stopPlayback: () -> Void
+    @State private var pan: Double
+    @State private var revision: Int?
+
+    init(vm: StudioViewModel, track: Int, stopPlayback: @escaping () -> Void) {
+        self.vm = vm; self.track = track; self.stopPlayback = stopPlayback
+        _pan = State(initialValue: vm.document.audioTrackPan(track))
+    }
+    private var editable: Bool {
+        !vm.isSaving && vm.document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil })
+    }
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Pan").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+            Slider(value: $pan, in: -1...1, onEditingChanged: { editing in
+                if editing { stopPlayback(); revision = vm.document.revision; return }
+                defer { revision = nil; pan = vm.document.audioTrackPan(track) }
+                guard let revision else { return }
+                // Snap near-centre to exact centre, as SoundCraft's pan knob does.
+                let value = abs(pan) < 0.04 ? 0 : (pan * 100).rounded() / 100
+                do { try vm.setAudioTrackPan(track, pan: value, expectedRevision: revision) }
+                catch { vm.message = error.localizedDescription }
+            }).tint(StudioCraftTheme.accent)
+                .disabled(!editable)
+                .accessibilityLabel("Track \(track) pan")
+                .accessibilityValue(StudioCraftAudio.panLabel(pan))
+                .accessibilityIdentifier("studio.audio.track-pan.\(track)")
+            Text(StudioCraftAudio.panLabel(pan)).font(.specialElite(11)).frame(width: 38, alignment: .trailing)
+                .accessibilityIdentifier("studio.audio.track-pan-value.\(track)")
+            let soloed = vm.document.isAudioTrackSoloed(track)
+            Button {
+                stopPlayback()
+                do { try vm.setAudioTrackSoloed(track, soloed: !soloed, expectedRevision: vm.document.revision) }
+                catch { vm.message = error.localizedDescription }
+            } label: {
+                Text("S").font(.system(size: 13, weight: .bold))
+                    .foregroundColor(soloed ? .black : StudioCraftTheme.solo)
+                    .frame(width: 44, height: 44)
+                    .background(soloed ? StudioCraftTheme.solo : Color.white.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: StudioCraftTheme.radiusSmall))
+            }.disabled(!editable)
+                .accessibilityLabel(soloed ? "Unsolo track \(track)" : "Solo track \(track)")
+                .accessibilityValue(soloed ? "Soloed" : "Not soloed")
+                .accessibilityIdentifier("studio.audio.track-solo.\(track)")
+        }.frame(minHeight: 44)
+    }
+}
+
+/// Small preview of a SoundCraft fade-in curve.
+struct StudioFadeCurveGlyph: View {
+    let shape: StudioFadeShape
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            for step in 0...24 {
+                let t = Double(step) / 24
+                let point = CGPoint(x: t * size.width, y: size.height * (1 - shape.gain(t)))
+                if step == 0 { path.move(to: point) } else { path.addLine(to: point) }
+            }
+            context.stroke(path, with: .color(StudioCraftTheme.accent), lineWidth: 1.5)
+        }.accessibilityHidden(true)
+    }
+}
+
 private struct StudioAudioFadeEditor: View {
     @ObservedObject var vm: StudioViewModel
     let capture: StudioViewModel.AudioFadeCapture
@@ -752,6 +927,8 @@ private struct StudioAudioFadeEditor: View {
     @Binding private var focusedField: String?
     @State private var incoming: String
     @State private var outgoing: String
+    @State private var incomingShape: StudioFadeShape
+    @State private var outgoingShape: StudioFadeShape
     @State private var notice: String?
     @FocusState private var focused: Field?
     private enum Field: Hashable { case incoming, outgoing }
@@ -762,12 +939,18 @@ private struct StudioAudioFadeEditor: View {
         let envelope = capture.selection.clip.fadeEnvelope, rate = StudioAudioTimelineGeometry.sampleRate
         _incoming = State(initialValue: String(Double(envelope?.fadeInFrames ?? 0) / rate))
         _outgoing = State(initialValue: String(Double(envelope?.fadeOutFrames ?? 0) / rate))
+        _incomingShape = State(initialValue: envelope?.fadeInShape ?? .linear)
+        _outgoingShape = State(initialValue: envelope?.fadeOutShape ?? .linear)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 input("Fade in (sec)", text: $incoming, field: .incoming)
                 input("Fade out (sec)", text: $outgoing, field: .outgoing)
+            }
+            HStack(spacing: 12) {
+                shapePicker("Fade in curve", selection: $incomingShape, id: "studio.audio.fades.in-shape")
+                shapePicker("Fade out curve", selection: $outgoingShape, id: "studio.audio.fades.out-shape")
             }
             Text("Fades follow the source through Trim and Split. Apply resets them to this clip.")
                 .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
@@ -778,7 +961,7 @@ private struct StudioAudioFadeEditor: View {
             HStack {
                 Button { focused = nil; dismiss() } label: { Text("Cancel").frame(minHeight: 44) }
                     .accessibilityIdentifier("studio.audio.fades.cancel")
-                Button { incoming = "0"; outgoing = "0"; notice = nil } label: { Text("Clear fades").frame(minHeight: 44) }
+                Button { incoming = "0"; outgoing = "0"; incomingShape = .linear; outgoingShape = .linear; notice = nil } label: { Text("Clear fades").frame(minHeight: 44) }
                     .accessibilityIdentifier("studio.audio.fades.clear")
                 Spacer()
                 Button {
@@ -787,7 +970,8 @@ private struct StudioAudioFadeEditor: View {
                           let fadeOut = StudioViewModel.audioTrimSeconds(outgoing) else {
                         notice = "Enter a valid number of seconds in both fields."; return
                     }
-                    do { try vm.setAudioFades(capture, fadeIn: fadeIn, fadeOut: fadeOut); dismiss() }
+                    do { try vm.setAudioFades(capture, fadeIn: fadeIn, fadeOut: fadeOut,
+                                              fadeInShape: incomingShape, fadeOutShape: outgoingShape); dismiss() }
                     catch { notice = error.localizedDescription }
                 } label: { Text("Apply fades").frame(minHeight: 44) }
                     .disabled(vm.prepareAudioFades() != capture)
@@ -807,6 +991,27 @@ private struct StudioAudioFadeEditor: View {
                 }
             }
         }
+    }
+    private func shapePicker(_ title: String, selection: Binding<StudioFadeShape>, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+            Menu {
+                Picker(title, selection: selection) {
+                    ForEach(StudioFadeShape.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+            } label: {
+                HStack {
+                    StudioFadeCurveGlyph(shape: selection.wrappedValue).frame(width: 22, height: 14)
+                    Text(selection.wrappedValue.title).font(.specialElite(12)).lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 10))
+                }.padding(.horizontal, 10).frame(minHeight: 44)
+                    .background(Color.white.opacity(0.06)).cornerRadius(8)
+            }.foregroundColor(.sdStudioActionText)
+                .accessibilityLabel(title)
+                .accessibilityValue(selection.wrappedValue.title)
+                .accessibilityIdentifier(id)
+        }.frame(maxWidth: .infinity)
     }
     private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -901,6 +1106,8 @@ private struct StudioAudioTimelineClip: View {
     let clip: AudioClip
     let pointsPerSecond: Double
     let measurement: StudioAudioPreviewSession.Measurement?
+    /// Another clip on the same track shares part of this time range (#177).
+    var overlaps = false
     let stop: () -> Void
     @State private var revision: Int?
     @State private var captured: AudioClip?
@@ -926,7 +1133,7 @@ private struct StudioAudioTimelineClip: View {
                     Text(clip.soundName).lineLimit(1).font(.specialElite(11))
                     Text(String(format: "%.2fs", visible.duration)).font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                     if let measurement {
-                        MeasuredAudioWaveform(peaks: measurement.peaks, sourceDuration: measurement.duration,
+                        MeasuredAudioWaveform(peaks: measurement.peaks, rms: measurement.rms, sourceDuration: measurement.duration,
                             sourceOffset: visible.sourceOffset, duration: visible.duration)
                             .frame(height: 14).allowsHitTesting(false)
                     }
@@ -942,10 +1149,16 @@ private struct StudioAudioTimelineClip: View {
                 .gesture(moveGesture)
             if clip.duration * pointsPerSecond >= 88 { handle(leading: false) }
         }.frame(width: width, height: 58)
-            .background(Color.sdRed.opacity(clip.isMuted || vm.document.isAudioTrackMuted(clip.track) ? 0.05 : 0.16))
+            .background(Color(hex: StudioCraftAudio.trackColor(clip.track)).opacity(clip.isMuted || !vm.document.isAudioTrackAudible(clip.track) ? 0.08 : 0.30))
             .clipShape(RoundedRectangle(cornerRadius: radius))
             .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(vm.selectedCurrentAudioClip?.id == clip.id ? Color.white.opacity(0.5) : Color.sdRed.opacity(0.5)))
-            .opacity(clip.isMuted || vm.document.isAudioTrackMuted(clip.track) ? 0.55 : 1)
+            .overlay(alignment: .top) {
+                // Overlap indicator: a solo-coloured bar along the top edge (#177).
+                if overlaps {
+                    Rectangle().fill(StudioCraftTheme.solo).frame(height: 3).padding(.horizontal, radius / 2).allowsHitTesting(false)
+                }
+            }
+            .opacity(clip.isMuted || !vm.document.isAudioTrackAudible(clip.track) ? 0.55 : 1)
             .frame(width: clip.duration * pointsPerSecond, height: 58, alignment: .leading)
             .offset(previewOffset)
     }
@@ -954,6 +1167,7 @@ private struct StudioAudioTimelineClip: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("studio.audio.clip.\(clip.id)")
             .accessibilityLabel("\(clip.soundName), track \(clip.track), start \(clip.startTime.formatted()) seconds, duration \(clip.duration.formatted()) seconds")
+            .accessibilityValue(overlaps ? "Overlaps another clip on this track; both play mixed together" : "")
             .accessibilityAction(named: "Select clip") { stop(); vm.selectedAudioClip = clip }
             .accessibilityAction(named: "Move earlier one frame") {
                 accessibleEdit(.place(start: max(0, clip.startTime - 1 / Double(vm.fps)), track: clip.track))
@@ -1138,6 +1352,10 @@ private struct AudioFilesImportControls: View {
             }
             Text("Up to 16 MB / 5 min · mono or stereo · decoded sample limits apply")
                 .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+            // The 32 MB project cap (#193) is stated before an import can hit it.
+            Text(String(format: "Project audio total 32 MB including undo history · %.1f MB used", Double(vm.managedAudioByteCount) / 1_048_576))
+                .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+                .accessibilityIdentifier("studio.audio.import.limits")
             Text("Adds audio at the captured timeline playhead. Move and trim clips in the timeline, then include them in MP4 export.")
                 .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
             if let projectNotice = vm.message {
@@ -1201,12 +1419,11 @@ private struct AudioProjectClips: View {
                                 .font(.specialElite(11)).foregroundColor(.sdStudioSecondaryText)
                             Text(String(format: "Source %.2f–%.2fs", clip.sourceOffset, clip.sourceOffset + clip.duration))
                                 .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
-                            if clip.isMuted || vm.document.isAudioTrackMuted(clip.track) {
-                                Text("Preview is silent: clip or track is muted")
+                            // Mirrors the mixer's gain rules, including solo (#180).
+                            if let reason = StudioAudioPreviewSilence.reason(for: clip, in: vm.document) {
+                                Text(reason)
                                     .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
-                            } else if clip.volume == 0 || vm.document.audioTrackVolume(clip.track) == 0 {
-                                Text("Preview is silent: clip or track volume is zero")
-                                    .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
+                                    .accessibilityIdentifier("studio.audio.project.silent." + clip.id)
                             }
                             if auditionID == clip.id {
                                 if timeline.isPreparing {
@@ -1219,7 +1436,7 @@ private struct AudioProjectClips: View {
                                 }
                             }
                             if let id = clip.assetID, let measured = audio.measurements[id] {
-                                MeasuredAudioWaveform(peaks: measured.peaks, sourceDuration: measured.duration,
+                                MeasuredAudioWaveform(peaks: measured.peaks, rms: measured.rms, sourceDuration: measured.duration,
                                     sourceOffset: clip.sourceOffset, duration: clip.duration).frame(height: 14)
                             }
                         }
@@ -1239,6 +1456,9 @@ private struct AudioProjectClips: View {
 
 private struct MeasuredAudioWaveform: View {
     let peaks: [Float]
+    /// Measured RMS per bin (#192); empty for catalogues without RMS. Drawn as
+    /// a solid inner band inside the translucent peak outline, never invented.
+    var rms: [Float] = []
     var sourceDuration: Double? = nil
     var sourceOffset: Double = 0
     var duration: Double? = nil
@@ -1250,25 +1470,34 @@ private struct MeasuredAudioWaveform: View {
         let end = min(1, (sourceOffset + duration) / sourceDuration)
         return end > start ? start...end : nil
     }
+    private func bars(_ values: [Float], in geometry: GeometryProxy) -> Path {
+        Path { path in
+            guard let range = visibleRange else { return }
+            for (index, value) in values.enumerated() where value.isFinite && value > 0 {
+                let lower = max(range.lowerBound, Double(index) / Double(max(1, values.count)))
+                let upper = min(range.upperBound, Double(index + 1) / Double(max(1, values.count)))
+                guard upper > lower else { continue }
+                // Bins are measured, not invented samples. Clip the overlapping
+                // bins to the audible source range at any zoom.
+                let position = ((lower + upper) / 2 - range.lowerBound) / (range.upperBound - range.lowerBound)
+                let x = CGFloat(position) * geometry.size.width
+                let half = CGFloat(min(1, max(0, value))) * geometry.size.height / 2
+                path.move(to: CGPoint(x: x, y: geometry.size.height / 2 - half))
+                path.addLine(to: CGPoint(x: x, y: geometry.size.height / 2 + half))
+            }
+        }
+    }
     var body: some View {
         GeometryReader { geometry in
-            Path { path in
-                if let range = visibleRange {
-                    for (index, peak) in peaks.enumerated() where peak.isFinite && peak > 0 {
-                        let lower = max(range.lowerBound, Double(index) / Double(max(1, peaks.count)))
-                        let upper = min(range.upperBound, Double(index + 1) / Double(max(1, peaks.count)))
-                        guard upper > lower else { continue }
-                        // Peaks are measured bins, not invented samples. Clip the
-                        // overlapping bins to the audible source range at any zoom.
-                        let position = ((lower + upper) / 2 - range.lowerBound) / (range.upperBound - range.lowerBound)
-                        let x = CGFloat(position) * geometry.size.width
-                        let half = CGFloat(min(1, max(0, peak))) * geometry.size.height / 2
-                        path.move(to: CGPoint(x: x, y: geometry.size.height / 2 - half))
-                        path.addLine(to: CGPoint(x: x, y: geometry.size.height / 2 + half))
-                    }
+            ZStack {
+                bars(peaks, in: geometry).stroke(Color.sdRed.opacity(rms.count == peaks.count ? 0.45 : 0.8), lineWidth: 1)
+                if rms.count == peaks.count {
+                    bars(rms, in: geometry).stroke(Color.sdRed, lineWidth: 1)
                 }
-            }.stroke(Color.sdRed.opacity(0.8), lineWidth: 1)
+            }
         }.accessibilityLabel("Measured source waveform overview")
-            .accessibilityHint("Shows measured peak bins for the clip's source range before volume and fades.")
+            .accessibilityHint(rms.count == peaks.count
+                ? "Shows measured peak and RMS bins for the clip's source range before volume and fades."
+                : "Shows measured peak bins for the clip's source range before volume and fades.")
     }
 }

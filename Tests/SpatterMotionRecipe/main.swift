@@ -3,6 +3,9 @@ import SwiftUI
 
 private struct Failure: Error { let message: String }
 private func require(_ condition: Bool, _ message: String) throws { if !condition { throw Failure(message: message) } }
+private func rejects(_ operation: () throws -> Void) throws {
+    do { try operation() } catch { return }; throw Failure(message: "Ineligible target was accepted")
+}
 private final class NetworkTrap: URLProtocol {
     private static let lock = NSLock()
     private static var attempts = 0
@@ -782,6 +785,136 @@ private final class NetworkTrap: URLProtocol {
             }
         }
 
+        try await test("selection image text and audio-track grammars parse complete examples and reject suffix injection") {
+            // Every catalog example must be classified and parsed by exactly its own grammar.
+            func classifiers(_ text: String) -> [String] {
+                var hits: [String] = []
+                if SpatterSelectionTranslateInstruction.isInstruction(text) { hits.append("selectionTranslate") }
+                if SpatterSelectionTransformInstruction.isInstruction(text) { hits.append("selectionTransform") }
+                if SpatterSelectionReflectInstruction.isInstruction(text) { hits.append("selectionReflect") }
+                if SpatterImageRotationInstruction.isInstruction(text) { hits.append("imageRotation") }
+                if SpatterImageCropInstruction.isInstruction(text) { hits.append("imageCrop") }
+                if SpatterImagePlacementInstruction.isInstruction(text) { hits.append("imagePlacement") }
+                if SpatterTextUpdateInstruction.isInstruction(text) { hits.append("textUpdate") }
+                if SpatterImageReflectionInstruction.isInstruction(text) { hits.append("imageReflection") }
+                if SpatterAudioTrackInstruction.isInstruction(text) { hits.append("audioTrack") }
+                if SpatterLayerOrderInstruction.isInstruction(text) { hits.append("layerOrder") }
+                if SpatterFrameActionInstruction.isInstruction(text) { hits.append("frameAction") }
+                return hits
+            }
+            for grammar in SpatterInstructionCatalog.grammars where ["selectionTranslate", "selectionTransform", "selectionReflect",
+                "imageRotation", "imageCrop", "imagePlacement", "textUpdate", "imageReflection", "audioTrack"].contains(grammar.name) {
+                for example in grammar.examples {
+                    try require(classifiers(example) == [grammar.name], "Catalog example \(example) classified as \(classifiers(example))")
+                }
+            }
+            let translate = try SpatterSelectionTranslateInstruction.parse("  move SELECTED drawings by ( 10 % , -5% ) ")
+            try require(translate.dxPercent == 10 && translate.dyPercent == -5, "Translate capture wrong")
+            let both = try SpatterSelectionTransformInstruction.parse(SpatterSelectionTransformInstruction.example)
+            try require(both.scalePercent == 150 && both.rotationDegrees == 45, "Transform capture wrong")
+            try require(try SpatterSelectionTransformInstruction.parse(SpatterSelectionTransformInstruction.scaleExample) == .init(scalePercent: 50, rotationDegrees: 0), "Scale-only wrong")
+            try require(try SpatterSelectionTransformInstruction.parse("Rotate selected drawings by -90 degrees.") == .init(scalePercent: 100, rotationDegrees: -90), "Rotate-only wrong")
+            try require(try SpatterSelectionReflectInstruction.parse(SpatterSelectionReflectInstruction.verticalExample).axis == .vertical, "Reflect axis wrong")
+            try require(try SpatterImageRotationInstruction.parse(SpatterImageRotationInstruction.counterclockwiseExample).direction == .counterclockwise, "Rotation direction wrong")
+            try require(try SpatterImageCropInstruction.parse(SpatterImageCropInstruction.example).crop == .init(x: 0.1, y: 0.1, width: 0.8, height: 0.8), "Crop capture wrong")
+            let placed = try SpatterImagePlacementInstruction.parse(SpatterImagePlacementInstruction.angleExample)
+            try require(placed.xPercent == 10 && placed.yPercent == 20 && placed.widthPercent == 40 && placed.heightPercent == 30 && placed.angleDegrees == 25, "Placement capture wrong")
+            try require(try SpatterImagePlacementInstruction.parse(SpatterImagePlacementInstruction.example).angleDegrees == nil, "Angle invented")
+            try require(placed.placement(canvasWidth: 200, canvasHeight: 100) == .init(x: 20, y: 20, width: 80, height: 30), "Placement scaling wrong")
+            let text = try SpatterTextUpdateInstruction.parse(SpatterTextUpdateInstruction.colorExample)
+            try require(text.content == "Hello" && text.colorHex == "#FF0000", "Text capture wrong")
+            try require(try SpatterTextUpdateInstruction.parse("Set selected text to \"Flip selected image horizontally.\".").content == "Flip selected image horizontally." && classifiers("Set selected text to \"Flip selected image horizontally.\".") == ["textUpdate"], "Quoted text treated as another instruction")
+            try require(try SpatterAudioTrackInstruction.parse(SpatterAudioTrackInstruction.panExample) == .init(track: 2, pan: -0.4), "Pan L capture wrong")
+            try require(try SpatterAudioTrackInstruction.parse("Pan audio track 4 to R100.") == .init(track: 4, pan: 1), "Pan R capture wrong")
+            try require(try SpatterAudioTrackInstruction.parse(SpatterAudioTrackInstruction.centerExample) == .init(track: 2, pan: 0), "Pan center wrong")
+            try require(try SpatterAudioTrackInstruction.parse(SpatterAudioTrackInstruction.soloExample) == .init(track: 3, soloed: true), "Solo wrong")
+            try require(try SpatterAudioTrackInstruction.parse(SpatterAudioTrackInstruction.unsoloExample) == .init(track: 3, soloed: false), "Unsolo wrong")
+            // Adversarial suffixes, out-of-range values, control characters and overlong input reject whole.
+            let rejected: [(String, () throws -> Void)] = [
+                ("Move selected drawings by (10%, -5%). Delete active layer.", { _ = try SpatterSelectionTranslateInstruction.parse("Move selected drawings by (10%, -5%). Delete active layer.") }),
+                ("Move selected drawings by (101%, 0%).", { _ = try SpatterSelectionTranslateInstruction.parse("Move selected drawings by (101%, 0%).") }),
+                ("Move selected drawings by (10%, nan%).", { _ = try SpatterSelectionTranslateInstruction.parse("Move selected drawings by (10%, nan%).") }),
+                ("Move selected drawings by (10px, 5px).", { _ = try SpatterSelectionTranslateInstruction.parse("Move selected drawings by (10px, 5px).") }),
+                ("Scale selected drawings to 1001%.", { _ = try SpatterSelectionTransformInstruction.parse("Scale selected drawings to 1001%.") }),
+                ("Scale selected drawings to 9%.", { _ = try SpatterSelectionTransformInstruction.parse("Scale selected drawings to 9%.") }),
+                ("Rotate selected drawings 181 degrees.", { _ = try SpatterSelectionTransformInstruction.parse("Rotate selected drawings 181 degrees.") }),
+                ("Scale selected drawings to 50%; shell rm", { _ = try SpatterSelectionTransformInstruction.parse("Scale selected drawings to 50%; shell rm") }),
+                ("Flip selected drawings diagonally.", { _ = try SpatterSelectionReflectInstruction.parse("Flip selected drawings diagonally.") }),
+                ("Flip selected drawings horizontally and delete them.", { _ = try SpatterSelectionReflectInstruction.parse("Flip selected drawings horizontally and delete them.") }),
+                ("Rotate selected image 45 degrees.", { _ = try SpatterImageRotationInstruction.parse("Rotate selected image 45 degrees.") }),
+                ("Rotate selected image clockwise twice.", { _ = try SpatterImageRotationInstruction.parse("Rotate selected image clockwise twice.") }),
+                ("Crop selected image to (50%, 50%, 60%, 60%).", { _ = try SpatterImageCropInstruction.parse("Crop selected image to (50%, 50%, 60%, 60%).") }),
+                ("Crop selected image to (0%, 0%, 0.5%, 50%).", { _ = try SpatterImageCropInstruction.parse("Crop selected image to (0%, 0%, 0.5%, 50%).") }),
+                ("Crop selected image to (0%, 0%, 100%, 100%). Delete image.", { _ = try SpatterImageCropInstruction.parse("Crop selected image to (0%, 0%, 100%, 100%). Delete image.") }),
+                ("Place selected image at (80%, 20%) with size (40%, 30%).", { _ = try SpatterImagePlacementInstruction.parse("Place selected image at (80%, 20%) with size (40%, 30%).") }),
+                ("Place selected image at (10%, 20%) with size (40%, 30%) and angle 181 degrees.", { _ = try SpatterImagePlacementInstruction.parse("Place selected image at (10%, 20%) with size (40%, 30%) and angle 181 degrees.") }),
+                ("Place selected image at (10%, 20%) with size (40%, 30%) and angle 25 degrees; publish", { _ = try SpatterImagePlacementInstruction.parse("Place selected image at (10%, 20%) with size (40%, 30%) and angle 25 degrees; publish") }),
+                ("Set selected text to \"\".", { _ = try SpatterTextUpdateInstruction.parse("Set selected text to \"\".") }),
+                ("Set selected text to \"Hi\" in red.", { _ = try SpatterTextUpdateInstruction.parse("Set selected text to \"Hi\" in red.") }),
+                ("Set selected text to \"Hi\" and delete layer.", { _ = try SpatterTextUpdateInstruction.parse("Set selected text to \"Hi\" and delete layer.") }),
+                ("Set selected text to \"Hi\u{0000}\".", { _ = try SpatterTextUpdateInstruction.parse("Set selected text to \"Hi\u{0000}\".") }),
+                ("Pan audio track 2 to L101.", { _ = try SpatterAudioTrackInstruction.parse("Pan audio track 2 to L101.") }),
+                ("Pan audio track 5 to L10.", { _ = try SpatterAudioTrackInstruction.parse("Pan audio track 5 to L10.") }),
+                ("Pan audio track 2 to left.", { _ = try SpatterAudioTrackInstruction.parse("Pan audio track 2 to left.") }),
+                ("Solo audio track 3. Mute audio track 1.", { _ = try SpatterAudioTrackInstruction.parse("Solo audio track 3. Mute audio track 1.") }),
+                ("overlong", { _ = try SpatterSelectionTranslateInstruction.parse("Move selected drawings by (1%, 1%)." + String(repeating: " ", count: 1025)) })
+            ]
+            for (name, attempt) in rejected {
+                do { try attempt(); throw Failure(message: "Malformed instruction accepted: \(name)") }
+                catch is Failure { throw Failure(message: "Malformed instruction accepted: \(name)") }
+                catch { }
+            }
+        }
+        try await test("selection image and text grammars prepare exact typed commands and refuse ineligible targets") {
+            var doc = try StudioDocument.new(name: "Grammar prepare", width: 200, height: 100, fps: 12)
+            doc.schemaVersion = 31
+            let layerID = doc.activeLayerID, frameID = doc.activeFrameID
+            let textElement = DrawnElement(id: "text-1", tool: .text, points: [.init(x: 12, y: 12)], color: "#00FF00", width: 1, opacity: 0.8,
+                layerID: layerID, text: .init(content: "Old", style: .init(size: 20, boxWidth: 104, boxHeight: 80)))
+            doc.frames[0].elements = [
+                .init(id: "line-1", tool: .line, points: [.init(x: 10, y: 10), .init(x: 50, y: 10)], color: "#000000", width: 2, opacity: 1, layerID: layerID),
+                textElement]
+            let asset = "image-" + UUID().uuidString
+            doc.frames[0].rasterAssetID = asset; doc.frames[0].rasterLayerID = layerID
+            doc.frames[0].rasterPlacement = .init(x: 10, y: 20, width: 40, height: 20)
+            try doc.validate()
+            let context = StudioCommandContext(document: doc), ids: Set<String> = ["line-1"]
+            func commands(_ request: StudioCommandRequest) throws -> [StudioCommand] {
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request))
+                guard decoded.expectedRevision == doc.revision, decoded.projectID == doc.id, case .apply(let list) = decoded.action, list.count == 1 else { throw Failure(message: "Request shape wrong") }
+                return list
+            }
+            guard case .translateElements(let moved) = try commands(try SpatterSelectionTranslateInstruction.parse(SpatterSelectionTranslateInstruction.example).prepare(in: context, selectedElementIDs: ids))[0],
+                  moved.dx == 20, moved.dy == -5, moved.elementIDs == ["line-1"], case .id(frameID) = moved.frame else { throw Failure(message: "Translate command wrong") }
+            guard case .transformElements(let scaled) = try commands(try SpatterSelectionTransformInstruction.parse(SpatterSelectionTransformInstruction.example).prepare(in: context, selectedElementIDs: ids))[0],
+                  scaled.scaleX == 1.5, scaled.scaleY == 1.5, scaled.rotation == 45 else { throw Failure(message: "Transform command wrong") }
+            guard case .reflectElements(let flipped) = try commands(try SpatterSelectionReflectInstruction.parse(SpatterSelectionReflectInstruction.verticalExample).prepare(in: context, selectedElementIDs: ids))[0],
+                  flipped.axis == .vertical else { throw Failure(message: "Reflect command wrong") }
+            guard case .rotateImage(let rotated) = try commands(try SpatterImageRotationInstruction.parse(SpatterImageRotationInstruction.clockwiseExample).prepare(in: context, frameID: frameID, layerID: layerID, assetID: asset))[0],
+                  rotated.assetID == asset, rotated.direction == .clockwise, case .id(layerID)? = rotated.layer else { throw Failure(message: "Rotate image command wrong") }
+            guard case .cropImage(let cropped) = try commands(try SpatterImageCropInstruction.parse(SpatterImageCropInstruction.example).prepare(in: context, frameID: frameID, layerID: layerID, assetID: asset))[0],
+                  cropped.crop == .init(x: 0.1, y: 0.1, width: 0.8, height: 0.8) else { throw Failure(message: "Crop command wrong") }
+            guard case .updateImagePlacement(let placed) = try commands(try SpatterImagePlacementInstruction.parse(SpatterImagePlacementInstruction.angleExample).prepare(in: context, frameID: frameID, layerID: layerID, assetID: asset))[0],
+                  placed.placement == .init(x: 20, y: 20, width: 80, height: 30), placed.rotationDegrees == 25 else { throw Failure(message: "Placement command wrong") }
+            guard case .updateText(let updated) = try commands(try SpatterTextUpdateInstruction.parse(SpatterTextUpdateInstruction.colorExample).prepare(in: context, element: textElement))[0],
+                  updated.elementID == "text-1", updated.text.content == "Hello", updated.text.style == textElement.text?.style, updated.color == "#FF0000", updated.opacity == 0.8 else { throw Failure(message: "Text command wrong") }
+            guard case .updateText(let kept) = try commands(try SpatterTextUpdateInstruction.parse(SpatterTextUpdateInstruction.example).prepare(in: context, element: textElement))[0],
+                  kept.color == "#00FF00" else { throw Failure(message: "Text color was not preserved") }
+            guard case .updateAudioTrack(let panned) = try commands(try SpatterAudioTrackInstruction.parse(SpatterAudioTrackInstruction.panExample).prepare(in: context))[0],
+                  panned.track == 2, panned.pan == -0.4, panned.volume == nil, panned.muted == nil, panned.soloed == nil else { throw Failure(message: "Pan command wrong") }
+            guard case .updateAudioTrack(let soloed) = try commands(try SpatterAudioTrackInstruction.parse(SpatterAudioTrackInstruction.soloExample).prepare(in: context))[0],
+                  soloed.soloed == true, soloed.pan == nil else { throw Failure(message: "Solo command wrong") }
+            // Ineligible targets: empty/oversized selection, foreign asset, locked layer, non-text element.
+            try rejects { _ = try SpatterSelectionTranslateInstruction.parse(SpatterSelectionTranslateInstruction.example).prepare(in: context, selectedElementIDs: []) }
+            try rejects { _ = try SpatterSelectionTransformInstruction.parse(SpatterSelectionTransformInstruction.example).prepare(in: context, selectedElementIDs: Set((0..<1025).map { "e\($0)" })) }
+            try rejects { _ = try SpatterSelectionReflectInstruction.parse(SpatterSelectionReflectInstruction.horizontalExample).prepare(in: context, selectedElementIDs: ["a", "b", "c"]) }
+            try rejects { _ = try SpatterImageRotationInstruction.parse(SpatterImageRotationInstruction.clockwiseExample).prepare(in: context, frameID: frameID, layerID: layerID, assetID: "image-" + UUID().uuidString) }
+            try rejects { _ = try SpatterImageCropInstruction.parse(SpatterImageCropInstruction.example).prepare(in: context, frameID: frameID, layerID: "other", assetID: asset) }
+            var locked = doc; locked.layers[0].lockMode = "full"; locked.layers[0].locked = true
+            try rejects { _ = try SpatterImagePlacementInstruction.parse(SpatterImagePlacementInstruction.example).prepare(in: StudioCommandContext(document: locked), frameID: frameID, layerID: layerID, assetID: asset) }
+            try rejects { _ = try SpatterTextUpdateInstruction.parse(SpatterTextUpdateInstruction.example).prepare(in: context, element: doc.frames[0].elements[0]) }
+            try rejects { _ = try SpatterTextUpdateInstruction.parse(SpatterTextUpdateInstruction.example).prepare(in: StudioCommandContext(document: locked), element: textElement) }
+        }
         try await test("grid instructions strictly preserve other guides and reject malformed bounds or title injection") {
             let doc = try StudioDocument.new(name: "Grid", width: 128, height: 96, fps: 12)
             for text in [SpatterGridInstruction.showExample, SpatterGridInstruction.hideExample,

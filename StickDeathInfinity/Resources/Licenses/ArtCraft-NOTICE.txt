@@ -1,0 +1,52 @@
+ArtCraft Crafting Apps — ported Studio behaviour
+
+StickDeath Infinity's Studio ports formulas, catalogues and design tokens
+(no code files, icons, fonts, names or logos) from these open-source ArtCraft
+projects, used under the MIT License (the projects are MIT OR Apache-2.0):
+
+PhotoCraft — https://github.com/storytold/photocraft
+  at commit 14733b522385d5f876fe59f60d1118473393b960
+  Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors.
+  Used: layer blend-mode catalogue, order and reference formulas
+  (crates/color/src/blend.rs), layer label colours (crates/doc/src/lib.rs,
+  crates/ui-egui/src/theme.rs), toolbar sections and tool names
+  (crates/ui-egui/src/panels.rs, state.rs), and "Studio (Dark)" theme tokens
+  (crates/ui-egui/src/theme.rs).
+
+SoundCraft — https://github.com/storytold/soundcraft
+  at commit 776b771f59cd9ffa13e2ed38d76fbca3c13347f0
+  Copyright (c) 2026 ArtCraft Team and the SoundCraft contributors.
+  Used: clip fade curve shapes (crates/model/src/clip.rs), balance pan law
+  (crates/dsp/src/pan.rs), mute/solo rule (crates/mix/src/lib.rs), track
+  colour palette (crates/model/src/track.rs) and solo/mute state colours
+  (crates/ui-egui/src/theme.rs).
+
+The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team and
+are not used by this app. StickDeath Infinity is not affiliated with or
+endorsed by ArtCraft.
+
+The MIT License text, identical for both projects apart from the project
+name in the copyright line above:
+
+MIT License
+
+Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors
+Copyright (c) 2026 ArtCraft Team and the SoundCraft contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

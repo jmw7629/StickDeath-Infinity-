@@ -27,6 +27,7 @@ class ReviewRegistrar:
         upload,owner=identifier(upload),identifier(owner)
         if metadata.get("consent_version") != self.consent_version:
             raise IntakeError("Publishing terms changed. Confirm the current permissions before submitting.",409)
+        self._verify_consent(owner, metadata["consent_version"])
         path=Path(path)
         if path.is_symlink() or path.resolve(strict=True) != self.root/(upload+".mp4") or path.stat().st_size != metadata["size"]:
             raise IntakeError("Artifact identity changed.",409)
@@ -54,6 +55,23 @@ class ReviewRegistrar:
         if not isinstance(result,dict) or result.get("error") or not result.get("review_id"):
             raise IntakeError("Review registration was not confirmed. Retain the local export and retry this upload.",409)
         return identifier(result["review_id"])
+
+    def _verify_consent(self, owner: str, version: str):
+        """The database is the authority on the member's current publishing and
+        content-policy consent (consent-versions.sql). Fail closed on any doubt."""
+        payload={"subject":owner,"version":version}
+        request=urllib.request.Request(self.base+"/rest/v1/rpc/sdi_consent_verify",data=json.dumps(payload).encode(),method="POST",
+            headers={"apikey":self.key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
+        try:
+            with urllib.request.build_opener(NoRedirect()).open(request,timeout=10) as response:
+                raw=response.read(4097)
+                if len(raw)>4096: raise ValueError()
+                result=json.loads(raw)
+        except (urllib.error.URLError,TimeoutError,OSError,ValueError):
+            raise IntakeError("Consent could not be verified. Retry this same upload ID.",503) from None
+        if not isinstance(result,dict) or result.get("allowed") is not True:
+            reason=result.get("reason") if isinstance(result,dict) and isinstance(result.get("reason"),str) else ""
+            raise IntakeError(reason or "Current publishing permission is required before submitting.",409)
 
     def artifact_released(self, upload: str, review):
         """Fail closed on uncertain retirement; never delete from an HTTP error."""
