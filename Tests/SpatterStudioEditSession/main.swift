@@ -2326,7 +2326,19 @@ private final class NetworkTrap: URLProtocol {
                 && vm.frames.dropFirst().reduce(0) { $0 + $1.durationTicks } == 72 && edit.summary.contains("storyboard is attached"), "Brief receipt or document wrong: \(edit.summary)")
             try require(vm.frames.dropFirst().allSatisfy { $0.elements.count == 10 && $0.elements.allSatisfy { $0.color == "#FF0000" && $0.layerID == edit.createdLayers[0].id } }, "Generated poses are not editable primitives on the actor layer")
             let report = SpatterQualityReport.analyze(vm.document, requestedTicks: 1 + 72, generatedLayerIDs: [edit.createdLayers[0].id])
-            try require(report.verdict().passes, "Quality verdict failed on the brief: \(report.findings)")
+            // The brief appends its frames without overwriting the existing
+            // blank project frame. The whole-project release gate must reject
+            // that blank; assess the generated sequence separately.
+            try require(!report.verdict().passes && report.actualTicks == 73 && report.findings.count == 1
+                && report.findings[0].kind == .blankFrame && report.findings[0].frameIndex == 0,
+                "Whole-project quality lost its preserved blank-frame warning: \(report.findings)")
+            var generatedSequence = vm.document
+            let generatedIDs = Set(edit.createdFrames.map(\.id))
+            generatedSequence.frames = vm.frames.filter { generatedIDs.contains($0.id) }
+            let generatedReport = SpatterQualityReport.analyze(generatedSequence, requestedTicks: story.totalTicks,
+                generatedLayerIDs: [edit.createdLayers[0].id])
+            try require(generatedSequence.frames.count == story.frameCount && generatedReport.verdict().passes,
+                "Generated sequence quality failed: \(generatedReport.findings)")
             try require(session.canUndoAppliedEdit(in: vm, currentScope: guest) && session.canRevertAppliedEdit(in: vm, currentScope: guest), "Undo and revert offers missing at the receipt revision")
             // An unrelated later edit withdraws the receipt-revision Undo offer but keeps the typed revert.
             vm.setFrameHold(original, ticks: 3); await vm.flush()

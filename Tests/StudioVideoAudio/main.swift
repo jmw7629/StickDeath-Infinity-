@@ -182,8 +182,8 @@ private actor PreparedAudioReceipt {
             "Cancellation callback did not follow the first actual bounded PCM chunk")
         try clean()
         try require(try Data(contentsOf: movie) == original, "original movie changed")
-        // One real one-second audio track occupies only the middle of a
-        // two-second movie. Leading/trailing gaps must retain their timing.
+        // Real source edits leave leading, internal and trailing timeline gaps.
+        // None may collapse, become fabricated sound or hide missing media.
         let gapMovie = root.appendingPathComponent("audio-gaps.mov")
         let gapComposition = AVMutableComposition()
         let gapVideo = gapComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
@@ -191,6 +191,10 @@ private actor PreparedAudioReceipt {
         let gapAudio = gapComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
         try gapAudio.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 1, preferredTimescale: 600)),
             of: sound, at: CMTime(seconds: 0.5, preferredTimescale: 600))
+        let internalGap = CMTimeRange(start: CMTime(seconds: 0.75, preferredTimescale: 600),
+            duration: CMTime(seconds: 0.25, preferredTimescale: 600))
+        gapAudio.removeTimeRange(internalGap)
+        gapAudio.insertEmptyTimeRange(internalGap)
         let gapExport = AVAssetExportSession(asset: gapComposition, presetName: AVAssetExportPresetPassthrough)!
         gapExport.outputURL = gapMovie; gapExport.outputFileType = .mov
         await gapExport.export()
@@ -202,7 +206,47 @@ private actor PreparedAudioReceipt {
             && gap.audio.waveformPeaks.suffix(50).allSatisfy { $0 == 0 }
             && gap.audio.waveformPeaks[80..<176].max()! > 0.1,
             "Movie audio gaps were collapsed or replaced with a silent soundtrack")
+        let silence = (44 + Int(0.8 * 44_100) * 4)..<(44 + Int(0.95 * 44_100) * 4)
+        try require(gap.audio.originalData[silence].allSatisfy { $0 == 0 }, "Internal source edit-list gap was collapsed or filled with audio")
         try clean()
+        print("MOVIE_AUDIO stage: native source sample rates")
+        for sampleRate in [8_000.0, 48_000.0, 96_000.0] {
+            print("MOVIE_AUDIO source-rate fixture begin=\(sampleRate)")
+            let rateAudio = root.appendingPathComponent("source-\(Int(sampleRate)).wav")
+            try autoreleasepool {
+                let file = try AVAudioFile(forWriting: rateAudio, settings: [AVFormatIDKey: kAudioFormatLinearPCM,
+                    AVSampleRateKey: sampleRate, AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
+                    AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false])
+                let frames = Int(sampleRate * 2)
+                let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(frames))!
+                buffer.frameLength = AVAudioFrameCount(frames)
+                for i in 0..<frames { buffer.floatChannelData![0][i] = 0.6 * sin(Float(Double(i) * 2 * .pi * 440 / sampleRate)) }
+                try file.write(from: buffer)
+            }
+            print("MOVIE_AUDIO source-rate WAV ready=\(sampleRate)")
+            let rateComposition = AVMutableComposition()
+            let rateVideo = rateComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            let interval = CMTimeRange(start: .zero, duration: CMTime(seconds: 2, preferredTimescale: 600))
+            try rateVideo.insertTimeRange(interval, of: video, at: .zero)
+            let rateAsset = AVURLAsset(url: rateAudio)
+            let rateSound = try await rateAsset.loadTracks(withMediaType: .audio)[0]
+            print("MOVIE_AUDIO source-rate tracks ready=\(sampleRate)")
+            let rateTrack = rateComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            try rateTrack.insertTimeRange(interval, of: rateSound, at: .zero)
+            let rateMovie = root.appendingPathComponent("source-\(Int(sampleRate)).mov")
+            let rateExport = AVAssetExportSession(asset: rateComposition, presetName: AVAssetExportPresetPassthrough)!
+            rateExport.outputURL = rateMovie; rateExport.outputFileType = .mov
+            await rateExport.export()
+            withExtendedLifetime(rateAsset) {}
+            print("MOVIE_AUDIO source-rate export status=\(rateExport.status.rawValue) rate=\(sampleRate)")
+            try require(rateExport.status == .completed, "Source-rate fixture export failed")
+            let result = try await service.extract(from: rateMovie,
+                mapping: .init(sourceStartSeconds: 1, sourceEndSeconds: 2, speed: 1.3), scratchParent: scratch)
+            try require(result.audio.originalData.count == 44 + Int((44_100 / 1.3).rounded()) * 4
+                && tailPeak(result.audio.originalData, frames: 120) > 0.3,
+                "Native source-rate conversion lost timing or tail: \(sampleRate)")
+            try clean()
+        }
         print("MOVIE_AUDIO stage: prepared import")
         let docs = root.appendingPathComponent("documents")
         let storage = DeviceStorageManager(documentsDirectory: docs, cachesDirectory: docs)
@@ -256,6 +300,6 @@ private actor PreparedAudioReceipt {
             "Cold reopen changed movie clip timing or managed audio bytes")
         await reopened.backToProjects(); try clean()
         print("PASS prepared movie import: selected-frame placement, single edit, measured waveform, managed bytes, undo/redo, actual save/cold reopen")
-        print("PASS 12 production movie-audio groups: boundary/fractional speed and trim, actual PCM/waveform, canonical asset, trim/speed/placement, no-audio, bounds, unsafe source, cancellation, cleanup/original preservation")
+        print("PASS 13 production movie-audio groups: native source rates/internal gaps, boundary/fractional speed and trim, actual PCM/waveform, canonical asset, trim/speed/placement, no-audio, bounds, unsafe source, cancellation, cleanup/original preservation")
     }
 }
