@@ -43,7 +43,9 @@ class StudioParityTest {
         assertTrue(ImageCrop.full.isFull); assertFalse(ImageCrop(0.0, 0.0, 0.99, 1.0).isFull)
         listOf(ImageCrop(-0.1, 0.0, 0.5, 0.5), ImageCrop(0.0, 0.0, 0.005, 0.5), ImageCrop(0.6, 0.0, 0.5, 0.5),
             ImageCrop(0.0, 0.6, 0.5, 0.5), ImageCrop(Double.NaN, 0.0, 0.5, 0.5)).forEach { crop -> rejects { crop.validate() } }
-        assertEquals(ImageCrop(0.1, 0.2, 0.6, 0.5), ImageCrop.fromEdges(0.1, 0.2, 0.7, 0.7))
+        // Binary-exact fractions: fromEdges subtracts doubles exactly as the sliders do, so the
+        // expectation must not depend on decimal rounding (0.7 - 0.2 is not 0.5 in IEEE 754).
+        assertEquals(ImageCrop(0.125, 0.25, 0.625, 0.5), ImageCrop.fromEdges(0.125, 0.25, 0.75, 0.75))
     }
 
     @Test fun quarterTurnsMapDisplayCornersToSourceCorners() {
