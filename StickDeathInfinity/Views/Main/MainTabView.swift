@@ -1,7 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
 // MainTabView — Bottom tab bar navigation
-// Matches: MainApp.tsx NAV_ITEMS exactly
-// Tabs: Home / Challenges / Studio / Rooms / Profile
+// Tabs: Home / Challenges / Studio / Rooms / Profile (no messaging or call routes)
 // Pricing ticker overlay + Spatter AI orb on all tabs except Studio
 // ═══════════════════════════════════════════════════════════════════
 

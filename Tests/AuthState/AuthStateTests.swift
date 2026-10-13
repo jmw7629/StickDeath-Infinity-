@@ -225,7 +225,12 @@ import Supabase
         let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
             options: .init(auth: .init(storage: AuthFixtureStorage(), autoRefreshToken: false), global: .init(session: session)))
         let service = AuthService(client: client)
-        let model = AuthViewModel(auth: service, initializeOnStart: false)
+        // Sign-out hands the open Studio project back to the library (#172):
+        // flush before the account changes, close after it is gone, delete nothing.
+        var studioEvents: [String] = []
+        let model = AuthViewModel(auth: service, initializeOnStart: false,
+            flushOpenProject: { studioEvents.append("flush:\(service.isAuthenticated)") },
+            closeOpenProject: { studioEvents.append("close:\(service.isAuthenticated)") })
         await service.initialize()
         XCTAssertEqual(model.state, .unauthenticated)
         await model.signIn(email: "first@example.invalid", password: "fixture-password")
@@ -243,6 +248,7 @@ import Supabase
         XCTAssertNil(model.userId)
         XCTAssertNil(model.user)
         XCTAssertNil(client.auth.currentSession)
+        XCTAssertEqual(studioEvents, ["flush:true", "close:false"], "Flush while signed in, close once signed out")
     }
 
     func testDelayedProfileAndOldNotificationsCannotReplaceNewSDKIdentity() async throws {
@@ -379,7 +385,7 @@ import Supabase
         XCTAssertNotNil(model.error)
     }
 
-    func testAppleUsernameFallsBackForPrivateRelayAndDisplayNameIsBounded() throws {
+    func testAppleUsernameFallsBackForPrivateRelayAndDisplayNameIsBounded() async throws {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let relay = try decoder.decode(User.self, from: Data("""
         {"id":"\(AuthFixtureTransport.first)","aud":"authenticated","role":"authenticated","email":"abc123@privaterelay.appleid.com","app_metadata":{},"user_metadata":{},"identities":[],"is_anonymous":false,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}
@@ -395,6 +401,33 @@ import Supabase
         XCTAssertNil(AuthService.appleDisplayName(PersonNameComponents()))
         var control = PersonNameComponents(); control.givenName = "Bad\u{0007}Name"
         XCTAssertNil(AuthService.appleDisplayName(control))
+        // Apple's subject identifier comes only from the server identity list.
+        XCTAssertNil(AuthService.appleUserIdentifier(for: relay))
+        let linked = try decoder.decode(User.self, from: Data("""
+        {"id":"\(AuthFixtureTransport.first)","aud":"authenticated","role":"authenticated","email":"abc123@privaterelay.appleid.com","app_metadata":{},"user_metadata":{},"identities":[{"identity_id":"30000000-0000-4000-8000-000000000003","id":"001234.fixtureapplesubject.0001","user_id":"\(AuthFixtureTransport.first)","identity_data":{},"provider":"apple","created_at":"2026-10-06T00:00:00Z","last_sign_in_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}],"is_anonymous":false,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}
+        """.utf8))
+        XCTAssertEqual(AuthService.appleUserIdentifier(for: linked), "001234.fixtureapplesubject.0001")
+        XCTAssertTrue(AuthService.appleCredentialRequiresSignOut(.revoked))
+        XCTAssertFalse(AuthService.appleCredentialRequiresSignOut(.authorized))
+        XCTAssertFalse(AuthService.appleCredentialRequiresSignOut(.notFound))
+        XCTAssertFalse(AuthService.appleCredentialRequiresSignOut(.transferred))
+        // Replays Apple's credential-state answer against a real signed-in SDK
+        // session: only `.revoked` clears it, locally, with a notice and no error.
+        let (service, model, transport, _, client) = try await profileFixture()
+        defer { transport.invalidateAndCancel() }
+        await service.handleAppleCredentialState(.authorized)
+        XCTAssertTrue(service.isAuthenticated); XCTAssertNotNil(client.auth.currentSession)
+        await service.handleAppleCredentialState(.notFound)
+        XCTAssertTrue(service.isAuthenticated, "notFound is not a revocation")
+        await service.handleAppleCredentialState(.revoked)
+        XCTAssertEqual(service.state, .unauthenticated); XCTAssertNil(service.currentUser)
+        XCTAssertNil(client.auth.currentSession, "Revoked Apple grant must clear the stored session")
+        XCTAssertEqual(service.restoration, .signInRequired)
+        XCTAssertEqual(model.notice, AuthService.appleRevokedNotice)
+        XCTAssertNil(model.error, "Revocation is a notice, not an error banner")
+        // Already signed out: a second answer changes nothing and throws nothing.
+        await service.handleAppleCredentialState(.revoked)
+        XCTAssertEqual(service.state, .unauthenticated)
     }
 
     func testInstallMarkerClearsStoredSessionOnceAfterReinstall() async throws {
@@ -428,6 +461,12 @@ import Supabase
     }
 
     func testDeepLinkRouterClassifiesBeforeNavigation() {
+        // Cold-launch routing (#136): pure decision used by AppFlowView after restoration settles.
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: true, guestChosen: false, guideCompleted: true, onboarded: false), .app)
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: true, guestChosen: false, guideCompleted: false, onboarded: true), .app)
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: true, guestChosen: true, guideCompleted: false, onboarded: false), .onboarding)
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: false, guestChosen: true, guideCompleted: false, onboarded: false), .app)
+        XCTAssertEqual(AppFlowView.startupDestination(isAuthenticated: false, guestChosen: false, guideCompleted: true, onboarded: true), .welcome)
         XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://auth/callback?code=abc")!), .authCallback)
         XCTAssertEqual(DeepLinkRouter.route(URL(string: "STICKDEATH://auth/callback/")!), .authCallback)
         XCTAssertEqual(DeepLinkRouter.route(URL(string: "stickdeath://auth/reset?code=abc")!), .passwordReset)

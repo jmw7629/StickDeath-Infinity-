@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
 // AppTutorialView — First-run tutorial overlay
-// Matches: src/components/AppTutorial.tsx
 // Shows once on first launch with tab highlights and tips. Copy describes only
 // shipped behavior: no comments, prizes, chat or calls are promised.
 // ═══════════════════════════════════════════════════════════════════
@@ -35,9 +34,7 @@ struct AppTutorialView: View {
             VStack(spacing: 24) {
                 Spacer()
 
-                // Skull icon
-                Text("☠️")
-                    .font(.system(size: 48))
+                SDIBrandMark(size: 48)
 
                 Text("Welcome to StickDeath ∞")
                     .font(.specialElite(22))

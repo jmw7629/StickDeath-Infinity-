@@ -1,5 +1,25 @@
 import SwiftUI
 
+/// The SD∞ skull mark used on Splash, Welcome, Login and the tutorial (#136).
+/// The owner's artwork is an explicit gate: when an image named
+/// `SDIBrandSkull` is added to the asset catalogue it is shown; until then the
+/// emoji is a clearly temporary placeholder, not the approved brand asset.
+/// Decorative in both cases; the wordmark beside it carries the header role.
+struct SDIBrandMark: View {
+    static let ownerAssetName = "SDIBrandSkull"
+    var size: CGFloat
+    var body: some View {
+        Group {
+            if let artwork = UIImage(named: Self.ownerAssetName) {
+                Image(uiImage: artwork).resizable().scaledToFit().frame(width: size, height: size)
+            } else {
+                Text("☠️").font(.system(size: size)) // Placeholder until the owner asset lands.
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 /// Cold-start branding also remains briefly visible when restoration is immediate.
 /// Account failures stay actionable and local projects remain reachable offline.
 struct SplashScreenView: View {
@@ -21,11 +41,9 @@ struct SplashScreenView: View {
                 ScrollView {
                     VStack(spacing: 20) {
                         Spacer(minLength: 24)
-                        Text("☠️")
-                            .font(.system(size: 96))
+                        SDIBrandMark(size: 96)
                             .shadow(color: .sdGlowRed.opacity(glowPulse ? 0.6 : 0.3),
                                     radius: glowPulse ? 36 : 20)
-                            .accessibilityHidden(true)
                         Text("STICKDEATH ∞")
                             .font(.specialElite(32))
                             .tracking(4)

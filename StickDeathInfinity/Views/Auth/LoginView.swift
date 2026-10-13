@@ -63,8 +63,7 @@ struct LoginView: View {
                     VStack(spacing: 0) {
                         // Header
                         VStack(spacing: 6) {
-                            Text("☠️")
-                                .font(.system(size: 56))
+                            SDIBrandMark(size: 56)
                                 .padding(.top, 16)
 
                             Text(authVM.passwordRecoveryPending ? "Set a New Password" : "Welcome Back")

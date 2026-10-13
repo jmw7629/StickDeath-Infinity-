@@ -39,6 +39,39 @@ enum DeepLinkRouter: Equatable {
     }
 }
 
+/// Keeps the process alive while a scene-phase save finishes (#168). Studio's
+/// flush runs when the scene leaves the foreground; without a background task
+/// assertion iOS may suspend the app mid-write. The storage layer already
+/// publishes only complete revisions, so an expired assertion can lose at most
+/// the unselected in-progress revision, never the last selected one.
+@MainActor enum BackgroundTaskScope {
+    private final class Assertion {
+        #if canImport(UIKit) && !os(watchOS)
+        var identifier: UIBackgroundTaskIdentifier = .invalid
+        #endif
+    }
+    static func run(_ name: String, _ work: @escaping @MainActor () async -> Void) {
+        #if canImport(UIKit) && !os(watchOS)
+        let assertion = Assertion()
+        assertion.identifier = UIApplication.shared.beginBackgroundTask(withName: name) {
+            // Expiration: release the assertion; the write itself is not torn
+            // down because an interrupted write never selects partial content.
+            Task { @MainActor in
+                guard assertion.identifier != .invalid else { return }
+                UIApplication.shared.endBackgroundTask(assertion.identifier); assertion.identifier = .invalid
+            }
+        }
+        Task { @MainActor in
+            await work()
+            guard assertion.identifier != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(assertion.identifier); assertion.identifier = .invalid
+        }
+        #else
+        Task { @MainActor in await work() }
+        #endif
+    }
+}
+
 @main
 struct StickDeathInfinityApp: App {
     @StateObject private var authVM = AuthViewModel()

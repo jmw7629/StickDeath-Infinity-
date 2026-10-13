@@ -17,6 +17,8 @@ struct StudioProjectLibrary: View {
     @State private var transferID: UUID?
     @State private var transferNotice: String?
     @State private var removal: AnimationMetadata?
+    @State private var renaming: AnimationMetadata?
+    @State private var renameText = ""
     @State private var showingRecovery = false
     @State private var showingStorage = false
     @State private var creating = false
@@ -257,13 +259,31 @@ struct StudioProjectLibrary: View {
             }
             Button("Cancel", role: .cancel) { removal = nil }
         } message: { Text("Your complete project stays on this device and can be restored. Nothing is permanently erased.") }
+        .alert("Rename project", isPresented: Binding(
+            get: { renaming != nil }, set: { if !$0 { renaming = nil } }), presenting: renaming) { project in
+            TextField("Project name", text: $renameText)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("studio.library.rename.field")
+            Button("Rename") {
+                let proposed = renameText
+                renaming = nil
+                Task { await vm.renameSavedProject(project, to: proposed) }
+            }
+            .accessibilityIdentifier("studio.library.rename.confirm")
+            Button("Cancel", role: .cancel) { renaming = nil }
+                .accessibilityIdentifier("studio.library.rename.cancel")
+        } message: { project in
+            Text("Use 1–120 characters. Renaming \"\(project.title)\" changes its title only; frames, images and sound stay intact.")
+        }
         .sheet(isPresented: $showingStorage) { StudioStorageSheet(vm: vm) }
         .sheet(isPresented: $showingRecovery) {
             NavigationStack {
                 List {
                     Text("Projects remain on this device until restored. There is no automatic deletion.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                     if let message = vm.message { Text(message).foregroundColor(.red) }
-                    if vm.recoverableProjects.isEmpty { Text("No readable projects in Recently Deleted.") }
+                    if vm.recoverableProjects.isEmpty {
+                        Text("No readable projects in Recently Deleted.").accessibilityIdentifier("studio.recovery.empty")
+                    }
                     ForEach(vm.recoverableProjects, id: \.id) { project in
                         HStack {
                             Text(project.title)
@@ -273,7 +293,9 @@ struct StudioProjectLibrary: View {
                         }
                     }
                 }.navigationTitle("Recently Deleted")
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingRecovery = false } } }
+                    .toolbar { ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingRecovery = false }.accessibilityIdentifier("studio.recovery.done")
+                    } }
             }.preferredColorScheme(.dark)
         }
 
@@ -354,10 +376,13 @@ struct StudioProjectLibrary: View {
         }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.project.backup.\(project.id.uuidString)")
         Button { searchFocused = false; Task { await vm.duplicateProject(project) } } label: {
             Label("Duplicate Project", systemImage: "doc.on.doc")
-        }.disabled(vm.isManagingProjects)
+        }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.library.menu.duplicate")
+        Button { searchFocused = false; renameText = project.title; renaming = project } label: {
+            Label("Rename…", systemImage: "pencil")
+        }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.library.menu.rename")
         Button(role: .destructive) { searchFocused = false; removal = project } label: {
             Label("Move to Recently Deleted", systemImage: "trash")
-        }
+        }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.library.menu.remove")
     }
 }
 

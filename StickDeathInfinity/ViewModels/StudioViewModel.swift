@@ -912,6 +912,37 @@ final class StudioViewModel: ObservableObject {
             message = nil; await loadProjects()
         } catch { message = "Copy could not be saved. Original preserved: \(error.localizedDescription)" }
     }
+    /// Renames a saved project from the library without opening it in this
+    /// session. The record is loaded with the same archive/asset validation as
+    /// opening, renamed through the document editor and written through the
+    /// normal save path, so lineage, revision and receipts match an open save.
+    /// The project open in this editor, an invalid name and concurrent library
+    /// operations are refused; the stored original is untouched on any failure.
+    @discardableResult
+    func renameSavedProject(_ metadata: AnimationMetadata, to proposed: String) async -> Bool {
+        guard !isEditing else {
+            message = document.id == metadata.id
+                ? "This project is open. Rename it from Project Settings instead."
+                : "Save and return to projects before renaming another animation."
+            return false
+        }
+        guard !isSaving, !isManagingProjects else { message = "Another project operation is running."; return false }
+        let title: String
+        do { title = try StudioDocument.validatedProjectName(proposed) }
+        catch { message = error.localizedDescription; return false }
+        isManagingProjects = true; defer { isManagingProjects = false }
+        // A temporary editor never replaces or changes the user's current session.
+        let source = StudioViewModel(storage: storage)
+        guard await source.openProject(metadata) else { message = source.message; return false }
+        guard source.renameProject(title, expectedProjectID: source.document.id, expectedRevision: source.document.revision) else {
+            message = source.message; return false
+        }
+        guard await source.save() else {
+            message = source.message ?? "The renamed project could not be saved. Original preserved."; return false
+        }
+        message = nil; await loadProjects()
+        return true
+    }
     private func requirePortableLibrary() throws {
         guard !isEditing, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil else {
             throw StudioDocumentError.unavailable("Save and return to projects before transferring a project backup.")

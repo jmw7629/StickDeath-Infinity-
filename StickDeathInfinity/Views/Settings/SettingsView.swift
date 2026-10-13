@@ -1,11 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════
-// SettingsView — App settings
-// Matches: src/pages/SettingsScreen.tsx exactly
-// - Account section (email, username, password change)
-// - Subscription / Plan
-// - Notification preferences
-// - About / Legal
-// - Delete account / Sign out
+// SettingsView — legacy account settings screen
+//
+// Not routed from the tab shell: ProfileView hosts the live account,
+// authenticator, sign-out and deletion rows. This screen stays compiled
+// into the app (it is listed in the Xcode project), so it shows only real
+// values and real outcomes: no placeholder toggles, defaults or links that
+// go nowhere (#135). Sign-out and deletion use the same AuthViewModel paths
+// as Profile; local projects are never touched by either.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
@@ -15,76 +16,84 @@ struct SettingsView: View {
     @State private var showDeleteConfirm = false
     var onBack: (() -> Void)? = nil
 
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String
+        let build = info?["CFBundleVersion"] as? String
+        switch (version, build) {
+        case let (version?, build?): return "\(version) (\(build))"
+        case let (version?, nil): return version
+        default: return "Unavailable"
+        }
+    }
+
     var body: some View {
         ZStack {
             Color.sdBackground.ignoresSafeArea()
 
             ScrollView {
                 VStack(spacing: 24) {
-                    // Account section
                     SettingsSection(title: "ACCOUNT") {
-                        SettingsRow(icon: "person.fill", title: "Username", value: authVM.user?.username ?? "—")
-                        SettingsRow(icon: "envelope.fill", title: "Email", value: authVM.user?.email ?? "—")
-                        SettingsRow(icon: "lock.fill", title: "Change Password", chevron: true)
+                        SettingsRow(icon: "person.fill", title: "Username",
+                                    value: authVM.user?.username ?? "Not available")
+                        SettingsRow(icon: "envelope.fill", title: "Email",
+                                    value: authVM.user?.email ?? "Not available")
+                        SettingsRow(icon: "creditcard.fill", title: "Current Plan",
+                                    value: authVM.user?.subscriptionTier ?? "Free")
                     }
 
-                    // Subscription
-                    SettingsSection(title: "SUBSCRIPTION") {
-                        SettingsRow(icon: "creditcard.fill", title: "Current Plan", value: authVM.user?.subscriptionTier ?? "Free")
-                        SettingsRow(icon: "arrow.up.circle.fill", title: "Upgrade Plan", chevron: true, accent: true)
-                    }
-
-                    // Preferences
-                    SettingsSection(title: "PREFERENCES") {
-                        SettingsToggleRow(icon: "bell.fill", title: "Push Notifications", isOn: .constant(true))
-                        SettingsToggleRow(icon: "envelope.badge.fill", title: "Email Notifications", isOn: .constant(false))
-                        SettingsToggleRow(icon: "moon.fill", title: "Dark Mode", isOn: .constant(true))
-                    }
-
-                    // Studio
-                    SettingsSection(title: "STUDIO") {
-                        SettingsRow(icon: "square.grid.2x2.fill", title: "Default Canvas Size", value: "1920×1080")
-                        SettingsRow(icon: "gauge.medium", title: "Default FPS", value: "12")
-                        SettingsToggleRow(icon: "square.3.layers.3d", title: "Auto Onion Skin", isOn: .constant(true))
-                    }
-
-                    // About
                     SettingsSection(title: "ABOUT") {
-                        SettingsRow(icon: "doc.text.fill", title: "Terms of Service", chevron: true)
-                        SettingsRow(icon: "hand.raised.fill", title: "Privacy Policy", chevron: true)
-                        SettingsRow(icon: "info.circle.fill", title: "Version", value: "1.0.0 (1)")
+                        SettingsRow(icon: "info.circle.fill", title: "Version", value: appVersion)
+                        SettingsRow(icon: "internaldrive.fill", title: "Projects",
+                                    value: "Stored on this device")
                     }
 
-                    // Danger zone
                     VStack(spacing: 12) {
-                        Button {
-                            Task { await authVM.signOut() }
-                        } label: {
-                            HStack {
-                                Image(systemName: "rectangle.portrait.and.arrow.right")
-                                Text("Sign Out")
+                        if authVM.isAuthenticated {
+                            Button {
+                                Task { await authVM.signOut() }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                                    Text("Sign Out")
+                                }
+                                .font(.specialElite(16))
+                                .foregroundColor(.sdTextPrimary)
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(Color.white.opacity(0.05))
+                                .cornerRadius(12)
                             }
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.sdTextPrimary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(Color.white.opacity(0.05))
-                            .cornerRadius(12)
-                        }
+                            .disabled(authVM.isLoading)
+                            .accessibilityIdentifier("settings.sign-out")
+                            Text("Signing out closes the open project and returns to the library. Nothing on this device is deleted.")
+                                .font(.specialElite(11, relativeTo: .caption))
+                                .foregroundColor(.sdTextSecondary)
+                                .multilineTextAlignment(.center)
 
-                        Button {
-                            showDeleteConfirm = true
-                        } label: {
-                            HStack {
-                                Image(systemName: "trash.fill")
-                                Text("Delete Account")
+                            Button {
+                                showDeleteConfirm = true
+                            } label: {
+                                HStack {
+                                    Image(systemName: "trash.fill")
+                                    Text("Delete Account")
+                                }
+                                .font(.specialElite(16))
+                                .foregroundColor(.sdDestructive)
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(Color.sdDestructive.opacity(0.1))
+                                .cornerRadius(12)
                             }
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.sdDestructive)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(Color.sdDestructive.opacity(0.1))
-                            .cornerRadius(12)
+                            .disabled(authVM.isLoading)
+                            .accessibilityIdentifier("settings.delete-account")
+                        } else {
+                            Text("Sign in from Profile to manage your account. Local projects do not require an account.")
+                                .font(.specialElite(13, relativeTo: .footnote))
+                                .foregroundColor(.sdTextSecondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        if let error = authVM.error {
+                            Text(error).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
+                                .multilineTextAlignment(.center)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -95,8 +104,8 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        // Deletion is not available yet (AuthService.deleteAccount throws). This
-        // legacy screen is not routed; keep its text truthful rather than promising removal.
+        // Deletion is refused by the service (AuthError.accountDeletionUnavailable)
+        // until identity and data deletion are configured server-side; say so.
         .alert("Account deletion unavailable", isPresented: $showDeleteConfirm) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -113,7 +122,7 @@ struct SettingsSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(title)
-                .font(.system(size: 11, weight: .bold))
+                .font(.specialElite(11, relativeTo: .caption))
                 .tracking(2)
                 .foregroundColor(.sdTextMuted)
                 .padding(.horizontal, 16)
@@ -133,47 +142,6 @@ struct SettingsRow: View {
     let icon: String
     let title: String
     var value: String? = nil
-    var chevron: Bool = false
-    var accent: Bool = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 16))
-                .foregroundColor(accent ? .sdRed : .sdTextSecondary)
-                .frame(width: 24)
-
-            Text(title)
-                .font(.system(size: 15))
-                .foregroundColor(accent ? .sdRed : .sdTextPrimary)
-
-            Spacer()
-
-            if let value {
-                Text(value)
-                    .font(.system(size: 14))
-                    .foregroundColor(.sdTextMuted)
-            }
-
-            if chevron {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.sdTextMuted)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .overlay(
-            Rectangle().fill(Color.sdBorder).frame(height: 1),
-            alignment: .bottom
-        )
-    }
-}
-
-struct SettingsToggleRow: View {
-    let icon: String
-    let title: String
-    @Binding var isOn: Bool
 
     var body: some View {
         HStack(spacing: 12) {
@@ -183,17 +151,20 @@ struct SettingsToggleRow: View {
                 .frame(width: 24)
 
             Text(title)
-                .font(.system(size: 15))
+                .font(.specialElite(15, relativeTo: .body))
                 .foregroundColor(.sdTextPrimary)
 
             Spacer()
 
-            Toggle("", isOn: $isOn)
-                .tint(.sdRed)
-                .labelsHidden()
+            if let value {
+                Text(value)
+                    .font(.specialElite(14, relativeTo: .subheadline))
+                    .foregroundColor(.sdTextMuted)
+                    .multilineTextAlignment(.trailing)
+            }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 12)
         .overlay(
             Rectangle().fill(Color.sdBorder).frame(height: 1),
             alignment: .bottom

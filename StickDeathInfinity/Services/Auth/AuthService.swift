@@ -1,8 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════
-// AuthService — Full Auth Architecture
-// Matches: src/services/AuthManager.ts + Supabase OAuth
+// AuthService — native account identity for StickDeath Infinity
 //
 // Sign In with Apple: Native ASAuthorizationController → Supabase
+//   (credential-state revocation observed after restoration, #130)
 // Google / GitHub / Microsoft: Supabase OAuth (PKCE) through ASWebAuthenticationSession
 // Email/Password: Direct Supabase Auth, with recovery links completed in-app
 // Guest: Anonymous Supabase session
@@ -145,6 +145,9 @@ final class AuthService: ObservableObject {
             let session = try await client.auth.session
             try Task.checkCancellation()
             try await finishAuthentication(session.user)
+            // A restored Apple account is re-checked against Apple's credential
+            // state off the critical path; a revoked grant signs out locally.
+            Task { [weak self] in await self?.verifyAppleCredentialState() }
         } catch {
             // Never promote an expired cached session after a refresh failure.
             // Keep SDK-owned credentials intact on transient errors for retry.
@@ -164,6 +167,7 @@ final class AuthService: ObservableObject {
     }
 
     private func observeAuthChanges() {
+        observeAppleCredentialRevocation()
         guard authStateTask == nil, let client = try? supabase else { return }
         // Install only after restoration succeeds or no session is present.
         // Subscribing after a failed refresh can itself trigger SDK refresh.
@@ -327,6 +331,56 @@ final class AuthService: ObservableObject {
     }
     var appleSignInUnavailableReason: String? {
         (try? supabase) == nil ? "Account sign-in is not configured for this build." : nil
+    }
+
+    // MARK: - Apple credential revocation (#130)
+
+    /// Apple's stable subject identifier for this account, taken from the
+    /// server-side identity list; never from email text or profile metadata.
+    static func appleUserIdentifier(for user: User) -> String? {
+        user.identities?.first(where: { $0.provider == "apple" })?.id
+    }
+    /// Only an explicit revocation ends the session. `.notFound` and
+    /// `.transferred` are not proof the person withdrew access on this device.
+    static func appleCredentialRequiresSignOut(_ state: ASAuthorizationAppleIDProvider.CredentialState) -> Bool {
+        state == .revoked
+    }
+    static let appleRevokedNotice = "Your Apple ID no longer authorizes StickDeath Infinity. You were signed out on this device; your local projects are unchanged."
+    private var appleRevocationObserver: NSObjectProtocol?
+    /// Installed once with the auth-change observer. The system posts this while
+    /// the app runs; the handler re-queries Apple rather than trusting the post.
+    private func observeAppleCredentialRevocation() {
+        guard appleRevocationObserver == nil else { return }
+        appleRevocationObserver = NotificationCenter.default.addObserver(
+            forName: ASAuthorizationAppleIDProvider.credentialRevokedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.verifyAppleCredentialState() }
+        }
+    }
+    /// Asks Apple for the live credential state of the signed-in Apple account.
+    /// Accounts without an Apple identity, and in-flight sign-ins, are untouched.
+    func verifyAppleCredentialState() async {
+        guard isAuthenticated, let user = currentUser, let appleID = Self.appleUserIdentifier(for: user) else { return }
+        let state: ASAuthorizationAppleIDProvider.CredentialState = await withCheckedContinuation { continuation in
+            ASAuthorizationAppleIDProvider().getCredentialState(forUserID: appleID) { state, _ in
+                continuation.resume(returning: state)
+            }
+        }
+        guard currentUser?.id == user.id else { return }
+        await handleAppleCredentialState(state)
+    }
+    /// Internal so native tests can replay Apple's answer without the system
+    /// prompt. A revoked grant clears the local session (the remote revocation
+    /// result never blocks it) and leaves a visible, non-error notice.
+    func handleAppleCredentialState(_ state: ASAuthorizationAppleIDProvider.CredentialState) async {
+        guard Self.appleCredentialRequiresSignOut(state), isAuthenticated,
+              !authenticationInProgress, !restorationInProgress, let client = try? supabase else { return }
+        authenticationInProgress = true
+        defer { authenticationInProgress = false }
+        if client.auth.currentSession != nil { try? await client.auth.signOut(scope: .local) }
+        setIdentity(nil)
+        restoration = .signInRequired
+        profileNotice = Self.appleRevokedNotice
     }
 
     // ═══════════════════════════════════════════════════════════════

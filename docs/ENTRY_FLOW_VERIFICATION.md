@@ -42,6 +42,50 @@ guessed asset counts and provider claims are not shipped as facts.
   animations respect Reduce Motion; the previous unowned repeating welcome timer
   and delayed splash callbacks are removed.
 
+- Cold-launch routing is a pure function, `AppFlowView.startupDestination(
+  isAuthenticated:guestChosen:guideCompleted:onboarded:)`: signed-in accounts go
+  to the app (or to the guide when neither the local preference nor the server
+  profile marks it complete), a remembered guest opens the app, everyone else
+  sees Welcome. Every branch is pinned in `Tests/AuthState`
+  (`testDeepLinkRouterClassifiesBeforeNavigation`, deferred native execution).
+- The skull on Splash, Welcome, Login and the tutorial is `SDIBrandMark`: it
+  renders the owner's artwork when an asset named `SDIBrandSkull` exists in the
+  catalogue and otherwise shows the emoji as a clearly temporary placeholder.
+  Supplying the approved artwork is an owner gate; the red glow, near-black
+  background and white wordmark are in place and respect Reduce Motion.
+- Leaving Studio is safe by construction: switching tabs or backgrounding runs
+  the shared editor's flush (`BackgroundTaskScope.run` provides the
+  background-task assertion; wiring it into `StudioView`'s scene-phase handler
+  is a coordinator patch in this wave), sign-out flushes first and returns to
+  the library only after the account is gone, and the in-app Sign In route
+  flushes before presenting Login. The editor refuses to
+  leave while a stroke or text draft is uncommitted and tells the person why.
+
+## Epic #8 evidence (splash, welcome, truthful onboarding)
+
+Splash shows the real restoration state with Retry, Sign In and Open Studio
+Offline always enabled, holds one second as documented branding, and routes by
+the pure function above (#136). Welcome, the five-page guide and the first-run
+tutorial advertise only shipped behaviour: local Studio, invitation-based Rooms
+with mutual approval and no chat or calls, War Room voting, licensed assets and
+local Spatter help; completion is a device preference (`sdi.guide.completed.v1`,
+`tutorial_completed`), the guest choice is remembered (`sdi.guest.chosen.v1`),
+and guests can create, save and reopen offline projects and sign in later from
+Rooms, Calendar or Profile (#137). Native journey evidence is recorded below;
+the current revision has not been re-run natively.
+
+## Epic #11 evidence (navigation, Rooms, protected routes)
+
+`MainTabView` exposes Home, Challenges, Studio, Rooms and Profile only; the
+Rooms tab hosts Calendar and the no-chat Watch Together route, and Profile hosts
+the admin entry, which is server-authorised. There are no messaging or call
+routes (`scripts/verify_retired_communications.py` passes). `DeepLinkRouter`
+accepts only the auth callback (rejected as unsolicited) and the password-reset
+link (completed only with this device's verifier); everything else is
+"Unsupported link" (#138). Leave-Studio safety is described above. A native
+UI journey through Rooms → Calendar → back and Rooms → Watch Together → back
+that asserts the open project's revision is unchanged remains deferred.
+
 ## Verification boundaries
 
 `testWelcomeGuideNavigationAndLocalCompletion` exercises the real native welcome,

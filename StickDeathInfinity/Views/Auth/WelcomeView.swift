@@ -34,7 +34,7 @@ struct WelcomeView: View {
                     VStack(spacing: 24) {
                         Spacer(minLength: 0)
                         VStack(spacing: 12) {
-                            Text("☠️").font(.system(size: 72)).accessibilityHidden(true)
+                            SDIBrandMark(size: 72)
                             Text("STICKDEATH ∞")
                                 .font(.specialElite(28))
                                 .tracking(3)

@@ -32,7 +32,17 @@ struct AppFlowView: View {
     /// enabled during it, so no one is stranded. Leaving via an action cancels it.
     static let minimumBrandingPresentation: UInt64 = 1_000_000_000
 
-    enum Screen { case splash, welcome, login, signup, onboarding, app }
+    enum Screen: Equatable { case splash, welcome, login, signup, onboarding, app }
+    /// Cold-launch routing once restoration has settled (#136). A signed-in
+    /// account goes to the app, or to the guide when neither the local guide
+    /// preference nor the server profile marks it complete; a remembered guest
+    /// opens the app directly; everyone else sees Welcome. Pure so the native
+    /// unit suite can pin every branch without presenting the splash.
+    static func startupDestination(isAuthenticated: Bool, guestChosen: Bool,
+                                   guideCompleted: Bool, onboarded: Bool) -> Screen {
+        if isAuthenticated { return guideCompleted || onboarded ? .app : .onboarding }
+        return guestChosen ? .app : .welcome
+    }
     @State private var screen: Screen = .splash
     @State private var accountUnavailable = false
     @State private var splashPresentationComplete = false
@@ -125,15 +135,16 @@ struct AppFlowView: View {
         // A late restoration result must not interrupt an explicit offline choice.
         guard screen == .splash, splashPresentationComplete, authVM.state != .loading, authVM.restoration == .ready else { return }
         accountUnavailable = authVM.error != nil
-        if authVM.isAuthenticated { routeSignedInUser() }
-        else if guestChosen { navigate(to: .app) }
-        else { navigate(to: .welcome) }
+        if authVM.isAuthenticated { loginReturnsToApp = false }
+        navigate(to: Self.startupDestination(isAuthenticated: authVM.isAuthenticated, guestChosen: guestChosen,
+                                             guideCompleted: guideCompleted, onboarded: authVM.user?.onboarded == true))
     }
 
     private func routeSignedInUser() {
         guard authVM.isAuthenticated else { return }
         loginReturnsToApp = false
-        navigate(to: guideCompleted || authVM.user?.onboarded == true ? .app : .onboarding)
+        navigate(to: Self.startupDestination(isAuthenticated: true, guestChosen: guestChosen,
+                                             guideCompleted: guideCompleted, onboarded: authVM.user?.onboarded == true))
     }
 
     private func navigate(to destination: Screen) {

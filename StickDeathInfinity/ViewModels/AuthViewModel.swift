@@ -1,9 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
 // AuthViewModel — Auth state for SwiftUI views
-// Matches: src/contexts/AuthContext.tsx useAuth()
 //
 // Handles: Email/Password, Apple, Google/GitHub/Microsoft, Guest, Sign Out,
 // password recovery, deep-link classification and account notices.
+// Sign-out closes the open Studio project back to the library (#172); it
+// never deletes anything on the device.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
@@ -26,6 +27,11 @@ final class AuthViewModel: ObservableObject {
     private let auth: AuthService
     private var subscriptions = Set<AnyCancellable>()
     static let passwordResetCooldown: TimeInterval = 60
+    /// Studio hand-offs around sign-out. The defaults use the shared editor's
+    /// own flush/save and back-to-library paths, so no edit is discarded and no
+    /// file is deleted; tests inject counters instead of touching the editor.
+    private let flushOpenProject: @MainActor () async -> Void
+    private let closeOpenProject: @MainActor () async -> Void
 
     var isAuthenticated: Bool { state == .authenticated }
     var isSuperAdmin: Bool { auth.isSuperAdmin }
@@ -34,9 +40,13 @@ final class AuthViewModel: ObservableObject {
     var microsoftTenant: String? { auth.microsoftTenant }
     var appleSignInUnavailableReason: String? { auth.appleSignInUnavailableReason }
 
-    init(auth: AuthService? = nil, initializeOnStart: Bool = true) {
+    init(auth: AuthService? = nil, initializeOnStart: Bool = true,
+         flushOpenProject: @escaping @MainActor () async -> Void = { await StudioViewModel.shared.flush() },
+         closeOpenProject: @escaping @MainActor () async -> Void = { await StudioViewModel.shared.backToProjects() }) {
         let auth = auth ?? .shared
         self.auth = auth
+        self.flushOpenProject = flushOpenProject
+        self.closeOpenProject = closeOpenProject
         auth.$restoration.sink { [weak self] in self?.restoration = $0 }.store(in: &subscriptions)
         auth.$state.sink { [weak self] in self?.state = $0 }.store(in: &subscriptions)
         auth.$currentProfile.sink { [weak self] in self?.user = $0 }.store(in: &subscriptions)
@@ -242,13 +252,20 @@ final class AuthViewModel: ObservableObject {
     // MARK: - Sign Out
 
     func signOut() async {
+        guard !isLoading else { return }
         isLoading = true
         error = nil
         defer { isLoading = false }
+        // Persist the open document before the account changes. A dirty project
+        // is saved through the normal revision path; nothing is removed.
+        await flushOpenProject()
         do { try await auth.signOut() }
         catch { self.error = error.localizedDescription }
         state = auth.state
         user = auth.currentProfile
+        // Once the account is gone, leave the editor for the library. The
+        // project stays on the device and reopens from the same library.
+        if state != .authenticated { await closeOpenProject() }
     }
 
     // MARK: - Onboarding
