@@ -2134,7 +2134,10 @@ private final class NetworkTrap: URLProtocol {
             try require(session.status == .applied && vm.visibleOnionGhosts.isEmpty
                 && vm.document.onionSettings == noOp.onionSettings
                 && (try erasurePixels(vm.document, includeOnion: true)) == plain, "Hide lost remembered settings or guide pixels")
-            vm.undo(); vm.redo(); vm.undo(); await vm.flush()
+            vm.undo(); vm.redo(); await vm.flush()
+            try require(!vm.showOnionSkin && vm.document.onionSettings == noOp.onionSettings && vm.frames == before.frames,
+                "Artwork Undo/Redo disturbed onion guides")
+            vm.showOnionSkin = true; await vm.flush()
             let saved = await vm.save(); try require(saved, "Onion settings save failed")
             let cold = StudioViewModel(storage: store), record = try store.loadAnimation(id: vm.document.id)!
             try require(await cold.openProject(record.metadata), "Onion cold open failed")
