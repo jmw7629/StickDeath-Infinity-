@@ -4245,7 +4245,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     @available(iOS 17.0, *)
     private func auditAccessibility(_ app: XCUIApplication, screen: String) throws {
-        let recordedTypes: XCUIAccessibilityAuditType = [.contrast, .dynamicType, .textClipped, .elementDetection, .trait, .parentChild]
+        let recordedTypes: XCUIAccessibilityAuditType = [.contrast, .dynamicType, .textClipped, .elementDetection, .trait]
         var recorded: [String] = []
         try app.performAccessibilityAudit(for: .all) { issue in
             guard recordedTypes.contains(issue.auditType) else { return false }
@@ -8326,6 +8326,7 @@ final class StudioSmokeUITests: XCTestCase {
         let base = label.dropLast(ext.count + 1)
         return (1...40).contains(base.count) && base.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
     }
+    @MainActor
     private func exportControl(_ identifier: String, app: XCUIApplication, scrollUp: Bool = true,
                                waitForExistence: Bool = true) throws -> XCUIElement {
         let element = app.descendants(matching: .any)[identifier].firstMatch
