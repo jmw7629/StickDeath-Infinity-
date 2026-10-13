@@ -41,11 +41,12 @@ the owner's own Supabase dashboard; nothing here needs a secret in source contro
    `sdi_provision_owner`, `sdi_feed_action` and the others. Dashboard → **Advisors**
    should report no missing-RLS findings for `sdi_private` or `public.users`.
 
-## 2. Create the owner account (Authentication, about one minute)
+## 2. Owner account (already created 2026-10-13)
 
-1. Dashboard → **Authentication → Users → Add user → Create new user**. Email
-   `joewillisny@gmail.com`, a password you choose, tick **Auto confirm user**.
-   (A confirmed email is required by the provisioning procedure.)
+1. The owner account exists in the project: email `joewillisny@gmail.com`, handle
+   `JWS`, email confirmed, password set privately by the owner. Nothing to do unless
+   you want to change the password (Dashboard → Authentication → Users, or the
+   command center's reset link). Only one account should ever hold the owner role.
 2. Dashboard → **Authentication → URL Configuration**: add the address where you will
    open `website/admin.html` (the published review page, or `http://localhost` if you
    serve the folder locally) to **Redirect URLs** so password-reset links can return
@@ -69,10 +70,10 @@ another one; the subject is looked up from the email:
 ```sql
 select public.sdi_provision_owner(
   (select id from auth.users where email = 'joewillisny@gmail.com'),
-  'Joseph Willis', 'joe');
+  'Joseph Willis', 'JWS');
 ```
 
-Expected: `{"status":"provisioned","handle":"joe"}`. The procedure refuses until the
+Expected: `{"status":"provisioned","handle":"JWS"}`. The procedure refuses until the
 email is confirmed and a verified factor exists, allows exactly one owner, writes an
 audit row and ends every existing session of that account (sign in again).
 
