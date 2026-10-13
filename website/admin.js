@@ -42,6 +42,7 @@
     { title: 'Support queue', rpc: 'sdi_support_action', params: { action: 'list', page: 0 } },
     { title: 'Finance reconciliation (90 days)', rpc: 'sdi_finance_report', params: { action: 'reconciliation' } },
     { title: 'Agents', rpc: 'sdi_agent_admin', params: { action: 'list' } },
+    { title: 'Agent proposals (inbox)', rpc: 'sdi_agent_proposal_admin', params: { action: 'inbox' } },
     { title: 'Announcements', rpc: 'sdi_announce_admin', params: { action: 'list' } },
     { title: 'Marketing workspace', rpc: 'sdi_marketing_action', params: { action: 'list' } },
     { title: 'Policy versions', rpc: 'sdi_consent_action', params: { action: 'list' } }
@@ -232,6 +233,24 @@
     if (result && result.status === 'confirmed') $('admin-stop-reason').value = '';
   }
 
+  async function decideProposal(event) {
+    event.preventDefault();
+    const submitter = event.submitter;
+    const action = submitter && submitter.dataset.decision === 'approve' ? 'approve' : 'reject';
+    const proposal = $('admin-proposal-id').value.trim();
+    const revision = Number.parseInt($('admin-proposal-revision').value.trim(), 10);
+    const reason = $('admin-proposal-reason').value.trim();
+    const out = $('admin-proposal-result');
+    if (!/^[0-9a-f-]{36}$/i.test(proposal) || !Number.isInteger(revision) || revision < 1 || !reason) {
+      out.textContent = 'Proposal id, the revision shown in the inbox and a reason are required; nothing was sent.'; return;
+    }
+    const result = await rpc('sdi_agent_proposal_admin', { action, proposal, revision, reason });
+    out.textContent = result && result.status === 'confirmed'
+      ? `Proposal ${result.state} and audited. The worker executes approved proposals; nothing runs on a rejection.`
+      : `Server answer: ${(result && (result.error || result.code)) || 'no confirmation'}.`;
+    if (result && result.status === 'confirmed') { $('admin-proposal-reason').value = ''; buildPanels(); }
+  }
+
   // --- wire up ----------------------------------------------------------------------
   const providerHost = $('admin-providers');
   if (providers.length) {
@@ -249,6 +268,7 @@
   $('admin-signout').addEventListener('click', () => signOut('Signed out.'));
   $('admin-refresh').addEventListener('click', () => enterConsole());
   $('admin-stop-form').addEventListener('submit', emergencyStop);
+  $('admin-proposal-form').addEventListener('submit', decideProposal);
   show('admin-signin', true);
   setStatus('Backend configured; not signed in.', `Sign in to ${new URL(base).hostname}. Nothing is stored in this browser; the session ends on reload or expiry.`);
   adoptFragment().catch(() => setStatus('Sign-in redirect could not be read.', 'Sign in again.'));

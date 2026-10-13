@@ -63,7 +63,7 @@ The current backend design is the set of SQL candidates in `backend/sql/` (insta
 | Consent registry | `consent-versions.sql` | `sdi_consent_action`; service `sdi_consent_verify` |
 | Notifications and email preferences | `notifications.sql` | `sdi_notify_action`, `sdi_announce_admin`; service `sdi_announcement_claim/finish`, `sdi_email_recipients`, `sdi_email_suppress` |
 | Marketing workspace | `marketing-workspace.sql` | `sdi_marketing_action`; service `sdi_marketing_claim/finish`, `sdi_marketing_cadence_due` |
-| Administration | `admin-users.sql`, `admin-permissions.sql`, `admin-overview.sql`, `admin-hardening.sql`, `agent-controls.sql` | `sdi_users_action`, `sdi_admin_permissions`, `sdi_admin_health`, `sdi_agent_admin` |
+| Administration | `admin-users.sql`, `admin-permissions.sql`, `admin-overview.sql`, `admin-hardening.sql`, `agent-controls.sql`, `agent-proposals.sql` | `sdi_users_action`, `sdi_admin_permissions`, `sdi_admin_health`, `sdi_agent_admin`, `sdi_agent_proposal_admin` |
 | Account lifecycle and support | `account-lifecycle.sql`, `support-requests.sql` | `sdi_account_lifecycle`, `sdi_member_notices`, `sdi_support_action` |
 
 All tables live in `sdi_private` (RLS enabled, no client grants) behind `security definer` RPCs that bind every action to `auth.uid()`, check `account_active()` (live session, not suspended) and, for administration, `admin_can(capability)` with MFA. Worker functions are granted to `service_role` only. There is no `increment_likes`-style client-callable counter; counts are computed server-side.
@@ -151,7 +151,7 @@ Entitlements derive from `sdi_private.entitlements` (active/trialing/grace/past_
 
 ### 7.1 Native Admin (Verified Source Exists)
 
-Tabs for video approvals, users, content, moderation, publishing and overview call the `sdi_*` admin RPCs. Authorization is server-side: enabled `admin_roles` row, MFA `aal2`, live session, capability check, step-up (recent MFA) for sensitive changes, per-administrator rate limits and a denial audit (`admin-hardening.sql`). Health (`sdi_admin_health`) reports queue depths, oldest pending items and worker heartbeat age without host details. Agent controls (`sdi_agent_admin`) provide pause/resume, emergency stop, caps and instruction history. Owner provisioning is a service-only procedure that requires a confirmed email and a verified MFA factor and takes no password.
+Tabs for video approvals, users, content, moderation, publishing and overview call the `sdi_*` admin RPCs. Authorization is server-side: enabled `admin_roles` row, MFA `aal2`, live session, capability check, step-up (recent MFA) for sensitive changes, per-administrator rate limits and a denial audit (`admin-hardening.sql`). Health (`sdi_admin_health`) reports queue depths, oldest pending items and worker heartbeat age without host details. Agent controls (`sdi_agent_admin`) provide pause/resume, emergency stop, caps and instruction history; the approval inbox (`sdi_agent_proposal_admin`) holds actions an agent proposed above its caps until the owner approves or rejects them with an audited reason, and the worker executes only approved proposals. Owner provisioning is a service-only procedure that requires a confirmed email and a verified MFA factor and takes no password.
 
 ### 7.2 Web Command Center
 
