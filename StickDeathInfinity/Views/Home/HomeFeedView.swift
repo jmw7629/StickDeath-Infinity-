@@ -169,9 +169,9 @@ struct HomeFeedView: View {
         loading = true
         defer { if revision == epoch { loading = false } }
         do {
-            let result = try await CommunityServices.feed.page(category, page: page, account: account)
+            let result = try await CommunityServices.feed.page(category, page: page, account: account, asOf: timeline.asOf)
             guard !Task.isCancelled, revision == epoch, account == auth.userId else { return }
-            try timeline.merge(page: page, posts: result.posts, hasMore: result.hasMore)
+            try timeline.merge(page: page, posts: result.posts, hasMore: result.hasMore, asOf: result.asOf)
             if case .cache(let updatedAt) = result.source { offlineUpdatedAt = updatedAt } else { offlineUpdatedAt = nil }
             loaded = true; error = nil
         } catch { if revision == epoch { loaded = true; self.error = CommunityGateway.normalize(error).errorDescription } }

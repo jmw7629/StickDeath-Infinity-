@@ -1,7 +1,7 @@
 -- Local assertions for feed-integrity.sql. Runs on the throwaway cluster only.
 begin;
 do $$
-declare alice uuid; bob uuid; carol uuid; admin uuid; media uuid; the_post uuid; r jsonb; report uuid; i integer;
+declare alice uuid; bob uuid; carol uuid; admin uuid; media uuid; media2 uuid; the_post uuid; later_post uuid; r jsonb; report uuid; i integer; snapshot timestamptz;
 begin
  alice:=sdi_test.user('alice'); bob:=sdi_test.user('bob'); carol:=sdi_test.user('carol');
  admin:=sdi_test.admin('mod',false,array['moderation']);
@@ -37,6 +37,23 @@ begin
  -- Visible to others until the creator is suspended.
  r:=sdi_private.feed_action('list');
  perform sdi_test.check(jsonb_array_length(r->'posts')=1,'post listed before suspension');
+ -- Snapshot-stable paging: a post published after the page-0 instant stays out
+ -- of later pages requested with that instant; a fresh instant shows it; a
+ -- stale instant is refused.
+ snapshot:=(r->>'as_of')::timestamptz;
+ perform sdi_test.check(snapshot is not null and snapshot<=clock_timestamp(),'list returns its snapshot instant');
+ insert into public.sdi_watch_media(title,url,duration,approved,owner_id,render_digest)
+ values('Alice later render','https://cdn.example.test/a2.mp4',9,true,alice,repeat('b',64)) returning id into media2;
+ insert into sdi_private.feed_posts(media_id,creator,creator_name,visible,published_at) values(media2,alice,'alice',true,clock_timestamp()) returning id into later_post;
+ r:=sdi_private.feed_action('list',as_of=>snapshot);
+ perform sdi_test.check(jsonb_array_length(r->'posts')=1 and (r->>'as_of')::timestamptz=snapshot,'post published after the snapshot excluded, snapshot echoed: '||r::text);
+ r:=sdi_private.feed_action('list',as_of=>clock_timestamp());
+ perform sdi_test.check(jsonb_array_length(r->'posts')=2 and (r->'posts'->0->>'id')::uuid=later_post,'fresh snapshot lists the newer post first');
+ r:=sdi_private.feed_action('list',as_of=>clock_timestamp()+interval '1 hour');
+ perform sdi_test.check(jsonb_array_length(r->'posts')=2 and (r->>'as_of')::timestamptz<=clock_timestamp(),'future instant clamped to now');
+ r:=sdi_private.feed_action('list',as_of=>clock_timestamp()-interval '2 days');
+ perform sdi_test.check(r->>'error'='This feed snapshot has expired. Refresh the feed.','stale snapshot refused');
+ delete from sdi_private.feed_posts where id=later_post; delete from public.sdi_watch_media where id=media2;
  insert into sdi_private.account_controls(user_id,state,reason) values(alice,'suspended','test');
  r:=sdi_private.feed_action('list');
  perform sdi_test.check(jsonb_array_length(r->'posts')=0,'restricted creator hidden from feed');
