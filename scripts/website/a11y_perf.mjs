@@ -25,7 +25,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-process.env.PLAYWRIGHT_BROWSERS_PATH ||= '/opt/pw-browsers';
+// Default to the pre-installed browser bundle only where it exists (local review
+// container); elsewhere Playwright uses its own cache (CI runs `playwright install`).
+import { existsSync } from 'node:fs';
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH && existsSync('/opt/pw-browsers')) process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
 const require = createRequire(import.meta.url);
 function loadPlaywright() {
   for (const candidate of ['playwright', '/opt/node-tools/node_modules/playwright']) {
