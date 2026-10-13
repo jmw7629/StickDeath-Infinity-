@@ -393,8 +393,10 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             // Frame 0, top layer only: green stroke present, red base stroke absent (white background).
             let top = try decode(layered.imageURLs[1])
             try pixel(top.pixel(60, 4), [0, 255, 0, 255]); try pixel(top.pixel(8, 16), [255, 255, 255, 255])
+            // Frame 0, base layer only: the 48 px red stroke covers the whole 64×32 canvas,
+            // so (60, 4) is red here and must not carry the top layer's green.
             let base = try decode(layered.imageURLs[0])
-            try pixel(base.pixel(8, 16), [255, 0, 0, 255]); try pixel(base.pixel(60, 4), [255, 255, 255, 255])
+            try pixel(base.pixel(8, 16), [255, 0, 0, 255]); try pixel(base.pixel(60, 4), [255, 0, 0, 255])
             try await rejects { _ = try await service.export(document: doc, format: .spritesheet, outputParent: folder, separateLayers: true) }
             for output in [doubled, half, layered] { try fm.removeItem(at: output.directory) }
         }
