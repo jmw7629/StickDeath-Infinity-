@@ -9,10 +9,13 @@ struct SpatterMotionRecipePanel: View {
     let onPictureImport: () -> Void
     let onExport: () -> Void
     let onMovieExport: (StudioMoviePanelState.DirectRequest) -> Void
-    /// Optional: the Export panel's movie state, so a completed direct export that
-    /// this panel handed off can show its factual receipt here. Nil keeps the
-    /// existing call site valid; the receipt is then shown only in the Export panel.
+    var onGIFExport: (StudioGIFPanelState.DirectRequest) -> Void = { _ in }
+    /// Optional: the Export panel's movie and GIF states, so a completed direct
+    /// export that this panel handed off can show its factual receipt here while
+    /// the Export panel is open. Nil keeps older call sites valid; the receipt is
+    /// then shown only in the Export panel.
     var movieState: StudioMoviePanelState? = nil
+    var gifState: StudioGIFPanelState? = nil
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = SpatterStudioEditSession()
@@ -551,16 +554,23 @@ struct SpatterMotionRecipePanel: View {
                         }
                         .disabled(session.saveState(in: vm, currentScope: scope) != .saved || session.isWorking)
                         .accessibilityIdentifier("spatter.motion.export-mp4")
+                        Button("Export this edit as GIF") {
+                            guard let request = session.prepareMovieExport(in: vm, currentScope: scope) else { return }
+                            session.close(); onGIFExport(request)
+                        }
+                        .disabled(session.saveState(in: vm, currentScope: scope) != .saved || session.isWorking)
+                        .accessibilityIdentifier("spatter.motion.export-gif")
                         Button("Open PNG export") {
                             guard receiptIsCurrent else { return }
                             session.close(); onExport()
                         }
                         .disabled(!receiptIsCurrent || vm.isSaving)
                         .accessibilityIdentifier("spatter.motion.export")
-                        Text("Export opens Studio's PNG sequence / spritesheet controls. Choose MP4 there for video with saved project audio, or GIF for an animated image. A file is created only when export finishes. Direct publishing is unfinished.")
+                        Text("Each saved edit can hand off one direct export, MP4 or GIF. Export opens Studio's PNG sequence / spritesheet controls. Choose MP4 there for video with saved project audio, or GIF for an animated image. A file is created only when export finishes. Direct publishing is unfinished.")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                     }
                     if let movieState { SpatterExportReceiptView(state: movieState) }
+                    if let gifState { SpatterGIFExportReceiptView(state: gifState) }
                     if let message = vm.message {
                         Text(message).font(.caption).foregroundColor(.white.opacity(0.8))
                             .accessibilityIdentifier("spatter.motion.project-status")
@@ -605,7 +615,7 @@ struct SpatterMotionRecipePanel: View {
 extension SpatterExportReceipt {
     /// Builds a receipt only for a still-owned, verified direct export whose
     /// manifest matches the Spatter request. Nil means "no factual receipt",
-    /// never a placeholder. The GIF session has no direct-request path yet.
+    /// never a placeholder.
     @MainActor
     static func make(from state: StudioMoviePanelState) -> SpatterExportReceipt? {
         guard let request = state.directSource, let output = state.session.output,
@@ -615,6 +625,41 @@ extension SpatterExportReceipt {
         let duration = Double(output.manifest.durationNumerator) / Double(output.manifest.durationDenominator)
         return try? SpatterExportReceipt.make(editRequestID: request.editRequestID, revision: request.revision, fileURL: movieURL,
             expectedByteCount: output.manifest.encodedBytes, durationSeconds: duration, frameCount: output.manifest.frameIDs.count)
+    }
+}
+
+extension SpatterExportReceipt {
+    /// GIF counterpart: the encoder receipt names the project, revision, frame
+    /// identities, per-frame delays and encoded byte count; the duration is the
+    /// sum of the written delays. Nil until the owned file is checked.
+    @MainActor
+    static func make(from state: StudioGIFPanelState) -> SpatterExportReceipt? {
+        guard let request = state.directSource, let output = state.session.output,
+              !state.session.isRunning, !state.session.needsCleanup, !state.session.isClosed, !output.isCleaned,
+              output.receipt.projectID == request.projectID, output.receipt.revision == request.revision,
+              (try? output.checkedURLs()) != nil else { return nil }
+        let duration = Double(output.receipt.delaysCentiseconds.reduce(0, +)) / 100
+        return try? SpatterExportReceipt.make(editRequestID: request.editRequestID, revision: request.revision, fileURL: output.gifURL,
+            expectedByteCount: output.receipt.encodedBytes, durationSeconds: duration, frameCount: output.receipt.frameIDs.count)
+    }
+}
+
+/// Read-only display of the last verified direct GIF export receipt.
+struct SpatterGIFExportReceiptView: View {
+    @ObservedObject var state: StudioGIFPanelState
+    var body: some View {
+        if let receipt = SpatterExportReceipt.make(from: state) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Verified GIF receipt").font(.specialElite(12, relativeTo: .caption))
+                Text(receipt.summary).font(.caption).textSelection(.enabled)
+                Text("Measured from the real output file. Export creates a device file only; nothing was published.")
+                    .font(.caption2).foregroundColor(.white.opacity(0.6))
+            }
+            .accessibilityIdentifier("spatter.motion.export-receipt-gif")
+        } else if let error = state.directError {
+            Text(error).font(.caption).foregroundColor(.white.opacity(0.8))
+                .accessibilityIdentifier("spatter.motion.export-receipt-gif-error")
+        }
     }
 }
 

@@ -20,6 +20,9 @@ struct StudioView: View {
     @State private var showingBottomImageDeletion = false
     @State private var menuRequest: StudioViewModel.MenuHandoff?
     @State private var spatterMovieRequest: StudioMoviePanelState.DirectRequest?
+    @State private var spatterGIFRequest: StudioGIFPanelState.DirectRequest?
+    @StateObject private var movieState = StudioMoviePanelState()
+    @StateObject private var gifState = StudioGIFPanelState()
 
     var body: some View {
         Group {
@@ -68,7 +71,10 @@ struct StudioView: View {
             if vm.activePanel == .shapeFillColor { ColorPickerPanel(vm: vm, target: .shapeFill) }
             if vm.activePanel == .projectSettings { ProjectSettingsPanel(vm: vm) }
             if vm.activePanel == .layers { LayerPanel(vm: vm) }
-            if vm.activePanel == .export { ExportPanel(vm: vm, directRequest: spatterMovieRequest, onDirectRequestConsumed: { spatterMovieRequest = nil }) }
+            if vm.activePanel == .export {
+                ExportPanel(vm: vm, movie: movieState, gif: gifState, directRequest: spatterMovieRequest, directGIFRequest: spatterGIFRequest,
+                            onDirectRequestConsumed: { spatterMovieRequest = nil; spatterGIFRequest = nil })
+            }
             if vm.activePanel == .framesViewer { FramesViewerPanel(vm: vm) }
             if vm.activePanel == .soundLibrary { SoundLibraryPanel(vm: vm) }
             if vm.activePanel == .audioTimeline { AudioTimelinePanel(vm: vm) }
@@ -109,27 +115,32 @@ struct StudioView: View {
             guard vm.isEditing, scenePhase == .active, vm.activePanel == .none,
                   authVM.userId == request.accountID, vm.document.id == request.projectID,
                   vm.document.revision == request.revision else {
-                spatterMovieRequest = nil
+                spatterMovieRequest = nil; spatterGIFRequest = nil
                 vm.message = "The project changed before export opened. Open Export for the current project."
                 return
             }
             if spatterMovieRequest != nil { vm.exportFormat = .mp4 }
+            else if spatterGIFRequest != nil { vm.exportFormat = .gif }
             vm.activePanel = .export
         }) {
-            SpatterAISheet(vm: vm, onPictureImport: {
+            SpatterAISheet(vm: vm, movieState: movieState, gifState: gifState, onPictureImport: {
                 guard let request = spatterPictureHandoff.prepare(in: vm, accountID: authVM.userId, isForeground: scenePhase == .active) else {
                     vm.message = "Finish the active edit or save before opening Add Picture."
                     return
                 }
-                spatterExportRequest = nil; spatterMovieRequest = nil
+                spatterExportRequest = nil; spatterMovieRequest = nil; spatterGIFRequest = nil
                 spatterPictureRequest = request
                 vm.activePanel = .none
             }, onExport: {
-                spatterMovieRequest = nil
+                spatterMovieRequest = nil; spatterGIFRequest = nil
                 spatterExportRequest = (vm.document.id, vm.document.revision, authVM.userId)
                 vm.activePanel = .none
             }, onMovieExport: { request in
-                spatterMovieRequest = request
+                spatterMovieRequest = request; spatterGIFRequest = nil
+                spatterExportRequest = (request.projectID, request.revision, request.accountID)
+                vm.activePanel = .none
+            }, onGIFExport: { request in
+                spatterGIFRequest = request; spatterMovieRequest = nil
                 spatterExportRequest = (request.projectID, request.revision, request.accountID)
                 vm.activePanel = .none
             })
@@ -903,9 +914,12 @@ struct AIVoiceMakerSheet: View {
 // MARK: - Spatter AI Sheet
 struct SpatterAISheet: View {
     @ObservedObject var vm: StudioViewModel
+    var movieState: StudioMoviePanelState? = nil
+    var gifState: StudioGIFPanelState? = nil
     let onPictureImport: () -> Void
     let onExport: () -> Void
     let onMovieExport: (StudioMoviePanelState.DirectRequest) -> Void
+    var onGIFExport: (StudioGIFPanelState.DirectRequest) -> Void = { _ in }
     @State private var showLocalRecipe = false
     @State private var showingPersonalMemory = false
     @StateObject private var spatterVM = SpatterAIViewModel()
@@ -918,7 +932,8 @@ struct SpatterAISheet: View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
             if showLocalRecipe {
-                SpatterMotionRecipePanel(vm: vm, onBack: { showLocalRecipe = false }, onPictureImport: onPictureImport, onExport: onExport, onMovieExport: onMovieExport)
+                SpatterMotionRecipePanel(vm: vm, onBack: { showLocalRecipe = false }, onPictureImport: onPictureImport, onExport: onExport,
+                                         onMovieExport: onMovieExport, onGIFExport: onGIFExport, movieState: movieState, gifState: gifState)
             } else {
             VStack(spacing: 0) {
                 HStack {
