@@ -2270,7 +2270,7 @@ private final class NetworkTrap: URLProtocol {
         }
         try await test("tween clipboard project-settings and brush grammars apply through the session with factual receipts") {
             let (vm, _) = try await fixture("registry-extensions")
-            func line(_ id: String, _ frameID: String? = nil) -> Bool {
+            @MainActor func line(_ id: String, _ frameID: String? = nil) -> Bool {
                 vm.commitElement(.init(id: id, tool: .line, points: [.init(x: 10, y: 10), .init(x: 60, y: 20)], color: "#000000", width: 2, opacity: 1, layerID: vm.activeLayerID), frameID: frameID)
             }
             let first = vm.currentFrame.id
