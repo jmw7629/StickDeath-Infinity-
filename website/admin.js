@@ -34,6 +34,7 @@
   let pendingFactor = null;
   const PANELS = [
     { title: 'Health and queues', rpc: 'sdi_admin_health', params: {} },
+    { title: 'Provider configuration (presence only)', rpc: 'sdi_admin_configuration', params: {} },
     { title: 'My permissions', rpc: 'sdi_admin_permissions', params: { action: 'mine' } },
     { title: 'Render approvals (pending)', rpc: 'sdi_review_action', params: { action: 'list' } },
     { title: 'Users (first page)', rpc: 'sdi_users_action', params: { action: 'list', page: 0 } },

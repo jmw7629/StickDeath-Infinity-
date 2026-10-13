@@ -35,9 +35,28 @@ LOOPING = {"account_deletion_run": ("action", {"idle", "waiting", "blocked"})}
 MAX_LOOP = 20
 
 
+# Settings whose presence the sweeps worker reports for the masked configuration
+# health view (#248). Only names appear here; the report sends booleans.
+REPORTED_SETTINGS = ("SDI_BACKEND_URL", "SDI_SERVICE_KEY", "SDI_YOUTUBE_CLIENT_FILE", "SDI_YOUTUBE_TOKEN_FILE",
+                     "SDI_STRIPE_WEBHOOK_SECRET_FILE", "SDI_MAIL_SENDER_DOMAIN", "SDI_MAIL_CREDENTIALS_FILE")
+
+
 class SweepAPI(JobAPI):
     PREFIX = "sdi_"
-    PERMITTED = frozenset(SWEEPS.values()) | {"worker_heartbeat"}
+    PERMITTED = frozenset(SWEEPS.values()) | {"worker_heartbeat", "worker_configuration"}
+
+
+def configuration_presence(environment: Mapping[str, str], names: Iterable[str] = REPORTED_SETTINGS) -> Dict[str, bool]:
+    """Presence booleans keyed by the lower-cased setting name; never the values."""
+    return {name.lower(): bool(environment.get(name)) for name in names}
+
+
+def report_configuration(api: SweepAPI, environment: Mapping[str, str], worker_name: str = "service-sweeps") -> dict:
+    try:
+        accepted = api.call("worker_configuration", worker=worker_name, settings=configuration_presence(environment))
+        return {"state": "ok" if accepted is True else "refused"}
+    except Exception as error:
+        return {"state": "failed", "error": type(error).__name__}
 
 
 def run_sweeps(api: SweepAPI, names: Iterable[str], worker_name: str = "service-sweeps",
@@ -97,8 +116,10 @@ def main(argv: Optional[list] = None, environment: Optional[Mapping[str, str]] =
         print("Backend URL and service key are not configured; no sweep ran.", file=sys.stderr)
         return 2
     report = run_sweeps(api, names)
+    # Informational: a refused or failed presence report is printed, never fatal.
+    report["_configuration"] = report_configuration(api, environment)
     print(json.dumps(report, sort_keys=True))
-    return 0 if all(v["state"] != "failed" for v in report.values()) else 1
+    return 0 if all(v["state"] != "failed" for k, v in report.items() if k != "_configuration") else 1
 
 
 if __name__ == "__main__":

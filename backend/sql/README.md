@@ -379,8 +379,11 @@ repository root. Service sweeps are run by an operator or host timer through
 37. marketing-workspace.sql
 38. spatter-draft-jobs.sql
 39. agent-proposals.sql
+40. worker-configuration.sql
 <!-- /apply-order -->
 
 `agent-proposals.sql` (#284): the approval inbox. A running agent with the `propose` permission files a proposal (`sdi_agent_propose`, idempotent for an identical pending one, fifty pending per agent) instead of acting above its caps; administrators read the inbox and only the owner approves or rejects with a reason (`sdi_agent_proposal_admin`, audited); the worker receives approved proposals (`sdi_agent_proposals_due`, nothing under emergency stop or pause) and records the outcome (`sdi_agent_proposal_finish`); pending proposals expire after fourteen days. Tested by `tests/110_agent_proposals.sql`.
+
+`worker-configuration.sql` (#248): masked provider-configuration health. A service worker reports which of its named settings are present as booleans only (`sdi_worker_configuration`; any other value type is refused so no secret can be stored), and administrators read presence, the missing names and staleness through `sdi_admin_configuration`. `backend.ops.sweeps` reports its own settings after every run. Tested by `tests/120_worker_configuration.sql`.
 
 `spatter-draft-jobs.sql` (#212/#214): one job per UTC day behind the `spatter_daily_video` agent gate, at most three attempts, 15-minute leases, missed days recorded; adds `render_reviews.storyboard` and `source_project_digest` and extends `invalidate_render_approval`. Unapplied; no capacity or schedule is created.
