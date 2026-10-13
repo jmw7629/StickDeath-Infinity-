@@ -25,7 +25,7 @@ The same wording is what Spatter gives in-app (`SpatterAIViewModel.swift:203`).
 
 ## Deletion requests
 
-- **Account deletion is not available in this build.** `AuthService.deleteAccount()` deliberately throws `accountDeletionUnavailable` (`Services/Auth/AuthService.swift:487-491`) because deleting a profile row would not remove the authentication identity, revoke sessions or erase related records. Tell the user this honestly and route the request to the owner for manual, server-side handling with an audit note. Do not say the account was deleted.
+- **Account deletion is a server-side request with a seven-day cooling-off period.** The app calls `sdi_account_lifecycle` (`request_deletion`, `status`, `cancel_deletion`; `Services/Auth/AuthService.swift`) and shows the scheduled date in Profile and Settings, where the member can cancel while the request is pending. The service worker (`backend/ops/sweeps.py`, `sdi_account_deletion_run`) prepares and later purges the account; the app deletes nothing itself and local projects are never touched. Where the lifecycle candidate is not installed the request is refused and the member sees "not configured on this server yet". Subscriptions are not cancelled by deletion; point members to the App Store or billing portal.
 - **Project deletion** happens on the device only. Support cannot delete, view or recover a user's local project.
 - **Published renditions**: removal/takedown requests follow the publishing contract in `docs/PRODUCT_SCOPE_2026_09_19.md`; do not promise deletion of copies already shared by third parties.
 

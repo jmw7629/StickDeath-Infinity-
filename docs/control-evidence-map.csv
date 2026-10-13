@@ -108,7 +108,11 @@ onboarding.next,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,Onboard
 onboarding.position,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.skip,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text 'Skip',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 profile.achievements.group,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileRecordsView,text 'No criteria configured.',n-a,#224,deferred
-profile.delete-account,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,"button 'Delete account' -> authVM.signOut, authVM.requestAccountDeletion",n-a,#135 #262,deferred
+profile.delete-account,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,button 'Delete account',n-a,#135 #262,deferred
+profile.delete-account.cancel,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,button 'Cancel deletion' -> authVM.cancelAccountDeletion,n-a,#135 #262,deferred
+profile.delete-account.confirm,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,"button 'Request deletion' -> authVM.refreshAccountDeletion, authVM.requestAccountDeletion, binds showingProfileEditor",n-a,#135 #262,deferred
+profile.delete-account.notice,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,text 'Deletion is requested from the server and comple',n-a,#135 #262,deferred
+profile.delete-account.status,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,text 'Sign Out' -> authVM.signOut,n-a,#135 #262,deferred
 profile.edit.avatar-notice,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text,n-a,#224,deferred
 profile.edit.avatar-picker,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,label -> binds avatarItem,n-a,#224,deferred
 profile.edit.bio,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text editor 'Bio' -> binds bio,n-a,#224,deferred
@@ -179,6 +183,7 @@ rooms.room.sync-status,StickDeathInfinity/Views/Collab/CollabRoomView.swift,Room
 rooms.warRoom,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.warRoom' (identifier-derived; review source),no,#221,testRoomsReplaceMessagingWithoutClaimingConnectedServices
 rooms.watchTogether,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.watchTogether' (identifier-derived; review source),no,#296,deferred
 settings.delete-account,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Delete Account',n-a,unmapped,deferred
+settings.delete-account.status,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign in from Profile to manage your account. Loc',n-a,unmapped,deferred
 settings.sign-out,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign Out' -> authVM.signOut,n-a,unmapped,deferred
 spatter.artwork.order-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Send selected artwork backward',no,#203,deferred
 spatter.audio.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,example-command chips 'spatter.audio.examples' (identifier-derived; review source),no,#203,testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen

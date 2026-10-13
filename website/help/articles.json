@@ -500,7 +500,7 @@
       "steps": [
         "This website has no sign-in, checkout or billing. The account page states whether a portal is connected; today it is not.",
         "In the app, Profile shows “Plan unavailable” for signed-in accounts and “On-device guest” when you are not signed in. No plan, price or renewal date is displayed because none is configured.",
-        "Profile offers “Delete account” and Settings shows “Account deletion unavailable”: the deletion service currently reports that it is unavailable, nothing is deleted and your projects stay on the device."
+        "Profile and Settings offer “Delete account”: it files a server request with a seven-day cooling-off period, shows the scheduled date and lets you cancel until then; the service completes it afterwards. Nothing is deleted immediately, projects on your device are never affected, and subscriptions must be cancelled through the App Store or billing portal. Where the deletion service is not configured the app says so and deletes nothing."
       ],
       "limits": [
         "Approved pricing and public distribution links need a separate release update; none are shown here.",

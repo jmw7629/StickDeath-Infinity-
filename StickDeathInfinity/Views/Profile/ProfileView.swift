@@ -191,6 +191,7 @@ struct ProfileSettingsView: View {
     @State private var showingMFA = false
     @State private var showingAppeals = false
     @State private var showingRemovalAppeals = false
+    @State private var showingDeletionConfirmation = false
     private var accountEmail: String {
         guard authVM.isAuthenticated, let user = authVM.user,
               let id = UUID(uuidString: user.id), let current = authVM.userId,
@@ -226,13 +227,28 @@ struct ProfileSettingsView: View {
                     if let error = authVM.error { Text(error).foregroundStyle(.red) }
                 }
                 Section("Account deletion") {
-                    Button("Delete account", role: .destructive) { Task { await authVM.requestAccountDeletion() } }
-                        .disabled(authVM.isLoading)
-                        .accessibilityIdentifier("profile.delete-account")
-                    // The service refuses deletion (AuthError.accountDeletionUnavailable) and
-                    // the refusal text is shown above through authVM.error. Say so up front.
-                    Text("Deletion is not available in this build yet: removing the profile row would not revoke sessions or erase related records, so nothing is deleted. Your local projects stay on this device either way.")
-                        .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
+                    if let status = authVM.accountDeletion, status.isOpen {
+                        Text(AuthViewModel.deletionSummary(status))
+                            .font(.specialElite(11, relativeTo: .caption))
+                            .accessibilityIdentifier("profile.delete-account.status")
+                        if status.state == .pending {
+                            Button("Cancel deletion") { Task { await authVM.cancelAccountDeletion() } }
+                                .disabled(authVM.isLoading)
+                                .accessibilityIdentifier("profile.delete-account.cancel")
+                        }
+                    } else {
+                        Button("Delete account", role: .destructive) { showingDeletionConfirmation = true }
+                            .disabled(authVM.isLoading)
+                            .accessibilityIdentifier("profile.delete-account")
+                        // The request is filed server-side (sdi_account_lifecycle) and completed by
+                        // the service worker after a cooling-off period; the app deletes nothing itself.
+                        Text("Deletion is requested from the server and completed after a seven-day cooling-off period, during which you can cancel here. It removes server records and signs the account out everywhere; projects on this device stay. Subscriptions must be cancelled through the App Store or billing portal.")
+                            .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
+                    }
+                    if let notice = authVM.notice {
+                        Text(notice).font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("profile.delete-account.notice")
+                    }
                 }
             }
         }
@@ -241,6 +257,14 @@ struct ProfileSettingsView: View {
         .sheet(isPresented: $showingAppeals) { AccountAppealsView() }
         .sheet(isPresented: $showingRemovalAppeals) { RemovalAppealsView() }
         .onChange(of: authVM.userId) { _ in showingProfileEditor = false; showingRemovalAppeals = false }
+        .task(id: authVM.userId) { await authVM.refreshAccountDeletion() }
+        .alert("Delete this account?", isPresented: $showingDeletionConfirmation) {
+            Button("Request deletion", role: .destructive) { Task { await authVM.requestAccountDeletion() } }
+                .accessibilityIdentifier("profile.delete-account.confirm")
+            Button("Keep account", role: .cancel) {}
+        } message: {
+            Text("Server records are deleted after a seven-day cooling-off period; you can cancel until then. Projects on this device are not affected.")
+        }
     }
 }
 
