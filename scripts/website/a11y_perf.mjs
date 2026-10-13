@@ -320,10 +320,17 @@ async function main() {
     const adminRequests = [];
     adminPage.on('request', (request) => adminRequests.push(request.url()));
     await adminPage.goto(base + 'admin.html', { waitUntil: 'load' });
-    const adminState = await adminPage.evaluate(() => ({ signinHidden: document.getElementById('admin-signin').hidden, consoleHidden: document.getElementById('admin-console').hidden, title: document.getElementById('admin-status-title').textContent }));
+    const adminState = await adminPage.evaluate(() => ({ configured: window.SDI_ADMIN_CONFIG !== null && window.SDI_ADMIN_CONFIG !== undefined, signinHidden: document.getElementById('admin-signin').hidden, consoleHidden: document.getElementById('admin-console').hidden, title: document.getElementById('admin-status-title').textContent }));
     const sameOrigin = adminRequests.every((url) => url.startsWith(base));
-    record('admin shell keeps sign-in and console hidden with null configuration', adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('not configured'), JSON.stringify(adminState), 'admin.html@390x844');
-    record('admin shell with null configuration requests only its own files', sameOrigin, `${adminRequests.length} requests`, 'admin.html@390x844');
+    // Unconfigured: nothing dynamic. Configured (admin-config.js holds the public backend origin and
+    // publishable key): the sign-in form shows, the console stays hidden until the server verifies a
+    // session, and loading the page still sends nothing anywhere.
+    if (adminState.configured) {
+      record('admin shell shows sign-in and keeps the console hidden before a verified session', !adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('not signed in'), JSON.stringify(adminState), 'admin.html@390x844');
+    } else {
+      record('admin shell keeps sign-in and console hidden with null configuration', adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('not configured'), JSON.stringify(adminState), 'admin.html@390x844');
+    }
+    record('admin shell requests only its own files on load', sameOrigin, `${adminRequests.length} requests`, 'admin.html@390x844');
     await adminContext.close();
     // file:// smoke: the help center must render from the embedded help-data.js without fetch().
     const local = await browser.newContext({ viewport: { width: 1440, height: 900 } });

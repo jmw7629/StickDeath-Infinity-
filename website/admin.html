@@ -31,13 +31,31 @@
 <input id="admin-email" name="email" type="email" autocomplete="username" maxlength="320" required>
 <label for="admin-password">Password</label>
 <input id="admin-password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
-<div class="actions"><button class="button" type="submit">Sign in</button></div>
+<div class="actions"><button class="button" type="submit">Sign in</button><button class="button" type="button" id="admin-recover">Email me a password reset link</button></div>
+<p id="admin-recover-result" class="quiet" aria-live="polite"></p>
 </form>
 <div id="admin-providers" class="actions" hidden></div>
 <form id="admin-mfa-form" class="support" novalidate hidden>
 <label for="admin-code">Authenticator code</label>
 <input id="admin-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
 <div class="actions"><button class="button" type="submit">Verify</button><button class="button" type="button" id="admin-mfa-cancel">Cancel</button></div>
+</form>
+<form id="admin-enrol-form" class="support" novalidate hidden>
+<h3>Enrol an authenticator</h3>
+<p class="quiet">This account has no verified second factor yet. Scan the code with an authenticator app (or enter the secret by hand), then type the six-digit code it shows. The factor is verified by the backend; nothing is stored in this browser.</p>
+<img id="admin-enrol-qr" width="200" height="200" alt="Authenticator enrolment QR code" hidden>
+<label for="admin-enrol-secret">Secret (manual entry)</label>
+<input id="admin-enrol-secret" name="secret" readonly>
+<label for="admin-enrol-code">Six-digit code from the authenticator</label>
+<input id="admin-enrol-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+<div class="actions"><button class="button" type="submit">Verify and finish enrolment</button><button class="button" type="button" id="admin-enrol-cancel">Cancel</button></div>
+</form>
+<form id="admin-newpassword-form" class="support" novalidate hidden>
+<h3>Set a new password</h3>
+<p class="quiet">You arrived from a password reset link. Choose a new password (6 to 128 characters); it is sent to the backend only.</p>
+<label for="admin-newpassword">New password</label>
+<input id="admin-newpassword" name="password" type="password" autocomplete="new-password" minlength="6" maxlength="128" required>
+<div class="actions"><button class="button" type="submit">Save password and continue</button><button class="button" type="button" id="admin-newpassword-cancel">Cancel</button></div>
 </form>
 </section>
 

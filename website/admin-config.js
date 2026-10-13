@@ -13,4 +13,11 @@
 //   publishableKey: '<anon key>',                  // publishable key only
 //   providers: ['apple', 'google', 'github', 'microsoft'] // optional sign-in buttons
 // };
-window.SDI_ADMIN_CONFIG = null;
+// Connected 2026-10-13 to the owner's Supabase project (organization "PRFKT Ads",
+// project gwcqlbjdvxebkxizfxsx, ca-central-1). These two values are public by
+// design; every operation is still authorized server-side.
+window.SDI_ADMIN_CONFIG = {
+  backendURL: 'https://gwcqlbjdvxebkxizfxsx.supabase.co',
+  publishableKey: 'sb_publishable_ESTaBouCYQb8AzPKGfS_5w_GNWI-otv',
+  providers: []
+};
