@@ -27,7 +27,13 @@ import CryptoKit
     let proof: Proof
     private init(snapshot: StudioMovieExportService.Snapshot, proof: Proof) { self.snapshot = snapshot; self.proof = proof }
     static func capture(_ snapshot: StudioMovieExportService.Snapshot) throws -> StudioMuxCapture {
-        let prepared = try holdingLastFrameForAudio(snapshot)
+        // Reference layers are hidden in the captured copy so both the proof and
+        // the rendered component describe the same exported picture (#200).
+        let hidden = StudioMovieExportService.Snapshot(document: snapshot.document.hidingReferenceLayers,
+            retainedAudioTracks: snapshot.retainedAudioTracks, rasterDataByID: snapshot.rasterDataByID,
+            imageCredits: snapshot.imageCredits, render: snapshot.render,
+            heldLastFrameTicks: snapshot.heldLastFrameTicks, soundCredits: snapshot.soundCredits)
+        let prepared = try holdingLastFrameForAudio(hidden)
         return StudioMuxCapture(snapshot: prepared, proof: try proofFor(prepared))
     }
 
@@ -56,6 +62,7 @@ import CryptoKit
         var prepared = StudioMovieExportService.Snapshot(document: document, retainedAudioTracks: snapshot.retainedAudioTracks,
             rasterDataByID: snapshot.rasterDataByID, imageCredits: snapshot.imageCredits, render: snapshot.render)
         prepared.heldLastFrameTicks = snapshot.heldLastFrameTicks + extra
+        prepared.soundCredits = snapshot.soundCredits
         return prepared
     }
     private struct Asset: Codable {
@@ -75,6 +82,7 @@ import CryptoKit
         var imageCredits: [CreditedRaster]? = nil
         var render: StudioMovieExportService.RenderOptions? = nil
         var heldLastFrameTicks: Int? = nil
+        var soundCredits: [StudioSoundCredit]? = nil
     }
 
     /// Deterministic content proof; only the private capture factory assigns an
@@ -88,9 +96,11 @@ import CryptoKit
         let plan: StudioMovieExportService.RenderPlan
         do { plan = try StudioMovieExportService.RenderPlan.make(canvasWidth: doc.width, canvasHeight: doc.height, preset: snapshot.render.preset) }
         catch { throw CaptureError.unsupportedSnapshot }
-        guard !doc.frames.isEmpty, doc.frames.count <= 240, (1...60).contains(doc.fps),
+        // Frame and pixel caps follow the streaming movie exporter (#182); the
+        // audio side stays within one 120-second mix (5,760,000 frames at 48 kHz).
+        guard !doc.frames.isEmpty, doc.frames.count <= 1440, (1...60).contains(doc.fps),
               doc.width > 0, doc.height > 0, plan.outputWidth.isMultiple(of: 2), plan.outputHeight.isMultiple(of: 2),
-              plan.outputWidth * plan.outputHeight <= 4_194_304, plan.outputWidth * plan.outputHeight * doc.frames.count <= 134_217_728,
+              plan.outputWidth * plan.outputHeight <= 4_194_304, plan.outputWidth * plan.outputHeight * doc.frames.count <= 2_985_984_000,
               snapshot.heldLastFrameTicks >= 0, snapshot.heldLastFrameTicks <= 600,
               doc.totalTimelineTicks * 48_000 % doc.fps == 0,
               doc.totalTimelineTicks * 48_000 / doc.fps <= 5_760_000,
@@ -116,6 +126,15 @@ import CryptoKit
             used.insert(id)
         }
         guard used == assetIDs else { throw CaptureError.unresolvedAudio }
+        // Sound credits must name captured assets and match their digests (#191).
+        guard snapshot.soundCredits.count <= 128,
+              Set(snapshot.soundCredits.map(\.assetID)).count == snapshot.soundCredits.count else { throw CaptureError.unsupportedSnapshot }
+        for credit in snapshot.soundCredits {
+            guard let asset = audio.first(where: { $0.id == credit.assetID }), asset.sha256 == credit.catalogueSoundID else {
+                throw CaptureError.unsupportedSnapshot
+            }
+            do { try credit.validate() } catch { throw CaptureError.unsupportedSnapshot }
+        }
         var rasters: [Raster] = []; totalBytes = 0
         guard snapshot.rasterDataByID.count <= 240 else { throw CaptureError.unsupportedSnapshot }
         for (id, data) in snapshot.rasterDataByID.sorted(by: { $0.key < $1.key }) {
@@ -132,7 +151,8 @@ import CryptoKit
         let canonical = try encoder.encode(Identity(document: doc, audio: audio, rasters: rasters,
             imageCredits: credits.isEmpty ? nil : credits,
             render: snapshot.render == .init() ? nil : snapshot.render,
-            heldLastFrameTicks: snapshot.heldLastFrameTicks > 0 ? snapshot.heldLastFrameTicks : nil))
+            heldLastFrameTicks: snapshot.heldLastFrameTicks > 0 ? snapshot.heldLastFrameTicks : nil,
+            soundCredits: snapshot.soundCredits.isEmpty ? nil : snapshot.soundCredits))
         guard canonical.count <= 8 * 1024 * 1024 else { throw CaptureError.unsupportedSnapshot }
         var proof = Proof(purpose: "video-only-component-for-same-capture-mux", projectID: doc.id, revision: doc.revision,
                      snapshotSHA256: hash(canonical), durationNumerator: doc.totalTimelineTicks, durationDenominator: doc.fps,

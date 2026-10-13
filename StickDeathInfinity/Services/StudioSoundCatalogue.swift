@@ -23,6 +23,15 @@ struct StudioSoundCatalogue: Sendable {
         let waveformPeaks: [Float]
         /// Optional for older catalogues; tags describe curated sound families, not inferred rights.
         let tags: [String]?
+        /// Optional measured RMS per peak bin (#192). Absent in catalogues
+        /// generated before RMS was recorded; never synthesized from peaks.
+        var waveformRMS: [Float]? = nil
+
+        /// Attribution that follows this sound into project exports (#191).
+        var attribution: StudioSoundAttribution {
+            StudioSoundAttribution(title: title, author: author, sourceURL: sourceURL, license: license,
+                                   licenseURL: licenseURL, catalogueSoundID: sha256, originalSHA256: originalSHA256)
+        }
     }
     private struct Manifest: Decodable { let schemaVersion: Int; let sounds: [Sound] }
     let sounds: [Sound]
@@ -51,6 +60,7 @@ struct StudioSoundCatalogue: Sendable {
                   sound.sampleRate.isFinite, (8000...192000).contains(sound.sampleRate), (1...2).contains(sound.channels),
                   sound.waveformPeaks.count == 256, sound.waveformPeaks.contains(where: { $0 > 0 }),
                   sound.waveformPeaks.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+                  Self.validRMS(sound.waveformRMS, peaks: sound.waveformPeaks),
                   [sound.title, sound.category, sound.author].allSatisfy(Self.label),
                   Self.validTags(sound.tags),
                   sound.license == "CC0-1.0", sound.licenseURL == "https://creativecommons.org/publicdomain/zero/1.0/",
@@ -88,6 +98,15 @@ struct StudioSoundCatalogue: Sendable {
         return try await load(directory: directory)
     }
     var categories: [String] { Array(Set(sounds.map(\.category))).sorted() }
+    /// Library attribution for the shipped file with this SHA-256, or nil for
+    /// audio that did not come from the catalogue (#191).
+    func attribution(forSHA256 digest: String) -> StudioSoundAttribution? {
+        sounds.first { $0.sha256 == digest }?.attribution
+    }
+    /// Digest → attribution table for bulk credit resolution without repeated scans.
+    var attributionsByDigest: [String: StudioSoundAttribution] {
+        Dictionary(uniqueKeysWithValues: sounds.map { ($0.sha256, $0.attribution) })
+    }
     enum DurationFilter: String, CaseIterable, Identifiable {
         case any = "Any duration", short = "Under 1 second", medium = "1–5 seconds", long = "Over 5 seconds"
         var id: String { rawValue }
@@ -158,6 +177,12 @@ struct StudioSoundCatalogue: Sendable {
         let checked = try checkedResource(sound)
         return AudioTrack(id: UUID(), name: sound.title, format: (sound.filename as NSString).pathExtension,
                           audioData: checked.data, startTime: 0, duration: sound.duration)
+    }
+    private static func validRMS(_ rms: [Float]?, peaks: [Float]) -> Bool {
+        guard let rms else { return true }
+        return rms.count == peaks.count && zip(rms, peaks).allSatisfy { value, peak in
+            value.isFinite && (0...1).contains(value) && value <= peak + 0.000001
+        }
     }
     private static func validTags(_ tags: [String]?) -> Bool {
         guard let tags else { return true }

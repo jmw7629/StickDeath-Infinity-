@@ -79,6 +79,9 @@ final class StudioMovieExportService {
         /// Set by `StudioMuxCapture` when the last frame was held so audio that
         /// ends after the animation fits inside the movie (#181). Informational.
         var heldLastFrameTicks: Int = 0
+        /// Library attribution for the retained audio assets, resolved by digest
+        /// before capture (#191). Verified against the assets by the mux proof.
+        var soundCredits: [StudioSoundCredit] = []
     }
     enum Phase { case rendering, finalizing, verifying, publishing }
     struct Progress {
@@ -113,6 +116,8 @@ final class StudioMovieExportService {
         var heldLastFrameTicks: Int? = nil
         /// The movie's actual filename inside the output directory.
         var movieFilename: String? = nil
+        /// Library sound attribution carried by a mixed export (#191); nil without audio.
+        var soundCredits: [StudioSoundCredit]? = nil
     }
     /// The caller retains this handle while a share sheet or decoder consumes
     /// its files. URLs alone do not transfer cleanup ownership. Neither service
@@ -552,10 +557,14 @@ final class StudioMovieExportService {
         }
     }
 
+    /// Frames stream through one pool buffer each, so the frame cap bounds
+    /// encoder time rather than memory (#182): 1,440 frames at 1080p (one
+    /// minute at 24 fps, two at 12 fps) fit the 300-second operation timeout
+    /// on current devices; the total-pixel cap is 1,440 × 1920 × 1080.
     struct Limits {
-        var maximumFrames = 240
+        var maximumFrames = 1440
         var maximumFramePixels = 4_194_304
-        var maximumTotalPixels = 134_217_728
+        var maximumTotalPixels = 2_985_984_000
         var maximumOutputBytes = 64 * 1024 * 1024
         var maximumRasterBytes = 64 * 1024 * 1024
         var maximumRasterPixels = 16_777_216
@@ -610,7 +619,8 @@ final class StudioMovieExportService {
         let plan = try validate(snapshot, background: background, componentProof: componentProof)
         let codec = snapshot.render.codec
         try checkpoint(started)
-        let document = snapshot.document
+        // Reference layers (imported video frames for tracing) never render (#200).
+        let document = snapshot.document.hidingReferenceLayers
         let imageCredits = try StudioExportService.renderedImageCredits(document: document, creditsByRasterID: snapshot.imageCredits)
         guard try JSONEncoder().encode(imageCredits).count <= 128 * 1024 else { throw ExportError.limitExceeded }
         let fm = FileManager.default
@@ -802,7 +812,7 @@ final class StudioMovieExportService {
         } else {
             guard snapshot.document.audioClips.isEmpty, snapshot.retainedAudioTracks.isEmpty else { throw ExportError.audioUnsupported }
         }
-        let document = snapshot.document
+        let document = snapshot.document.hidingReferenceLayers
         try document.validate()
         // Odd canvases are no longer refused (#182): the render plan pads the
         // encoded frame with one white column/row and records that rule.

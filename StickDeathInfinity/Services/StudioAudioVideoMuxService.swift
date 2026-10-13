@@ -42,6 +42,8 @@ import Darwin
         var maximumAudioRMSDeviation: Float? = nil
         var heldLastFrameTicks: Int? = nil
         var renderPlan: StudioMovieExportService.RenderPlan? = nil
+        /// Library attribution for the mixed audio assets, verified by the capture proof (#191).
+        var soundCredits: [StudioSoundCredit]? = nil
     }
     /// Sum-of-squares accumulator over the clip windows of one capture. The same
     /// code measures the mixer PCM while muxing and the decoded AAC afterwards.
@@ -321,6 +323,7 @@ import Darwin
             receipt.maximumAudioRMSDeviation = decoded.rmsDeviation
             receipt.heldLastFrameTicks = proof.heldLastFrameTicks
             receipt.renderPlan = proof.renderPlan
+            receipt.soundCredits = video.capture.snapshot.soundCredits.isEmpty ? nil : video.capture.snapshot.soundCredits
             let data = try encoder.encode(receipt)
             guard data.count <= 128 * 1024, data.count <= limits.maximumOutputBytes - bytes else { throw MuxError.limitExceeded }
             try encoding!.writeManifest(data)

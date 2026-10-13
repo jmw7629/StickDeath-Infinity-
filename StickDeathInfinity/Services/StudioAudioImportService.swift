@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import AudioToolbox
+import CryptoKit
 import Darwin
 
 /// Imports a materialized Files URL without playing, recording, uploading or
@@ -40,7 +41,15 @@ actor StudioAudioImportService {
         /// Peak absolute sample across channels in 256 equal time intervals.
         /// Values are capped at 1 for display; silence remains exactly zero.
         let waveformPeaks: [Float]
+        /// Root mean square of every sample in the same 256 intervals (#192).
+        let waveformRMS: [Float]
         let hasClippedSamples: Bool
+        /// SHA-256 of `originalData`; the key of the persistent waveform cache.
+        var sha256: String { SHA256.hash(data: originalData).map { String(format: "%02x", $0) }.joined() }
+        var waveformRecord: StudioWaveformRecord {
+            StudioWaveformRecord(sha256: sha256, byteCount: originalData.count, duration: duration, sampleRate: sampleRate,
+                                 channels: channelCount, peaks: waveformPeaks, rms: waveformRMS, clipped: hasClippedSamples)
+        }
 
         var track: AudioTrack {
             AudioTrack(id: id, name: name, format: container.rawValue,
@@ -182,8 +191,10 @@ actor StudioAudioImportService {
               Double(frames) / rate <= Self.maximumDurationSeconds,
               frames <= Self.maximumDecodedSamples / Int64(channels) else { throw ImportError.limitExceeded }
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: Self.decodeChunkFrames) else { throw ImportError.invalidAudio }
-        var peaks = [Float](repeating: 0, count: Self.waveformBinCount)
-        var decoded: Int64 = 0, clipped = false
+        // Peak and RMS come from the same pass over the actual samples (#192).
+        var waveform = StudioWaveformAccumulator(totalFrames: frames, channels: channels, binCount: Self.waveformBinCount)
+        var decoded: Int64 = 0
+        var samples = [Float](repeating: 0, count: channels)
         while decoded < frames {
             try Task.checkCancellation()
             let count = AVAudioFrameCount(min(Int64(Self.decodeChunkFrames), frames - decoded))
@@ -192,15 +203,12 @@ actor StudioAudioImportService {
             guard buffer.frameLength > 0, buffer.frameLength <= count,
                   let channelData = buffer.floatChannelData else { throw ImportError.invalidAudio }
             for offset in 0..<Int(buffer.frameLength) {
-                var peak: Float = 0
                 for channel in 0..<channels {
                     let value = channelData[channel][offset * buffer.stride]
                     guard value.isFinite else { throw ImportError.invalidAudio }
-                    peak = max(peak, abs(value))
+                    samples[channel] = value
                 }
-                if peak > 1 { clipped = true }
-                let bin = Int((decoded + Int64(offset)) * Int64(Self.waveformBinCount) / frames)
-                peaks[bin] = max(peaks[bin], min(1, peak))
+                waveform.add(frame: decoded + Int64(offset), samples: samples)
             }
             decoded += Int64(buffer.frameLength)
             try await progress(.init(phase: .decoding, completed: decoded, total: frames))
@@ -213,7 +221,7 @@ actor StudioAudioImportService {
         return ImportedAudio(id: UUID(), name: name, container: container, originalData: data,
                              duration: Double(decoded) / rate, sampleRate: rate, channelCount: channels,
                              decodedFrameCount: decoded, codecID: file.fileFormat.streamDescription.pointee.mFormatID,
-                             waveformPeaks: peaks, hasClippedSamples: clipped)
+                             waveformPeaks: waveform.peaks, waveformRMS: waveform.rms, hasClippedSamples: waveform.clipped)
     }
 
     /// Core Audio can recover available PCM from a truncated RIFF/FORM file.

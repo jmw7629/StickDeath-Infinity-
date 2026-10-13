@@ -30,6 +30,8 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
     @Published private(set) var progress = 0.0
     @Published private(set) var notice: String?
     @Published private(set) var previewGain = 1.0
+    /// Non-nil while playing a 120-second window of a longer timeline (#180).
+    @Published private(set) var window: StudioAudioPreviewWindow.Range?
     private let mixer = StudioAudioMixService()
     private let scratchParent: URL
     private var work: Task<Void, Never>?
@@ -66,15 +68,31 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
             notice = "The previous audio output needs safe recovery. Close or retry after restoring its ownership."; return false
         }
         guard Self.activeOwner == nil else { notice = "Another audio timeline is preparing or playing."; return false }
-        guard stillCurrent(), duration.isFinite, duration > 0, duration <= 120,
+        guard stillCurrent(), duration.isFinite, duration > 0, duration <= 1300,
               start.isFinite, start >= 0, start < duration,
               auditionVolume.isFinite, (0...1).contains(auditionVolume), !document.audioClips.isEmpty else {
-            notice = "Add saved audio and select a playhead within the 120-second preview limit."; return false
+            notice = "Add saved audio and place the playhead inside the timeline before playing."; return false
         }
+        // Timelines longer than one mix (120 s) play the window that starts at
+        // the playhead (#180). The mixer still renders real clips; nothing is
+        // invented for the parts of the timeline outside the window.
+        var mixDocument = document, mixTracks = tracks, mixLength = duration, playerStart = start
+        var windowRange: StudioAudioPreviewWindow.Range?
+        if StudioAudioPreviewWindow.needsWindow(timelineDuration: duration) {
+            guard let range = StudioAudioPreviewWindow.range(playhead: start, timelineDuration: duration),
+                  let shifted = Self.windowed(document: document, tracks: tracks, range: range) else {
+                notice = "No audio clips lie within the 120 seconds after the playhead. Move the playhead to a clip to preview it."
+                return false
+            }
+            windowRange = range; mixDocument = shifted.document; mixTracks = shifted.tracks
+            mixLength = range.length; playerStart = 0
+        }
+        let playsLoop = loop && windowRange == nil
         Self.activeOwner = ownerID
         let token = UUID(); generation = token
         self.stillCurrent = stillCurrent; self.onTime = onTime
         self.duration = duration; currentTime = start; progress = 0; notice = nil
+        self.window = windowRange
         isPreparing = true
         // Retain the owner until this bounded task executes its deferred release,
         // even if the panel closes in the same actor turn before work starts.
@@ -84,8 +102,8 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
                 if !self.isPlaying && Self.activeOwner == self.ownerID { Self.activeOwner = nil }
             }
             do {
-                let length = ceil(duration * StudioAudioMixService.sampleRate) / StudioAudioMixService.sampleRate
-                let result = try await self.mixer.mix(document: document, retainedAudioTracks: tracks,
+                let length = ceil(mixLength * StudioAudioMixService.sampleRate) / StudioAudioMixService.sampleRate
+                let result = try await self.mixer.mix(document: mixDocument, retainedAudioTracks: mixTracks,
                     durationSeconds: length, outputParent: self.scratchParent) { [weak self] value in
                         try Task.checkCancellation()
                         await self?.setProgress(Double(value.completed) / Double(max(1, value.total)), token: token)
@@ -101,17 +119,21 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
                 }
                 let next = try AVAudioPlayer(contentsOf: result.checkedURL())
                 guard next.duration.isFinite, abs(next.duration - length) <= 0.01 else { throw TimelineError.playback }
-                next.delegate = self; next.numberOfLoops = loop ? -1 : 0
+                next.delegate = self; next.numberOfLoops = playsLoop ? -1 : 0
                 // The mixed file preserves exact gains/over-range samples. Only
                 // audition gain is reduced, visibly, to avoid clipping playback.
                 self.previewGain = 1 / max(1, Double(result.receipt.peakAbsoluteSample))
                 next.volume = auditionVolume * Float(self.previewGain)
-                next.currentTime = start
+                next.currentTime = playerStart
                 guard next.prepareToPlay() else { throw TimelineError.playback }
                 self.player = next
                 guard next.play(), next.isPlaying else { throw TimelineError.playback }
                 self.isPlaying = true; self.playbackBegan = true; self.progress = 1
                 if self.previewGain < 1 { self.notice = "Preview level reduced to avoid clipping. Clip volumes are unchanged." }
+                if let windowRange {
+                    self.notice = String(format: "Playing %.0f s from the playhead (%.1f–%.1f s). Timelines longer than 120 s preview one window at a time; looping is off.",
+                                         windowRange.length, windowRange.start, windowRange.end)
+                }
                 onTime(start, true)
                 self.timer = Timer.scheduledTimer(withTimeInterval: 1 / 60, repeats: true) { [weak self] _ in
                     Task { @MainActor in self?.tick() }
@@ -149,8 +171,30 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
             return
         }
         awaitingCompletionSince = nil
-        currentTime = min(duration, max(0, player.currentTime))
+        currentTime = timelineTime(player.currentTime)
         onTime?(currentTime, true)
+    }
+    /// Player positions are window-relative when a window is active.
+    private func timelineTime(_ playerTime: Double) -> Double {
+        if let window { return StudioAudioPreviewWindow.timelineTime(playerTime: playerTime, range: window) }
+        return min(duration, max(0, playerTime))
+    }
+    /// The clips of `document` that intersect `range`, re-based to the window,
+    /// with only the assets they still reference. Nil when nothing is audible.
+    static func windowed(document: StudioDocument, tracks: [AudioTrack],
+                         range: StudioAudioPreviewWindow.Range) -> (document: StudioDocument, tracks: [AudioTrack])? {
+        var clips: [AudioClip] = []
+        for clip in document.audioClips {
+            guard let span = StudioAudioPreviewWindow.clipped(.init(start: clip.startTime, duration: clip.duration, sourceOffset: clip.sourceOffset), to: range) else { continue }
+            var copy = clip
+            copy.startTime = span.start; copy.duration = span.duration; copy.sourceOffset = span.sourceOffset
+            clips.append(copy)
+        }
+        guard !clips.isEmpty else { return nil }
+        var shifted = document
+        shifted.audioClips = clips
+        let referenced = Set(clips.compactMap(\.assetID))
+        return (shifted, tracks.filter { referenced.contains($0.id) })
     }
     func stop() {
         generation = UUID(); work?.cancel()
@@ -168,6 +212,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
         player?.stop(); player?.delegate = nil; player = nil
         StudioAudioSessionController.shared.end(owner: ownerID)
         isPlaying = false
+        window = nil
         let callback = playbackBegan ? onTime : nil
         playbackBegan = false; onTime = nil; stillCurrent = nil
         if let output {
@@ -195,7 +240,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
         let id = ObjectIdentifier(player)
         Task { @MainActor [weak self] in
             guard let self, self.player.map(ObjectIdentifier.init) == id else { return }
-            if flag { self.currentTime = self.duration }
+            if flag { self.currentTime = self.window?.end ?? self.duration }
             self.stop()
             if !flag { self.notice = "Audio playback ended with an error." }
         }

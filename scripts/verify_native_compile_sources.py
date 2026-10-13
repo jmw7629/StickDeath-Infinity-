@@ -23,6 +23,29 @@ DEPENDENCIES = {
     },
     "StickDeathInfinity/Services/StudioSoundCatalogue.swift": {
         "StickDeathInfinity/Services/StudioAudioImportService.swift",
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+    },
+    # Wave 3 media logic (#191, #192, #177, #180): Foundation-only files that the
+    # AVFoundation services now call. A step that compiles the service without
+    # them fails on macOS, so the dependency is declared here.
+    "StickDeathInfinity/Services/StudioAudioImportService.swift": {
+        "StickDeathInfinity/Services/StudioAudioWaveformCache.swift",
+    },
+    "StickDeathInfinity/Services/StudioAudioTimelineSession.swift": {
+        "StickDeathInfinity/Services/StudioAudioTimelineLogic.swift",
+    },
+    "StickDeathInfinity/Services/StudioMovieExportService.swift": {
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+    },
+    "StickDeathInfinity/Services/StudioMuxCapture.swift": {
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+    },
+    "StickDeathInfinity/Services/StudioAudioVideoMuxService.swift": {
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+    },
+    "StickDeathInfinity/Services/StudioMovieExportSession.swift": {
+        "StickDeathInfinity/Services/StudioSoundCredits.swift",
+        "StickDeathInfinity/Services/StudioSoundCatalogue.swift",
     },
 }
 

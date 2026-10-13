@@ -659,6 +659,35 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
                 try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "cancel leak")
             }
         }
+        try await test("timelines beyond 120 seconds play a real window from the playhead and report timeline times") {
+            // Same clips, placed late on a long timeline: the mixer renders only the window.
+            var long = vm.document
+            for index in long.audioClips.indices { long.audioClips[index].startTime += 125 }
+            try long.validate()
+            let session = StudioAudioTimelineSession(scratchParent: scratch)
+            defer { session.close() }
+            var updates: [(Double, Bool)] = []
+            try check(session.play(document: long, tracks: vm.projectAudioTracks, duration: 126.5, from: 124.5,
+                auditionVolume: 0, stillCurrent: { true }, onTime: { updates.append(($0, $1)) }), session.notice ?? "window prepare refused")
+            for _ in 0..<2000 { if !session.isPreparing { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            try check(session.actualPlayerIsPlaying && session.isPlaying, session.notice ?? "window player absent")
+            guard let window = session.window else { throw Failure(message: "window not published") }
+            try check(abs(window.start - 124.5) < 1.0 / 48_000 && window.end == 126.5 && session.duration == 126.5, "window range \(window)")
+            try check(updates.first?.0 == 124.5 && updates.first?.1 == true, "window clock did not start at the playhead")
+            try check(session.notice?.contains("from the playhead") == true, "window not announced")
+            session.tick()
+            try check((updates.last?.0 ?? 0) >= 124.5 && (updates.last?.0 ?? 999) <= 126.5, "reported time left the timeline window")
+            session.stop()
+            try check(!session.isPlaying && session.window == nil && updates.last?.1 == false, "window stop")
+            try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "window mix leaked")
+            // A window with no audio inside is refused honestly instead of playing silence.
+            let empty = StudioAudioTimelineSession(scratchParent: scratch)
+            try check(!empty.play(document: long, tracks: vm.projectAudioTracks, duration: 126.5, from: 0,
+                auditionVolume: 0, stillCurrent: { true }, onTime: { _, _ in }) && empty.notice?.contains("No audio clips") == true, "empty window played")
+            // The pure window arithmetic agrees with the session's shifted document.
+            guard let shifted = StudioAudioTimelineSession.windowed(document: long, tracks: vm.projectAudioTracks, range: window) else { throw Failure(message: "window arithmetic dropped every clip") }
+            try check(shifted.document.audioClips.count == long.audioClips.count && shifted.document.audioClips.allSatisfy { $0.startTime >= 0 && $0.startTime + $0.duration <= window.length + 0.000001 }, "shifted clips outside window")
+        }
         try await test("geometry rejects invalid values and schema guards prevent silent feature downgrade") {
             for x in [Double.nan, .infinity, -1, 1001] {
                 try check(StudioAudioTimelineGeometry.snapped(x, fps: 8, enabled: true) == nil, "invalid snap")

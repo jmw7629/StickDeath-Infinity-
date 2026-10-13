@@ -8,7 +8,7 @@ The existing native Export panel can now render canonical Studio audio with the 
 - The panel reports readiness only after checking the actual final file and removing its owned intermediate video/CAF files. The share request retains both MP4 and manifest through the actual native consumer lifetime.
 - Cancel, close, account changes and leaving Studio cancel work. Unknown or replaced files are preserved. A retained recovery handle supports a safe retry and blocks another export during cleanup.
 - Missing sources, audio beyond the animation, retained unresolved legacy audio, transparency, over-range mixes and size/timing limits return errors. No audio is silently discarded or normalized in export.
-- Current mixed-output bounds include 240 frames, 128 clips, 16 audio sources, an even canvas, bounded pixels/input bytes and a duration representable in whole 48 kHz samples. Export uses the original frame rate and dimensions. No device memory benchmark or real-time deadline guarantee is claimed.
+- Current mixed-output bounds include 1,440 frames within one 120-second audio mix (5,760,000 frames at 48 kHz; raised from 240 frames in wave 3, #182), 128 clips, 16 audio sources, verified library sound credits (#191), bounded pixels/input bytes and a duration representable in whole 48 kHz samples; odd canvases are padded by the render plan rather than refused. Export uses the original frame rate and dimensions. No device memory benchmark or real-time deadline guarantee is claimed.
 
 ## Verification evidence
 

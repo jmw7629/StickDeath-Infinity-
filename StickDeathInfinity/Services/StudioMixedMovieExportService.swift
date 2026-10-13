@@ -67,7 +67,7 @@ import Darwin
             case .outputUnavailable: return "The rendered MP4 is no longer available."
             case .recoveryRequired: return "A temporary movie has an ownership conflict. Its files were preserved."
             case .unresolvedAudio: return "This project contains audio with a missing source, or a clip that ends more than 600 frame ticks after the animation (the last frame can be held at most that long). Restore the source or trim the clip before exporting."
-            case .unsupportedSnapshot: return "This project exceeds the current mixed MP4 limits. Use up to 240 frames, 128 clips, 16 audio sources and an output size within 4.2 million pixels."
+            case .unsupportedSnapshot: return "This project exceeds the current mixed MP4 limits. Use up to 1,440 frames within 120 seconds of audio, 128 clips, 16 audio sources, valid sound credits and an output size within 4.2 million pixels."
             }
         }
     }

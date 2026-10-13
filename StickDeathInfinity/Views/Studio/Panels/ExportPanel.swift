@@ -16,7 +16,10 @@ struct ExportPanel: View {
     @State private var lastFrame = 1
     @State private var sheetColumns = 0
     @State private var cellPadding = 0
+    @State private var scale: StudioExportService.Scale = .original
+    @State private var separateLayers = false
     @State private var shareRequest: StudioExportShareRequest?
+    @State private var saveRequest: StudioImageExportFileRequest?
 
     private var supportedFormat: StudioExportService.Format? {
         switch vm.exportFormat {
@@ -61,9 +64,31 @@ struct ExportPanel: View {
                             sectionLabel("IMAGE QUALITY")
                             Text("Original canvas · \(document.width) × \(document.height)")
                                 .font(.specialElite(12))
-                            Text("Lossless PNG · \(document.frames.count) project frames · \(document.fps) fps; frame exposures are included in the timing manifest. Audio, editor grid and onion skin are not included.")
+                            Text("Lossless PNG · \(document.frames.count) project frames · \(document.fps) fps; frame exposures are included in the timing manifest. Audio, editor grid, onion skin and video reference layers are not included.")
                                 .font(.specialElite(10))
                                 .foregroundColor(.white.opacity(0.6))
+                            // Output scale (#184): the compositor draws at the output size.
+                            Picker("Export scale", selection: $scale) {
+                                ForEach(StudioExportService.Scale.allCases, id: \.rawValue) { Text($0.label).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .disabled(session.isRunning || session.isSharing)
+                            .accessibilityIdentifier("studio.export.scale")
+                            Text("Output \(max(1, Int((Double(document.width) * scale.factor).rounded(.down)))) × \(max(1, Int((Double(document.height) * scale.factor).rounded(.down)))) per frame · vectors and placed images are drawn at this size, not resampled.")
+                                .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
+                                .accessibilityIdentifier("studio.export.scale.output")
+                            if supportedFormat == .pngSequence {
+                                Toggle(isOn: $separateLayers) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("One PNG per visible layer").font(.specialElite(12))
+                                        Text("Writes every frame once per visible layer (\(document.layers.filter { $0.visible && $0.opacity > 0 && !$0.isReference }.count) now) with the layer recorded in the manifest.")
+                                            .font(.specialElite(9)).foregroundColor(.white.opacity(0.6))
+                                    }
+                                }
+                                .tint(Color(hex: "#DC2626"))
+                                .disabled(session.isRunning || session.isSharing)
+                                .accessibilityIdentifier("studio.export.separate-layers")
+                            }
                             sectionLabel("BACKGROUND")
                             Picker("Export background", selection: $background) {
                                 Text("White").tag(StudioExportService.Background.white)
@@ -135,9 +160,12 @@ struct ExportPanel: View {
                             sectionLabel(session.previewImage == nil ? "EXPORT FILES UNAVAILABLE" : "READY ON THIS DEVICE")
                             Text("\(output.imageURLs.count) PNG \(output.imageURLs.count == 1 ? "file" : "files") + timing manifest")
                                 .font(.specialElite(12))
-                            Text("\(output.manifest.imageWidth) × \(output.manifest.imageHeight) · revision \(output.manifest.documentRevision)")
+                            Text("\(output.manifest.imageWidth) × \(output.manifest.imageHeight) · revision \(output.manifest.documentRevision)"
+                                 + (output.manifest.scale.map { " · \($0.label) scale" } ?? "")
+                                 + (output.manifest.layerCount.map { " · \($0) layers separately" } ?? ""))
                                 .font(.specialElite(10))
                                 .foregroundColor(.white.opacity(0.6))
+                                .accessibilityIdentifier("studio.export.receipt")
                             if let credits = output.manifest.imageCredits, !credits.isEmpty {
                                 Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
                                     .font(.specialElite(10))
@@ -166,7 +194,18 @@ struct ExportPanel: View {
                             }
                             .disabled(session.isSharing || session.isRunning || session.previewImage == nil)
                             .accessibilityIdentifier("studio.export.share")
-                            Text("Choose a destination in the iOS share sheet. Files stay available until you close this panel or create another export.")
+                            Button(action: saveToFiles) {
+                                Label {
+                                    Text("Save to Files").font(.specialElite(12))
+                                } icon: {
+                                    Image(systemName: "folder").font(.specialElite(12))
+                                }
+                                    .frame(maxWidth: .infinity).padding(12)
+                                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
+                            }
+                            .disabled(session.isSharing || session.isRunning || session.previewImage == nil)
+                            .accessibilityIdentifier("studio.export.save-files")
+                            Text("Share opens the iOS share sheet; Save to Files copies every PNG and the manifest into a folder you choose. Files stay available until you close this panel or create another export.")
                                 .font(.specialElite(10))
                                 .foregroundColor(.white.opacity(0.6))
                         }
@@ -181,7 +220,7 @@ struct ExportPanel: View {
                             "After an export is ready, Share hands the files to the iOS share sheet. Save to Files, Photos (for MP4/GIF) or any installed app that accepts them. Studio does not post to TikTok, YouTube or Instagram itself.")
                             .accessibilityIdentifier("studio.export.share-explanation")
                     }
-                    Text("No watermark is added. Files are named after the project (ASCII letters, digits, '-' and '_'; otherwise \"animation\"). PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC. GIF uses reduced colors, a white background and no audio.")
+                    Text("No watermark is added. Files are named after the project (ASCII letters, digits, '-' and '_'; otherwise \"animation\"). PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC with library sound credits in its manifest. GIF uses reduced colors, a white background and no audio. Video reference layers are never exported.")
                         .font(.specialElite(10))
                         .foregroundColor(.white.opacity(0.5))
                 }
@@ -197,6 +236,16 @@ struct ExportPanel: View {
             StudioExportShareSheet(urls: request.urls) { completed, error in
                 session.finishSharing(completed: completed, error: error)
                 shareRequest = nil
+            }
+        }
+        .background {
+            if let request = saveRequest {
+                let binding = $saveRequest
+                StudioFilesSavePresenter(request: request, isAllowed: { [weak vm] in
+                    guard let vm else { return false }
+                    return vm.isEditing && vm.activePanel == .export
+                }) { id in if binding.wrappedValue?.id == id { binding.wrappedValue = nil } }
+                .id(request.id)
             }
         }
         .onDisappear {
@@ -271,12 +320,38 @@ struct ExportPanel: View {
         }
         session.start(document: document, format: format, background: background, rasters: rasters, imageCredits: imageCredits,
             sheetColumns: format == .spritesheet && sheetColumns > 0 ? min(sheetColumns, selectedFrames.count) : nil,
-            cellPadding: format == .spritesheet ? cellPadding : 0, frameIDs: frameIDs)
+            cellPadding: format == .spritesheet ? cellPadding : 0, frameIDs: frameIDs,
+            scale: scale, separateLayers: format == .pngSequence && separateLayers)
     }
 
     private func shareExport() {
         guard let urls = session.beginSharing() else { return }
         shareRequest = StudioExportShareRequest(urls: urls)
+    }
+    private func saveToFiles() {
+        guard let urls = session.beginSharing() else { return }
+        saveRequest = StudioImageExportFileRequest(urls: urls, session: session)
+    }
+}
+
+/// Adapts the PNG session's share lease to the shared Files-save presenter (#185).
+@MainActor
+final class StudioImageExportFileRequest: StudioExportFileRequest {
+    let id = UUID()
+    private let urls: [URL]
+    private let session: StudioExportSession
+    private var finished = false
+    init(urls: [URL], session: StudioExportSession) { self.urls = urls; self.session = session }
+    func checkedURLs() throws -> [URL] {
+        guard !finished, !urls.isEmpty, urls.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else {
+            throw StudioExportService.ExportError.unsafeDestination
+        }
+        return urls
+    }
+    func finish(completed: Bool, error: Error?) {
+        guard !finished else { return }
+        finished = true
+        session.finishSharing(completed: completed, error: error)
     }
 }
 
@@ -303,26 +378,31 @@ final class StudioExportSession: ObservableObject {
     func start(document: StudioDocument, format: StudioExportService.Format,
                background: StudioExportService.Background, rasters: [String: Data],
                imageCredits: [String: StudioExportService.ImageCredit] = [:],
-               sheetColumns: Int? = nil, cellPadding: Int = 0, frameIDs: Set<String>? = nil) {
+               sheetColumns: Int? = nil, cellPadding: Int = 0, frameIDs: Set<String>? = nil,
+               scale: StudioExportService.Scale = .original, separateLayers: Bool = false) {
         guard !isRunning, !isSharing, !isClosed else { return }
         errorMessage = nil; notice = nil
         guard removeOutput() else { return }
         // Preflight (#202) before any rendering: free space for twice the
-        // estimated PNG output and a non-critical thermal state.
+        // estimated PNG output (at the output scale, once per layer pass) and a
+        // non-critical thermal state.
         let frameCount = frameIDs?.count ?? document.frames.count
+        let passes = separateLayers ? max(1, document.layers.filter { $0.visible && $0.opacity > 0 && !$0.isReference }.count) : 1
         let outputParent = FileManager.default.temporaryDirectory
         do {
             try StudioExportPreflight.check(estimatedOutputBytes: StudioExportPreflight.estimatedPNGBytes(
-                width: document.width, height: document.height, frames: frameCount), destination: outputParent)
+                width: max(1, Int((Double(document.width) * scale.factor).rounded(.down))),
+                height: max(1, Int((Double(document.height) * scale.factor).rounded(.down))),
+                frames: frameCount * passes), destination: outputParent)
         } catch { errorMessage = error.localizedDescription; return }
         let filenameBase = StudioExportFilename.base(for: document.name)
-        isRunning = true; completedFrames = 0; totalFrames = frameCount
+        isRunning = true; completedFrames = 0; totalFrames = frameCount * passes
         task = Task { [self] in
             do {
                 let result = try await StudioExportService().export(document: document, format: format,
                     outputParent: outputParent, background: background,
                     sheetColumns: sheetColumns, cellPadding: cellPadding, frameIDs: frameIDs, imageCredits: imageCredits,
-                    filenameBase: filenameBase,
+                    filenameBase: filenameBase, scale: scale, separateLayers: separateLayers,
                     rasterData: { rasters[$0] }, progress: { [self] completed, total in
                         completedFrames = completed; totalFrames = total
                     })

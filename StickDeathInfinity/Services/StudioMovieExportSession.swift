@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 import Darwin
 
 /// Private MP4 session foundation. The panel must report its scalar scope and
@@ -26,6 +27,7 @@ final class StudioMovieExportSession: ObservableObject {
                 manifest.canvasWidth = p.renderPlan?.canvasWidth; manifest.canvasHeight = p.renderPlan?.canvasHeight
                 manifest.renderPlan = p.renderPlan; manifest.renderRule = p.renderPlan?.rule
                 manifest.heldLastFrameTicks = p.heldLastFrameTicks; manifest.movieFilename = r.movieFilename
+                manifest.soundCredits = r.soundCredits
                 return manifest
             }
         }
@@ -69,6 +71,8 @@ final class StudioMovieExportSession: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var notice: String?
     @Published private(set) var needsCleanup = false
+    /// Why library sound credits could not be resolved for the last export, if so (#191).
+    @Published private(set) var soundCreditNotice: String?
 
     private let outputParent: URL
     private let limits: Service.Limits
@@ -167,7 +171,7 @@ final class StudioMovieExportSession: ObservableObject {
         editor = vm; capturedAccountID = scope.accountID
         source = Source(projectID: document.id, revision: document.revision,
                         name: document.name, frameCount: document.frames.count)
-        errorMessage = nil; notice = nil; phase = nil; audioProgressText = nil
+        errorMessage = nil; notice = nil; phase = nil; audioProgressText = nil; soundCreditNotice = nil
         completedFrames = 0; totalFrames = document.frames.count
         cancellationRequested = false
         let runID = UUID(); activeRunID = runID
@@ -175,8 +179,15 @@ final class StudioMovieExportSession: ObservableObject {
         task = Task { [self, snapshot] in
             do {
                 try checkRunningContext()
+                var snapshot = snapshot
                 if !snapshot.document.audioClips.isEmpty {
                     guard background == .white else { throw Service.ExportError.transparentUnsupported }
+                    // Library attribution travels with the mixed movie (#191).
+                    audioProgressText = "Resolving sound credits…"
+                    let resolved = await Self.resolveSoundCredits(for: snapshot.retainedAudioTracks)
+                    try checkRunningContext()
+                    snapshot.soundCredits = resolved.credits
+                    soundCreditNotice = resolved.notice
                     let mixedOptions = StudioMixedMovieExportService.Options(
                         audio: .init(normalizeToMinusOneDBFS: options.normalizeAudio), filenameBase: filenameBase)
                     let result = try await StudioMixedMovieExportService().export(snapshot: snapshot,
@@ -214,6 +225,9 @@ final class StudioMovieExportSession: ObservableObject {
                 if let held = output.manifest.heldLastFrameTicks, held > 0 {
                     text += " The last frame is held \(held) extra tick\(held == 1 ? "" : "s") so the audio tail fits."
                 }
+                if let credits = output.manifest.soundCredits, !credits.isEmpty {
+                    text += " \(credits.count) library sound credit\(credits.count == 1 ? " is" : "s are") recorded in the manifest."
+                }
                 notice = text
                 audioProgressText = nil
             } catch is CancellationError {
@@ -236,6 +250,27 @@ final class StudioMovieExportSession: ObservableObject {
             }
         }
         return true
+    }
+
+    /// Library credits for the captured audio assets (#191). Digests and the
+    /// bundled catalogue load off the main actor. An unavailable library yields
+    /// no credits plus a notice, never a failed export: every library sound is
+    /// CC0 and audio imported from Files has no library attribution anyway.
+    static func resolveSoundCredits(for tracks: [AudioTrack]) async -> (credits: [StudioSoundCredit], notice: String?) {
+        let assets = await Task.detached(priority: .userInitiated) { () -> [StudioSoundCreditResolver.Asset] in
+            tracks.compactMap { track in
+                guard track.legacySourceFilename == nil, let data = track.audioData, !data.isEmpty else { return nil }
+                return .init(id: track.id, sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+            }
+        }.value
+        guard !assets.isEmpty else { return ([], nil) }
+        do {
+            let catalogue = try await StudioSoundCatalogue.loadBundled()
+            let table = catalogue.attributionsByDigest
+            return (try StudioSoundCreditResolver.credits(for: assets) { table[$0] }, nil)
+        } catch {
+            return ([], "Library sound credits were not resolved (\(error.localizedDescription)). The MP4 manifest lists no sound credits.")
+        }
     }
 
     func refreshScope(_ scope: Scope) {

@@ -54,3 +54,40 @@ The Export panel's four destination rows (Camera Roll / TikTok / YouTube / Insta
 
 - Linux (this host): `swiftc -parse` passes for every edited Swift file. The Foundation-only logic (`StudioExportFilename`, `StudioExportPreflight.decide`/estimates, `RenderPlan`, `StudioAudioPreviewSilence`, the hold-tick arithmetic) was extracted verbatim and executed with the Linux toolchain: 5/5 harness groups pass.
 - Deferred (needs macOS/Xcode): `Tests/StudioExport` (filename, PNG decode-back, preflight), `Tests/StudioMovieExport` (render plan, odd-canvas padding export, 480p preset, HEVC-or-explicit-refusal), the full workflow suites and the native UI journeys. None of these has been run for this commit; nothing here is claimed as passed on Apple platforms.
+
+## Wave 3 additions (2026-10-13; nothing below has run on Apple hardware)
+
+### Frame cap raised by streaming (#182)
+
+`StudioMovieExportService.Limits.maximumFrames` is 1,440 and `maximumTotalPixels` is 2,985,984,000 (1,440 × 1920 × 1080). Frames were already rendered one at a time into a pixel-buffer pool entry, so the cap bounds encoder time rather than memory; the 300-second operation timeout and the 64 MiB output cap are unchanged. `StudioMuxCapture` applies the same caps to mixed exports, whose audio side still has to fit one 120-second mix (5,760,000 samples at 48 kHz), so a 1,440-frame mixed MP4 needs 12 fps or more. The PNG sequence exporter (`StudioExportService.maximumFrames`) takes the same 1,440-image cap because it writes each PNG before rendering the next; spritesheets keep their 16.7-megapixel sheet bound. GIF keeps 240 frames and 8.4 million aggregate pixels because Image I/O retains frame bitmaps until finalisation (memory-bound, measured earlier).
+
+Tests added, DEFERRED (not run here): `Tests/StudioMovieExport` "frames stream through one pool buffer so 300 frames export above the former 240 cap"; the `Tests/StudioExport` limit test now rejects 1,441 images.
+
+### PNG scale and separate layers (#184)
+
+`StudioExportService.export(..., scale:, separateLayers:)`. `Scale` is 50 % / 100 % / 200 %: the compositor draws vectors and placed rasters at the output size through `render(outputSize:)`; nothing is resampled afterwards, and the per-image pixel caps apply to the output size. `separateLayers` (PNG sequence only) writes every frame once per visible, non-reference layer as `<base>_<frame>_L<nn>.png`, records `layerID`/`layerName`/`layerIndex` per `FrameRecord`, and sets `scale`/`separateLayers`/`layerCount` (manifest version 6). The Export panel exposes `studio.export.scale` and `studio.export.separate-layers`. Test: `Tests/StudioExport` "scale draws at the output size and separate layers write one decodable PNG per visible layer" (DEFERRED).
+
+### Save to Files (#185)
+
+`StudioFilesSavePresenter` wraps `UIDocumentPickerViewController(forExporting:asCopy: true)`. It takes the same share request the share sheet uses (`StudioExportFileRequest`: the MP4 and GIF `ShareRequest` classes, plus `StudioImageExportFileRequest` for the PNG session), so the files stay owned by the export session until the picker's delegate callback; dismissal alone never finishes the request. Buttons: `studio.export.save-files`, `studio.export.movie.save-files`, `studio.export.gif.save-files`. A completed save is a copy receipt; no destination is recorded and nothing is uploaded. Native journey coverage is required and DEFERRED.
+
+### Library sound credits in MP4 manifests (#191, #198)
+
+`StudioMovieExportSession` hashes the retained audio assets off the main actor, loads the bundled catalogue and resolves `StudioSoundCredit` records by shipped-file digest. `StudioMuxCapture.proofFor` refuses a credit that names an uncaptured asset or whose digest differs from the asset bytes, and includes the credits in the proof identity; `StudioAudioVideoMuxService.Receipt.soundCredits` and the session's `Manifest.soundCredits` carry them. An unavailable library yields no credits plus `soundCreditNotice`; every library sound is CC0, so the export is not blocked. PNG and GIF carry no audio and therefore no sound credits. `scripts/verify_sound_catalogue_provenance.py` (run here: 2,127 sounds, 2,127 distinct shipped and original digests, 2 publisher hosts) checks the catalogue offline.
+
+### Reference layers never export (#200)
+
+`StudioDocument.hidingReferenceLayers` (in `StudioExportService.swift`) hides every layer whose `isReference` flag is set before PNG, GIF, animation-only MP4 and mixed-MP4 rendering and before the mux proof is computed. The flag itself is a `Models.swift` change owned by the Studio model agent (see the wave 3 report's coordinator actions); until it lands these call sites do not compile.
+
+### Benchmark harness (#202)
+
+`Tests/StudioExportBenchmark/main.swift` drives the production exporters with a generated document and prints wall time, `ru_maxrss` before/after and output bytes; `scripts/media/run_export_benchmark.py <frames> <width> <height> <fps> [png]` compiles it with the exact production source list of the `Tests/StudioMovieExport` CI step. On Linux the script prints the command and exits 3.
+
+| Case | Device | Seconds | Peak RSS | Output bytes | Status |
+| --- | --- | --- | --- | --- | --- |
+| MP4 1,440 × 1080 × 1920 @ 24 fps | — | — | — | — | DEFERRED (not run) |
+| MP4 1,440 × 1920 × 1080 @ 12 fps | — | — | — | — | DEFERRED (not run) |
+| PNG 1,440 × 1080 × 1920 | — | — | — | — | DEFERRED (not run) |
+| MP4 240 × 1080 × 1920 @ 24 fps (former cap, regression) | — | — | — | — | DEFERRED (not run) |
+
+Record development-Mac numbers as Mac numbers; iPhone thermal and memory behaviour needs an on-device run. The preflight (`StudioExportPreflight`) remains the only runtime guard: free space for twice the estimate and a non-critical thermal state.

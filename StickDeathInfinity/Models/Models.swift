@@ -1020,6 +1020,9 @@ struct CanvasLayer: Codable, Identifiable, Equatable {
     /// Document-space radius; omitted fields retain legacy full-resolution appearance.
     var glowRadius: Double?
     var glowStrength: Double?
+    /// Reference material (for example extracted video frames) is shown while
+    /// drawing but never rendered into exports. Encoded only when set.
+    var isReference: Bool = false
     var effectiveGlowRadius: Double { glowRadius ?? 5 }
     var effectiveGlowStrength: Double { glowStrength ?? 1 }
     var hasValidGlowSettings: Bool {
@@ -1038,17 +1041,19 @@ struct CanvasLayer: Codable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, visible, locked, opacity, lockMode, blendMode
-        case glowEnabled, glowColor, glowRadius, glowStrength, colorLabel
+        case glowEnabled, glowColor, glowRadius, glowStrength, colorLabel, isReference
     }
 
     init(id: String, name: String, visible: Bool = true, locked: Bool = false, opacity: Double = 1,
          lockMode: String = "free", blendMode: String = "normal", glowEnabled: Bool = false,
-         glowColor: String? = nil, colorLabel: String? = nil, glowRadius: Double? = nil, glowStrength: Double? = nil) {
+         glowColor: String? = nil, colorLabel: String? = nil, glowRadius: Double? = nil, glowStrength: Double? = nil,
+         isReference: Bool = false) {
         self.id = id; self.name = name; self.visible = visible; self.locked = locked
         self.opacity = opacity; self.lockMode = locked ? "full" : lockMode
         self.blendMode = blendMode; self.glowEnabled = glowEnabled
         self.glowColor = glowColor; self.colorLabel = colorLabel
         self.glowRadius = glowRadius; self.glowStrength = glowStrength
+        self.isReference = isReference
     }
 
     init(from decoder: Decoder) throws {
@@ -1065,6 +1070,21 @@ struct CanvasLayer: Codable, Identifiable, Equatable {
         colorLabel = try c.decodeIfPresent(String.self, forKey: .colorLabel)
         glowRadius = try c.decodeIfPresent(Double.self, forKey: .glowRadius)
         glowStrength = try c.decodeIfPresent(Double.self, forKey: .glowStrength)
+        isReference = try c.decodeIfPresent(Bool.self, forKey: .isReference) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(name, forKey: .name)
+        try c.encode(visible, forKey: .visible); try c.encode(locked, forKey: .locked)
+        try c.encode(opacity, forKey: .opacity); try c.encode(lockMode, forKey: .lockMode)
+        try c.encode(blendMode, forKey: .blendMode); try c.encode(glowEnabled, forKey: .glowEnabled)
+        try c.encodeIfPresent(glowColor, forKey: .glowColor)
+        try c.encodeIfPresent(glowRadius, forKey: .glowRadius)
+        try c.encodeIfPresent(glowStrength, forKey: .glowStrength)
+        try c.encodeIfPresent(colorLabel, forKey: .colorLabel)
+        // Historical documents never carried this key; keep their bytes identical.
+        if isReference { try c.encode(true, forKey: .isReference) }
     }
 
     var isFullyLocked: Bool { locked || lockMode == "full" }

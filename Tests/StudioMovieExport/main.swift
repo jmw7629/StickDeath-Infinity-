@@ -301,6 +301,18 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             }
             try require(contents(folder).isEmpty, "Preflight budget left partial output")
         }
+        await test("frames stream through one pool buffer so 300 frames export above the former 240 cap") {
+            try require(Service.Limits().maximumFrames == 1440 && Service.Limits().maximumTotalPixels == 2_985_984_000, "Streaming limits")
+            let folder = try parent(root, "stream-300")
+            let colors = (0..<300).map { $0 % 2 == 0 ? "#FF0000" : "#0000FF" }
+            let output = try await Service().export(snapshot: snapshot(try document(colors: colors, width: 32, height: 16, fps: 24)), outputParent: folder, background: .white)
+            let decoded = try await decode(output.movieURL)
+            try require(output.manifest.frameIDs.count == 300 && decoded.frames.count == 300 && decoded.pts.count == 300, "300-frame movie incomplete")
+            try require(CMTimeCompare(decoded.duration, CMTime(value: 300, timescale: 24)) == 0, "300-frame duration")
+            try pixel(decoded.frames[0].pixel(16, 8), [255, 0, 0, 255]); try pixel(decoded.frames[299].pixel(16, 8), [0, 0, 255, 255])
+            try output.cleanup()
+            try require(try contents(folder).isEmpty, "Streamed export left files")
+        }
         await test("cancellation before work and after real encoded frame removes only owned partial output") {
             let folder = try parent(root, "cancel"); let sentinel = folder.appendingPathComponent("keep.txt")
             try Data("keep".utf8).write(to: sentinel); let doc = try document()

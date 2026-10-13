@@ -3510,7 +3510,7 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.locked
         }
         let clipboardVersion = editor.clipboardVersion, selectedIDs = editor.selectedElementIDs
-        let imageLayer = CanvasLayer(id: UUID().uuidString, name: "Video reference")
+        let imageLayer = CanvasLayer(id: UUID().uuidString, name: "Video reference", isReference: true)
         var records: [String: StoredAnimationFrame] = [:], frames: [AnimationFrame] = []
         var pngBytes = 0, pixels = 0
         for imported in imports {

@@ -366,9 +366,37 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             try await rejects { _ = try await service.export(document: large, format: .pngSequence, outputParent: folder) }
             let sheet = try document(colors: Array(repeating: "#FF0000", count: 5), width: 2048, height: 2048)
             try await rejects { _ = try await service.export(document: sheet, format: .spritesheet, outputParent: folder) }
-            let many = try document(colors: Array(repeating: "#FF0000", count: 241), width: 16, height: 16)
+            // The sequence streams to disk, so the cap is 1,440 images (#182/#184).
+            let many = try document(colors: Array(repeating: "#FF0000", count: 1441), width: 16, height: 16)
             try await rejects { _ = try await service.export(document: many, format: .pngSequence, outputParent: folder) }
             try require(try fm.contentsOfDirectory(atPath: folder.path).isEmpty, "Oversized request created output")
+        }
+        await test("scale draws at the output size and separate layers write one decodable PNG per visible layer") {
+            let folder = try parent(root, "scale-layers")
+            var doc = try document(colors: ["#FF0000", "#0000FF"], width: 64, height: 32)
+            doc.layers.append(CanvasLayer(id: "layer-top", name: "Top"))
+            doc.frames[0].elements.append(DrawnElement(id: "top-stroke", tool: .brush,
+                points: [StrokePoint(x: 56, y: 4), StrokePoint(x: 64, y: 4)], color: "#00FF00", width: 8, opacity: 1, layerID: "layer-top"))
+            let doubled = try await service.export(document: doc, format: .pngSequence, outputParent: folder, scale: .double)
+            try require(doubled.manifest.imageWidth == 128 && doubled.manifest.imageHeight == 64 && doubled.manifest.scale == .double
+                        && doubled.manifest.version == 6 && doubled.manifest.frames.allSatisfy { $0.width == 128 && $0.height == 64 }, "Doubled manifest wrong")
+            let big = try decode(doubled.imageURLs[1])
+            try require(big.width == 128 && big.height == 64, "Doubled PNG size")
+            try pixel(big.pixel(64, 32), [0, 0, 255, 255])
+            let half = try await service.export(document: doc, format: .pngSequence, outputParent: folder, scale: .half)
+            let halfImage = try decode(half.imageURLs[0])
+            try require(half.manifest.imageWidth == 32 && half.manifest.imageHeight == 16 && halfImage.width == 32 && halfImage.height == 16, "Half scale wrong")
+            let layered = try await service.export(document: doc, format: .pngSequence, outputParent: folder, filenameBase: "fixture", separateLayers: true)
+            try require(layered.imageURLs.count == 4 && layered.manifest.separateLayers == true && layered.manifest.layerCount == 2
+                        && layered.manifest.frames.map(\.filename) == ["fixture_000000_L01.png", "fixture_000000_L02.png", "fixture_000001_L01.png", "fixture_000001_L02.png"]
+                        && layered.manifest.frames.map(\.layerID) == [doc.layers[0].id, "layer-top", doc.layers[0].id, "layer-top"], "Layer pass records wrong: \(layered.manifest.frames.map(\.filename))")
+            // Frame 0, top layer only: green stroke present, red base stroke absent (white background).
+            let top = try decode(layered.imageURLs[1])
+            try pixel(top.pixel(60, 4), [0, 255, 0, 255]); try pixel(top.pixel(8, 16), [255, 255, 255, 255])
+            let base = try decode(layered.imageURLs[0])
+            try pixel(base.pixel(8, 16), [255, 0, 0, 255]); try pixel(base.pixel(60, 4), [255, 255, 255, 255])
+            try await rejects { _ = try await service.export(document: doc, format: .spritesheet, outputParent: folder, separateLayers: true) }
+            for output in [doubled, half, layered] { try fm.removeItem(at: output.directory) }
         }
         await test("destination symlink rejected and project title never becomes a path") {
             let folder = try parent(root, "safe-path"); let link = root.appendingPathComponent("link")
