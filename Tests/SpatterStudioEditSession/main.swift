@@ -1821,9 +1821,9 @@ private final class NetworkTrap: URLProtocol {
             }
             doc.frames = [
                 AnimationFrame(id: "f1", elements: [line("a", 10, 40), line("limb1", 0, 10, layerID: stick)]),
-                AnimationFrame(id: "f2", elements: [line("b", 10, 40), line("limb2", 0, 20, layerID: stick)]),   // frozen vs f1 (same geometry, no hold)
+                AnimationFrame(id: "f2", elements: [line("b", 10, 40), line("limb2", 0, 10, layerID: stick)]),   // frozen vs f1 (same geometry, no hold)
                 AnimationFrame(id: "f3", elements: []),                                                          // blank
-                AnimationFrame(id: "f4", elements: [line("c", 10, 500)]),                                        // out of canvas
+                AnimationFrame(id: "f4", elements: [line("c", 10, 500), line("limb3", 0, 20, layerID: stick)]), // out of canvas, with separate limb variance
                 AnimationFrame(id: "f5", elements: [line("d", 10, 40)], holdTicks: 4),
                 AnimationFrame(id: "f6", elements: [line("e", 10, 40)])                                           // deliberate hold before it
             ]
@@ -2177,14 +2177,15 @@ private final class NetworkTrap: URLProtocol {
             } }
         }
 
-        try await test("grid session matches manual controls preserves artwork pixels and onion guides with one Undo and cold persistence") {
+        try await test("grid session matches manual controls preserves artwork pixels and onion guides with artwork Undo and cold persistence") {
             let (vm, store) = try await fixture("grid-guides")
             try require(vm.commitElement(styledStroke(vm)), "Grid artwork fixture failed")
-            vm.showOnionSkin = true; vm.onionOpacity = 0.35; await vm.flush()
+            vm.showOnionSkin = true; vm.onionOpacity = 0.35; vm.gridSpacing = 40; await vm.flush()
             let before = vm.document, pixels = try erasurePixels(vm.document)
             vm.gridSpacing = 32; vm.gridOpacity = 0.25; vm.gridTint = .red
             let manual = vm.document
-            for _ in 0..<3 { vm.undo() }
+            try require(vm.canUndo && !vm.canRedo, "Grid preferences changed artwork history")
+            vm.gridSpacing = 40; vm.gridOpacity = 0.1; vm.gridTint = .blue
             await vm.flush(); try require(content(vm.document) == content(before), "Manual grid fixture drift")
             let session = SpatterStudioEditSession()
             _ = session.submit(SpatterGridInstruction.settingsExample, in: vm, accountID: nil, currentScope: { guest })
@@ -2193,10 +2194,12 @@ private final class NetworkTrap: URLProtocol {
                 && !vm.gridEnabled && vm.document.onionSettings == before.onionSettings
                 && vm.showOnionSkin && vm.frames == before.frames && vm.layers == before.layers
                 && (try erasurePixels(vm.document)) == pixels, "Grid configure changed unrelated guides/artwork or diverged from manual")
-            vm.undo(); try require(content(vm.document) == content(before), "One Undo did not restore complete grid settings")
+            vm.undo()
+            try require(vm.frames[0].elements.isEmpty && vm.document.gridSettings == manual.gridSettings
+                && vm.showOnionSkin && vm.canRedo, "Undo must remove artwork while retaining grid/onion preferences")
             vm.redo(); await vm.flush()
             vm.gridEnabled = true; let manualShown = vm.document
-            vm.undo(); await vm.flush()
+            vm.gridEnabled = false; await vm.flush()
             _ = session.submit(SpatterGridInstruction.showExample, in: vm, accountID: nil, currentScope: { guest })
             await session.waitForCompletion()
             try require(session.status == .applied && content(vm.document) == content(manualShown)
@@ -2211,7 +2214,10 @@ private final class NetworkTrap: URLProtocol {
             await session.waitForCompletion()
             try require(session.status == .applied && !vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings
                 && vm.showOnionSkin && vm.document.onionSettings == noOp.onionSettings, "Hide grid lost remembered or onion settings")
-            vm.undo(); vm.redo(); vm.undo(); await vm.flush()
+            vm.undo(); vm.redo()
+            try require(!vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings
+                && (try erasurePixels(vm.document)) == pixels, "Artwork history lost hidden grid preferences or pixels")
+            vm.gridEnabled = true; await vm.flush()
             let saved = await vm.save(); try require(saved, "Grid settings save failed")
             let cold = StudioViewModel(storage: store), record = try store.loadAnimation(id: vm.document.id)!
             try require(await cold.openProject(record.metadata), "Grid cold open failed")

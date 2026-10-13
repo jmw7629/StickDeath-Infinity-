@@ -216,7 +216,11 @@ private final class NetworkTrap: URLProtocol {
                             "VM did not expose actual edit/dirty/undo state")
                 try require(receipt.revision == before.revision + 1 && receipt.createdElementIDs == ["editable-stroke"], "wrong transaction receipt")
                 vm.undo()
-                try require(content(vm.document) == content(before) && vm.canRedo, "ordinary UI undo did not reverse command transaction")
+                var expectedUndo = before
+                expectedUndo.gridEnabled = changed.gridEnabled
+                expectedUndo.onionEnabled = changed.onionEnabled
+                try require(content(vm.document) == content(expectedUndo) && vm.canRedo,
+                            "ordinary UI undo did not restore artwork while preserving current overlays")
                 vm.redo()
                 try require(content(vm.document) == content(changed), "ordinary UI redo did not restore command transaction")
                 await vm.flush()
