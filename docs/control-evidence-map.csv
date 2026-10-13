@@ -1,7 +1,62 @@
 identifier,file,screen,operation,history,issue,uiTest
+admin.agents.cap-cost,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text field 'Monthly cost cap (minor units)' -> binds monthlyMinor,n-a,#210 #285,deferred
+admin.agents.cap-daily,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text field 'Daily runs' -> binds daily,n-a,#210 #285,deferred
+admin.agents.cap-items,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text field 'Items per run' -> binds perRun,n-a,#210 #285,deferred
+admin.agents.emergency-stop,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,button,n-a,#210 #285,deferred
+admin.agents.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text,n-a,#210 #285,deferred
+admin.agents.instructions,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text field 'New instruction text (publishing creates the nex' -> binds instructionBody,n-a,#210 #285,deferred
+admin.agents.publish-instructions,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,button 'Publish instructions',n-a,#210 #285,deferred
+admin.agents.reason,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text field 'Required reason for any change' -> binds reason,n-a,#210 #285,deferred
+admin.agents.refresh,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,button 'Refresh registry' -> load,n-a,#210 #285,deferred
+admin.agents.rollback,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,button 'Roll back',n-a,#210 #285,deferred
+admin.agents.save-caps,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,button 'Save caps',n-a,#210 #285,deferred
+admin.agents.save-permissions,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,"button 'Save permissions' -> insert, binds 0",n-a,#210 #285,deferred
+admin.agents.select,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text,n-a,#210 #285,deferred
+admin.analytics.status,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAnalyticsContent,text 'Engagement analytics are not connected. Register',n-a,#210 #285,deferred
+admin.appeals.accept,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRemovalAppealsContent,button 'Accept and restore',n-a,#210 #285,deferred
+admin.appeals.note,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRemovalAppealsContent,"text field 'Member-visible decision reason' -> binds reviewed, binds note",n-a,#210 #285,deferred
+admin.appeals.play,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRemovalAppealsContent,button 'Play the removed rendition',n-a,#210 #285,deferred
+admin.appeals.refresh,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRemovalAppealsContent,button 'Refresh appeals' -> load,n-a,#210 #285,deferred
+admin.appeals.reject,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRemovalAppealsContent,button 'Reject appeal',n-a,#210 #285,deferred
+admin.appeals.select,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRemovalAppealsContent,text,n-a,#210 #285,deferred
+admin.challenges.brief,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text field 'Brief (up to 2000)' -> binds brief,n-a,#210 #285,deferred
+admin.challenges.cancel,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,button -> cancel,n-a,#210 #285,deferred
+admin.challenges.cancel-reason,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text field 'Cancellation reason' -> binds reason,n-a,#210 #285,deferred
+admin.challenges.closes,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,date picker 'Submissions close' -> binds closesAt,n-a,#210 #285,deferred
+admin.challenges.create,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,button 'Create draft challenge',n-a,#210 #285,deferred
+admin.challenges.ends,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,date picker 'Voting ends' -> binds endsAt,n-a,#210 #285,deferred
+admin.challenges.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text,n-a,#210 #285,deferred
+admin.challenges.refresh,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,button 'Refresh challenges' -> load,n-a,#210 #285,deferred
+admin.challenges.reward,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text field 'Reward text (configured real reward or empty)' -> binds reward,n-a,#210 #285,deferred
+admin.challenges.schedule,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,button -> binds 0.title,n-a,#210 #285,deferred
+admin.challenges.select,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text 'Scheduled challenges',n-a,#210 #285,deferred
+admin.challenges.starts,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,date picker 'Opens' -> binds startsAt,n-a,#210 #285,deferred
+admin.challenges.title,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text field 'Title (1–100)' -> binds title,n-a,#210 #285,deferred
+admin.finance.configure-annual,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,button 'Record owner configuration for this annual produ',n-a,#210 #285,deferred
+admin.finance.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,text,n-a,#210 #285,deferred
+admin.finance.product-id,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,text field 'Provider product id' -> binds productID,n-a,#210 #285,deferred
+admin.finance.reason,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,"text field 'Required reason' -> binds provider, binds tier, binds period",n-a,#210 #285,deferred
+admin.finance.refresh,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,button 'Next' -> load,n-a,#210 #285,deferred
+admin.finance.save-product,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,button 'Save product',n-a,#210 #285,deferred
+admin.finance.section,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,"picker 'Section' -> binds section, binds 0.1, binds 0.0",n-a,#210 #285,deferred
+admin.health.emergency-stop,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminHealthContent,text 'AGENT EMERGENCY STOP IS ACTIVE',n-a,#210 #285,deferred
+admin.health.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminHealthContent,text,n-a,#210 #285,deferred
+admin.health.refresh,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminHealthContent,button 'Refresh health' -> load,n-a,#210 #285,deferred
 admin.overview.status,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDashboardContent,text 'Recent activity is not connected.',n-a,#210 #285,deferred
+admin.review.history,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text 'Spatter video — owner approval required',n-a,#210 #285,deferred
 admin.review.renew-preview,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,button 'Renew private preview' -> load,n-a,#210 #285,deferred
 admin.review.rights,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,"button 'Decision notes / rights evidence' -> binds acknowledged, binds note",n-a,#210 #285,deferred
+admin.review.select,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,button 'Reject',n-a,#210 #285,deferred
+admin.review.storyboard,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text 'Script and storyboard: not supplied by the revie',n-a,#210 #285,deferred
+admin.rooms.reports.close,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRoomReportsContent,button 'Close room',n-a,#210 #285,deferred
+admin.rooms.reports.dismiss,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRoomReportsContent,button 'Dismiss',n-a,#210 #285,deferred
+admin.rooms.reports.reason,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRoomReportsContent,text field 'Required decision reason' -> binds reason,n-a,#210 #285,deferred
+admin.rooms.reports.refresh,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRoomReportsContent,button 'Refresh reports' -> load,n-a,#210 #285,deferred
+admin.rooms.reports.select,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRoomReportsContent,text,n-a,#210 #285,deferred
+admin.spatter.status,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminSpatterContent,"text 'No generation status, draft count or provider co'",n-a,#210 #285,deferred
+admin.step-up.banner,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminStepUpBanner,-> binds showing,n-a,#210 #285,deferred
+admin.step-up.notice,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDashboardView,text 'Privileged actions need a recent authenticator v',n-a,#210 #285,deferred
+admin.step-up.verify,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminStepUpBanner,button 'Verify authenticator now',n-a,#210 #285,deferred
 admin.users.history,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminUsersContent,button 'Account history',n-a,#210 #285,deferred
 app.notice,StickDeathInfinity/App/AppFlowView.swift,AppFlowView,button 'Dismiss',no,unmapped,deferred
 auth.back,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,text '‹',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
@@ -13,27 +68,116 @@ auth.provider.apple,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,-> a
 auth.provider.apple,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,-> authVM.signInWithApple,n-a,#134 #136 #137,deferred
 auth.recovery.save,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,button 'Save Password' -> authVM.updatePassword,n-a,#134 #136 #137,deferred
 auth.signup.notice,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,text,n-a,#134 #136 #137,deferred
-calendar.offline,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),label 'Retry',n-a,#297,deferred
+calendar.day.empty,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),text 'No scheduled items on this day.',n-a,#297,deferred
+calendar.error,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),progress,n-a,#297,deferred
+calendar.item,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),text,n-a,#297,deferred
+calendar.item.open-challenge,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarItemDetailView (retired; excluded from native target),button 'Open challenge',n-a,#297,deferred
+calendar.next-month,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),button 'Next month',n-a,#297,deferred
+calendar.offline,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),container 'calendar.offline' (identifier-derived; review source),n-a,#297,deferred
+calendar.prev-month,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),button 'Previous month' -> binds 0,n-a,#297,deferred
+calendar.retry,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),button 'Retry',n-a,#297,deferred
 calendar.screen,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),"-> load, binds detail, binds 0",n-a,#297,deferred
-calendar.sign-in,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),button 'Sign In',n-a,#297,deferred
+calendar.today,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),button 'Today',n-a,#297,deferred
+challenges.detail.empty,StickDeathInfinity/Views/Challenges/ChallengeDetailView.swift,ChallengeDetailView,text 'No eligible entries yet.' -> binds 0.id,n-a,unmapped,deferred
+challenges.detail.error,StickDeathInfinity/Views/Challenges/ChallengeDetailView.swift,ChallengeDetailView,"text 'Rules: enter your own approved, rights-cleared r'",n-a,unmapped,deferred
+challenges.detail.play,StickDeathInfinity/Views/Challenges/ChallengeDetailView.swift,ChallengeDetailView,button,n-a,unmapped,deferred
+challenges.detail.refresh,StickDeathInfinity/Views/Challenges/ChallengeDetailView.swift,ChallengeDetailView,button 'Refresh entries' -> load,n-a,unmapped,deferred
+challenges.detail.result,StickDeathInfinity/Views/Challenges/ChallengeDetailView.swift,ChallengeDetailView,text 'Result' -> binds 0.id,n-a,unmapped,deferred
+challenges.detail.submit,StickDeathInfinity/Views/Challenges/ChallengeDetailView.swift,ChallengeDetailView,button 'Submit entry' -> submit,n-a,unmapped,deferred
+challenges.detail.submit-picker,StickDeathInfinity/Views/Challenges/ChallengeDetailView.swift,ChallengeDetailView,"text 'Approved video' -> binds selection, binds 0.title, binds 0.id.uuidString",n-a,unmapped,deferred
+challenges.detail.vote,StickDeathInfinity/Views/Challenges/ChallengeDetailView.swift,ChallengeDetailView,label,n-a,unmapped,deferred
+challenges.detail.withdraw,StickDeathInfinity/Views/Challenges/ChallengeDetailView.swift,ChallengeDetailView,button 'Withdraw entry' -> load,n-a,unmapped,deferred
+challenges.list.card,StickDeathInfinity/Views/Challenges/ChallengesView.swift,ChallengeCard,text 'You have an entry in this challenge.',n-a,unmapped,deferred
+challenges.list.empty,StickDeathInfinity/Views/Challenges/ChallengesView.swift,ChallengesView,text,n-a,unmapped,deferred
+challenges.list.error,StickDeathInfinity/Views/Challenges/ChallengesView.swift,ChallengesView,progress,n-a,unmapped,deferred
+challenges.list.refresh,StickDeathInfinity/Views/Challenges/ChallengesView.swift,ChallengesView,"button 'Refresh challenges' -> load, binds 0.phase",n-a,unmapped,deferred
+feed.card,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text 'Export not permitted by the creator; sharing lin',n-a,unmapped,deferred
+feed.card.export,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,label,n-a,unmapped,deferred
+feed.card.like,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,label,n-a,unmapped,deferred
+feed.card.menu,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,image 'Report video',n-a,unmapped,deferred
+feed.card.play,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text,n-a,unmapped,deferred
+feed.card.share,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,label 'Share',n-a,unmapped,deferred
+feed.home.empty,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text 'No approved videos in this feed yet.',n-a,unmapped,deferred
+feed.home.error,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text,n-a,unmapped,deferred
+feed.home.load-more,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,button -> load,n-a,unmapped,deferred
+feed.home.notice,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,container 'feed.home.notice' (identifier-derived; review source),n-a,unmapped,deferred
+feed.home.offline,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,container 'feed.home.offline' (identifier-derived; review source),n-a,unmapped,deferred
+feed.home.refresh,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,button 'Refresh feed' -> load,n-a,unmapped,deferred
 onboarding.back,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,label,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.next,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,next-page button 'onboarding.next' (identifier-derived; review source),n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.position,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.skip,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text 'Skip',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
+profile.achievements.group,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileRecordsView,text 'No criteria configured.',n-a,#224,deferred
 profile.delete-account,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,"button 'Delete account' -> authVM.signOut, authVM.requestAccountDeletion",n-a,#135 #262,deferred
+profile.edit.avatar-notice,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text,n-a,#224,deferred
+profile.edit.avatar-picker,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,label -> binds avatarItem,n-a,#224,deferred
 profile.edit.bio,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text editor 'Bio' -> binds bio,n-a,#224,deferred
-profile.edit.notice,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text 'Name: 1–80 characters. Bio: up to 500 characters',n-a,#224,deferred
+profile.edit.notice,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text,n-a,#224,deferred
 profile.edit.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,button 'Edit username and bio' -> authVM.captureProfileEdit,n-a,#224,deferred
 profile.edit.save,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,"progress 'Save Profile' -> authVM.saveProfile, dismiss",n-a,#224,deferred
 profile.edit.username,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text field 'Your username' -> binds username,n-a,#224,deferred
+profile.edit.username-problem,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,container 'profile.edit.username-problem' (identifier-derived; review source),n-a,#224,deferred
 profile.identity,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,text -> binds 0,n-a,#294,deferred
+profile.portfolio,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfilePortfolioSection,container 'profile.portfolio' (identifier-derived; review source),n-a,#224,deferred
+profile.portfolio.empty,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfilePortfolioSection,text 'No approved renditions yet. Submit an exported M',n-a,#224,deferred
+profile.portfolio.play,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfilePortfolioSection,text -> binds 0.rounded,n-a,#224,deferred
 profile.projects.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Projects on this device',n-a,#294,testGuestProfileProjectsAndSettingsNavigation
-profile.sign-in,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Sign in or create an account',n-a,#134 #136 #137,deferred
+profile.records.message,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileRecordsView,progress 'Both public displays start off. Hiding your prof',n-a,#224,deferred
+profile.records.refresh,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileRecordsView,button 'Refresh' -> load,n-a,#224,deferred
+profile.records.save,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileRecordsView,button 'Save display preferences' -> load,n-a,#224,deferred
+profile.records.show-badges,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileRecordsView,toggle 'Show my earned badges publicly' -> binds showBadges,n-a,#224,deferred
+profile.records.show-records,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileRecordsView,toggle 'Show my win/loss record publicly' -> binds showRecords,n-a,#224,deferred
+profile.removal-appeals.explanation,StickDeathInfinity/Views/Profile/ProfileView.swift,RemovalAppealsView,text field 'Explanation (up to 2000 characters)' -> binds explanation,n-a,#224,deferred
+profile.removal-appeals.media,StickDeathInfinity/Views/Profile/ProfileView.swift,RemovalAppealsView,text field 'Video identifier' -> binds mediaID,n-a,#224,deferred
+profile.removal-appeals.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,button 'Removed video appeals',n-a,#224,deferred
+profile.removal-appeals.submit,StickDeathInfinity/Views/Profile/ProfileView.swift,RemovalAppealsView,button 'Submit appeal' -> submit,n-a,#224,deferred
+profile.reviews.allow-export,StickDeathInfinity/Views/Profile/ProfileView.swift,CreatorReviewsView,toggle 'Allow viewers to save this video file',n-a,#224,deferred
+profile.reviews.publish-feed,StickDeathInfinity/Views/Profile/ProfileView.swift,CreatorReviewsView,button 'Publish approved video to the SDI feed',n-a,#224,deferred
+profile.sign-in,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Sign in or create an account' -> binds 0,n-a,#134 #136 #137,deferred
+profile.statistics,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,text,n-a,#224,deferred
 profile.subscription-status,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,"text 'Pricing, renewal and purchase information are no'",n-a,#258,deferred
-rooms.calendar,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,progress 'Your Studio project is saved before sign-in and ',n-a,#297,deferred
-rooms.sign-in,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Sign In',n-a,#134 #136 #137,deferred
-rooms.warRoom,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.warRoom' (identifier-derived; review source),n-a,#221,testRoomsReplaceMessagingWithoutClaimingConnectedServices
-rooms.watchTogether,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.watchTogether' (identifier-derived; review source),n-a,#296,deferred
+rooms.browser.create,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Create room',no,#228 #234,deferred
+rooms.browser.empty,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'No accepted rooms.',no,#228 #234,deferred
+rooms.browser.refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Refresh rooms' -> load,no,#228 #234,deferred
+rooms.browser.room,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,"text 'Your rooms' -> load, binds 0",no,#228 #234,deferred
+rooms.calendar,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,progress -> load,no,#297,deferred
+rooms.create.consent,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomCreateSheet,toggle 'I choose to share this project with the members ' -> binds consent,no,#228 #234,deferred
+rooms.create.permission-edit,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomCreateSheet,toggle 'Members may edit (otherwise view only)' -> binds allowEdit,no,#228 #234,deferred
+rooms.create.project-picker,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomCreateSheet,text 'Project' -> binds projectID,no,#228 #234,deferred
+rooms.create.submit,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomCreateSheet,button,no,#228 #234,deferred
+rooms.create.title,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomCreateSheet,"text field 'Room name' -> binds 0.id.uuidString, binds title",no,#228 #234,deferred
+rooms.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,container 'rooms.error' (identifier-derived; review source),no,#228 #234,deferred
+rooms.join.code,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,text field 'Invitation code' -> binds code,no,#228 #234,deferred
+rooms.join.consent,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,toggle 'I agree to join this room and let its owner see ' -> binds consent,no,#228 #234,deferred
+rooms.join.request,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,button 'Request admission',no,#228 #234,deferred
+rooms.join.review,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,button 'Review invitation',no,#228 #234,deferred
+rooms.member.approve,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Approve' -> binds 0,no,#228 #234,deferred
+rooms.member.block,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Block',no,#228 #234,deferred
+rooms.member.remove,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Remove',no,#228 #234,deferred
+rooms.member.role,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button,no,#228 #234,deferred
+rooms.not-configured,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'Collaborate by agreement. Invitation codes never',no,#228 #234,deferred
+rooms.notice,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,container 'rooms.notice' (identifier-derived; review source),no,#228 #234,deferred
+rooms.quotas,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomQuotaPanel,container 'rooms.quotas' (identifier-derived; review source),no,#228 #234,deferred
+rooms.quotas.transfer-unavailable,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomQuotaPanel,text 'Quotas and transfers',no,#228 #234,deferred
+rooms.report.detail,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,"text field 'What happened? (optional, up to 2000 characters)' -> binds draft.detail",no,#228 #234,deferred
+rooms.report.reason,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,"text 'Reason' -> binds draft.reason, binds 0.title, binds 0",no,#228 #234,deferred
+rooms.report.submit,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,button -> submit,no,#228 #234,deferred
+rooms.requests.item,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'Your pending requests',no,#228 #234,deferred
+rooms.room.back,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Back to rooms' -> auth.userId.flatMap,no,#228 #234,deferred
+rooms.room.copy-code,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,label 'Copy',no,#228 #234,deferred
+rooms.room.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text,no,#228 #234,deferred
+rooms.room.invite,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Create 24-hour invite',no,#228 #234,deferred
+rooms.room.notice,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,container 'rooms.room.notice' (identifier-derived; review source),no,#228 #234,deferred
+rooms.room.open-studio,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Open shared project in Studio',no,#228 #234,deferred
+rooms.room.project,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text 'Loading room summary…',no,#228 #234,deferred
+rooms.room.refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Refresh members' -> refresh,no,#228 #234,deferred
+rooms.room.report,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Report room',no,#228 #234,deferred
+rooms.room.revoke-invites,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Revoke invites and pending requests',no,#228 #234,deferred
+rooms.room.share-code,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,label 'Share code',no,#228 #234,deferred
+rooms.room.sync-refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Refresh edit stream',no,#228 #234,deferred
+rooms.room.sync-status,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text 'Shared edit stream',no,#228 #234,deferred
+rooms.warRoom,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.warRoom' (identifier-derived; review source),no,#221,testRoomsReplaceMessagingWithoutClaimingConnectedServices
+rooms.watchTogether,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.watchTogether' (identifier-derived; review source),no,#296,deferred
 settings.delete-account,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Delete Account',n-a,unmapped,deferred
 settings.sign-out,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign Out' -> authVM.signOut,n-a,unmapped,deferred
 spatter.artwork.order-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Send selected artwork backward',no,#203,deferred
@@ -535,12 +679,47 @@ studio.wand.sampling,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.sw
 studio.wand.select-all,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Select all pixels' -> vm.changeImageRegionMembership,no,#153,deferred
 studio.wand.shrink,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Shrink 1 px' -> vm.changeImageRegionMembership,no,#153,deferred
 studio.wand.tolerance,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,slider 'Tolerance' -> binds vm.wandTolerance,no,#153,deferred
+warRoom.empty,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,text 'No available matchups.',n-a,#221 #226,deferred
+warRoom.error,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,text 'Watch both videos and pick your favorite. One cu' -> auth.userId.flatMap,n-a,#221 #226,deferred
 warRoom.leaderboard,StickDeathInfinity/Views/Collab/LeaderboardView.swift,LeaderboardView,text -> load,n-a,#221 #226,deferred
-warRoom.screen,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,"button 'Cancel' -> binds reporting, binds reportReason",n-a,#221 #226,deferred
+warRoom.leaderboard-link,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,label 'Leaderboard',n-a,#221 #226,deferred
+warRoom.leaderboard.empty,StickDeathInfinity/Views/Collab/LeaderboardView.swift,LeaderboardView,text 'No public finalized records yet.',n-a,#221 #226,deferred
+warRoom.leaderboard.refresh,StickDeathInfinity/Views/Collab/LeaderboardView.swift,LeaderboardView,button 'Refresh records' -> load,n-a,#221 #226,deferred
+warRoom.match.accept,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button 'Accept with my selected video',n-a,#221 #226,deferred
+warRoom.match.block,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button 'Block creator',n-a,#221 #226,deferred
+warRoom.match.mute,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button,n-a,#221 #226,deferred
+warRoom.match.play-left,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button,n-a,#221 #226,deferred
+warRoom.match.play-right,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button,n-a,#221 #226,deferred
+warRoom.match.report,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button 'Report',n-a,#221 #226,deferred
+warRoom.match.result,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,text,n-a,#221 #226,deferred
+warRoom.match.watch,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,label,n-a,#221 #226,deferred
+warRoom.match.withdraw,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button 'Withdraw',n-a,#221 #226,deferred
+warRoom.notice,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,container 'warRoom.notice' (identifier-derived; review source),n-a,#221 #226,deferred
+warRoom.notices.appeal,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarNoticesView,button 'Appeal this decision',n-a,#221 #226,deferred
+warRoom.notices.explanation,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarNoticesView,text field 'Explain why this decision should be reviewed' -> binds explanation,n-a,#221 #226,deferred
+warRoom.notices.refresh,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarNoticesView,button 'Refresh notices',n-a,#221 #226,deferred
+warRoom.notices.submit,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarNoticesView,button 'Submit appeal',n-a,#221 #226,deferred
+warRoom.playback.mode,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,"text 'Playback' -> binds 0, binds 0.title",n-a,#221 #226,deferred
+warRoom.refresh,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button 'Refresh matchups' -> load,n-a,#221 #226,deferred
+warRoom.report.reason,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,"text field 'What happened?' -> load, binds reporting, binds reportReason",n-a,#221 #226,deferred
+warRoom.report.submit,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button 'Submit report',n-a,#221 #226,deferred
+warRoom.screen,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,text 'Cancel' -> binds 0,n-a,#221 #226,deferred
+warRoom.submission.agree,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,toggle 'I agree to submit this approved video under the ' -> binds agreed,n-a,#221 #226,deferred
+warRoom.submission.opponent,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,text field 'Opponent account ID' -> binds opponent,n-a,#221 #226,deferred
+warRoom.submission.propose,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,button 'Propose matchup',n-a,#221 #226,deferred
+warRoom.submission.video,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,"text 'Video' -> binds selection, binds 0.title, binds 0.id.uuidString",n-a,#221 #226,deferred
+watchTogether.clock,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,text 'The host controls shared playback.',n-a,#296,deferred
+watchTogether.leave,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button 'Leave',n-a,#296,deferred
 watchTogether.localMute,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,label -> toggle,n-a,#296,deferred
 watchTogether.localVolume,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,slider 'Volume on this device',n-a,#296,deferred
+watchTogether.media-picker,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,"text 'Approved video' -> binds selectedMedia, binds 0.title, binds 0.id.uuidString",n-a,#296,deferred
 watchTogether.participants,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,text 'Shows account identifiers from room membership o',n-a,#296,deferred
+watchTogether.play-pause,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button,n-a,#296,deferred
+watchTogether.reconnect,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button 'Reconnect',n-a,#296,deferred
+watchTogether.room,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,label 'No approved videos are available.',n-a,#296,deferred
 watchTogether.screen,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,-> load,n-a,#296,deferred
+watchTogether.seek,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,slider 'Shared video position' -> binds seekPosition,n-a,#296,deferred
+watchTogether.share-video,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button 'Share selected video',n-a,#296,deferred
 watchTogether.sign-in,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button 'Sign In',n-a,#296,deferred
 welcome.account-unavailable,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,text 'Sign-in is unavailable. Your local Studio is rea',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 welcome.content,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,scroll container 'welcome.content' (identifier-derived; review source),n-a,#134 #136 #137,helper:tapWelcomeAction

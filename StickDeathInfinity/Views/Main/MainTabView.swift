@@ -62,6 +62,10 @@ struct MainTabView: View {
                 AppTutorialView(isPresented: showTutorial)
             }
         }
+        // A shared room project opened from Rooms hands off to the Studio tab.
+        .onReceive(NotificationCenter.default.publisher(for: .sdiCommunityOpenStudio)) { _ in
+            withAnimation(.easeInOut(duration: 0.15)) { activeTab = .studio }
+        }
     }
 
     // MARK: - Bottom Nav Bar

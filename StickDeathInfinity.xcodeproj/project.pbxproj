@@ -33,7 +33,6 @@
 		CC8F8BF92ACF1F89EE1627F9 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0479BA6F7780A4DEB3C60F2 /* AuthService.swift */; };
 		9833E4086A52A2A5B405C4E7 /* ChallengeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE48B38951EADD41C6E5E75A /* ChallengeService.swift */; };
 		748453AED889D7E4CD66A74D /* ProjectService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41F0B165DD87455546A7D836 /* ProjectService.swift */; };
-		B36809DEAD6E1AC1EA8CC097 /* SocialService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20DBEA40743E8B29BF0DA349 /* SocialService.swift */; };
 		3A794D3755DF28CDDA6127E2 /* SpatterKnowledgeBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34E427184981FBEC697F07A /* SpatterKnowledgeBase.swift */; };
 		A578A3A5DD22E83B0716D505 /* SpatterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81DAB4AA71459F2780EA9C33 /* SpatterService.swift */; };
 		F4273EE3A499F240CEE098AC /* SpatterBotService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E975ABD831D8A007A69CF51C /* SpatterBotService.swift */; };
@@ -169,6 +168,22 @@
 		93DE111B5F25B092FBE62817 /* StudioDodgeBurnSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7C85B5E0BF2257B209119DC /* StudioDodgeBurnSession.swift */; };
 DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167DF61D75773FC9A39D49CE; };
 		A1DAE47624167521029F1A9B /* frameworkBuild */ = {isa = PBXBuildFile; productRef = 78279A7AFBC995917F5DE1A6; };
+		2CA87708C1C4BCC0CB3578A4 /* CommunityModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 735BEA1269807500EC232221 /* CommunityModels.swift */; };
+		1AFE10FF01E4E4DF69656052 /* ChallengeLifecycleClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25B6DEBFD700AAD6A59C4A1E /* ChallengeLifecycleClient.swift */; };
+		78E42BED993BF28406A8D082 /* RoomSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E765C1C2A24DAE3DDDC8B71 /* RoomSessionCoordinator.swift */; };
+		3CF08A8E74051DA0DAC4B9CF /* RoomsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 789E252DA7A77F141C94F064 /* RoomsClient.swift */; };
+		F6A461DEEF16AE136F8951D7 /* AdminOperationsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 568162C57EF5AA929C2596A6 /* AdminOperationsClient.swift */; };
+		D001C9B7FE41E6A27652879C /* AvatarUploadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D226B83EB7046F2D6676B1D /* AvatarUploadService.swift */; };
+		3C17981EA332F1CD7C0E2237 /* CommunityTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C095FEC3B8D7F0051130A3F2 /* CommunityTransport.swift */; };
+		E323199B7320971DF6C97C13 /* FeedClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDD7A243D595CD988EC712D1 /* FeedClient.swift */; };
+		E7F15872AA87DB515043DAA7 /* ProfileClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C975C91F4E83B31921454F0 /* ProfileClient.swift */; };
+		430876905B94BE284A30390B /* SupabaseCommunityTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBA6D86AA006DAF01F5C961D /* SupabaseCommunityTransport.swift */; };
+		FF03FA1673D34C76FA93AD53 /* StudioAudioTimelineLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C74204C6189B02C8D10FB0E /* StudioAudioTimelineLogic.swift */; };
+		F30ECA49E6AEE2CCC716618F /* StudioAudioWaveformCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FF2417C58A3CE8D66F7870B /* StudioAudioWaveformCache.swift */; };
+		326491B57399773D158EC1DD /* StudioSoundCredits.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEA54F2E964057DEA20141A /* StudioSoundCredits.swift */; };
+		C228BE99AF0E06643DBC4EAA /* WarRoomClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E9568FC6E5AB1A9E7E44059 /* WarRoomClient.swift */; };
+		9AE12A21DE3C70A990A621FD /* CommunityChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA88ECF7ECD59A7B32AC204C /* CommunityChrome.swift */; };
+		EB101BFC249B15DF959F78F4 /* StudioFilesSavePresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDC71D132ED80FA9A6723AB0 /* StudioFilesSavePresenter.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -208,7 +223,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		F0479BA6F7780A4DEB3C60F2 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		BE48B38951EADD41C6E5E75A /* ChallengeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChallengeService.swift; sourceTree = "<group>"; };
 		41F0B165DD87455546A7D836 /* ProjectService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectService.swift; sourceTree = "<group>"; };
-		20DBEA40743E8B29BF0DA349 /* SocialService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocialService.swift; sourceTree = "<group>"; };
 		C34E427184981FBEC697F07A /* SpatterKnowledgeBase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterKnowledgeBase.swift; sourceTree = "<group>"; };
 		81DAB4AA71459F2780EA9C33 /* SpatterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterService.swift; sourceTree = "<group>"; };
 		E975ABD831D8A007A69CF51C /* SpatterBotService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterBotService.swift; sourceTree = "<group>"; };
@@ -347,6 +361,22 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		E7C85B5E0BF2257B209119DC /* StudioDodgeBurnSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioDodgeBurnSession.swift"; sourceTree = SOURCE_ROOT; };
 167DF61D75773FC9A39D49CE /* source */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/AuthState/AuthStateTests.swift; sourceTree = SOURCE_ROOT; };
 		BD0DCA309307BF9D0201B758 /* product */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StickDeathInfinityAuthTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		735BEA1269807500EC232221 /* CommunityModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/CommunityModels.swift"; sourceTree = SOURCE_ROOT; };
+		25B6DEBFD700AAD6A59C4A1E /* ChallengeLifecycleClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Challenge/ChallengeLifecycleClient.swift"; sourceTree = SOURCE_ROOT; };
+		1E765C1C2A24DAE3DDDC8B71 /* RoomSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Rooms/RoomSessionCoordinator.swift"; sourceTree = SOURCE_ROOT; };
+		789E252DA7A77F141C94F064 /* RoomsClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Rooms/RoomsClient.swift"; sourceTree = SOURCE_ROOT; };
+		568162C57EF5AA929C2596A6 /* AdminOperationsClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Social/AdminOperationsClient.swift"; sourceTree = SOURCE_ROOT; };
+		6D226B83EB7046F2D6676B1D /* AvatarUploadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Social/AvatarUploadService.swift"; sourceTree = SOURCE_ROOT; };
+		C095FEC3B8D7F0051130A3F2 /* CommunityTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Social/CommunityTransport.swift"; sourceTree = SOURCE_ROOT; };
+		EDD7A243D595CD988EC712D1 /* FeedClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Social/FeedClient.swift"; sourceTree = SOURCE_ROOT; };
+		7C975C91F4E83B31921454F0 /* ProfileClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Social/ProfileClient.swift"; sourceTree = SOURCE_ROOT; };
+		CBA6D86AA006DAF01F5C961D /* SupabaseCommunityTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Social/SupabaseCommunityTransport.swift"; sourceTree = SOURCE_ROOT; };
+		1C74204C6189B02C8D10FB0E /* StudioAudioTimelineLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioAudioTimelineLogic.swift"; sourceTree = SOURCE_ROOT; };
+		0FF2417C58A3CE8D66F7870B /* StudioAudioWaveformCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioAudioWaveformCache.swift"; sourceTree = SOURCE_ROOT; };
+		6BEA54F2E964057DEA20141A /* StudioSoundCredits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioSoundCredits.swift"; sourceTree = SOURCE_ROOT; };
+		9E9568FC6E5AB1A9E7E44059 /* WarRoomClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/WarRoom/WarRoomClient.swift"; sourceTree = SOURCE_ROOT; };
+		CA88ECF7ECD59A7B32AC204C /* CommunityChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Collab/CommunityChrome.swift"; sourceTree = SOURCE_ROOT; };
+		DDC71D132ED80FA9A6723AB0 /* StudioFilesSavePresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioFilesSavePresenter.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -451,6 +481,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		31B4F99131B295EC586BBC18 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				735BEA1269807500EC232221 /* CommunityModels.swift */,
 				4D55B9BB2295236FE2D381EE /* SpatterMotionRecipe.swift */,
 				8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */,
 				BC83D8E81EBA4936AF0E9ED4 /* StudioCommands.swift */,
@@ -489,6 +520,11 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		444FE51936F2829A8267B473 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				8BA7B604059AD2BA8702562D /* WarRoom */,
+				6BEA54F2E964057DEA20141A /* StudioSoundCredits.swift */,
+				0FF2417C58A3CE8D66F7870B /* StudioAudioWaveformCache.swift */,
+				1C74204C6189B02C8D10FB0E /* StudioAudioTimelineLogic.swift */,
+				54FD439F3474ABE7A8C46D90 /* Rooms */,
 				1726C3AA18FB3C0CF058C144 /* StudioBrushRenderer.swift */,
 				5129B474A6397D64F5CCE559 /* StudioAudioImportService.swift */,
 				8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */,
@@ -561,6 +597,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		4A6CA8964B099D03D70149E6 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				CADE69133361D0E471AFF879 /* Collab */,
 				90132A03E62C27C079B40BC6 /* Auth */,
 				A1E8E02D27AC9EF0C0FD6320 /* Challenges */,
 				19557ED54AC1CAE0246282BE /* Components */,
@@ -598,6 +635,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		E17A356E63009412D6C19673 /* Challenge */ = {
 			isa = PBXGroup;
 			children = (
+				25B6DEBFD700AAD6A59C4A1E /* ChallengeLifecycleClient.swift */,
 				BE48B38951EADD41C6E5E75A /* ChallengeService.swift */,
 			);
 			path = Challenge;
@@ -614,7 +652,12 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		250A8DC3DF93D70CBF473523 /* Social */ = {
 			isa = PBXGroup;
 			children = (
-				20DBEA40743E8B29BF0DA349 /* SocialService.swift */,
+				CBA6D86AA006DAF01F5C961D /* SupabaseCommunityTransport.swift */,
+				7C975C91F4E83B31921454F0 /* ProfileClient.swift */,
+				EDD7A243D595CD988EC712D1 /* FeedClient.swift */,
+				C095FEC3B8D7F0051130A3F2 /* CommunityTransport.swift */,
+				6D226B83EB7046F2D6676B1D /* AvatarUploadService.swift */,
+				568162C57EF5AA929C2596A6 /* AdminOperationsClient.swift */,
 			);
 			path = Social;
 			sourceTree = "<group>";
@@ -758,6 +801,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		3B024C3853998DADC30849C9 /* Studio */ = {
 			isa = PBXGroup;
 			children = (
+				FFD5B6ABA6744D1B1B3E630C /* Panels */,
 				D2E14BAC8AF4FCFE2BC956AF /* SpatterMotionRecipePanel.swift */,
 				59076FC7529E68BDBECFB946 /* StudioImageImportPanel.swift */,
 				3D9126553C3561AC5D1ABDB4 /* StudioImageLibraryView.swift */,
@@ -794,6 +838,39 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXGroup;
 			children = (B1D0394B6F991E65F7774F78 /* StudioSmokeUITests.swift */,);
 			path = Tests/NativeUI;
+			sourceTree = "<group>";
+		};
+		54FD439F3474ABE7A8C46D90 /* Rooms */ = {
+			isa = PBXGroup;
+			children = (
+				789E252DA7A77F141C94F064 /* RoomsClient.swift */,
+				1E765C1C2A24DAE3DDDC8B71 /* RoomSessionCoordinator.swift */,
+			);
+			path = Rooms;
+			sourceTree = "<group>";
+		};
+		8BA7B604059AD2BA8702562D /* WarRoom */ = {
+			isa = PBXGroup;
+			children = (
+				9E9568FC6E5AB1A9E7E44059 /* WarRoomClient.swift */,
+			);
+			path = WarRoom;
+			sourceTree = "<group>";
+		};
+		CADE69133361D0E471AFF879 /* Collab */ = {
+			isa = PBXGroup;
+			children = (
+				CA88ECF7ECD59A7B32AC204C /* CommunityChrome.swift */,
+			);
+			path = Collab;
+			sourceTree = "<group>";
+		};
+		FFD5B6ABA6744D1B1B3E630C /* Panels */ = {
+			isa = PBXGroup;
+			children = (
+				DDC71D132ED80FA9A6723AB0 /* StudioFilesSavePresenter.swift */,
+			);
+			path = Panels;
 			sourceTree = "<group>";
 		};
 		/* End PBXGroup section */
@@ -911,6 +988,22 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EB101BFC249B15DF959F78F4 /* StudioFilesSavePresenter.swift in Sources */,
+				9AE12A21DE3C70A990A621FD /* CommunityChrome.swift in Sources */,
+				C228BE99AF0E06643DBC4EAA /* WarRoomClient.swift in Sources */,
+				326491B57399773D158EC1DD /* StudioSoundCredits.swift in Sources */,
+				F30ECA49E6AEE2CCC716618F /* StudioAudioWaveformCache.swift in Sources */,
+				FF03FA1673D34C76FA93AD53 /* StudioAudioTimelineLogic.swift in Sources */,
+				430876905B94BE284A30390B /* SupabaseCommunityTransport.swift in Sources */,
+				E7F15872AA87DB515043DAA7 /* ProfileClient.swift in Sources */,
+				E323199B7320971DF6C97C13 /* FeedClient.swift in Sources */,
+				3C17981EA332F1CD7C0E2237 /* CommunityTransport.swift in Sources */,
+				D001C9B7FE41E6A27652879C /* AvatarUploadService.swift in Sources */,
+				F6A461DEEF16AE136F8951D7 /* AdminOperationsClient.swift in Sources */,
+				3CF08A8E74051DA0DAC4B9CF /* RoomsClient.swift in Sources */,
+				78E42BED993BF28406A8D082 /* RoomSessionCoordinator.swift in Sources */,
+				1AFE10FF01E4E4DF69656052 /* ChallengeLifecycleClient.swift in Sources */,
+				2CA87708C1C4BCC0CB3578A4 /* CommunityModels.swift in Sources */,
 				C78931511F16777575D84DF0 /* SpatterMotionRecipePanel.swift in Sources */,
 				E78451B6A27000224D3946FD /* SpatterStudioEditSession.swift in Sources */,
 				9625F0E7F0F535C0CCBC456D /* SpatterMotionRecipe.swift in Sources */,
@@ -1019,7 +1112,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				CC8F8BF92ACF1F89EE1627F9 /* AuthService.swift in Sources */,
 				9833E4086A52A2A5B405C4E7 /* ChallengeService.swift in Sources */,
 				748453AED889D7E4CD66A74D /* ProjectService.swift in Sources */,
-				B36809DEAD6E1AC1EA8CC097 /* SocialService.swift in Sources */,
 				3A794D3755DF28CDDA6127E2 /* SpatterKnowledgeBase.swift in Sources */,
 				A578A3A5DD22E83B0716D505 /* SpatterService.swift in Sources */,
 				F4273EE3A499F240CEE098AC /* SpatterBotService.swift in Sources */,

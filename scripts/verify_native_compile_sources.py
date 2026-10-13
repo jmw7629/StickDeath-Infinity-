@@ -8,6 +8,15 @@ ROOT = Path(__file__).resolve().parents[1]
 # These production types refer to each other directly. Keep the real catalogue
 # in tests that compile preview sessions; a test-only stand-in would hide wiring.
 DEPENDENCIES = {
+    # Community clients share one model file and one transport protocol.
+    "StickDeathInfinity/Services/Social/CommunityTransport.swift": {"StickDeathInfinity/Models/CommunityModels.swift"},
+    "StickDeathInfinity/Services/Social/FeedClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Social/ProfileClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Social/AdminOperationsClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Rooms/RoomsClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Rooms/RoomSessionCoordinator.swift": {"StickDeathInfinity/Services/Rooms/RoomsClient.swift"},
+    "StickDeathInfinity/Services/WarRoom/WarRoomClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
+    "StickDeathInfinity/Services/Challenge/ChallengeLifecycleClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
     # The motion-recipe suite checks every catalogued instruction example.
     "Tests/SpatterMotionRecipe/main.swift": {
         "StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift",

@@ -21,12 +21,14 @@ struct LeaderboardView: View {
                 Text("Up to 100 creators who choose to show their records. Ranked by finalized wins; equal wins share a rank. Removed matches do not count.")
                     .font(.callout).foregroundStyle(Color.sdTextSecondary)
                 Text("Manage your visibility in Profile → Records & badges.").font(.caption)
-                if !auth.isAuthenticated { Label("Sign in to view records", systemImage: "lock") }
+                if !auth.isAuthenticated { CommunitySignInPrompt(text: "Sign in to view records", identifier: "warRoom.leaderboard.sign-in") }
                 else {
-                    Button("Refresh records") { Task { await load() } }.disabled(busy)
+                    Button("Refresh records") { Task { await load() } }
+                        .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                        .accessibilityIdentifier("warRoom.leaderboard.refresh")
                     if busy { ProgressView() }
                     if let message { Text(message).foregroundStyle(Color.sdRed) }
-                    if loaded && leaders.isEmpty { Text("No public finalized records yet.") }
+                    if loaded && leaders.isEmpty { Text("No public finalized records yet.").accessibilityIdentifier("warRoom.leaderboard.empty") }
                     ForEach(leaders) { leader in
                         HStack(alignment: .top, spacing: 12) {
                             Text("#\(leader.rank)").font(.specialElite(22)).foregroundStyle(Color.sdRed)
@@ -34,9 +36,12 @@ struct LeaderboardView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(leader.name).font(.specialElite(18))
                                 Text("\(leader.wins) wins · \(leader.losses) losses · \(leader.ties) ties").font(.callout)
+                                // Badges arrive only for creators who chose to show them; nothing is
+                                // inferred for the others.
                                 ForEach(leader.badges ?? []) { badge in
                                     Label(badge.title, systemImage: "seal").font(.caption)
                                 }
+                                if leader.badges == nil { Text("Badges hidden by this creator").font(.caption).foregroundStyle(Color.sdTextSecondary) }
                             }
                             Spacer(minLength: 0)
                         }.padding().frame(maxWidth: .infinity, alignment: .leading)
