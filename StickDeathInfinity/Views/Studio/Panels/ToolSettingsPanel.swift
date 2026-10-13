@@ -407,10 +407,14 @@ struct FloatingToolSettingsPanel: View {
                     Toggle("Bold", isOn: $vm.textStyle.bold).accessibilityIdentifier("studio.text.bold")
                     Toggle("Italic", isOn: $vm.textStyle.italic).accessibilityIdentifier("studio.text.italic")
                 }.font(.specialElite(10))
-                ColorPicker("Text color", selection: $vm.textPickerColor, supportsOpacity: true)
-                    .font(.specialElite(12))
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("studio.text.color")
+                HStack {
+                    Text("Text color").font(.specialElite(12))
+                    Spacer()
+                    ColorPicker("Text color", selection: $vm.textPickerColor, supportsOpacity: true)
+                        .labelsHidden()
+                        .frame(minWidth: 44, minHeight: 44)
+                        .accessibilityIdentifier("studio.text.color")
+                }
                 SettingsSlider(label: "Box Width", value: $vm.textStyle.boxWidth, range: 16...4096, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Box Height", value: $vm.textStyle.boxHeight, range: 16...4096, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Rotation", value: $vm.textStyle.rotation, range: -180...180, unit: "°", accent: accentColor)

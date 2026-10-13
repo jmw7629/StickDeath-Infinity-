@@ -3583,12 +3583,10 @@ final class StudioSmokeUITests: XCTestCase {
             }, evaluatedWith: picker).waitUntilFulfilled(timeout: 8)
             if !pickerReady { captureHierarchy(app, name: "native-text-colorwell-not-settled") }
             XCTAssertTrue(pickerReady, "Native Text color swatch did not become stable and actionable")
-            // Observed ColorWell includes its label; only the right circular
-            // swatch opens UIKit's picker. Derive its center from actual bounds.
-            let well = picker.frame
-            XCTAssertGreaterThan(well.width, well.height)
-            picker.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2)).tap()
+            // The color well exposes only its swatch, separately from the
+            // visible row label. Activate the actual control, not an inferred
+            // trailing point within a combined label-and-swatch rectangle.
+            picker.tap()
             // iOS exposes this native picker track as Other, with a separate
             // percentage TextField; the Studio opacity Slider is underneath.
             let systemPicker = app.otherElements["UIColorPickerView"].firstMatch
