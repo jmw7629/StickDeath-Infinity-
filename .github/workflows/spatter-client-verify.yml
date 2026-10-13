@@ -67,8 +67,12 @@ jobs:
           persist-credentials: false
       - name: Run backend Python tests with fake transports
         run: python3 -m unittest discover -s backend/tests -t .
+      - name: Run the Spatter backend handler tests
+        run: python3 -m unittest discover -s backend/spatter -p 'test_*.py' -t .
       - name: Apply SQL candidates in README order and run the SQL tests
         run: bash scripts/backend/run_sql_tests.sh
+      - name: Rehearse backup and restore on the throwaway cluster
+        run: bash scripts/backend/verify_backup.sh
   source-security:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
