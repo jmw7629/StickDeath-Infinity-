@@ -26,7 +26,7 @@ from pathlib import Path
 
 LEDGER_HEADING = re.compile(r"^##\s+Ledger\s*$", re.IGNORECASE)
 HEADING = re.compile(r"^##\s+")
-ROW = re.compile(r"^\s*(?:[-*]\s+)?\|?\s*#(\d+)\s*\|\s*([^|]+?)\s*(?:\|\s*(.*?))?\s*\|?\s*$")
+ROW = re.compile(r"^\s*(?:[-*]\s+)?\|?\s*#(\d+)(?:\s+[^|]*?)?\s*\|\s*([^|]+?)\s*(?:\|\s*(.*?))?\s*\|?\s*$")
 KNOWN_STATES = ("DONE-in-source", "DEFERRED-native-verification", "OWNER-GATED ⭐", "PARTIAL", "NOT-STARTED")
 
 
