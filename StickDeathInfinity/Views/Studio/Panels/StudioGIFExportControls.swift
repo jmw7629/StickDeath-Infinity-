@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 struct StudioGIFExportControls: View {
     @ObservedObject var vm: StudioViewModel
     @ObservedObject var gif: StudioGIFPanelState
+    var directRequest: StudioGIFPanelState.DirectRequest? = nil
+    var onDirectRequestConsumed: () -> Void = {}
     var onReady: () -> Void = {}
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
@@ -84,6 +86,14 @@ struct StudioGIFExportControls: View {
             if let pending = shareLifetime.pendingMessage {
                 Text(pending).font(.specialElite(11))
                     .foregroundColor(.white.opacity(0.75)).accessibilityIdentifier("studio.export.gif.share.pending")
+            }
+            if let error = gif.directError {
+                Text(error).foregroundColor(Color(hex: "#FF8888"))
+                    .font(.specialElite(11)).accessibilityIdentifier("studio.export.gif.direct-error")
+            }
+            if let provenance = gif.directArtifactDescription {
+                Text(provenance).font(.specialElite(10))
+                    .accessibilityIdentifier("studio.export.gif.spatter-receipt")
             }
             if let error = session.errorMessage {
                 Text(error).foregroundColor(Color(hex: "#FF8888"))
@@ -207,7 +217,14 @@ struct StudioGIFExportControls: View {
                                     foreground: scope.isForeground && scope.isStudioVisible)) {
             await playPreview()
         }
-        .onAppear { isVisible = true; refreshScope(); loadPreview() }
+        .onAppear {
+            isVisible = true; refreshScope()
+            if let request = directRequest {
+                _ = gif.start(request, from: vm, scope: scope)
+                onDirectRequestConsumed()
+            }
+            loadPreview()
+        }
         .onDisappear {
             previewPlaying = false
             previewImage = nil

@@ -1,0 +1,40 @@
+# CI step candidate for .github/workflows/spatter-client-verify.yml (native-ios-build job,
+# place next to "Verify explicit local motion recipes through production Studio commands").
+# Compiles Tests/SpatterPlanner against the production model/command/editor layer with the
+# real frameworks on macOS. On Linux the same list ran here with stub SwiftUI/UIKit/
+# CoreGraphics/CoreImage modules (developer evidence only; see REPORT.md).
+      - name: Verify deterministic brief planner impact primitives registry extensions batches and quality gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioCraftAudio.swift \
+            StickDeathInfinity/Models/StudioCraftLayers.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
+            Tests/SpatterPlanner/main.swift \
+            -o "$RUNNER_TEMP/sdi-spatter-planner-tests"
+          "$RUNNER_TEMP/sdi-spatter-planner-tests"
+# Also add to the Linux "spatter-production-tests" job if desired: the same list compiles there
+# only with the stub modules, so the macOS placement above is the honest CI home.
+#
+# Backend additions to existing steps:
+#   - "Run backend Python tests with fake transports": also run
+#       python3 -m unittest backend.spatter.test_handler backend.spatter.test_draft_queue
+#   - "Apply SQL candidates in README order and run the SQL tests": requires the README apply-order
+#       patch (34. spatter-draft-jobs.sql) so backend/sql/tests/070_spatter_draft_jobs.sql runs.

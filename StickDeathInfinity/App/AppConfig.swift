@@ -259,6 +259,12 @@ private final class SDIIntakeRedirectPolicy: NSObject, URLSessionTaskDelegate, @
     }
 }
 
+/// One library asset the render contains, by catalogue digest; the intake
+/// service admits a render only when every declared asset is licensed (#188).
+struct SDIRenderAssetCredit: Codable, Sendable, Equatable {
+    let kind: String
+    let sha256: String
+}
 struct SDIRenderUploadMetadata: Codable, Sendable {
     var size: Int64
     var sha256: String
@@ -268,6 +274,8 @@ struct SDIRenderUploadMetadata: Codable, Sendable {
     let rights_summary: String
     let consent_version: String
     let made_for_kids: Bool
+    /// Absent for renders without library assets; older journals decode without it.
+    var asset_credits: [SDIRenderAssetCredit]? = nil
 }
 struct SDIRenderUploadJournal: Codable, Identifiable, Sendable {
     let id: UUID

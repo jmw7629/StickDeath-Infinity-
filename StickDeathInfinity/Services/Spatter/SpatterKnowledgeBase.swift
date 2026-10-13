@@ -77,11 +77,13 @@ enum SpatterKnowledgeBase {
         relevant += activeModules.filter { $0.category == "Core Identity" }
 
         // Add screen-specific knowledge. The retired "messages" screen no longer
-        // exists; its historical Collaboration pack is filtered by isRetired.
+        // exists (it falls to the default branch); the historical Collaboration
+        // pack is filtered by isRetired. "companion" and "library" carry no
+        // screen-specific pack beyond the core identity.
         switch screen.lowercased() {
-        case "studio":
+        case "studio", "library":
             relevant += activeModules.filter { ["Studio Tools", "Studio Systems", "Animation"].contains($0.category) }
-        case "messages", "rooms":
+        case "rooms":
             relevant += activeModules.filter { $0.category == "Collaboration" }
         case "challenges":
             relevant += activeModules.filter { $0.category == "Community" || $0.id.contains("challenge") }
@@ -1924,8 +1926,24 @@ struct SpatterInstructionGrammar: Equatable {
 }
 
 enum SpatterInstructionCatalog {
-    static let version = 2
+    static let version = 3
     static let grammars: [SpatterInstructionGrammar] = [
+        .init(name: "multiClauseBrief", examples: ["A red stick figure walks left to right for 1 second, then punches, then falls; 3 seconds.",
+                                                   "A red stick figure runs left to right, then kicks; a blue stick figure ducks, then jumps; 2.5 seconds.",
+                                                   "A black stick figure walks left to right, then explodes; 2 seconds; seed 7."],
+              commands: ["addLayer", "appendFrames", "selectFrame"],
+              summary: "One to three stick figures, up to six actions each (walks, runs, jumps, waves, falls, punches, kicks, sits, ducks, throws, explodes), per-clause durations, 0.5–60 seconds, deterministic seed; one appendFrames command per brief."),
+        .init(name: "tween", examples: ["Tween 4 in-betweens between frames 1 and 2 with ease-in-out easing.", "Tween 2 in-betweens between frames 1 and 2."],
+              commands: ["tweenFrames"], summary: "1–24 in-betweens between two adjacent frames with linear, ease-in, ease-out, ease-in-out or easy-ease easing."),
+        .init(name: "frameClipboard", examples: ["Copy frame 1 and paste it after frame 2.", "Copy frame 1.", "Paste frame after active frame."],
+              commands: ["copyFrame", "pasteFrame"], summary: "Copy a frame to the frame clipboard and/or paste an editable copy after a frame."),
+        .init(name: "projectSettings", examples: ["Set project size to 640 by 480 pixels.", "Set project frame rate to 24 FPS.", "Set project size to 640 by 480 pixels at 24 FPS."],
+              commands: ["updateProjectSettings"], summary: "Canvas size 16–4096 px and frame rate 1–60 FPS; artwork coordinates are kept."),
+        .init(name: "brushStroke", examples: ["Draw a round brush line from (10%, 20%) to (90%, 20%) in #000000, size 6 px, opacity 100%.",
+                                              "Draw a gradient brush line from (10%, 40%) to (90%, 40%) in #FF0000 to #0000FF, size 8 px, opacity 100%."],
+              commands: ["draw"], summary: "One straight stroke on the active frame/layer in any brush family (round, stipple, grain, rough pen, calligraphy, dip pen, halftone, hatch right/left, gradient, airbrush, watercolor, neon)."),
+        .init(name: "batch", examples: ["Add 3 blank frames.\nSet frames 1 through 2 exposure to 2 ticks.\nRename project to \"Batch\"."],
+              commands: ["addFrame", "setFrameHold", "renameProject"], summary: "2–8 context-only instructions, one per line, applied as one revision and one Undo step; frame numbers refer to the captured project."),
         .init(name: "circleMotion", examples: ["Append 8 frames of a red outlined circle moving from (20%, 50%) to (80%, 50%), radius 8%, line width 3 px."],
               commands: ["addFrame", "draw"], summary: "2–24 appended outlined-circle frames on a new layer at the project FPS."),
         .init(name: "stickFigure", examples: ["Append 20 frames of a black stick figure walking from (25%, 80%) to (75%, 80%), height 35%, line width 3 px."],

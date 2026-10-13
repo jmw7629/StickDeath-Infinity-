@@ -7,6 +7,7 @@ import stat
 import threading
 from urllib.parse import urlsplit
 
+from .assets import LicensedAssetRegistry
 from .auth import AccountAuthorizer
 from .http import UploadApplication
 from .media import MediaValidator
@@ -122,7 +123,9 @@ def create_application(environment=None):
     authorize = AccountAuthorizer(backend, _required(env, "SDI_BACKEND_PUBLISHABLE_KEY"))
     service_key = _secret_file(env, "SDI_BACKEND_SERVICE_KEY_FILE")
     validate = MediaValidator(Path(_required(env, "SDI_FFPROBE")), Path(_required(env, "SDI_FFMPEG")))
-    store = UploadStore(root, total_quota=quota, account_quota=account_quota)
+    catalogues = env.get("SDI_ASSET_CATALOGUE_ROOT")
+    assets = LicensedAssetRegistry.from_catalogues(Path(catalogues) if catalogues else None)
+    store = UploadStore(root, total_quota=quota, account_quota=account_quota, licensed_assets=assets)
     registrar = ReviewRegistrar(backend, service_key, store.root, consent, links)
     upload = UploadApplication(store, authorize, validate, registrar, registrar.renew_preview)
     preview = PreviewApplication(store.root, links, registrar.preview_authority)

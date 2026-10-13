@@ -2184,8 +2184,13 @@ private final class NetworkTrap: URLProtocol {
             let before = vm.document, pixels = try erasurePixels(vm.document)
             vm.gridSpacing = 32; vm.gridOpacity = 0.25; vm.gridTint = .red
             let manual = vm.document
-            for _ in 0..<3 { vm.undo() }
-            await vm.flush(); try require(content(vm.document) == content(before), "Manual grid fixture drift")
+            // Editor guides live outside document history: changing them must not add Undo steps.
+            var baseline = before; baseline.gridSettings = .init()
+            try require(vm.document.gridSettings == manual.gridSettings && vm.frames == before.frames
+                && content(manual) != content(baseline), "Manual grid settings did not apply")
+            let defaults = StudioGridSettings()
+            vm.gridSpacing = defaults.spacing; vm.gridOpacity = defaults.opacity; vm.gridTint = defaults.tint
+            await vm.flush(); try require(content(vm.document) == content(baseline), "Manual guide reset fixture drift")
             let session = SpatterStudioEditSession()
             _ = session.submit(SpatterGridInstruction.settingsExample, in: vm, accountID: nil, currentScope: { guest })
             await session.waitForCompletion()
@@ -2193,10 +2198,10 @@ private final class NetworkTrap: URLProtocol {
                 && !vm.gridEnabled && vm.document.onionSettings == before.onionSettings
                 && vm.showOnionSkin && vm.frames == before.frames && vm.layers == before.layers
                 && (try erasurePixels(vm.document)) == pixels, "Grid configure changed unrelated guides/artwork or diverged from manual")
-            vm.undo(); try require(content(vm.document) == content(before), "One Undo did not restore complete grid settings")
+            vm.undo(); try require(vm.document.gridSettings == manual.gridSettings, "Undo must not revert grid settings")
             vm.redo(); await vm.flush()
             vm.gridEnabled = true; let manualShown = vm.document
-            vm.undo(); await vm.flush()
+            vm.gridEnabled = false; await vm.flush()
             _ = session.submit(SpatterGridInstruction.showExample, in: vm, accountID: nil, currentScope: { guest })
             await session.waitForCompletion()
             try require(session.status == .applied && content(vm.document) == content(manualShown)
@@ -2211,7 +2216,10 @@ private final class NetworkTrap: URLProtocol {
             await session.waitForCompletion()
             try require(session.status == .applied && !vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings
                 && vm.showOnionSkin && vm.document.onionSettings == noOp.onionSettings, "Hide grid lost remembered or onion settings")
-            vm.undo(); vm.redo(); vm.undo(); await vm.flush()
+            vm.undo(); vm.redo(); await vm.flush()
+            try require(!vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings && (try erasurePixels(vm.document)) == pixels,
+                "Artwork Undo/Redo disturbed guide settings")
+            vm.gridEnabled = true; await vm.flush()
             let saved = await vm.save(); try require(saved, "Grid settings save failed")
             let cold = StudioViewModel(storage: store), record = try store.loadAnimation(id: vm.document.id)!
             try require(await cold.openProject(record.metadata), "Grid cold open failed")
@@ -2259,6 +2267,104 @@ private final class NetworkTrap: URLProtocol {
                     && target.document == held && target.canUndo == undo && target.canRedo == redo,
                     "Grid command crossed context/cancellation fence")
             } }
+        }
+        try await test("tween clipboard project-settings and brush grammars apply through the session with factual receipts") {
+            let (vm, _) = try await fixture("registry-extensions")
+            @MainActor func line(_ id: String, _ frameID: String? = nil) -> Bool {
+                vm.commitElement(.init(id: id, tool: .line, points: [.init(x: 10, y: 10), .init(x: 60, y: 20)], color: "#000000", width: 2, opacity: 1, layerID: vm.activeLayerID), frameID: frameID)
+            }
+            let first = vm.currentFrame.id
+            try require(line("tween-a"), "First endpoint rejected")
+            vm.addFrame()
+            try require(line("tween-b"), "Second endpoint rejected")
+            vm.selectFrame(first); await vm.flush(); vm.activePanel = .spatterAI
+            let before = vm.document
+            let tween = SpatterStudioEditSession()
+            _ = tween.submit(SpatterTweenInstruction.example, in: vm, accountID: nil, currentScope: { guest }); await tween.waitForCompletion()
+            guard tween.status == .applied, let tweened = tween.appliedEdit, tweened.tween == .init(inbetweens: 4, firstFrame: 1, easing: .easeInOut) else {
+                throw Failure(message: "Tween not applied: \(tween.notice ?? "")") }
+            try require(tweened.addedFrameCount == 4 && vm.frames.count == 6 && tweened.summary.contains("4 in-betweens") && tweened.summary.contains("Ease in/out"), "Tween receipt wrong: \(tweened.summary)")
+            try require(tween.undoAppliedEdit(in: vm, currentScope: guest) && content(vm.document) == content(before), "Tween Spatter undo did not restore the endpoints")
+            let clip = SpatterStudioEditSession()
+            _ = clip.submit("Copy frame 1 and paste it after frame 2.", in: vm, accountID: nil, currentScope: { guest }); await clip.waitForCompletion()
+            guard clip.status == .applied, let pasted = clip.appliedEdit, pasted.frameClipboard?.destination == .number(2) else { throw Failure(message: "Copy+paste not applied: \(clip.notice ?? "")") }
+            try require(vm.frames.count == 3 && pasted.addedFrameCount == 1 && vm.frames[2].elements.count == 1 && vm.frames[2].elements[0].id != "tween-a"
+                && vm.frames[2].elements[0].points == before.frames[0].elements[0].points && pasted.summary.contains("Pasted 1 editable frame copy"), "Pasted frame is not a fresh editable copy")
+            vm.undo(); await vm.flush()
+            let copyOnly = SpatterStudioEditSession()
+            _ = copyOnly.submit(SpatterFrameClipboardInstruction.copyExample, in: vm, accountID: nil, currentScope: { guest }); await copyOnly.waitForCompletion()
+            try require(copyOnly.status == .applied && copyOnly.appliedEdit?.receipt.outcome == .unchanged && copyOnly.notice?.contains("Copied the frame") == true
+                && content(vm.document) == content(before), "Copy-only must not change the document")
+            let (fresh, _) = try await fixture("paste-without-clipboard")
+            let captured = fresh.document
+            let pasteOnly = SpatterStudioEditSession()
+            _ = pasteOnly.submit(SpatterFrameClipboardInstruction.pasteExample, in: fresh, accountID: nil, currentScope: { guest }); await pasteOnly.waitForCompletion()
+            try require(pasteOnly.status == .rejected && fresh.document == captured && pasteOnly.appliedEdit == nil, "Paste without a copied frame did not fail closed")
+            let settings = SpatterStudioEditSession()
+            _ = settings.submit("Set project size to 300 by 200 pixels at 12 FPS.", in: fresh, accountID: nil, currentScope: { guest }); await settings.waitForCompletion()
+            guard settings.status == .applied, let resized = settings.appliedEdit, resized.projectSettings == .init(width: 300, height: 200, fps: 12) else { throw Failure(message: "Settings not applied: \(settings.notice ?? "")") }
+            try require(fresh.document.width == 300 && fresh.document.height == 200 && fresh.fps == 12 && resized.summary.contains("300×200 px, 12 FPS"), "Settings receipt or document wrong")
+            try require(settings.undoAppliedEdit(in: fresh, currentScope: guest) && fresh.document.width == 128 && fresh.fps == 24, "Settings undo failed")
+            let brush = SpatterStudioEditSession()
+            _ = brush.submit(SpatterBrushStrokeInstruction.gradientExample, in: fresh, accountID: nil, currentScope: { guest }); await brush.waitForCompletion()
+            guard brush.status == .applied, let drawn = brush.appliedEdit, drawn.brushStroke?.family == .gradient else { throw Failure(message: "Brush stroke not applied: \(brush.notice ?? "")") }
+            try require(drawn.receipt.createdElementIDs.count == 1 && fresh.currentFrame.elements.last?.brush?.family == .gradient
+                && fresh.currentFrame.elements.last?.brush?.gradientEndColor == .init(red: 0, green: 0, blue: 1, alpha: 1) && drawn.summary.contains("gradient brush stroke"), "Gradient stroke did not reach the editor")
+            await fresh.flush()
+            try require(!fresh.isDirty, "Grammar edits did not persist through autosave")
+        }
+        try await test("multi-clause brief builds held frames on new layers with a storyboard and a typed revert that survives unrelated edits") {
+            let (vm, store) = try await fixture("multi-clause-brief")
+            let before = vm.document, original = vm.currentFrame.id
+            let session = SpatterStudioEditSession()
+            _ = session.submit(SpatterMultiClauseBrief.example, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+            guard session.status == .applied, let edit = session.appliedEdit, let story = edit.storyboard else { throw Failure(message: "Brief not applied: \(session.notice ?? "")") }
+            try require(story.totalTicks == 72 && story.actors.count == 1 && edit.addedFrameCount == story.frameCount && vm.frames.count == 1 + story.frameCount
+                && vm.layers.count == 2 && edit.createdFrames.count == story.frameCount && edit.createdLayers.count == 1
+                && vm.frames.dropFirst().reduce(0) { $0 + $1.durationTicks } == 72 && edit.summary.contains("storyboard is attached"), "Brief receipt or document wrong: \(edit.summary)")
+            try require(vm.frames.dropFirst().allSatisfy { $0.elements.count == 10 && $0.elements.allSatisfy { $0.color == "#FF0000" && $0.layerID == edit.createdLayers[0].id } }, "Generated poses are not editable primitives on the actor layer")
+            let report = SpatterQualityReport.analyze(vm.document, requestedTicks: 1 + 72, generatedLayerIDs: [edit.createdLayers[0].id])
+            try require(report.verdict().passes, "Quality verdict failed on the brief: \(report.findings)")
+            try require(session.canUndoAppliedEdit(in: vm, currentScope: guest) && session.canRevertAppliedEdit(in: vm, currentScope: guest), "Undo and revert offers missing at the receipt revision")
+            // An unrelated later edit withdraws the receipt-revision Undo offer but keeps the typed revert.
+            vm.setFrameHold(original, ticks: 3); await vm.flush()
+            try require(!session.canUndoAppliedEdit(in: vm, currentScope: guest) && session.canRevertAppliedEdit(in: vm, currentScope: guest), "Revert offer did not survive an unrelated edit")
+            let generated = vm.document
+            try require(session.revertAppliedEdit(in: vm, currentScope: guest) && session.appliedEdit == nil && session.notice?.contains("Reverted this Spatter edit") == true, "Typed revert failed: \(session.notice ?? "")")
+            try require(vm.frames.count == 1 && vm.layers.count == 1 && vm.frames[0].durationTicks == 3 && vm.frames[0].elements == before.frames[0].elements, "Revert removed more than the generated frames and layer")
+            vm.undo(); try require(vm.frames.count == generated.frames.count && vm.layers.count == 2, "Studio Undo did not restore the generated scene after revert")
+            await vm.flush()
+            // Touching a generated frame makes the revert honest: it refuses instead of deleting edited work.
+            let again = SpatterStudioEditSession()
+            vm.undo(); vm.undo(); await vm.flush()
+            _ = again.submit(SpatterMultiClauseBrief.explosionExample, in: vm, accountID: nil, currentScope: { guest }); await again.waitForCompletion()
+            guard again.status == .applied, let second = again.appliedEdit, second.storyboard?.seed == 7 else { throw Failure(message: "Seeded brief not applied: \(again.notice ?? "")") }
+            vm.setFrameHold(second.createdFrames[0].id, ticks: 9); await vm.flush()
+            try require(!again.canRevertAppliedEdit(in: vm, currentScope: guest) && !again.revertAppliedEdit(in: vm, currentScope: guest)
+                && again.notice?.contains("Revert Spatter edit is unavailable") == true && vm.frames.count == 1 + second.createdFrames.count, "Revert deleted an edited generated frame")
+            let id = vm.document.id, saved = vm.document
+            await vm.backToProjects()
+            let record = try store.loadAnimation(id: id)!, reopened = StudioViewModel(storage: store)
+            try require(await reopened.openProject(record.metadata) && reopened.frames == saved.frames && reopened.layers == saved.layers, "Cold reopen lost the generated scene")
+            await reopened.backToProjects()
+        }
+        try await test("instruction batches apply as one revision and reject as a whole") {
+            let (vm, _) = try await fixture("batch")
+            vm.addFrame(); vm.selectFrame(vm.frames[0].id); await vm.flush(); vm.activePanel = .spatterAI
+            let before = vm.document
+            let session = SpatterStudioEditSession()
+            _ = session.submit(SpatterInstructionBatch.example, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+            guard session.status == .applied, let edit = session.appliedEdit, let summary = edit.batchSummary else { throw Failure(message: "Batch not applied: \(session.notice ?? "")") }
+            try require(summary.hasPrefix("3 instructions") && edit.receipt.revision == before.revision + 1 && vm.document.name == "Batch" && vm.frames.count == 5
+                && before.frames.allSatisfy { frame in vm.frames.first { $0.id == frame.id }?.durationTicks == 2 } && edit.summary.contains("one revision and one Undo step"), "Batch did not apply every line as one revision")
+            vm.undo(); try require(content(vm.document) == content(before), "Batch is not one Undo step")
+            await vm.flush()
+            let failing = SpatterStudioEditSession()
+            _ = failing.submit("Add 2 blank frames.\nSelect frame 9.", in: vm, accountID: nil, currentScope: { guest }); await failing.waitForCompletion()
+            try require(failing.status == .rejected && content(vm.document) == content(before) && failing.notice?.contains("Line 2") == true, "A failing batch line applied partial edits")
+            let mixed = SpatterStudioEditSession()
+            _ = mixed.submit("Add 2 blank frames.\nMove selected drawings by (10%, -5%).", in: vm, accountID: nil, currentScope: { guest }); await mixed.waitForCompletion()
+            try require(mixed.status == .rejected && content(vm.document) == content(before), "Selection line inside a batch was accepted")
         }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")

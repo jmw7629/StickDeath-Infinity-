@@ -46,6 +46,18 @@
 <p id="admin-identity" class="quiet"></p>
 <div class="actions"><button class="button" type="button" id="admin-signout">Sign out</button><button class="button" type="button" id="admin-refresh">Refresh permissions</button></div>
 <div id="admin-panels"></div>
+<h2>Agent proposals</h2>
+<p class="quiet">Actions an agent proposed above its caps wait here (owner only, recent MFA required). Approving hands the proposal to the worker; rejecting records the reason. Nothing runs until a decision, and pending proposals expire after fourteen days.</p>
+<form id="admin-proposal-form" class="support" novalidate>
+<label for="admin-proposal-id">Proposal id (from the inbox panel)</label>
+<input id="admin-proposal-id" name="proposal" maxlength="36" required>
+<label for="admin-proposal-revision">Revision (as shown)</label>
+<input id="admin-proposal-revision" name="revision" inputmode="numeric" maxlength="12" required>
+<label for="admin-proposal-reason">Reason</label>
+<input id="admin-proposal-reason" name="reason" maxlength="2000" required>
+<div class="actions"><button class="button" type="submit" data-decision="approve">Approve</button><button class="button" type="submit" data-decision="reject">Reject</button></div>
+<p id="admin-proposal-result" class="quiet" aria-live="polite"></p>
+</form>
 <h2>Emergency stop</h2>
 <p class="quiet">Stops every automated agent (owner only, recent MFA required). Drafts are kept; nothing is deleted.</p>
 <form id="admin-stop-form" class="support" novalidate>

@@ -12,7 +12,9 @@ import unittest
 import urllib.error
 import uuid
 
+from backend.ingestion import assets as assets_module
 from backend.ingestion import auth as auth_module
+from backend.ingestion.assets import LicensedAssetRegistry
 from backend.ingestion import registration as registration_module
 from backend.ingestion.auth import AccountAuthorizer
 from backend.ingestion.http import UploadApplication
@@ -291,6 +293,53 @@ class RegistrarTests(unittest.TestCase):
             self.assertTrue(self.registrar().artifact_released(self.upload, str(uuid.uuid4())))
         finally:
             registration_module.urllib.request.build_opener = original
+
+
+class LicensedAssetRegistryTests(unittest.TestCase):
+    """The shipped catalogues are the licence authority for declared library assets (#188)."""
+    def setUp(self):
+        self.registry = LicensedAssetRegistry.from_catalogues()
+        images = json.loads((assets_module.DEFAULT_ROOT / "StudioImages" / "catalogue.json").read_text())
+        sounds = json.loads((assets_module.DEFAULT_ROOT / "StudioSounds" / "catalogue.json").read_text())
+        self.image = images["images"][0]["originalSHA256"]
+        self.sound = sounds["sounds"][0]["originalSHA256"]
+        self.store = UploadStore(Path(tempfile.mkdtemp()), total_quota=64 * 1024 * 1024, account_quota=32 * 1024 * 1024,
+                                 licensed_assets=self.registry)
+        self.unchecked = UploadStore(Path(tempfile.mkdtemp()), total_quota=64 * 1024 * 1024, account_quota=32 * 1024 * 1024)
+
+    def test_catalogued_assets_are_admitted_with_their_licence_and_unknown_ones_refused(self):
+        checked = self.registry.check([{"kind": "image", "sha256": self.image}, {"kind": "sound", "sha256": self.sound},
+                                       {"kind": "image", "sha256": self.image}])
+        self.assertEqual([c["kind"] for c in checked], ["image", "sound"], "duplicates collapse, order kept")
+        self.assertTrue(all(c["license"] for c in checked))
+        unknown = "0" * 64
+        with self.assertRaises(IntakeError) as refused:
+            self.registry.check([{"kind": "image", "sha256": unknown}])
+        self.assertEqual(refused.exception.status, 422)
+        with self.assertRaises(IntakeError):
+            self.registry.check([{"kind": "sound", "sha256": self.image}])  # right digest, wrong kind
+        for malformed in ("not-a-list", [{"kind": "video", "sha256": self.image}], [{"kind": "image"}],
+                          [{"kind": "image", "sha256": "ABC"}], [{"kind": "image", "sha256": self.image, "license": "CC0-1.0"}],
+                          [{"kind": "image", "sha256": self.image}] * (assets_module.MAX_CREDITS + 1)):
+            with self.assertRaises(IntakeError, msg=str(malformed)[:60]):
+                self.registry.check(malformed)
+
+    def test_store_requires_a_registry_before_admitting_credits_and_keeps_the_matched_licence(self):
+        actor = str(uuid.uuid4()); digest = hashlib.sha256(b"render").hexdigest()
+        declared = dict(metadata(4096, digest), asset_credits=[{"kind": "image", "sha256": self.image}])
+        with self.assertRaises(IntakeError) as refused:
+            self.unchecked.begin(actor, str(uuid.uuid4()), declared)
+        self.assertEqual(refused.exception.status, 503, "credits are never admitted unchecked")
+        upload = self.store.begin(actor, str(uuid.uuid4()), declared)
+        self.assertEqual(upload["state"], "receiving")
+        stored = self.store.metadata(actor, upload["id"])
+        self.assertEqual(stored["asset_credits"][0]["sha256"], self.image)
+        self.assertTrue(stored["asset_credits"][0]["license"])
+        with self.assertRaises(IntakeError) as refused:
+            self.store.begin(actor, str(uuid.uuid4()), dict(metadata(4096, digest), asset_credits=[{"kind": "sound", "sha256": "f" * 64}]))
+        self.assertEqual(refused.exception.status, 422)
+        plain = self.store.begin(actor, str(uuid.uuid4()), metadata(4096, digest))
+        self.assertEqual(plain["state"], "receiving", "renders without library assets still declare nothing")
 
 
 class UploadApplicationTests(unittest.TestCase):

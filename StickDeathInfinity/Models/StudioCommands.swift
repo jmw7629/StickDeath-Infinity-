@@ -202,6 +202,22 @@ enum StudioCommand: Codable {
     case cutElements(DeleteElements)
     case duplicateElements(DeleteElements), copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
 
+    // MARK: Spatter batched generation (appended 2026-10-13; see StudioDocument+Spatter.swift)
+    /// One command creates many consecutive frames of plain generated primitives
+    /// (line / circle / rectangle, two points each) so a brief's frame count is
+    /// bounded by the generated-element budget rather than the 96-command cap.
+    /// Every frame may draw on several layers (each actor owns a layer).
+    struct AppendFrames: Codable {
+        struct Drawing: Codable { let layer: StudioCommandReference; let strokes: [StudioCommandStroke] }
+        struct Frame: Codable { let result: String; let holdTicks: Int; let drawings: [Drawing] }
+        let after: StudioCommandReference
+        let frames: [Frame]
+    }
+    case appendFrames(AppendFrames)
+    /// Removes an explicit set of existing frames in one step (the inverse of
+    /// `appendFrames`); at least one frame must remain.
+    case deleteFrameRange(ReverseFrames)
+
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
@@ -251,6 +267,8 @@ enum StudioCommand: Codable {
         case "copyElements": self = .copyElements(try container.decode(DeleteElements.self, forKey: key))
         case "pasteElements": self = .pasteElements(try container.decode(PasteElements.self, forKey: key))
         case "canvasOptions": self = .canvasOptions(try container.decode(CanvasOptions.self, forKey: key))
+        case "appendFrames": self = .appendFrames(try container.decode(AppendFrames.self, forKey: key))
+        case "deleteFrameRange": self = .deleteFrameRange(try container.decode(ReverseFrames.self, forKey: key))
         default: throw StudioCommandError.unsupportedCommand
         }
     }
@@ -303,6 +321,8 @@ enum StudioCommand: Codable {
         case .copyElements(let value): try container.encode(value, forKey: StudioWireKey("copyElements"))
         case .pasteElements(let value): try container.encode(value, forKey: StudioWireKey("pasteElements"))
         case .canvasOptions(let value): try container.encode(value, forKey: StudioWireKey("canvasOptions"))
+        case .appendFrames(let value): try container.encode(value, forKey: StudioWireKey("appendFrames"))
+        case .deleteFrameRange(let value): try container.encode(value, forKey: StudioWireKey("deleteFrameRange"))
         }
     }
 }
@@ -424,6 +444,8 @@ enum StudioCommandExecutor {
     static let maximumInputPoints = 16_384
     static let maximumGeneratedElements = 1024
     static let maximumGeneratedPoints = 65_536
+    /// Frames one `appendFrames` command may create: the MP4 exporter's frame cap.
+    static let maximumAppendedFrames = 240
     static let supportedTools: [DrawingTool] = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text]
 
     /// Only these plain primitives have identical append semantics and can share
@@ -498,7 +520,8 @@ enum StudioCommandExecutor {
             "reflectElements": ["frame", "elementIDs", "axis"],
             "cutElements": ["frame", "elementIDs"],
             "duplicateElements": ["frame", "elementIDs"], "copyElements": ["frame", "elementIDs"], "pasteElements": ["frame", "layer", "clipboardID"],
-            "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion", "gridSettings", "onionSettings"]
+            "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion", "gridSettings", "onionSettings"],
+            "appendFrames": ["after", "frames"], "deleteFrameRange": ["frameIDs"]
         ]
         func textDescriptor(_ value: Any) throws {
             let fields = try object(value, keys: ["version", "content", "style"])
@@ -581,6 +604,28 @@ enum StudioCommandExecutor {
                     for point in points {
                         let fields = try object(point, keys: ["x", "y", "pressure", "timestamp", "tilt"])
                         if let tilt = fields["tilt"] { _ = try object(tilt, keys: ["altitude", "azimuth"]) }
+                    }
+                }
+            }
+            if kind == "appendFrames" {
+                // Generated primitives only: no brush, shape, eraser or text descriptors
+                // and exactly two plain points per stroke, validated again at execution.
+                guard let frames = fields["frames"] as? [Any], !frames.isEmpty, frames.count <= maximumAppendedFrames else { throw StudioCommandError.limitExceeded }
+                var generated = 0
+                for frame in frames {
+                    let entry = try object(frame, keys: ["result", "holdTicks", "drawings"])
+                    guard let drawings = entry["drawings"] as? [Any], !drawings.isEmpty, drawings.count <= 8 else { throw StudioCommandError.malformed }
+                    for drawing in drawings {
+                        let group = try object(drawing, keys: ["layer", "strokes"])
+                        try reference(group["layer"])
+                        guard let values = group["strokes"] as? [Any], !values.isEmpty else { throw StudioCommandError.malformed }
+                        guard values.count <= maximumGeneratedElements - generated else { throw StudioCommandError.limitExceeded }
+                        generated += values.count
+                        for value in values {
+                            let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity"])
+                            guard let points = stroke["points"] as? [Any], points.count == 2 else { throw StudioCommandError.invalidGeometry }
+                            for point in points { _ = try object(point, keys: ["x", "y"]) }
+                        }
                     }
                 }
             }
@@ -1040,6 +1085,54 @@ enum StudioCommandExecutor {
             if editor.document == before {
                 guard (value.gridSettings?.isValid ?? true), (value.onionSettings?.isValid ?? true) else { throw StudioCommandError.invalidSettings }
             }
+        case .appendFrames(let value):
+            // Generated primitives are charged against the generated element and
+            // point budgets (not the hand-drawn input-stroke budget) and enter the
+            // document through one editor change, so frame count is bounded by
+            // `maximumAppendedFrames` and the element budget, never by command count.
+            let anchor = try frame(value.after)
+            guard (1...maximumAppendedFrames).contains(value.frames.count),
+                  document.frames.count + value.frames.count <= 1000 else { throw StudioCommandError.limitExceeded }
+            var aliases = created
+            var planned: [StudioDocumentEditor.GeneratedFrame] = []
+            for entry in value.frames {
+                try checkCancellation()
+                try validateAlias(entry.result, created: aliases)
+                aliases[entry.result] = .init(kind: .frame, id: entry.result)
+                guard (1...600).contains(entry.holdTicks) else { throw StudioCommandError.invalidSettings }
+                guard !entry.drawings.isEmpty, entry.drawings.count <= 8 else { throw StudioCommandError.limitExceeded }
+                var elements: [DrawnElement] = []
+                for drawing in entry.drawings {
+                    let layerID = try layer(drawing.layer)
+                    guard !drawing.strokes.isEmpty else { throw StudioCommandError.invalidGeometry }
+                    for stroke in drawing.strokes {
+                        guard [.line, .circle, .rectangle].contains(stroke.tool), stroke.points.count == 2,
+                              stroke.brush == nil, stroke.shape == nil, stroke.eraser == nil, stroke.text == nil,
+                              !stroke.id.isEmpty, stroke.id.count <= 128, validColor(stroke.color),
+                              stroke.width.isFinite, (0.1...1024).contains(stroke.width),
+                              stroke.opacity.isFinite, (0...1).contains(stroke.opacity),
+                              stroke.points.allSatisfy({ point in
+                                  point.x.isFinite && point.y.isFinite && point.pressure == nil && point.tilt == nil && point.timestamp == nil
+                                  && (0...Double(document.width)).contains(Double(point.x)) && (0...Double(document.height)).contains(Double(point.y))
+                              }) else { throw StudioCommandError.invalidGeometry }
+                        let element = DrawnElement(id: stroke.id, tool: stroke.tool, points: stroke.points, color: stroke.color,
+                                                   width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID)
+                        try budget.generate([element])
+                        elements.append(element)
+                    }
+                }
+                planned.append(.init(alias: entry.result, holdTicks: entry.holdTicks, elements: elements))
+            }
+            let ids = try editor.appendGeneratedFrames(after: anchor, frames: planned, checkCancellation: checkCancellation)
+            guard ids.count == planned.count else { throw StudioCommandError.invalidReference }
+            for (plan, id) in zip(planned, ids) { created[plan.alias] = .init(kind: .frame, id: id) }
+        case .deleteFrameRange(let value):
+            guard (1...maximumAppendedFrames).contains(value.frameIDs.count), Set(value.frameIDs).count == value.frameIDs.count,
+                  document.frames.count - value.frameIDs.count >= 1 else { throw StudioCommandError.cannotDeleteLastFrame }
+            for id in value.frameIDs {
+                guard document.frames.contains(where: { $0.id == id }) else { throw StudioCommandError.invalidReference }
+            }
+            try editor.deleteFrames(value.frameIDs, checkCancellation: checkCancellation)
         }
     }
     private static func receipt(_ request: StudioCommandRequest, original: StudioDocument, final: StudioDocument,
@@ -1063,5 +1156,90 @@ enum StudioCommandExecutor {
                 !final.audioClips.contains(where: { $0.id == clip.id })
             }.map(\.id),
             clipboardElementCount: clipboardElementCount, clipboardID: clipboardID)
+    }
+}
+
+/// Editor operations used by Spatter's batched generation command. Both run as
+/// one `change`, so a brief of any supported length is one history step, one
+/// revision and one autosave, and `Undo` restores the complete prior document.
+extension StudioDocumentEditor {
+    /// One generated frame: plain primitive elements that already carry their
+    /// layer identity, plus the exposure the planner assigned.
+    struct GeneratedFrame: Equatable {
+        let alias: String
+        let holdTicks: Int
+        let elements: [DrawnElement]
+    }
+
+    /// Inserts `frames` directly after `frameID`, preserving every existing
+    /// frame, and makes the first new frame active. Returns the new identities
+    /// in order. Only plain line/circle/rectangle primitives on visible, unlocked
+    /// layers are accepted; anything else is refused before the document changes.
+    @discardableResult
+    mutating func appendGeneratedFrames(after frameID: String, frames: [GeneratedFrame],
+                                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [String] {
+        guard (1...StudioCommandExecutor.maximumAppendedFrames).contains(frames.count),
+              document.frames.count + frames.count <= 1000 else {
+            throw StudioDocumentError.invalid("Generated frames must number 1–\(StudioCommandExecutor.maximumAppendedFrames) and fit the 1,000-frame project limit. Nothing changed.")
+        }
+        var identities: [String] = []
+        try change { value in
+            guard let index = value.frames.firstIndex(where: { $0.id == frameID }) else {
+                throw StudioDocumentError.invalid("The frame to append after is no longer available. Nothing changed.")
+            }
+            var inserted: [AnimationFrame] = []
+            inserted.reserveCapacity(frames.count)
+            for frame in frames {
+                try checkCancellation()
+                guard (1...600).contains(frame.holdTicks) else {
+                    throw StudioDocumentError.invalid("Generated frame exposure must be 1–600 ticks. Nothing changed.")
+                }
+                for element in frame.elements {
+                    guard let layerID = element.layerID, let layer = value.layers.first(where: { $0.id == layerID }),
+                          layer.visible, !layer.isFullyLocked, layer.lockMode == "free" || layer.lockMode == "position" else {
+                        throw StudioDocumentError.locked
+                    }
+                    guard [.line, .circle, .rectangle].contains(element.tool), element.points.count == 2,
+                          element.brush == nil, element.shape == nil, element.fillColor == nil, element.fillMask == nil,
+                          element.translation == nil, element.reflection == nil, element.eraser == nil, element.text == nil,
+                          element.transform == nil, element.smudge == nil, element.blur == nil, element.sharpen == nil,
+                          element.dodgeBurn == nil, element.preservesLayerAlpha == nil, element.selectionErasures == nil,
+                          element.points.allSatisfy({ $0.pressure == nil && $0.tilt == nil && $0.timestamp == nil }) else {
+                        throw StudioDocumentError.invalid("Only plain generated primitives can be appended as frames. Nothing changed.")
+                    }
+                }
+                var created = AnimationFrame(id: UUID().uuidString, elements: frame.elements)
+                if frame.holdTicks > 1 {
+                    created.holdTicks = frame.holdTicks
+                    value.schemaVersion = max(value.schemaVersion, 21)
+                }
+                inserted.append(created)
+            }
+            try checkCancellation()
+            value.frames.insert(contentsOf: inserted, at: index + 1)
+            value.activeFrameID = inserted[0].id
+            identities = inserted.map(\.id)
+        }
+        return identities
+    }
+
+    /// Removes the listed frames in one step; at least one frame must remain.
+    /// If the active frame is removed, the nearest surviving frame becomes
+    /// active, matching `deleteFrame`.
+    mutating func deleteFrames(_ ids: [String], checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        let targets = Set(ids)
+        guard !targets.isEmpty, targets.count == ids.count,
+              targets.allSatisfy({ id in document.frames.contains(where: { $0.id == id }) }),
+              document.frames.count - targets.count >= 1 else {
+            throw StudioDocumentError.invalid("Choose existing frames to remove and keep at least one frame. Nothing changed.")
+        }
+        try change { value in
+            try checkCancellation()
+            let activeIndex = value.frames.firstIndex(where: { $0.id == value.activeFrameID }) ?? 0
+            value.frames.removeAll { targets.contains($0.id) }
+            if targets.contains(value.activeFrameID) {
+                value.activeFrameID = value.frames[min(activeIndex, value.frames.count - 1)].id
+            }
+        }
     }
 }

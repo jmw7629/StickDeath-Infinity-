@@ -66,9 +66,12 @@ phases come from `server_time` (`ChallengeSummary.phase(at:)`), entries play rea
 renditions, one entry per creator from the creator's approved media, one mutable
 favourite vote for non-participants, results only from the finalised record, reward
 text only when configured, and the moderator lifecycle (create, schedule with the
-1 h/1 h/60-day rules, cancel) sits in Admin → Challenges. Gaps: the server ranks by
-offset, so cursor stability under new posts is a refresh, not a snapshot; later pages
-are never cached.
+1 h/1 h/60-day rules, cancel) sits in Admin → Challenges. Paging is snapshot-stable:
+page 0 returns an `as_of` instant that `FeedTimeline` keeps and `FeedClient.page`
+sends with every later page, so posts published meanwhile shift nothing until the
+member refreshes (a snapshot older than a day is refused with "Refresh the feed";
+Trending's like-based rank is still computed per request). Later pages are never
+cached.
 
 ### #10 — Profiles, ownership and optional public achievements (client half)
 

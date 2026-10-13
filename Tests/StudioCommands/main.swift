@@ -14,6 +14,14 @@ private func content(_ document: StudioDocument) -> StudioDocument {
     var value = document; value.revision = 0; value.modifiedAt = value.createdAt
     return value
 }
+/// Editor guides (grid, onion) live outside document history: Undo and Redo
+/// restore the artwork and keep the current guide settings.
+private func carryingGuides(_ document: StudioDocument, from current: StudioDocument) -> StudioDocument {
+    var value = document
+    value.gridEnabled = current.gridEnabled; value.gridSettings = current.gridSettings
+    value.onionEnabled = current.onionEnabled; value.onionSettings = current.onionSettings
+    return value
+}
 private func request(_ editor: StudioDocumentEditor, _ action: StudioCommandAction) -> StudioCommandRequest {
     .init(requestID: UUID(), projectID: editor.document.id, expectedRevision: editor.document.revision, action: action)
 }
@@ -211,7 +219,9 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                     let receipt = try StudioCommandExecutor.execute(decoded, editor: &editor)
                     let frames = editor.document.frames
                     try require(frames.count == 3 && frames[0] == before.frames[0] && frames[2] == before.frames[1], "Tween changed endpoint artwork or holds")
-                    let factor = easing == .easeIn ? 0.25 : easing == .easeOut ? 0.75 : 0.5
+                    // One in-between sits at t = 0.5: ease-in 0.25, ease-out 0.75, Hold keeps the start pose (0),
+                    // linear, ease-in/out and Easy Ease all pass through 0.5.
+                    let factor = easing == .easeIn ? 0.25 : easing == .easeOut ? 0.75 : easing == .hold ? 0 : 0.5
                     let generated = frames[1].elements[0]
                     // Translation is canonical affine metadata; the renderer
                     // applies it without destructively rewriting source points.
@@ -1007,7 +1017,7 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                 try require(after.layers[0].glowColor == "#00FF00" && after.layers[0].glowRadius == 18 && after.layers[0].glowStrength == 0.35 && after.schemaVersion == 28,
                             "Typed layer command lost glow style or schema")
                 let undo = try StudioCommandExecutor.execute(request(editor, .undo), editor: &editor)
-                try require(undo.outcome == .undone && content(editor.document) == content(before) && !editor.canUndo && editor.canRedo,
+                try require(undo.outcome == .undone && content(editor.document) == content(carryingGuides(before, from: after)) && !editor.canUndo && editor.canRedo,
                             "one undo did not reverse entire mixed transaction")
                 let redo = try StudioCommandExecutor.execute(request(editor, .redo), editor: &editor)
                 try require(redo.outcome == .redone && content(editor.document) == content(after), "redo did not restore full transaction")

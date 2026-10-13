@@ -240,13 +240,53 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Account deletion (not available yet)
+    // MARK: - Account deletion (#262)
 
-    /// Reports the real outcome: nothing is deleted. Local projects stay on device.
+    /// Last known server-side deletion request for the signed-in account.
+    /// Nil means none is known; refresh before relying on it.
+    @Published private(set) var accountDeletion: AuthService.AccountDeletionStatus?
+
+    static func deletionSummary(_ status: AuthService.AccountDeletionStatus) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        let when = status.scheduledFor.map { formatter.string(from: $0) + " UTC" } ?? "the scheduled time"
+        switch status.state {
+        case .pending: return "Account deletion is scheduled for \(when). Cancel before then to keep the account. Projects on this device are untouched; subscriptions must be cancelled through the App Store or billing portal."
+        case .processing: return "Account deletion is in progress and can no longer be cancelled from the app. Projects on this device are untouched."
+        case .blocked: return "Account deletion is waiting on a retained record. Contact support if it stays blocked. Projects on this device are untouched."
+        case .completed: return "This account's server records were deleted."
+        case .cancelled: return "Account deletion was cancelled. Nothing was removed."
+        }
+    }
+    /// Informational: a failure leaves the last known state and never shows an error.
+    func refreshAccountDeletion() async {
+        guard isAuthenticated else { accountDeletion = nil; return }
+        if let status = try? await auth.accountDeletionStatus() { accountDeletion = status }
+    }
+    /// Files the request with the server; nothing is removed now and nothing local is touched.
     func requestAccountDeletion() async {
-        error = nil
-        do { try await auth.deleteAccount() }
-        catch { self.error = error.localizedDescription }
+        guard !isLoading else { return }
+        isLoading = true; error = nil; notice = nil
+        defer { isLoading = false }
+        do {
+            let status = try await auth.requestAccountDeletion()
+            accountDeletion = status
+            notice = Self.deletionSummary(status)
+        } catch { self.error = error.localizedDescription }
+    }
+    func cancelAccountDeletion() async {
+        guard !isLoading, let status = accountDeletion, status.state == .pending, let revision = status.revision else { return }
+        isLoading = true; error = nil; notice = nil
+        defer { isLoading = false }
+        do {
+            try await auth.cancelAccountDeletion(revision: revision)
+            accountDeletion = .init(state: .cancelled, scheduledFor: nil, revision: nil)
+            notice = Self.deletionSummary(.init(state: .cancelled, scheduledFor: nil, revision: nil))
+        } catch {
+            self.error = error.localizedDescription
+            await refreshAccountDeletion()
+        }
     }
 
     // MARK: - Sign Out
@@ -263,6 +303,7 @@ final class AuthViewModel: ObservableObject {
         catch { self.error = error.localizedDescription }
         state = auth.state
         user = auth.currentProfile
+        if state != .authenticated { accountDeletion = nil }
         // Once the account is gone, leave the editor for the library. The
         // project stays on the device and reopens from the same library.
         if state != .authenticated { await closeOpenProject() }

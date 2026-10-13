@@ -559,17 +559,42 @@ import Supabase
         XCTAssertEqual(ChallengeScheduleCache.monthKey(springForward, calendar: calendar), "2026-03")
     }
 
-    func testWrongCallbackAndUnavailableDeletionNeverMutateAccount() async throws {
-        let service = AuthService()
+    func testWrongCallbackAndDeletionRequestsNeverDeleteFromTheClient() async throws {
+        let unauthenticated = AuthService()
         do {
-            try await service.handleOAuthCallback(url: URL(string: "https://attacker.invalid/auth/callback?code=fixture")!)
+            try await unauthenticated.handleOAuthCallback(url: URL(string: "https://attacker.invalid/auth/callback?code=fixture")!)
             XCTFail("Wrong callback accepted")
         } catch AuthService.AuthError.invalidCallback { }
         do {
-            try await service.deleteAccount()
-            XCTFail("Profile-only account deletion claimed success")
-        } catch AuthService.AuthError.accountDeletionUnavailable { }
-        XCTAssertNil(service.currentUser)
+            _ = try await unauthenticated.requestAccountDeletion()
+            XCTFail("Deletion request without an account claimed success")
+        } catch AuthService.AuthError.notAuthenticated { }
+        XCTAssertNil(unauthenticated.currentUser)
+
+        // Signed in: the client only files, reads and cancels a server request (#262).
+        let (service, model, transport, _, _) = try await profileFixture()
+        defer { transport.invalidateAndCancel() }
+        AuthFixtureTransport.resetLifecycle()
+        XCTAssertNil(try await service.accountDeletionStatus(), "No request yet must read as nil, not as a state")
+        await model.requestAccountDeletion()
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.accountDeletion?.state, .pending)
+        XCTAssertEqual(model.accountDeletion?.revision, 1)
+        XCTAssertEqual(model.accountDeletion?.scheduledFor, ISO8601DateFormatter().date(from: "2026-10-20T01:00:00Z"))
+        XCTAssertEqual(model.notice, "Account deletion is scheduled for 2026-10-20 01:00 UTC. Cancel before then to keep the account. Projects on this device are untouched; subscriptions must be cancelled through the App Store or billing portal.")
+        XCTAssertEqual(try await service.accountDeletionStatus()?.state, .pending)
+        await model.cancelAccountDeletion()
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.accountDeletion?.state, .cancelled)
+        XCTAssertEqual(AuthFixtureTransport.lifecycleActions, ["status", "request_deletion", "status", "cancel_deletion"])
+        XCTAssertEqual(AuthFixtureTransport.lifecycleCancelRevision, 1)
+        // A server refusal is reported verbatim and changes nothing locally.
+        AuthFixtureTransport.lifecycleRefusal = "Administrator accounts use the separate owner procedure."
+        await model.requestAccountDeletion()
+        XCTAssertEqual(model.error, "Administrator accounts use the separate owner procedure.")
+        XCTAssertEqual(model.accountDeletion?.state, .cancelled)
+        XCTAssertNil(AuthFixtureTransport.deletionRow, "A refused request must not have been stored")
+        XCTAssertNotNil(service.currentUser, "Deletion flows must not sign the account out or delete anything client-side")
     }
 }
 private final class AuthFixtureStorage: AuthLocalStorage, @unchecked Sendable {
@@ -638,6 +663,21 @@ private final class AuthFixtureTransport: URLProtocol {
     }
     static let first = "10000000-0000-4000-8000-000000000001"
     static let second = "20000000-0000-4000-8000-000000000002"
+    private static var lifecycleLog: [String] = []
+    private static var lifecycleRefusalText: String?
+    private static var lifecycleCancelledRevision: Int?
+    private static var lifecycleRow: [String: Any]?
+    static var lifecycleActions: [String] { gate.lock(); defer { gate.unlock() }; return lifecycleLog }
+    static var lifecycleCancelRevision: Int? { gate.lock(); defer { gate.unlock() }; return lifecycleCancelledRevision }
+    static var deletionRow: [String: Any]? { gate.lock(); defer { gate.unlock() }; return lifecycleRow }
+    static var lifecycleRefusal: String? {
+        get { gate.lock(); defer { gate.unlock() }; return lifecycleRefusalText }
+        set { gate.lock(); defer { gate.unlock() }; lifecycleRefusalText = newValue }
+    }
+    static func resetLifecycle() {
+        gate.lock(); defer { gate.unlock() }
+        lifecycleLog = []; lifecycleRefusalText = nil; lifecycleCancelledRevision = nil; lifecycleRow = nil
+    }
     private let loadingLock = NSLock()
     private var stopped = false
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -659,6 +699,32 @@ private final class AuthFixtureTransport: URLProtocol {
             var row = fields; row["id"] = mode == "wrong" ? Self.second : (mode == "malformed" ? "invalid-identity" : Self.alpha)
             if mode == "hold" { Self.gate.lock(); Self.patchRequests.append((self,row)); Self.gate.unlock(); return }
             respond(200, row); return
+        }
+        if url.path.hasSuffix("/rpc/sdi_account_lifecycle") {
+            let fields = (try? JSONSerialization.jsonObject(with: requestBody())) as? [String: Any] ?? [:]
+            let action = fields["action"] as? String ?? ""
+            Self.gate.lock(); defer { Self.gate.unlock() }
+            Self.lifecycleLog.append(action)
+            if let refusal = Self.lifecycleRefusalText { respond(200, ["error": refusal]); return }
+            switch action {
+            case "status":
+                respond(200, ["deletion": Self.lifecycleRow.map { $0 as Any } ?? NSNull(), "exports_remaining_today": 3, "note": "fixture"])
+            case "request_deletion":
+                // Postgres timestamptz text carries microseconds; the client must parse it.
+                let row: [String: Any] = ["state": "pending", "scheduled_for": "2026-10-20T01:00:00.000000+00:00", "revision": 1, "requested_at": "2026-10-13T01:00:00+00:00"]
+                Self.lifecycleRow = row
+                respond(200, ["status": "pending", "scheduled_for": row["scheduled_for"]!, "revision": 1])
+            case "cancel_deletion":
+                Self.lifecycleCancelledRevision = fields["revision"] as? Int
+                guard let row = Self.lifecycleRow, row["state"] as? String == "pending", row["revision"] as? Int == Self.lifecycleCancelledRevision else {
+                    respond(200, ["error": "No pending deletion request can be cancelled."]); return
+                }
+                Self.lifecycleRow = nil
+                respond(200, ["status": "cancelled"])
+            default:
+                respond(200, ["error": "Unsupported account operation."])
+            }
+            return
         }
         if url.path.hasSuffix("/logout") || url.path.hasSuffix("/recover") {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return

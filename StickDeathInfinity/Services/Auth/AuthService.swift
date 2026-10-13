@@ -603,10 +603,66 @@ final class AuthService: ObservableObject {
         ])
     }
 
-    func deleteAccount() async throws {
-        // Deleting a profile row does not delete the authentication identity,
-        // revoke every session, or erase related records. Never claim it does.
-        throw AuthError.accountDeletionUnavailable
+    // MARK: - Account lifecycle (#262)
+
+    /// Server-side deletion request state from `sdi_account_lifecycle`. Deleting
+    /// a profile row would not remove the identity, revoke sessions or erase
+    /// related records, so the client never deletes anything itself: it files a
+    /// request with a seven-day cooling-off period that the service worker
+    /// completes, and it can cancel that request while it is still pending.
+    struct AccountDeletionStatus: Equatable {
+        enum State: String { case pending, processing, blocked, completed, cancelled }
+        let state: State
+        let scheduledFor: Date?
+        let revision: Int?
+        var isOpen: Bool { state == .pending || state == .processing || state == .blocked }
+    }
+    private struct LifecycleRequest: Encodable { let action: String; var revision: Int? = nil }
+    private struct LifecycleResponse: Decodable {
+        struct Deletion: Decodable { let state: String; let scheduled_for: String?; let revision: Int? }
+        let error: String?
+        let status: String?
+        let scheduled_for: String?
+        let revision: Int?
+        let deletion: Deletion?
+    }
+    /// Postgres renders timestamptz with up to six fractional digits; ISO8601DateFormatter
+    /// accepts three, so the fraction is truncated (never rounded) before parsing.
+    static func lifecycleDate(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        let trimmed = raw.replacingOccurrences(of: #"(\.\d{3})\d+"#, with: "$1", options: .regularExpression)
+        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter(); plain.formatOptions = [.withInternetDateTime]
+        return fractional.date(from: trimmed) ?? plain.date(from: trimmed)
+    }
+    private func lifecycle(_ action: String, revision: Int? = nil) async throws -> LifecycleResponse {
+        guard userId != nil else { throw AuthError.notAuthenticated }
+        let response: LifecycleResponse
+        do {
+            response = try await supabase.rpc("sdi_account_lifecycle", params: LifecycleRequest(action: action, revision: revision)).execute().value
+        } catch let error as PostgrestError where error.code == "PGRST202" || error.code == "42883" {
+            // The lifecycle candidate is not installed on this server: nothing is deleted.
+            throw AuthError.accountDeletionUnavailable
+        }
+        if let message = response.error { throw AuthError.accountOperationRefused(message) }
+        return response
+    }
+    /// Current request, or nil when none has ever been filed.
+    func accountDeletionStatus() async throws -> AccountDeletionStatus? {
+        let response = try await lifecycle("status")
+        guard let deletion = response.deletion, let state = AccountDeletionStatus.State(rawValue: deletion.state) else { return nil }
+        return .init(state: state, scheduledFor: Self.lifecycleDate(deletion.scheduled_for), revision: deletion.revision)
+    }
+    /// Files (or returns the already open) deletion request. Nothing is removed now.
+    func requestAccountDeletion() async throws -> AccountDeletionStatus {
+        let response = try await lifecycle("request_deletion")
+        guard let raw = response.status, let state = AccountDeletionStatus.State(rawValue: raw) else { throw AuthError.accountOperationRefused("The server returned an unknown deletion state. Nothing was deleted.") }
+        return .init(state: state, scheduledFor: Self.lifecycleDate(response.scheduled_for), revision: response.revision)
+    }
+    /// Cancels a pending request at the revision the member last saw.
+    func cancelAccountDeletion(revision: Int) async throws {
+        let response = try await lifecycle("cancel_deletion", revision: revision)
+        guard response.status == "cancelled" else { throw AuthError.accountOperationRefused("The deletion request could not be cancelled. Refresh and try again.") }
     }
 
     /// Recovery links return to this app and finish through the SDK's own PKCE
@@ -732,6 +788,7 @@ final class AuthService: ObservableObject {
         case providerUnavailable(String)
         case providerDenied(String)
         case operationInProgress, invalidCallback, accountDeletionUnavailable
+        case accountOperationRefused(String)
         case invalidEmail, weakPassword
         case notAuthenticated
         case noPresentingViewController
@@ -746,7 +803,8 @@ final class AuthService: ObservableObject {
             case .weakPassword: return "Use a password of 6–128 characters."
             case .operationInProgress: return "Another sign-in or sign-out is still finishing. Wait before trying again."
             case .invalidCallback: return "This sign-in callback is not for StickDeath Infinity."
-            case .accountDeletionUnavailable: return "Account deletion is unavailable until secure identity and data deletion is configured. Your account has not been deleted."
+            case .accountDeletionUnavailable: return "Account deletion is not configured on this server yet. Your account has not been deleted."
+            case .accountOperationRefused(let reason): return reason
             case .notAuthenticated: return "Not authenticated"
             case .noPresentingViewController: return "No presenting view controller available"
             case .appleSignInFailed(let msg): return "Apple Sign In failed: \(msg)"

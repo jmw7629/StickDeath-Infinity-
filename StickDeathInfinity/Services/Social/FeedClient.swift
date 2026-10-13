@@ -12,7 +12,7 @@ import Foundation
 @MainActor
 final class FeedClient {
     enum PageSource: Equatable { case server, cache(updatedAt: Date) }
-    struct Page: Equatable { let posts: [FeedPost]; let hasMore: Bool; let source: PageSource }
+    struct Page: Equatable { let posts: [FeedPost]; let hasMore: Bool; let source: PageSource; var asOf: String? = nil }
 
     let gateway: CommunityGateway
     let cache: CommunityOfflineCache<[FeedPost]>
@@ -21,14 +21,16 @@ final class FeedClient {
     }
 
     /// One server page. Page 0 of each category is cached per account for the
-    /// offline label; later pages are never served from cache.
-    func page(_ category: FeedCategory, page: Int, account: String) async throws -> Page {
+    /// offline label; later pages are never served from cache. `asOf` is the
+    /// snapshot page 0 returned; later pages send it so the ranking stays put.
+    func page(_ category: FeedCategory, page: Int, account: String, asOf: String? = nil) async throws -> Page {
         guard (0..<FeedTimeline.maximumPages).contains(page) else { throw CommunityError.invalidResponse("Feed page out of range.") }
         do {
-            let response = try await gateway.call("sdi_feed_action", params: FeedRequest(action: "list", category: category.rawValue, page: page), as: FeedListResponse.self)
+            let request = FeedRequest(action: "list", category: category.rawValue, page: page, as_of: page == 0 ? nil : asOf)
+            let response = try await gateway.call("sdi_feed_action", params: request, as: FeedListResponse.self)
             guard let posts = response.posts, let more = response.has_more else { throw CommunityError.invalidResponse("The feed returned an incomplete response.") }
             if page == 0 { try? cache.store(posts, account: account, key: category.rawValue) }
-            return Page(posts: posts, hasMore: more, source: .server)
+            return Page(posts: posts, hasMore: more, source: .server, asOf: response.as_of)
         } catch let error as CommunityError {
             if page == 0, case .transport = error, let cached = cache.entry(account: account, key: category.rawValue) {
                 return Page(posts: cached.value, hasMore: false, source: .cache(updatedAt: cached.updatedAt))
