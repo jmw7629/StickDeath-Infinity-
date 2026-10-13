@@ -56,7 +56,7 @@ struct FloatingToolSettingsPanel: View {
                         Spacer()
                         Button(action: { textInputFocused = false; imageFocusedField = nil; vm.activePanel = .none }) {
                             Text("✕")
-                                .font(.system(size: 14))
+                                .font(.specialElite(14))
                                 .foregroundColor(.sdStudioSecondaryText)
                                 .frame(width: 44, height: 44)
                                 .contentShape(Rectangle())
@@ -666,7 +666,7 @@ struct FloatingToolSettingsPanel: View {
                         }) {
                             VStack(spacing: 2) {
                                 Text(String(action.prefix(2)))
-                                    .font(.system(size: 12))
+                                    .font(.specialElite(12))
                                 Text(String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces))
                                     .font(.specialElite(7))
                                     .foregroundColor(.sdStudioSecondaryText)
@@ -989,10 +989,37 @@ struct FloatingToolSettingsPanel: View {
                 ForEach(StudioMirrorMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
             }.accessibilityIdentifier("studio.drawing.mirror")
             if vm.mirrorMode != .off {
-                Text(vm.mirrorMode == .both ? "Four editable copies around the canvas center; one Undo step." : "Two editable copies across the canvas center; one Undo step.")
+                if vm.mirrorMode != .horizontal {
+                    mirrorAxisSlider("Vertical line", value: $vm.mirrorAxisX, identifier: "studio.drawing.mirror.axis-x",
+                                     position: "\(Int((vm.mirrorAxisX * Double(vm.canvasWidth)).rounded())) px from left")
+                }
+                if vm.mirrorMode != .vertical {
+                    mirrorAxisSlider("Horizontal line", value: $vm.mirrorAxisY, identifier: "studio.drawing.mirror.axis-y",
+                                     position: "\(Int((vm.mirrorAxisY * Double(vm.canvasHeight)).rounded())) px from top")
+                }
+                if vm.mirrorAxisX != 0.5 || vm.mirrorAxisY != 0.5 {
+                    Button("Center mirror lines") { vm.mirrorAxisX = 0.5; vm.mirrorAxisY = 0.5 }
+                        .font(.specialElite(10)).foregroundColor(.red).frame(minHeight: 44)
+                        .accessibilityIdentifier("studio.drawing.mirror.center")
+                }
+                Text(vm.mirrorMode == .both ? "Four editable copies around the mirror lines; one Undo step." : "Two editable copies across the mirror line; one Undo step.")
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             }
         }.font(.specialElite(11))
+    }
+    /// Normalised 0…1 axis position; the displayed value is the actual document pixel.
+    private func mirrorAxisSlider(_ title: String, value: Binding<Double>, identifier: String, position: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(position).foregroundColor(.sdStudioSecondaryText).font(.specialElite(9))
+            }
+            Slider(value: value, in: 0...1)
+                .accessibilityLabel(title + " mirror position")
+                .accessibilityValue(position)
+                .accessibilityIdentifier(identifier)
+        }
     }
 
     private var lineRulerSettings: some View {

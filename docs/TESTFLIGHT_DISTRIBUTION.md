@@ -75,6 +75,16 @@ page on the phone, enable installation from unknown sources for the browser
 and open the file. Debug APKs are signed with the shared Android debug key
 and are for the owner's own device testing only, never for distribution.
 
+## Review captures versus installed builds
+
+The owner-private gallery and the simulator route above are **review**
+evidence from CI's unsigned simulator build; how its PNGs are sourced from the
+run artifact (`attachments/`, `attachment-export.log`, `manifest.json`) is
+described in `docs/NATIVE_SIMULATOR_REVIEW.md`, "Sourcing gallery captures
+from the run artifact". A TestFlight build is a different binary (Release,
+signed); captures from a TestFlight install must be labelled with that build
+number and commit and never mixed into a simulator-run gallery entry.
+
 ## Known limits
 
 - No build has been installed on any physical device by this project yet;

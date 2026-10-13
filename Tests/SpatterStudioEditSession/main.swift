@@ -2098,8 +2098,12 @@ private final class NetworkTrap: URLProtocol {
             let before = vm.document, artwork = try erasurePixels(vm.document), plain = try erasurePixels(vm.document, includeOnion: true)
             vm.onionPreviousCount = 2; vm.onionNextCount = 1; vm.onionOpacity = 0.35; vm.onionTinted = true
             let manual = vm.document
-            for _ in 0..<4 { vm.undo() }
-            await vm.flush(); try require(content(vm.document) == content(before), "Manual guide Undo fixture drift")
+            // Editor guides live outside document history: changing them must not add Undo steps.
+            var baseline = before; baseline.onionSettings = .init()
+            try require(vm.document.onionSettings == manual.onionSettings && vm.frames == before.frames
+                && content(manual) != content(baseline), "Manual onion settings did not apply")
+            vm.onionPreviousCount = 1; vm.onionNextCount = 0; vm.onionOpacity = 0.2; vm.onionTinted = false
+            await vm.flush(); try require(content(vm.document) == content(baseline), "Manual guide reset fixture drift")
             let session = SpatterStudioEditSession()
             _ = session.submit(SpatterOnionInstruction.settingsExample, in: vm, accountID: nil, currentScope: { guest })
             await session.waitForCompletion()
@@ -2107,12 +2111,12 @@ private final class NetworkTrap: URLProtocol {
                 && vm.visibleOnionGhosts.isEmpty && !vm.showOnionSkin && vm.frames == before.frames
                 && vm.layers == before.layers && (try erasurePixels(vm.document)) == artwork,
                 "Onion configure changed artwork/visibility or diverged from real manual settings")
-            vm.undo(); try require(content(vm.document) == content(before), "One Undo did not restore all onion settings")
+            vm.undo(); try require(vm.document.onionSettings == manual.onionSettings, "Undo must not revert onion settings")
             vm.redo(); await vm.flush()
             vm.showOnionSkin = true; let manualShown = vm.document
             let shownPixels = try erasurePixels(manualShown, includeOnion: true)
             try require(shownPixels != plain, "Real neighboring-frame guides rendered no pixels")
-            vm.undo(); await vm.flush()
+            vm.showOnionSkin = false; await vm.flush()
             _ = session.submit(SpatterOnionInstruction.showExample, in: vm, accountID: nil, currentScope: { guest })
             await session.waitForCompletion()
             try require(session.status == .applied && content(vm.document) == content(manualShown)

@@ -576,13 +576,19 @@ struct StudioDocumentEditor {
 
     /// Change the viewport, not artwork coordinates. Reject any resize which
     /// would silently discard fill coverage or reinterpret flattened/effect pixels.
-    mutating func updateProjectSettings(name: String, width: Int, height: Int, fps: Int) throws {
+    /// A non-default `anchor` keeps that canvas point fixed by offsetting every
+    /// placement by the whole-pixel size difference; the default keeps content
+    /// top-left so historical documents and their bytes stay identical.
+    mutating func updateProjectSettings(name: String, width: Int, height: Int, fps: Int,
+                                        anchor: StudioCanvasAnchor = .topLeading) throws {
         let title = try StudioDocument.validatedProjectName(name)
         guard (16...4096).contains(width), (16...4096).contains(height), (1...60).contains(fps) else {
             throw StudioDocumentError.invalid("Canvas sides must be 16–4096 pixels and FPS must be 1–60.")
         }
+        guard anchor.isValid else { throw StudioDocumentError.invalid("The resize anchor must stay inside the canvas, 0–1 on each axis.") }
         guard title != document.name || width != document.width || height != document.height || fps != document.fps else { return }
         let resizing = width != document.width || height != document.height
+        let offset = anchor.offset(fromWidth: document.width, height: document.height, toWidth: width, height: height)
         try change { value in
             if resizing {
                 for index in value.frames.indices {
@@ -592,6 +598,10 @@ struct StudioDocumentEditor {
                     }
                     guard !frame.elements.contains(where: { $0.hasPixelEffect }) else {
                         throw StudioDocumentError.unavailable("Canvas resizing with replayable pixel effects is unavailable. Name and FPS can still be changed.")
+                    }
+                    if offset != .zero {
+                        try Self.anchorFrameContent(&value.frames[index], offset: offset, width: width, height: height, schemaVersion: &value.schemaVersion)
+                        continue
                     }
                     for elementIndex in frame.elements.indices {
                         guard let mask = frame.elements[elementIndex].fillMask else { continue }
@@ -607,6 +617,97 @@ struct StudioDocumentEditor {
             value.name = title; value.width = width; value.height = height; value.fps = fps
             // Existing image placement bounds, effect budgets, audio seconds and
             // the one-hour timeline limit remain enforced by change/validate.
+        }
+    }
+
+    /// Offset one frame's drawings and images by a whole-pixel resize anchor.
+    /// World-space placement (transform, then translation) moves when present so
+    /// reflections and selection erasures follow; otherwise the original samples,
+    /// text origins and fill spans move. Nothing is resampled or re-rendered.
+    private static func anchorFrameContent(_ frame: inout AnimationFrame, offset: StudioCanvasAnchor.Offset,
+                                           width: Int, height: Int, schemaVersion: inout Int) throws {
+        let dx = Double(offset.dx), dy = Double(offset.dy)
+        let discardsFill = StudioDocumentError.unavailable("This size would discard stored fill coverage. Choose a larger canvas or another anchor; nothing changed.")
+        for index in frame.elements.indices {
+            var element = frame.elements[index]
+            if var transform = element.transform {
+                transform.tx += dx; transform.ty += dy
+                try transform.validate(); element.transform = transform
+            } else if var translation = element.translation {
+                translation.x += dx; translation.y += dy
+                try translation.validate(); element.translation = translation
+            } else if element.reflection != nil || element.selectionErasures?.isEmpty == false {
+                let translation = StudioElementTranslation(x: dx, y: dy)
+                try translation.validate(); element.translation = translation
+                schemaVersion = max(schemaVersion, 7)
+            } else {
+                if let mask = element.fillMask {
+                    guard mask.spans.allSatisfy({ (0..<height).contains($0.row + offset.dy) && $0.start + offset.dx >= 0 && $0.end + offset.dx <= width }) else { throw discardsFill }
+                    let moved = StudioFillMask(width: width, height: height, spans: mask.spans.map {
+                        .init(row: $0.row + offset.dy, start: $0.start + offset.dx, end: $0.end + offset.dx, alpha: $0.alpha)
+                    })
+                    try moved.validate(); element.fillMask = moved
+                }
+                for pointIndex in element.points.indices {
+                    element.points[pointIndex].x += CGFloat(dx); element.points[pointIndex].y += CGFloat(dy)
+                }
+            }
+            if element.fillMask?.width != width || element.fillMask?.height != height, let mask = element.fillMask {
+                // Placed fills keep their span coordinates; only the mask frame grows or shrinks.
+                guard mask.spans.allSatisfy({ $0.row < height && $0.end <= width }) else { throw discardsFill }
+                let resized = StudioFillMask(width: width, height: height, spans: mask.spans)
+                try resized.validate(); element.fillMask = resized
+            }
+            frame.elements[index] = element
+        }
+        func moved(_ placement: StudioRasterPlacement) -> StudioRasterPlacement {
+            .init(x: placement.x + dx, y: placement.y + dy, width: placement.width, height: placement.height)
+        }
+        func movedGeometry(_ geometry: StudioImageRegionMask.Geometry) throws -> StudioImageRegionMask.Geometry {
+            var instance = geometry.applying(to: StudioRasterLayerInstance(layerID: "anchor"))
+            instance.placement = instance.placement.map(moved)
+            guard let result = StudioImageRegionMask.Geometry(instance) else { throw StudioDocumentError.invalid("An image region has no placement.") }
+            return result
+        }
+        func movedMask(_ mask: StudioImageRegionMask) throws -> StudioImageRegionMask {
+            guard let sampling = mask.samplingGeometry, let placement = mask.placementGeometry else { return mask }
+            var result = mask
+            let movedSampling = try movedGeometry(sampling)
+            result.samplingGeometry = movedSampling
+            // Recompute the compact placement from the moved sampling geometry so
+            // validation's exact reframe equality holds without rounding drift.
+            if sampling == placement { result.placementGeometry = movedSampling }
+            else if let crop = placement.crop { result.placementGeometry = try movedSampling.reframed(crop: crop) }
+            else { result.placementGeometry = try movedGeometry(placement) }
+            return result
+        }
+        func movedInstance(_ instance: StudioRasterLayerInstance) throws -> StudioRasterLayerInstance {
+            var result = instance
+            guard let placement = instance.placement else { return result }
+            guard instance.rotationDegrees != nil || (placement.x + dx >= 0 && placement.y + dy >= 0) else {
+                throw StudioDocumentError.unavailable("This size would move an image outside the canvas. Choose a larger canvas or another anchor; nothing changed.")
+            }
+            if let mask = instance.regionMask {
+                let movedRegion = try movedMask(mask)
+                result.regionMask = movedRegion
+                // A fragment still at its lifted placement follows its recomputed geometry exactly.
+                if mask.placementGeometry != nil, StudioImageRegionMask.Geometry(instance) == mask.placementGeometry,
+                   let next = movedRegion.placementGeometry?.placement {
+                    result.placement = next
+                    return result
+                }
+            }
+            result.placement = moved(placement)
+            return result
+        }
+        if frame.rasterPlacement != nil, let layerID = frame.rasterLayerID {
+            let primary = try movedInstance(.init(layerID: layerID, placement: frame.rasterPlacement, reflection: frame.rasterReflection,
+                quarterTurns: frame.rasterQuarterTurns, crop: frame.rasterCrop, rotationDegrees: frame.rasterRotationDegrees,
+                regionMask: frame.rasterRegionMask, stackPosition: frame.rasterStackPosition))
+            frame.rasterPlacement = primary.placement; frame.rasterRegionMask = primary.regionMask
+        }
+        if let aliases = frame.rasterAliases {
+            frame.rasterAliases = try aliases.map(movedInstance)
         }
     }
 
@@ -1193,6 +1294,27 @@ struct StudioDocumentEditor {
             value.frames.swapAt(index, index + offset)
         }
     }
+    /// Move a contiguous run of frames so its first frame lands at `position`
+    /// (0-based index in the resulting order). The run keeps its internal order,
+    /// exposures and identities; every other frame keeps its relative order.
+    /// One history entry; an unknown, non-contiguous or out-of-range request changes nothing.
+    mutating func moveFrames(_ ids: [String], toPosition position: Int) throws {
+        guard !ids.isEmpty, ids.count <= document.frames.count,
+              let first = document.frames.firstIndex(where: { $0.id == ids[0] }),
+              first + ids.count <= document.frames.count,
+              Array(document.frames[first..<(first + ids.count)].map(\.id)) == ids else {
+            throw StudioDocumentError.invalid("Choose a contiguous range of existing frames to move.")
+        }
+        guard (0...(document.frames.count - ids.count)).contains(position) else {
+            throw StudioDocumentError.invalid("Choose a position between 1 and \(document.frames.count - ids.count + 1) for this range.")
+        }
+        guard position != first else { return }
+        try change { value in
+            let moving = Array(value.frames[first..<(first + ids.count)])
+            value.frames.removeSubrange(first..<(first + ids.count))
+            value.frames.insert(contentsOf: moving, at: position)
+        }
+    }
     /// One reversible edit; original geometry and fill pixels are never cropped.
     /// Placement edits retain the immutable image identity and original bytes.
     /// Historical full-canvas raster records are deliberately not converted here.
@@ -1752,12 +1874,44 @@ struct StudioDocumentEditor {
     mutating func undo() {
         guard document.revision < Int.max - 2, var previous = undoDocuments.popLast() else { return }
         redoDocuments.append(document); previous.revision = document.revision + 1; previous.modifiedAt = Date()
-        document = previous; selectedElementIDs.removeAll()
+        Self.carryViewSettings(from: document, to: &previous)
+        document = previous; retainSelectionAfterHistoryStep()
     }
     mutating func redo() {
         guard document.revision < Int.max - 2, var next = redoDocuments.popLast() else { return }
         undoDocuments.append(document); next.revision = document.revision + 1; next.modifiedAt = Date()
-        document = next; selectedElementIDs.removeAll()
+        Self.carryViewSettings(from: document, to: &next)
+        document = next; retainSelectionAfterHistoryStep()
+    }
+    /// Grid and onion-skin overlays persist with the project but are not
+    /// artwork: changing them never enters Undo history, and Undo/Redo keep the
+    /// current overlay settings rather than reverting them with the artwork.
+    /// Anything else the operation touches is refused and nothing changes.
+    @discardableResult
+    mutating func changeViewSettings(_ operation: (inout StudioDocument) -> Void) -> Bool {
+        guard document.revision < Int.max - 2 else { return false }
+        var next = document
+        operation(&next)
+        var artwork = next
+        Self.carryViewSettings(from: document, to: &artwork)
+        guard artwork == document, next != document, (try? next.validate()) != nil else { return false }
+        next.revision = document.revision + 1; next.modifiedAt = Date()
+        document = next
+        return true
+    }
+    private static func carryViewSettings(from current: StudioDocument, to restored: inout StudioDocument) {
+        restored.gridEnabled = current.gridEnabled; restored.gridSettings = current.gridSettings
+        restored.onionEnabled = current.onionEnabled; restored.onionSettings = current.onionSettings
+    }
+    /// Keep the element selection across a history step while every selected
+    /// drawing still exists on the active frame; otherwise clear it.
+    private mutating func retainSelectionAfterHistoryStep() {
+        guard !selectedElementIDs.isEmpty,
+              let frame = document.frames.first(where: { $0.id == document.activeFrameID }) else {
+            selectedElementIDs.removeAll(); return
+        }
+        let existing = Set(frame.elements.map(\.id))
+        if !selectedElementIDs.isSubset(of: existing) { selectedElementIDs.removeAll() }
     }
     private mutating func trimHistory() {
         func cost(_ value: StudioDocument) -> Int {
@@ -1930,11 +2084,14 @@ enum StudioTweenEasing: String, Codable, CaseIterable, Identifiable {
     /// x(s) = s so the curve reduces exactly to 3t² − 2t³ (smoothstep). Gentler
     /// than Ease in/out and never overshoots.
     case easyEase
+    /// EffectCraft "Hold": a step curve. Every in-between repeats the start pose
+    /// and the motion lands entirely on the end frame (classic held pose).
+    case hold
     var id: String { rawValue }
     var title: String {
         switch self { case .linear: return "Linear"; case .easeIn: return "Ease in"
         case .easeOut: return "Ease out"; case .easeInOut: return "Ease in/out"
-        case .easyEase: return "Easy ease" }
+        case .easyEase: return "Easy ease"; case .hold: return "Hold" }
     }
     func progress(_ t: Double) -> Double {
         let t = min(1, max(0, t))
@@ -1944,6 +2101,7 @@ enum StudioTweenEasing: String, Codable, CaseIterable, Identifiable {
         case .easeOut: return t * (2 - t)
         case .easeInOut: return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
         case .easyEase: return t * t * (3 - 2 * t)
+        case .hold: return t < 1 ? 0 : 1
         }
     }
 }
@@ -2180,5 +2338,32 @@ extension StudioDocumentEditor {
         }
         try checkCancellation()
         self = candidate
+    }
+}
+
+/// Normalised canvas point that stays fixed while the project canvas is resized.
+/// `(0, 0)` is the historical top-left behaviour; `(0.5, 0.5)` keeps the centre
+/// and `(1, 1)` keeps the bottom-right corner. Foundation-only so the document
+/// editor, Spatter commands and SwiftUI share one definition.
+struct StudioCanvasAnchor: Equatable, Hashable, Sendable {
+    var x: Double
+    var y: Double
+    static let topLeading = Self(x: 0, y: 0)
+    static let center = Self(x: 0.5, y: 0.5)
+    static let bottomTrailing = Self(x: 1, y: 1)
+    /// The nine picker positions, row by row from top-left.
+    static let grid: [Self] = [0.0, 0.5, 1.0].flatMap { y in [0.0, 0.5, 1.0].map { x in Self(x: x, y: y) } }
+    var isValid: Bool { x.isFinite && y.isFinite && (0...1).contains(x) && (0...1).contains(y) }
+
+    /// Whole-pixel content offset so fill coverage and vector strokes stay aligned.
+    struct Offset: Equatable, Sendable {
+        var dx: Int
+        var dy: Int
+        static let zero = Self(dx: 0, dy: 0)
+    }
+    func offset(fromWidth oldWidth: Int, height oldHeight: Int, toWidth newWidth: Int, height newHeight: Int) -> Offset {
+        guard isValid else { return .zero }
+        return Offset(dx: Int((Double(newWidth - oldWidth) * x).rounded()),
+                      dy: Int((Double(newHeight - oldHeight) * y).rounded()))
     }
 }

@@ -150,7 +150,7 @@ struct StudioImageLibraryView: View {
                                             .font(.specialElite(12, relativeTo: .caption))
                                     } icon: {
                                         Image(systemName: favorites.contains(item.id) ? "star.fill" : "star")
-                                            .font(.caption)
+                                            .font(.specialElite(12, relativeTo: .caption))
                                     }
                                     .foregroundColor(.red).frame(maxWidth: .infinity, minHeight: 44)
                                 }.accessibilityIdentifier("studio.image-library.favorite." + item.id)

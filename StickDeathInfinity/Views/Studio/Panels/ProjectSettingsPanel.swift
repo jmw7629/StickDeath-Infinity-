@@ -9,6 +9,7 @@ struct ProjectSettingsPanel: View {
     @State private var height = 1920
     @State private var fps = 12
     @State private var backgroundID: String?
+    @State private var anchor: StudioCanvasAnchor = .topLeading
     @State private var capturedProjectID: UUID?
     @State private var capturedRevision = -1
     @State private var notice: String?
@@ -42,7 +43,11 @@ struct ProjectSettingsPanel: View {
                         notice: settingsNotice, busy: vm.isSaving,
                         canSubmit: capturedProjectID != nil && settingsAreCurrent && scenePhase == .active && !vm.isPlaying,
                         chooseExistingBackground: chooseBackground, onSubmit: apply)
-                    Text("Canvas changes keep artwork at its original position and change the visible area. Frame rate changes animation speed; audio stays at its time in seconds. Undo restores the previous settings. Resizing may be unavailable for historical flattened images, pixel effects or a smaller size that would discard fill coverage.")
+                    if width != vm.canvasWidth || height != vm.canvasHeight {
+                        StudioCanvasAnchorPicker(anchor: $anchor, fromWidth: vm.canvasWidth, fromHeight: vm.canvasHeight,
+                                                 toWidth: width, toHeight: height)
+                    }
+                    Text("Canvas changes keep artwork at its original size and change the visible area; the anchor chooses which edge or corner stays fixed. Frame rate changes animation speed; audio stays at its time in seconds. Undo restores the previous settings. Resizing may be unavailable for historical flattened images, pixel effects or a smaller size that would discard fill coverage.")
                         .font(.specialElite(12)).foregroundStyle(.gray)
                     Button("Reload current settings") { load() }
                         .font(.specialElite(14)).foregroundStyle(.red).frame(minHeight: 44)
@@ -58,11 +63,12 @@ struct ProjectSettingsPanel: View {
     }
     private func load() {
         projectName = vm.projectName; width = vm.canvasWidth; height = vm.canvasHeight; fps = vm.fps
+        anchor = .topLeading
         capturedProjectID = vm.document.id; capturedRevision = vm.document.revision; notice = nil
     }
     private func apply() {
         guard let id = capturedProjectID, scenePhase == .active else { return }
-        if vm.updateProjectSettings(name: projectName, width: width, height: height, fps: fps,
+        if vm.updateProjectSettings(name: projectName, width: width, height: height, fps: fps, anchor: anchor,
                                     expectedProjectID: id, expectedRevision: capturedRevision) {
             load(); notice = vm.isDirty ? "Settings applied to the open project. Check the Studio save indicator for device-save status." : "Settings match the current project."
         } else { notice = vm.message ?? "Settings could not be changed." }
@@ -177,6 +183,56 @@ struct ProjectSettingsPanel: View {
         }
     }
 
+}
+
+// MARK: - Resize anchor
+/// 3×3 picker for the canvas point that stays fixed while an existing project
+/// is resized. New projects have nothing to anchor, so the card never shows it.
+struct StudioCanvasAnchorPicker: View {
+    @Binding var anchor: StudioCanvasAnchor
+    var fromWidth: Int
+    var fromHeight: Int
+    var toWidth: Int
+    var toHeight: Int
+    private static let names = ["top left", "top", "top right", "left", "center", "right", "bottom left", "bottom", "bottom right"]
+    private var offset: StudioCanvasAnchor.Offset {
+        anchor.offset(fromWidth: fromWidth, height: fromHeight, toWidth: toWidth, height: toHeight)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("RESIZE ANCHOR").font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.white.opacity(0.5)).tracking(1)
+            HStack(alignment: .top, spacing: 16) {
+                VStack(spacing: 4) {
+                    ForEach(0..<3, id: \.self) { row in
+                        HStack(spacing: 4) {
+                            ForEach(0..<3, id: \.self) { column in
+                                let value = StudioCanvasAnchor.grid[row * 3 + column]
+                                let selected = anchor == value
+                                Button { anchor = value } label: {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(selected ? Color(hex: "E03030") : Color.white.opacity(0.08))
+                                        .frame(width: 44, height: 44)
+                                        .overlay(Circle().fill(selected ? Color.white : Color.white.opacity(0.35)).frame(width: 8, height: 8))
+                                }
+                                .accessibilityLabel("Keep \(Self.names[row * 3 + column]) fixed")
+                                .accessibilityAddTraits(selected ? .isSelected : [])
+                                .accessibilityIdentifier("studio.settings.anchor.\(row)\(column)")
+                            }
+                        }
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("studio.settings.anchor")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Keeps the \(Self.names[StudioCanvasAnchor.grid.firstIndex(of: anchor) ?? 0]) fixed.")
+                        .font(.specialElite(12)).foregroundStyle(.white)
+                    Text("\(fromWidth)×\(fromHeight) → \(toWidth)×\(toHeight); artwork moves \(offset.dx >= 0 ? "+" : "")\(offset.dx), \(offset.dy >= 0 ? "+" : "")\(offset.dy) px. One Undo step restores the previous size and position.")
+                        .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.gray)
+                        .accessibilityIdentifier("studio.settings.anchor.offset")
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Settings Row

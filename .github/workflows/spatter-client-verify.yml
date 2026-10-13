@@ -2272,15 +2272,17 @@ jobs:
       matrix:
         include:
           - shard: 0
-            timeout: 222
+            timeout: 224
           - shard: 1
-            timeout: 198
+            timeout: 203
     env:
       SDI_NATIVE_SHARD_INDEX: ${{ matrix.shard }}
-    # Sorted alternating partitions preserve all 107 native cases (54/53).
+    # Sorted alternating partitions preserve all 110 native cases (55/55):
+    # shard 0 = 10620 s (7 bounded 240 s journeys), shard 1 = 10680 s (8).
     # Per-case 180/240s, no retries, one simulator and one Mac job at a time.
     # Both shards include 300s evidence overhead + 25m build/preservation;
-    # shard zero alone also retains the 17m authentication suite.
+    # shard zero alone also retains the 22-minute authentication step.
+    # Tests/NativeSmokeHarness/test_suite_budget.py derives these exact ceilings.
     timeout-minutes: ${{ matrix.timeout }}
     steps:
       - name: Require successful production verification

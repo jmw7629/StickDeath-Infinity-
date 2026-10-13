@@ -46,7 +46,7 @@ struct StickerEmojiPanel: View {
             .padding(.bottom, 8)
 
             if let insertionNotice {
-                Text(insertionNotice).font(.caption).foregroundColor(.red)
+                Text(insertionNotice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
                     .accessibilityIdentifier("studio.sticker.result")
                     .padding(.horizontal, 12)
             }

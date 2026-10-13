@@ -17,7 +17,7 @@ struct StudioTimeline: View {
             // Prev
             Button(action: { vm.prevFrame() }) {
                 Text("‹")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.specialElite(16)).fontWeight(.bold)
                     .foregroundColor(vm.currentFrameIndex > 0 ? .white.opacity(0.6) : .white.opacity(0.2))
             }
             .disabled(vm.currentFrameIndex == 0)
@@ -43,7 +43,7 @@ struct StudioTimeline: View {
             // Next
             Button(action: { vm.nextFrame() }) {
                 Text("›")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.specialElite(16)).fontWeight(.bold)
                     .foregroundColor(vm.currentFrameIndex < vm.frames.count - 1 ? .white.opacity(0.6) : .white.opacity(0.2))
             }
             .disabled(vm.currentFrameIndex >= vm.frames.count - 1)
@@ -176,7 +176,7 @@ struct StudioTimeline: View {
 
             // Frame counter
             Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
-                .font(.system(size: 10, design: .monospaced))
+                .font(.specialElite(10, relativeTo: .caption2)).monospacedDigit()
                 .foregroundColor(.white.opacity(0.4))
         }
         // A timeline is a bounded control row, not a second flexible canvas.
@@ -302,10 +302,21 @@ private struct StudioFrameTimingOptions: View {
     @State private var error: String?
     @State private var deletingIDs: [String] = []
     @State private var confirmingDelete = false
+    /// 1-based timeline position the selected range should start at.
+    @State private var targetPosition: Int
     init(vm: StudioViewModel, capture: StudioFrameTimingCapture) {
         self.vm = vm; self.capture = capture
         _first = State(initialValue: capture.initialIndex + 1)
         _ticks = State(initialValue: capture.initialTicks)
+        _targetPosition = State(initialValue: capture.initialIndex + 1)
+    }
+    private var lastTargetPosition: Int { max(1, capture.frameIDs.count - count + 1) }
+    private func moveRangeToTarget() {
+        guard isCurrent, (1...lastTargetPosition).contains(targetPosition), targetPosition != first else { return }
+        let ids = Array(capture.frameIDs[(first-1)..<last])
+        vm.message = nil
+        if vm.moveFrames(ids, toPosition: targetPosition - 1, expectedRevision: capture.revision) { dismiss() }
+        else { error = vm.message ?? "The frames could not be moved." }
     }
     private var last: Int { min(capture.frameIDs.count, first + count - 1) }
     private var isCurrent: Bool {
@@ -379,6 +390,11 @@ private struct StudioFrameTimingOptions: View {
                     Button("Move selected range later") { moveRange(.later) }
                         .disabled(!isCurrent || last >= capture.frameIDs.count)
                         .accessibilityIdentifier("studio.frame-timing.move-later")
+                    Stepper("Start at frame \(min(targetPosition, lastTargetPosition))", value: $targetPosition, in: 1...lastTargetPosition)
+                        .accessibilityIdentifier("studio.frame-timing.position")
+                    Button("Move selected range to frame \(min(targetPosition, lastTargetPosition))") { moveRangeToTarget() }
+                        .disabled(!isCurrent || min(targetPosition, lastTargetPosition) == first)
+                        .accessibilityIdentifier("studio.frame-timing.move-to")
                     Text("Moves the range across one neighboring frame while preserving its internal order, exposure and selected frame. Audio times stay unchanged. One Undo restores the order.")
                     Button("Duplicate selected range") {
                         do {

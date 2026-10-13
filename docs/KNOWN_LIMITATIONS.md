@@ -89,9 +89,10 @@ Every admin list falls back to an honest unavailable state when the server-autho
 
 - Native build, simulator, device, accessibility, persistence and export verification for the October 9 implementation batch (`docs/STUDIO_CONTROL_IMPLEMENTATION_INDEX.md`).
 - Exact-head CI for the current branch head; the last recorded public failure is `b50033cc` run 37816602055 shard 0 (#292).
-- 108 native journeys at the current head (#124, #265); #265 bullet 2 (feed, rooms, War Room, approval flows on isolated data) has no connected services to exercise.
-- Accessibility and adaptive layout (#264): 421 fixed `.font(.system(size:))` uses, no `@ScaledMetric`, no size-class checks, Reduce Motion only on Splash/Welcome/Onboarding, CI simulator is iPhone 16 Pro only; `textFaint` contrast defect (see `docs/STUDIO_CONTROL_CONTRAST_VERIFICATION.md`).
-- Visual reference comparison (#127): all rows in `docs/VISUAL_REFERENCE_MAP.md` are `deferred`.
+- 110 native journeys at the current head (#124, #265), including the new complete project journey (`testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen`) and the accessibility audit (`testAccessibilityAuditLibraryAndStudioAtAccessibilityTextSize`), neither of which has run yet; #265 bullet 2 (feed, rooms, War Room, approval flows on isolated data) has no connected services to exercise.
+- Accessibility and adaptive layout (#264): 307 fixed `.font(.system(size:))` uses remain after `SDTextField` adopted the new `sdScaledSystemFont` helper (`docs/ACCESSIBILITY_DYNAMIC_TYPE.md`), no size-class checks, Reduce Motion only on Splash/Welcome/Onboarding, CI simulator is iPhone 16 Pro only. Token contrast is measured: `textFaint` passes 3:1 on its surfaces and `sdTextMuted` was raised to `#757575`; both await the exact-source native run.
+- Visual reference comparison (#127): all rows in `docs/VISUAL_REFERENCE_MAP.md` are `deferred`; the preview-site screens have mapped capture names but no same-viewport comparison.
+- Performance baselines (#266): `Tests/NativePerformance` exists as a target candidate only; no device or simulator measurement exists (`docs/PERFORMANCE_MEASUREMENT_PROTOCOL.md`).
 - TestFlight, signing, physical-device and performance protocol (#266) are owner-gated.
 - Privacy manifest target membership and bundle inclusion (`StickDeathInfinity/PrivacyInfo.xcprivacy`) need a native build.
 - Live identity provider sign-in, billing and publishing flows have never been exercised against production services as tests, by policy.

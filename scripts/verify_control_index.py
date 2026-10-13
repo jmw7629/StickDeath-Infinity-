@@ -46,6 +46,60 @@ RETIRED_PREFIXES = ("Views/Messages/", "Views/Collab/CreatorRoomView.swift", "Se
 # Identifier-prefix mapping taken from the issue numbers each verification doc cites.
 # The implementation index table is matched separately by control words.
 PREFIX_ISSUES = [
+    # 2026-10-12 (#125): groups that were "unmapped" at ee35143, mapped to the
+    # delivery issue whose title owns the control family (scratch issue index).
+    ("studio.export", "#182 #183 #184 #185", "export issues EX01–EX04"),
+    ("studio.storage", "#171 #167", "local storage bounds and the project browser"),
+    ("studio.frame-menu", "#161", "frames, duration, duplication, reordering"),
+    ("studio.frame-timing", "#161", "frames, duration, duplication, reordering"),
+    ("studio.frames-viewer", "#161", "frames, duration, duplication, reordering"),
+    ("studio.frame-timeline", "#161", "frames, duration, duplication, reordering"),
+    ("studio.add-frame", "#161", "frames, duration, duplication, reordering"),
+    ("studio.timeline", "#161", "frames, duration, duplication, reordering"),
+    ("studio.onion", "#162", "onion skin, thumbnails, playback"),
+    ("studio.grid", "#151", "Hand, zoom, fit and canvas navigation"),
+    ("studio.tween", "#166", "tweening and easing"),
+    ("studio.dodge-burn", "#149", "gradient, blur, smudge, sharpen, burn"),
+    ("studio.blur", "#149", "gradient, blur, smudge, sharpen, burn"),
+    ("studio.sharpen", "#149", "gradient, blur, smudge, sharpen, burn"),
+    ("studio.smudge", "#149", "gradient, blur, smudge, sharpen, burn"),
+    ("studio.color", "#146", "eyedropper and color editing"),
+    ("studio.eyedropper", "#146", "eyedropper and color editing"),
+    ("studio.toolbar", "#139", "sole floating toolbar"),
+    ("studio.show-tools", "#139", "sole floating toolbar"),
+    ("studio.settings", "#292 #167", "project settings card"),
+    ("studio.project", "#292 #167", "project creation card"),
+    ("studio.new-project", "#292 #167", "project creation card"),
+    ("studio.background", "#292", "project background in the creation card"),
+    ("studio.back", "#293", "Studio back navigation"),
+    ("studio.undo", "#163", "transactional undo/redo"),
+    ("studio.redo", "#163", "transactional undo/redo"),
+    ("studio.save", "#168", "atomic saves and recovery checkpoints"),
+    ("studio.status", "#168", "save/recovery status"),
+    ("studio.brush-library", "#142", "brush behaviour"),
+    ("studio.brush-discard", "#142", "brush behaviour"),
+    ("studio.brush-retry", "#142", "brush behaviour"),
+    ("studio.eraser", "#140", "docs/TOOL_PREFERENCES_VERIFICATION.md, docs/ERASER_VERIFICATION.md"),
+    ("studio.layer", "#158", "docs/LAYER_RENAME_VERIFICATION.md"),
+    ("studio.image-delete", "#196", "docs/IMAGE_DELETE_CONFIRMATION_VERIFICATION.md"),
+    ("studio.image-move", "#196", "docs/IMAGE_CANVAS_DRAG_VERIFICATION.md"),
+    ("studio.spatter", "#203", "Spatter in Studio"),
+    ("profile.sign-in", "#134 #136 #137", "docs/ENTRY_FLOW_VERIFICATION.md"),
+    ("profile.delete-account", "#135 #262", "account deletion entry points"),
+    ("profile.subscription-status", "#258", "billing states"),
+    ("profile.projects", "#294", "reference profile"),
+    ("profile.identity", "#294", "reference profile"),
+    ("profile", "#224", "profile editing and portfolios"),
+    ("admin", "#210 #285", "admin roles, MFA, user directory"),
+    ("spattercc", "#210", "admin credentials"),
+    ("calendar", "#297", "native Calendar"),
+    ("rooms.warRoom", "#221", "War Room matchups"),
+    ("rooms.watchTogether", "#296", "Watch Together without chat or calls"),
+    ("rooms.calendar", "#297", "native Calendar"),
+    ("rooms.sign-in", "#134 #136 #137", "docs/ENTRY_FLOW_VERIFICATION.md"),
+    ("rooms", "#228 #234", "project-scoped rooms"),
+    ("warRoom", "#221 #226", "War Room matchups and records"),
+    ("watchTogether", "#296", "Watch Together without chat or calls"),
     ("studio.lasso", "#152", "docs/AREA_SELECTION_VERIFICATION.md"),
     ("studio.selection.polygon", "#152", "docs/AREA_SELECTION_VERIFICATION.md"),
     ("studio.selection", "#154", "docs/SELECTION_HANDLE_VERIFICATION.md, docs/SELECTION_TRANSFORM_VERIFICATION.md"),
@@ -217,7 +271,28 @@ CONTROL_KINDS = [
 ]
 
 
-def describe_operation(context: list[str]) -> str:
+# Containers and indicators whose identifier sits on a view with no label or
+# action in the surrounding lines. The identifier's last segment names the
+# element kind; the row still says "review source" so nobody reads it as a
+# verified operation.
+IDENTIFIER_KINDS = {
+    "scroll": "scroll container", "content": "scroll container", "list": "list container", "grid": "grid container",
+    "progress": "progress indicator", "examples": "example-command chips", "glow-examples": "example-command chips",
+    "labels": "track-label column", "track-labels": "track-label column", "toolbar": "toolbar container",
+    "tool-settings": "tool settings popup", "frame-timeline": "frame timeline strip", "repeat": "frame repeat menu entry",
+    "camera": "camera import option", "unreadable": "unreadable-project notice", "total": "storage total text",
+    "project-picker": "project picker", "pack-list": "image pack list", "next": "next-page button",
+    "warRoom": "navigation entry", "watchTogether": "navigation entry",
+}
+
+
+def identifier_fallback(identifier: str) -> str:
+    segment = identifier.rsplit(".", 1)[-1]
+    kind = IDENTIFIER_KINDS.get(segment, "container")
+    return f"{kind} '{identifier}' (identifier-derived; review source)"
+
+
+def describe_operation(context: list[str], identifier: str = "") -> str:
     joined = "\n".join(context)
     kind = ""
     for line in reversed(context):
@@ -256,7 +331,7 @@ def describe_operation(context: list[str]) -> str:
         pieces.append("-> " + ", ".join(actions))
     text = " ".join(pieces).strip()
     if not text:
-        return "unresolved (review source)"
+        return identifier_fallback(identifier) if identifier else "unresolved (review source)"
     return text[:140]
 
 
@@ -374,7 +449,7 @@ def generate(root: Path) -> tuple[list[dict[str, str]], dict[str, int]]:
                     screen += " (retired; excluded from native target)"
                 occurrences[key] = {
                     "identifier": identifier, "file": file, "screen": screen,
-                    "operation": describe_operation(context),
+                    "operation": describe_operation(context, identifier),
                     "history": history_for(context, file, text, reaches),
                     "issue": issue_for(identifier, rows_index), "uiTest": "deferred",
                 }
@@ -387,7 +462,7 @@ def generate(root: Path) -> tuple[list[dict[str, str]], dict[str, int]]:
                "files": len({r["file"] for r in rows}), "dynamic": dynamic,
                "deferred": sum(r["uiTest"] == "deferred" for r in rows),
                "unmapped": sum(r["issue"] == "unmapped" for r in rows),
-               "unresolved": sum(r["operation"].startswith("unresolved") for r in rows),
+               "unresolved": sum("review source" in r["operation"] for r in rows),
                "historyYes": sum(r["history"] == "yes" for r in rows),
                "historyNo": sum(r["history"] == "no" for r in rows),
                "historyNA": sum(r["history"] == "n-a" for r in rows)}

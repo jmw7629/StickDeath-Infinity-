@@ -464,6 +464,19 @@ private struct Failure: Error { let message: String }
             }
             try require(easing.progress(0) == 0 && easing.progress(1) == 1, "Easing endpoints are not exact")
         }
+        try require(StudioTweenEasing.allCases.map(\.title) == ["Linear", "Ease in", "Ease out", "Ease in/out", "Easy ease", "Hold"], "Easing picker titles")
+        try require(StudioTweenEasing.hold.progress(0.999) == 0 && StudioTweenEasing.hold.progress(1) == 1 &&
+            abs(StudioTweenEasing.easyEase.progress(0.5) - 0.5) < 0.000001 && StudioTweenEasing.easyEase.progress(0.25) < StudioTweenEasing.linear.progress(0.25),
+            "Hold must be a step curve and Easy ease a symmetric smoothstep")
+        var held = try StudioDocumentEditor(document: original)
+        _ = try held.tweenFrames(after: original.frames[0].id, to: original.frames[1].id, inbetweenCount: 2, easing: .hold)
+        for frame in held.document.frames.dropFirst().dropLast() {
+            let e = frame.elements[0], point = e.transform!.point(CGPoint(x: e.points[0].x, y: e.points[0].y))
+            try require(abs(point.x - 12) < 0.000001 && abs(point.y - 30) < 0.000001, "Hold in-between left the start pose")
+        }
+        let heldRender = try render(held.document)
+        var startOnly = original; startOnly.frames = [original.frames[0]]; startOnly.activeFrameID = startOnly.frames[0].id
+        try require(heldRender == render(startOnly), "Held first in-between must render exactly like the start pose")
         print("PASS authored endpoints, easing, holds, style, fresh IDs and atomic Undo/Redo")
         var rotation = original
         rotation.frames[1].elements[0].translation = nil

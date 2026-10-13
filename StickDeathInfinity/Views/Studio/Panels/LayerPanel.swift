@@ -89,7 +89,7 @@ struct LayerPanel: View {
                         // Add layer button
                         Button(action: { vm.addLayer() }) {
                             Text("+")
-                                .font(.system(size: 20, weight: .bold))
+                                .font(.specialElite(20)).fontWeight(.bold)
                                 .foregroundColor(.red)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
@@ -216,7 +216,7 @@ struct LayerRow: View {
                     .foregroundColor(layer.visible ? Color(hex: "DC2626") : StudioCraftTheme.textFaint)
                 if StudioLayerBlendMode(stored: layer.blendMode).map({ $0 != .normal }) == true {
                     Text(StudioLayerBlendMode.title(forStored: layer.blendMode))
-                        .font(.system(size: 11))
+                        .font(.specialElite(11, relativeTo: .caption))
                         .foregroundColor(StudioCraftTheme.textDim)
                         .lineLimit(1)
                 }

@@ -528,13 +528,19 @@ enum StudioMirrorMode: String, Codable, CaseIterable {
 
 /// Captured at touch start. Copies retain original samples and brush seed;
 /// canonical reflection/translation makes their pixels true mirror images.
+/// `axisX`/`axisY` are the normalised mirror lines (0…1 of the canvas); the
+/// default 0.5 reflects across the canvas centre exactly as before.
 struct StudioMirrorCapture: Equatable {
     let mode: StudioMirrorMode
     let width: Double
     let height: Double
+    var axisX: Double = 0.5
+    var axisY: Double = 0.5
+    static func isValidAxis(_ value: Double) -> Bool { value.isFinite && (0...1).contains(value) }
     func elements(from source: DrawnElement) throws -> [DrawnElement] {
         guard width.isFinite, height.isFinite, (1...8192).contains(width), (1...8192).contains(height),
-              [.pencil,.pen,.brush,.marker,.crayon,.line,.rectangle,.circle].contains(source.tool),
+              Self.isValidAxis(axisX), Self.isValidAxis(axisY),
+              StudioStrokeInput.mirrorTools.contains(source.tool),
               source.translation == nil, source.reflection == nil, source.transform == nil,
               source.selectionErasures?.isEmpty != false else {
             throw StudioBrushError.invalidSettings("This mirror draft cannot be applied. The original remains unchanged.")
@@ -547,12 +553,15 @@ struct StudioMirrorCapture: Equatable {
         case .horizontal: axes = [(false,true)]
         case .both: axes = [(true,false),(false,true),(true,true)]
         }
+        // Reflecting about x = axisX·width is x' = 2·axisX·width − x: a reflection
+        // through the origin followed by this translation. 2·0.5·width == width exactly.
+        let translationX = 2 * axisX * width, translationY = 2 * axisY * height
         for (x,y) in axes {
             result.append(DrawnElement(id: source.id + "-mirror-" + (x ? "x" : "") + (y ? "y" : ""),
                 tool: source.tool, points: source.points, color: source.color, width: source.width,
                 opacity: source.opacity, fillColor: source.fillColor, layerID: source.layerID,
                 brush: source.brush, shape: source.shape,
-                translation: .init(x: x ? width : 0, y: y ? height : 0),
+                translation: .init(x: x ? translationX : 0, y: y ? translationY : 0),
                 reflection: .init(horizontal: x, vertical: y), preservesLayerAlpha: source.preservesLayerAlpha))
         }
         return result
@@ -675,6 +684,8 @@ struct StudioStrokeInput {
     /// tools whose samples are projected onto the ruler axis (PhotoCraft
     /// straight-line painting). Fixed length remains Line-only.
     static let rulerTools: Set<DrawingTool> = [.line, .pencil, .pen, .brush, .marker, .crayon]
+    /// Tools whose committed strokes `StudioMirrorCapture` can reflect.
+    static let mirrorTools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .line, .rectangle, .circle]
     /// Editor-only ruler guide, never part of a DrawnElement or export.
     var rulerGuide: [CGPoint] {
         guard Self.rulerTools.contains(tool), let angle = rulerAngleDegrees, angle.isFinite,

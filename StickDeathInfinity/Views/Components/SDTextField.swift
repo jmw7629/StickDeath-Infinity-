@@ -1,6 +1,9 @@
 // ═══════════════════════════════════════════════════════════════════
 // SDTextField — Reusable dark-themed input field
 // Matches: React input fields with dark bg, white text, icon prefix
+// Dynamic Type: text and icon scale through sdScaledSystemFont (#264); the
+// decorative prefix icon is hidden from VoiceOver, the field keeps its
+// placeholder as its label.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
@@ -17,9 +20,10 @@ struct SDTextField: View {
         HStack(spacing: 12) {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 16))
+                    .sdScaledSystemFont(16)
                     .foregroundColor(isFocused ? .sdRed : .sdTextMuted)
-                    .frame(width: 20)
+                    .sdScaledFrame(width: 20, height: 20)
+                    .accessibilityHidden(true)
             }
 
             Group {
@@ -29,7 +33,7 @@ struct SDTextField: View {
                     TextField(placeholder, text: $text)
                 }
             }
-            .font(.system(size: 16))
+            .sdScaledSystemFont(16)
             .foregroundColor(.sdTextPrimary)
             .focused($isFocused)
         }

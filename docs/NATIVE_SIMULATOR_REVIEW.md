@@ -56,3 +56,44 @@ These are the exact steps for an isolated local review of the CI-built simulator
    ```
    To review the previous known-good build instead, repeat steps 1–3 and 5 with that run's artifact in its own directory (its own `manifest.json` is the receipt). To remove the review device entirely: `xcrun simctl shutdown "$UDID" && xcrun simctl delete "$UDID"` — this deletes only the simulator you created in step 4; never run `simctl erase` or `delete` on another device, and keep the downloaded `artifact/` directory as evidence.
 7. **Record** in #126: run id, attempt, `sourceCommit`, archive SHA-256, runtime used, what launched, what was captured, and what was not checked. Observed behaviour on this simulator is not a claim about a physical device or a signed build.
+
+## Sourcing gallery captures from the run artifact (#126)
+
+The owner-private gallery (coordinator-managed; see #126 for the current
+version and its rollback) shows **original XCTest attachments**, never web
+renders. Every capture it publishes is taken from the native smoke artifact of
+one exact run, and its label carries that run's `sourceCommit`.
+
+Where the files are (`scripts/native-smoke/run_smoke_ci.sh`, artifact
+`native-studio-<sha>-<attempt>-<shard>`):
+
+| Path in the artifact | Produced by | Use |
+| --- | --- | --- |
+| `attachments/` | `xcrun xcresulttool export attachments --path StudioSmoke.xcresult --output-path attachments` | the PNG screenshots, normalized export previews, hierarchy dumps and audit text attachments |
+| `attachment-export.log` | stdout/stderr of that export | confirms the export ran to completion; a non-empty error here means `attachments/` is partial and the run stays red (`sdi_evidence_status=3`) |
+| `test-summary.json`, `test-tree.json` | `xcresulttool get test-results summary|tests` | which test produced which result; the tree holds the test identifiers the receipt binds |
+| `ui-test-budget.json`, `source-and-config.json`, `recording-status.json` | `run_recorded_test.py` | `sourceCommit`, shard assignment, fixture plan, exit codes |
+| `simulator.mp4`, `recording-validation.json` | `simctl io recordVideo` + `VerifyRecording.swift` | the continuous recording of the shard |
+
+Naming: each PNG's human-readable name is the `capture(app, name:)` string in
+`Tests/NativeUI/StudioSmokeUITests.swift` (for example `studio-portrait`,
+`gradient-family-sole-popup`, `layer-row-drag-real-order`,
+`audio-numeric-trim-applied`, `png-export-drawn-preview`,
+`owner-project-library-scroll`; the new accessibility and journey captures are
+`library-accessibility-xl`, `studio-portrait-accessibility-xl`,
+`studio-landscape-accessibility-xl`, `journey-*`). The exported file names are
+assigned by `xcresulttool`; on the Xcode 16 toolchain the export writes an
+`attachments/manifest.json` that lists, per test identifier, each exported
+file name next to its `suggestedHumanReadableName` (the capture string). Use
+that manifest to pick files; do not guess from file names. If a toolchain
+writes no manifest, pair the files through `test-tree.json` and the capture
+order in `ui-tests.log`, and say so in the gallery provenance.
+
+Publishing rules for a capture (unchanged from #126): copy the PNG
+byte-identical and record its SHA-256; label it with `sourceCommit`, run id,
+attempt, shard, test function and capture name; state the run's result
+(passed / failed / interrupted) next to it; never crop, retouch or upscale;
+never present a capture from one commit as evidence for another. A capture
+from a failed or partial run may be published only as failure evidence.
+
+Routes to a real device remain owner-gated: `docs/TESTFLIGHT_DISTRIBUTION.md`.

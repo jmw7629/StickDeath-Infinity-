@@ -169,6 +169,15 @@ struct StudioToolStrip: View {
                                 radius: isSelected ? 5 : 1.5, y: isSelected ? 3 : 1)
                     }
                     .id(def.tool.rawValue)
+                    .background {
+                        if isSelected {
+                            // The sole options popup opens beside this button.
+                            GeometryReader { geometry in
+                                Color.clear.preference(key: StudioSelectedToolFrameKey.self,
+                                                       value: geometry.frame(in: .named("studio.toolbar.stage")))
+                            }
+                        }
+                    }
                     .accessibilityLabel(def.label)
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
                     .accessibilityIdentifier("studio.tool.\(def.tool.rawValue)")
@@ -225,5 +234,15 @@ struct StudioToolStrip: View {
 
     func hasSettings(_ tool: DrawingTool) -> Bool {
         FloatingToolSettingsPanel.hasSettings(tool)
+    }
+}
+
+/// Stage-space frame of the selected tool button, or nil while it is scrolled
+/// out of the rail; `StudioToolbarLayout.settingsFrame(in:toolbar:anchor:)`
+/// then falls back to the historical popup placement.
+struct StudioSelectedToolFrameKey: PreferenceKey {
+    static let defaultValue: CGRect? = nil
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        if let next = nextValue() { value = next }
     }
 }

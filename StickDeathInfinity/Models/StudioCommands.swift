@@ -109,7 +109,11 @@ enum StudioCommand: Codable {
     struct RenameProject: Codable { let name: String }
     /// Omitted fields keep the current value; the editor applies the same
     /// 16–4096 px / 1–60 fps limits as the Project Settings panel.
-    struct UpdateProjectSettings: Codable { var name: String? = nil; var width: Int? = nil; var height: Int? = nil; var fps: Int? = nil }
+    /// `anchorX`/`anchorY` (0…1, default 0 = top-left) choose which canvas point stays fixed during a resize.
+    struct UpdateProjectSettings: Codable {
+        var name: String? = nil; var width: Int? = nil; var height: Int? = nil; var fps: Int? = nil
+        var anchorX: Double? = nil; var anchorY: Double? = nil
+    }
     struct CopyFrame: Codable { let source: StudioCommandReference }
     struct PasteFrame: Codable { let after: StudioCommandReference }
     struct Draw: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let strokes: [StudioCommandStroke] }
@@ -467,7 +471,7 @@ enum StudioCommandExecutor {
             "tweenFrames": ["after", "to", "inbetweenCount", "easing"],
             "eraseSelectedElements": ["frame", "layer", "elementIDs", "points", "width", "opacity", "mode"],
             "renameProject": ["name"],
-            "updateProjectSettings": ["name", "width", "height", "fps"],
+            "updateProjectSettings": ["name", "width", "height", "fps", "anchorX", "anchorY"],
             "copyFrame": ["source"], "pasteFrame": ["after"],
             "splitAudioClip": ["clipID", "seconds", "newClipID"],
             "deleteAudioClip": ["clipID"],
@@ -614,13 +618,17 @@ enum StudioCommandExecutor {
             try result.validate()
             let stagedClipboard = candidate
             candidate = editor
-            try candidate.change { $0 = result }
+            // Grid/onion overlays are editor state: a batch made only of them
+            // commits like the Studio toggles, without an Undo entry.
+            let overlayOnly = commands.allSatisfy { if case .canvasOptions = $0 { return true } else { return false } }
+            if overlayOnly { candidate.changeViewSettings { $0 = result } }
+            else { try candidate.change { $0 = result } }
             try candidate.adoptClipboard(from: stagedClipboard)
             // These operations preserve the same selection as their manual paths.
             // A mixed batch containing any other operation keeps existing clearing semantics.
             let preservesSelection = commands.allSatisfy {
                 switch $0 {
-                case .renameProject, .updateProjectSettings, .copyFrame, .eraseSelectedElements, .updateAudioTrack: return true
+                case .renameProject, .updateProjectSettings, .copyFrame, .eraseSelectedElements, .updateAudioTrack, .canvasOptions: return true
                 default: return false
                 }
             }
@@ -725,8 +733,10 @@ enum StudioCommandExecutor {
             try editor.renameProject(value.name)
         case .updateProjectSettings(let value):
             guard value.name != nil || value.width != nil || value.height != nil || value.fps != nil else { throw StudioCommandError.malformed }
+            let anchor = StudioCanvasAnchor(x: value.anchorX ?? 0, y: value.anchorY ?? 0)
+            guard anchor.isValid else { throw StudioCommandError.malformed }
             try editor.updateProjectSettings(name: value.name ?? document.name, width: value.width ?? document.width,
-                height: value.height ?? document.height, fps: value.fps ?? document.fps)
+                height: value.height ?? document.height, fps: value.fps ?? document.fps, anchor: anchor)
         case .copyFrame(let value):
             try editor.copyFrame(try frame(value.source))
         case .pasteFrame(let value):
@@ -1018,11 +1028,17 @@ enum StudioCommandExecutor {
                 layerID: imageLayer(value.layer, frame: value.frame, assetID: value.assetID), checkCancellation: checkCancellation)
         case .canvasOptions(let value):
             guard value.grid != nil || value.onion != nil || value.gridSettings != nil || value.onionSettings != nil else { throw StudioCommandError.invalidSettings }
-            try editor.change {
+            // Overlays are editor state, not artwork: they bypass Undo history
+            // exactly like the Studio toggles, and invalid settings change nothing.
+            let before = editor.document
+            editor.changeViewSettings {
                 if let grid = value.grid { $0.gridEnabled = grid }
                 if let onion = value.onion { $0.onionEnabled = onion }
                 if let settings = value.gridSettings { $0.gridSettings = settings }
                 if let settings = value.onionSettings { $0.onionSettings = settings }
+            }
+            if editor.document == before {
+                guard (value.gridSettings?.isValid ?? true), (value.onionSettings?.isValid ?? true) else { throw StudioCommandError.invalidSettings }
             }
         }
     }

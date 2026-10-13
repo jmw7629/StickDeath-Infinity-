@@ -143,6 +143,42 @@ import CoreGraphics
             }
             check(count==1440,"sweep coverage")
         }
+        test("popup slides along the rail to the selected tool and stays clamped") {
+            for size in [CGSize(width:320,height:180),CGSize(width:390,height:600),CGSize(width:844,height:221),CGSize(width:1024,height:900)] {
+                let b=CGRect(origin:.zero,size:size)
+                for dock in [StudioToolbarLayout.Dock.leading,.trailing,.floating] {
+                    var l=StudioToolbarLayout();l.choose(dock,in:b)
+                    let p=l.placement(in:b,compactHeight:size.height<500)
+                    let plain=StudioToolbarLayout.settingsFrame(in:b,toolbar:p)
+                    check(StudioToolbarLayout.settingsFrame(in:b,toolbar:p,anchor:nil)==plain,"nil anchor keeps historical placement")
+                    for fraction in [CGFloat(0),0.25,0.5,0.75,1] {
+                        // A 52-point tool button somewhere along the visible rail.
+                        let anchor = p.vertical
+                            ? CGRect(x:p.frame.minX+8,y:p.frame.minY+8+(p.frame.height-68)*fraction,width:52,height:52)
+                            : CGRect(x:p.frame.minX+8+(p.frame.width-68)*fraction,y:p.frame.minY+8,width:52,height:52)
+                        let d=StudioToolbarLayout.settingsFrame(in:b,toolbar:p,anchor:anchor)
+                        check(contained(d,b) && !d.intersects(p.frame) && d.size==plain.size,"anchored popup bounds")
+                        if p.vertical {
+                            check(abs(d.minX-plain.minX)<0.001,"edge popup must stay beside its rail")
+                            let wanted=min(max(plain.minY,anchor.minY),max(plain.minY,plain.minY+(b.maxY-8)-plain.minY-d.height))
+                            check(abs(d.minY-wanted)<0.001 && d.minY>=plain.minY,"vertical slide")
+                            if anchor.minY+d.height <= b.maxY-8 { check(abs(d.minY-anchor.minY)<0.001,"popup should start at the selected tool's row") }
+                        } else {
+                            check(abs(d.minY-plain.minY)<0.001,"horizontal popup keeps its row")
+                            if anchor.midX-d.width/2 >= 8 && anchor.midX+d.width/2 <= b.maxX-8 { check(abs(d.midX-anchor.midX)<0.001,"popup should centre under the selected tool") }
+                        }
+                    }
+                }
+            }
+        }
+        test("off-rail, empty or non-finite anchors fall back to the historical placement") {
+            let b=CGRect(x:0,y:0,width:390,height:600),l=StudioToolbarLayout()
+            let p=l.placement(in:b,compactHeight:false),plain=StudioToolbarLayout.settingsFrame(in:b,toolbar:p)
+            for bad in [CGRect(x:10,y:400,width:52,height:52),CGRect(x:20,y:20,width:0,height:0),
+                        CGRect(x:CGFloat.nan,y:20,width:52,height:52),CGRect(x:20,y:CGFloat.infinity,width:52,height:52)] {
+                check(StudioToolbarLayout.settingsFrame(in:b,toolbar:p,anchor:bad)==plain,"bad anchor \(bad)")
+            }
+        }
         print("STUDIO_TOOLBAR_TESTS=PASS \(groups)/\(groups)")
     }
 }

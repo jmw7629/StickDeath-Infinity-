@@ -324,6 +324,20 @@ private struct Failure: Error { let message: String }
         try require(mirrorVM.currentFrame.elements.isEmpty && !mirrorVM.canUndo,"Mirror required more than one Undo")
         mirrorVM.redo(); try require(render(mirrorVM.document)==mirrorPixels,"Mirror Redo changed pixels")
         let mirrorSaved = await mirrorVM.save(); try require(mirrorSaved,"Mirror save")
+        // #150: an off-centre mirror line reflects across x = axis·width, not the canvas centre.
+        mirrorVM.undo()
+        let quarter = StudioMirrorCapture(mode:.vertical,width:128,height:128,axisX:0.25,axisY:0.5)
+        var quarterOriginal = shape(mirrorVM.activeLayerID)
+        quarterOriginal.points = [.init(x:8,y:16),.init(x:24,y:32)]
+        let quarterCopies = try quarter.elements(from:quarterOriginal)
+        try require(quarterCopies.count == 2 && quarterCopies[1].translation == .init(x:64,y:0),"Quarter axis translation must be 2·0.25·128")
+        try require(mirrorVM.commitElement(quarterOriginal,mirror:quarter),"Off-centre mirror commit")
+        let quarterPixels = try render(mirrorVM.document)
+        try require(channel(quarterPixels,16,24,0)==255 && channel(quarterPixels,48,24,0)==255 && channel(quarterPixels,112,24,0)==0,
+            "Reflected copy must land at 64−x, not at the canvas centre line")
+        do { _ = try StudioMirrorCapture(mode:.vertical,width:128,height:128,axisX:1.5).elements(from:quarterOriginal); throw Failure(message:"Axis outside the canvas accepted") }
+        catch is StudioBrushError { }
+        mirrorVM.undo(); try require(mirrorVM.currentFrame.elements.isEmpty,"Off-centre mirror was not one Undo")
         let mirrorReopened = StudioViewModel(storage:mirrorStorage); await mirrorReopened.loadProjects()
         let mirrorOpened = await mirrorReopened.openProject(mirrorReopened.savedProjects[0]); try require(mirrorOpened,"Mirror cold reopen")
         try require(render(mirrorReopened.document)==mirrorPixels && mirrorReopened.currentFrame.elements.map(\.id)==copies.map(\.id),"Mirror identities/pixels lost on reopen")

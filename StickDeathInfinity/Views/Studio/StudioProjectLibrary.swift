@@ -16,6 +16,8 @@ struct StudioProjectLibrary: View {
     @State private var transferTask: Task<Void, Never>?
     @State private var transferID: UUID?
     @State private var transferNotice: String?
+    /// Backup whose import failed only because referenced sound bytes are missing; offers a retry that drops those clips.
+    @State private var missingAudioImportURL: URL?
     @State private var removal: AnimationMetadata?
     @State private var renaming: AnimationMetadata?
     @State private var renameText = ""
@@ -212,6 +214,26 @@ struct StudioProjectLibrary: View {
                     Button("Cancel") { transferTask?.cancel() }
                         .accessibilityIdentifier("studio.library.transfer.cancel")
                 }.padding().background(Color(hex: "17171F")).foregroundColor(.white).cornerRadius(12)
+            } else if let url = missingAudioImportURL {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("This backup references sounds it does not contain.")
+                        .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
+                    Button("Import without missing sounds") {
+                        missingAudioImportURL = nil
+                        startTransfer { check in
+                            let metadata = try await vm.importPortableProject(from: url, droppingMissingAudio: true, checkCancellation: check)
+                            let dropped = vm.lastImportWarnings
+                            transferNotice = "Imported \(metadata.title) as a new project." + (dropped.isEmpty ? "" : " " + dropped.joined(separator: " "))
+                        }
+                    }
+                    .font(.custom("SpecialElite-Regular", size: 13, relativeTo: .body)).foregroundColor(.red)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("studio.library.import.drop-missing-audio")
+                    Button("Dismiss") { missingAudioImportURL = nil }
+                        .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.gray)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("studio.library.import.drop-missing-audio.dismiss")
+                }.padding().background(Color(hex: "17171F")).foregroundColor(.white).cornerRadius(12)
             }
         }
         .fileImporter(isPresented: $showingImport, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
@@ -220,9 +242,15 @@ struct StudioProjectLibrary: View {
             switch result {
             case .success(let urls):
                 guard let url = urls.first else { return }
+                missingAudioImportURL = nil
                 startTransfer { check in
-                    let metadata = try await vm.importPortableProject(from: url, checkCancellation: check)
-                    transferNotice = "Imported \(metadata.title) as a new project."
+                    do {
+                        let metadata = try await vm.importPortableProject(from: url, checkCancellation: check)
+                        transferNotice = "Imported \(metadata.title) as a new project."
+                    } catch {
+                        if error.localizedDescription.contains("missing referenced managed audio") { missingAudioImportURL = url }
+                        throw error
+                    }
                 }
             case .failure(let error):
                 transferNotice = isPickerCancellation(error) ? "Import cancelled. Projects unchanged." : error.localizedDescription
