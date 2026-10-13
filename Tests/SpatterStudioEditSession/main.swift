@@ -2318,6 +2318,9 @@ private final class NetworkTrap: URLProtocol {
         }
         try await test("multi-clause brief builds held frames on new layers with a storyboard and a typed revert that survives unrelated edits") {
             let (vm, store) = try await fixture("multi-clause-brief")
+            // The brief appends to a real project: the existing frame carries artwork,
+            // so the quality verdict measures the generated frames, not an empty start.
+            try require(vm.commitElement(styledStroke(vm)), "Brief artwork fixture failed"); await vm.flush()
             let before = vm.document, original = vm.currentFrame.id
             let session = SpatterStudioEditSession()
             _ = session.submit(SpatterMultiClauseBrief.example, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
