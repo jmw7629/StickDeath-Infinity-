@@ -306,6 +306,13 @@ execution, an explicit service-only function list, no secret-shaped columns); se
 `docs/RLS_REVIEW.md`. `scripts/backend/verify_backup.sh` rehearses pg_dump/pg_restore
 of the applied set with a fixture and checks counts, RLS and grants after restore.
 
+`tests/100_burst_limits.sql` drives each per-minute cap to its documented limit
+through the real RPCs (feed 60, challenges 60, War Room 60, room creation and
+management 30 shared, room commands 300, administrative gate 60 with an audited
+refusal) and shows that an expired window admits the member again. The 20-per-minute
+publishing-admin cap counts real audit rows and is covered by the publishing tests
+rather than a burst loop.
+
 ## Local harness
 
 `scripts/backend/run_sql_tests.sh` starts a throwaway PostgreSQL 16 cluster
