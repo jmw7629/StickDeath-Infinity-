@@ -141,7 +141,8 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
         let dropped = try await vm.importPortableProject(missingBundle, droppingMissingAudio: true)
         try require(vm.lastImportWarnings.count == 1 && vm.lastImportWarnings[0].contains("Dropped missing sound"), "No warning for dropped clip")
         let droppedCold = StudioViewModel(storage: storage)
-        try require(await droppedCold.openProject(dropped) && droppedCold.document.audioClips.isEmpty
+        let openedDropped = await droppedCold.openProject(dropped)
+        try require(openedDropped && droppedCold.document.audioClips.isEmpty
                     && droppedCold.rasterData(droppedCold.currentFrame.rasterAssetID) == image.normalizedPNG, "Dropped-audio import did not reopen with its image")
         await droppedCold.backToProjects()
         print("STUDIO_PORTABLE_PROJECT_TESTS=PASS real Files transport, managed image/audio bytes, two fresh identities, cold reopen, collision, checksum, cancel and symlink rejection")
