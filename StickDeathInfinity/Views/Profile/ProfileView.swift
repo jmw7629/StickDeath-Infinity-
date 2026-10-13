@@ -191,6 +191,7 @@ struct ProfileSettingsView: View {
     @State private var showingMFA = false
     @State private var showingAppeals = false
     @State private var showingRemovalAppeals = false
+    @State private var showingDeletionConfirmation = false
     private var accountEmail: String {
         guard authVM.isAuthenticated, let user = authVM.user,
               let id = UUID(uuidString: user.id), let current = authVM.userId,
@@ -226,13 +227,28 @@ struct ProfileSettingsView: View {
                     if let error = authVM.error { Text(error).foregroundStyle(.red) }
                 }
                 Section("Account deletion") {
-                    Button("Delete account", role: .destructive) { Task { await authVM.requestAccountDeletion() } }
-                        .disabled(authVM.isLoading)
-                        .accessibilityIdentifier("profile.delete-account")
-                    // The service refuses deletion (AuthError.accountDeletionUnavailable) and
-                    // the refusal text is shown above through authVM.error. Say so up front.
-                    Text("Deletion is not available in this build yet: removing the profile row would not revoke sessions or erase related records, so nothing is deleted. Your local projects stay on this device either way.")
-                        .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
+                    if let status = authVM.accountDeletion, status.isOpen {
+                        Text(AuthViewModel.deletionSummary(status))
+                            .font(.specialElite(11, relativeTo: .caption))
+                            .accessibilityIdentifier("profile.delete-account.status")
+                        if status.state == .pending {
+                            Button("Cancel deletion") { Task { await authVM.cancelAccountDeletion() } }
+                                .disabled(authVM.isLoading)
+                                .accessibilityIdentifier("profile.delete-account.cancel")
+                        }
+                    } else {
+                        Button("Delete account", role: .destructive) { showingDeletionConfirmation = true }
+                            .disabled(authVM.isLoading)
+                            .accessibilityIdentifier("profile.delete-account")
+                        // The request is filed server-side (sdi_account_lifecycle) and completed by
+                        // the service worker after a cooling-off period; the app deletes nothing itself.
+                        Text("Deletion is requested from the server and completed after a seven-day cooling-off period, during which you can cancel here. It removes server records and signs the account out everywhere; projects on this device stay. Subscriptions must be cancelled through the App Store or billing portal.")
+                            .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
+                    }
+                    if let notice = authVM.notice {
+                        Text(notice).font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("profile.delete-account.notice")
+                    }
                 }
             }
         }
@@ -241,6 +257,14 @@ struct ProfileSettingsView: View {
         .sheet(isPresented: $showingAppeals) { AccountAppealsView() }
         .sheet(isPresented: $showingRemovalAppeals) { RemovalAppealsView() }
         .onChange(of: authVM.userId) { _ in showingProfileEditor = false; showingRemovalAppeals = false }
+        .task(id: authVM.userId) { await authVM.refreshAccountDeletion() }
+        .alert("Delete this account?", isPresented: $showingDeletionConfirmation) {
+            Button("Request deletion", role: .destructive) { Task { await authVM.requestAccountDeletion() } }
+                .accessibilityIdentifier("profile.delete-account.confirm")
+            Button("Keep account", role: .cancel) {}
+        } message: {
+            Text("Server records are deleted after a seven-day cooling-off period; you can cancel until then. Projects on this device are not affected.")
+        }
     }
 }
 
@@ -748,11 +772,21 @@ final class SDIRenderUploadExport: Identifiable {
     let account: String
     let title: String
     let revision: String
+    /// Library assets the export manifest credits (images by original digest,
+    /// sounds by catalogue digest), declared to intake so licensing is checked
+    /// server-side. Empty means the render credits no library asset.
+    let assetCredits: [SDIRenderAssetCredit]
     private let request: StudioMovieExportSession.ShareRequest
     private var copying = false
     private var closed = false
-    init(request: StudioMovieExportSession.ShareRequest, account: String, title: String, revision: String) {
+    init(request: StudioMovieExportSession.ShareRequest, account: String, title: String, revision: String,
+         manifest: StudioMovieExportService.Manifest? = nil) {
         self.request = request; self.account = account; self.title = title; self.revision = revision
+        var credits: [SDIRenderAssetCredit] = []
+        for image in manifest?.imageCredits ?? [] { credits.append(.init(kind: "image", sha256: image.originalSHA256)) }
+        for sound in manifest?.soundCredits ?? [] { credits.append(.init(kind: "sound", sha256: sound.originalSHA256)) }
+        var seen = Set<String>()
+        assetCredits = credits.filter { seen.insert($0.kind + ":" + $0.sha256).inserted }
     }
     func beginCopy() throws -> URL {
         guard !closed, !copying,
@@ -907,15 +941,18 @@ struct SDIRenderUploadView: View {
     }
     private func stageExport(_ exportedMovie: SDIRenderUploadExport) {
         guard canStage else { return }
-        do { stage(try exportedMovie.beginCopy(), exportLease: exportedMovie) }
+        do { stage(try exportedMovie.beginCopy(), assetCredits: exportedMovie.assetCredits, exportLease: exportedMovie) }
         catch { message = "This export is no longer available. Return to Studio and render it again." }
     }
-    private func stage(_ url: URL, exportLease: SDIRenderUploadExport? = nil) {
+    private func stage(_ url: URL, assetCredits: [SDIRenderAssetCredit] = [], exportLease: SDIRenderUploadExport? = nil) {
         guard canStage, let account = auth.userId.flatMap(UUID.init(uuidString:)), let consent = AppConfig.publishingConsent else {
             exportLease?.endCopy(); return
         }
+        // A file picked from Files carries no manifest, so it declares nothing;
+        // the rights summary and owner review remain the authority for it.
         let metadata = SDIRenderUploadMetadata(size: 0, sha256: "", title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-            source_revision: sourceRevision, destinations: destinations, rights_summary: rights, consent_version: consent.version, made_for_kids: audience == "kids")
+            source_revision: sourceRevision, destinations: destinations, rights_summary: rights, consent_version: consent.version, made_for_kids: audience == "kids",
+            asset_credits: assetCredits.isEmpty ? nil : assetCredits)
         let captured = epoch; busy = true; message = nil
         work = Task {
             defer { exportLease?.endCopy() }

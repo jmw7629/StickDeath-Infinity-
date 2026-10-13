@@ -91,6 +91,16 @@ struct SettingsView: View {
                                 .foregroundColor(.sdTextSecondary)
                                 .multilineTextAlignment(.center)
                         }
+                        if let status = authVM.accountDeletion, status.isOpen {
+                            Text(AuthViewModel.deletionSummary(status))
+                                .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.sdTextSecondary)
+                                .multilineTextAlignment(.center)
+                                .accessibilityIdentifier("settings.delete-account.status")
+                        }
+                        if let notice = authVM.notice {
+                            Text(notice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.sdTextSecondary)
+                                .multilineTextAlignment(.center)
+                        }
                         if let error = authVM.error {
                             Text(error).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
                                 .multilineTextAlignment(.center)
@@ -104,13 +114,15 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        // Deletion is refused by the service (AuthError.accountDeletionUnavailable)
-        // until identity and data deletion are configured server-side; say so.
-        .alert("Account deletion unavailable", isPresented: $showDeleteConfirm) {
-            Button("OK", role: .cancel) {}
+        // The request is filed with the server (sdi_account_lifecycle) and completed
+        // after a seven-day cooling-off period; the app never deletes anything itself.
+        .alert("Delete this account?", isPresented: $showDeleteConfirm) {
+            Button("Request deletion", role: .destructive) { Task { await authVM.requestAccountDeletion() } }
+            Button("Keep account", role: .cancel) {}
         } message: {
-            Text("Account deletion is not available in this build. Nothing has been deleted, and your local projects stay on this device.")
+            Text("Server records are deleted after a seven-day cooling-off period; cancel from Profile until then. Projects on this device are not affected. Subscriptions must be cancelled through the App Store or billing portal.")
         }
+        .task(id: authVM.userId) { await authVM.refreshAccountDeletion() }
     }
 }
 

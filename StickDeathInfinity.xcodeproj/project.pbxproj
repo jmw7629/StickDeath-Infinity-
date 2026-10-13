@@ -29,13 +29,11 @@
 		2521183A1B876C324220E6BB /* Color+SD.swift in Sources */ = {isa = PBXBuildFile; fileRef = C22C180D3484DBB4FE4B35E3 /* Color+SD.swift */; };
 		3D7A47976B9D00AFE3401083 /* Font+SD.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD18CEA0067C48D3ABBC674 /* Font+SD.swift */; };
 		8E13CD8B6EE7E40F82501E78 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62D2F0EA2FB3C1485B089D1F /* Models.swift */; };
-		0441EC321BA02E7A4D08A95F /* SpatterBotModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63F202A1A399355E17EA84D1 /* SpatterBotModels.swift */; };
 		CC8F8BF92ACF1F89EE1627F9 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0479BA6F7780A4DEB3C60F2 /* AuthService.swift */; };
 		9833E4086A52A2A5B405C4E7 /* ChallengeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE48B38951EADD41C6E5E75A /* ChallengeService.swift */; };
 		748453AED889D7E4CD66A74D /* ProjectService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41F0B165DD87455546A7D836 /* ProjectService.swift */; };
 		3A794D3755DF28CDDA6127E2 /* SpatterKnowledgeBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34E427184981FBEC697F07A /* SpatterKnowledgeBase.swift */; };
 		A578A3A5DD22E83B0716D505 /* SpatterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81DAB4AA71459F2780EA9C33 /* SpatterService.swift */; };
-		F4273EE3A499F240CEE098AC /* SpatterBotService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E975ABD831D8A007A69CF51C /* SpatterBotService.swift */; };
 		C668314D13B23F9F48B6AB67 /* StorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4557A43FB15AF7BB34E1E80 /* StorageService.swift */; };
 		65D744996A825ADFFD055E21 /* StripeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A228ED27DD23FABD551B9863 /* StripeService.swift */; };
 		52A76CE1908B4AC8E550C620 /* SupabaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A06474957888749CDB750996 /* SupabaseManager.swift */; };
@@ -60,12 +58,6 @@
 		78FB94D18EF96EE63AD9A65C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7730FDBE2EC61574D75137B /* SettingsView.swift */; };
 		64B3E881E5784E27B2A680B4 /* SpatterChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40CCBD912D57DE195DF6744A /* SpatterChatView.swift */; };
 		822DFAD68269AD08B8100EC6 /* SpatterOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 631F5447686554DCC9B91D18 /* SpatterOrbView.swift */; };
-		D6513056AA33DCAF50967C59 /* SpatterAnalyticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04613779CA77DA3353F37E89 /* SpatterAnalyticsView.swift */; };
-		B18217780FDCD76471340017 /* SpatterBotConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE796D4C0CE0B3113A4F0F54 /* SpatterBotConfigView.swift */; };
-		CF0B333603180E431AE2EA22 /* SpatterCCSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05225C502ED662E5B556E9D0 /* SpatterCCSettingsView.swift */; };
-		C2654786898B0727CE6578A4 /* SpatterCommandCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01DA28CD0FFA43A72A6D2FB8 /* SpatterCommandCenterView.swift */; };
-		0DA4A8D7474A3161D01A4882 /* SpatterContentQueueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59B14ADF25D97A74FB331CCC /* SpatterContentQueueView.swift */; };
-		AB1B494A04D9F94ACBCE7F29 /* SpatterDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B514CB7EF2121CDDAEF695DC /* SpatterDashboardView.swift */; };
 		B2779A8597C13DDDB16A9F29 /* SplashScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A9EEAD66E546E795C94E765 /* SplashScreenView.swift */; };
 		86E0DC95ACA1BBC245CCDF17 /* StudioCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0650F55BD6E1547B22C473E3 /* StudioCanvasView.swift */; };
 		9D2E553F06403A4D4A9EBDEA /* StudioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95AE67F46AFC6C02606795A7 /* StudioView.swift */; };
@@ -219,13 +211,11 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		C22C180D3484DBB4FE4B35E3 /* Color+SD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Color+SD.swift"; sourceTree = "<group>"; };
 		DBD18CEA0067C48D3ABBC674 /* Font+SD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Font+SD.swift"; sourceTree = "<group>"; };
 		62D2F0EA2FB3C1485B089D1F /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-		63F202A1A399355E17EA84D1 /* SpatterBotModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterBotModels.swift; sourceTree = "<group>"; };
 		F0479BA6F7780A4DEB3C60F2 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		BE48B38951EADD41C6E5E75A /* ChallengeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChallengeService.swift; sourceTree = "<group>"; };
 		41F0B165DD87455546A7D836 /* ProjectService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectService.swift; sourceTree = "<group>"; };
 		C34E427184981FBEC697F07A /* SpatterKnowledgeBase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterKnowledgeBase.swift; sourceTree = "<group>"; };
 		81DAB4AA71459F2780EA9C33 /* SpatterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterService.swift; sourceTree = "<group>"; };
-		E975ABD831D8A007A69CF51C /* SpatterBotService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterBotService.swift; sourceTree = "<group>"; };
 		E4557A43FB15AF7BB34E1E80 /* StorageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageService.swift; sourceTree = "<group>"; };
 		A228ED27DD23FABD551B9863 /* StripeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StripeService.swift; sourceTree = "<group>"; };
 		A06474957888749CDB750996 /* SupabaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseManager.swift; sourceTree = "<group>"; };
@@ -250,12 +240,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		E7730FDBE2EC61574D75137B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		40CCBD912D57DE195DF6744A /* SpatterChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterChatView.swift; sourceTree = "<group>"; };
 		631F5447686554DCC9B91D18 /* SpatterOrbView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterOrbView.swift; sourceTree = "<group>"; };
-		04613779CA77DA3353F37E89 /* SpatterAnalyticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterAnalyticsView.swift; sourceTree = "<group>"; };
-		EE796D4C0CE0B3113A4F0F54 /* SpatterBotConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterBotConfigView.swift; sourceTree = "<group>"; };
-		05225C502ED662E5B556E9D0 /* SpatterCCSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterCCSettingsView.swift; sourceTree = "<group>"; };
-		01DA28CD0FFA43A72A6D2FB8 /* SpatterCommandCenterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterCommandCenterView.swift; sourceTree = "<group>"; };
-		59B14ADF25D97A74FB331CCC /* SpatterContentQueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterContentQueueView.swift; sourceTree = "<group>"; };
-		B514CB7EF2121CDDAEF695DC /* SpatterDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterDashboardView.swift; sourceTree = "<group>"; };
 		0A9EEAD66E546E795C94E765 /* SplashScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplashScreenView.swift; sourceTree = "<group>"; };
 		0650F55BD6E1547B22C473E3 /* StudioCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioCanvasView.swift; sourceTree = "<group>"; };
 		95AE67F46AFC6C02606795A7 /* StudioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioView.swift; sourceTree = "<group>"; };
@@ -499,7 +483,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				BC92573CB8ACFD459EA81E80 /* StudioBlur.swift */,
 				2F41754542DC254495AE40A4 /* StudioSharpen.swift */,
 				B1DD94B4B00625F2B09AAF02 /* StudioDodgeBurn.swift */,
-				63F202A1A399355E17EA84D1 /* SpatterBotModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -578,7 +561,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				698E139A9903F607B85BC635 /* Storage */,
 				89185C7D851EC4F5081D1BAB /* Stripe */,
 				400F5B5435E666DC6B79F316 /* Supabase */,
-				E975ABD831D8A007A69CF51C /* SpatterBotService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -780,12 +762,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		F27B8B21C6628C40D3A4F7E5 /* SpatterCC */ = {
 			isa = PBXGroup;
 			children = (
-				04613779CA77DA3353F37E89 /* SpatterAnalyticsView.swift */,
-				EE796D4C0CE0B3113A4F0F54 /* SpatterBotConfigView.swift */,
-				05225C502ED662E5B556E9D0 /* SpatterCCSettingsView.swift */,
-				01DA28CD0FFA43A72A6D2FB8 /* SpatterCommandCenterView.swift */,
-				59B14ADF25D97A74FB331CCC /* SpatterContentQueueView.swift */,
-				B514CB7EF2121CDDAEF695DC /* SpatterDashboardView.swift */,
 			);
 			path = SpatterCC;
 			sourceTree = "<group>";
@@ -1108,13 +1084,11 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				3D7A47976B9D00AFE3401083 /* Font+SD.swift in Sources */,
 				474C02AD0626C4DCF990DAAD /* View+SD.swift in Sources */,
 				8E13CD8B6EE7E40F82501E78 /* Models.swift in Sources */,
-				0441EC321BA02E7A4D08A95F /* SpatterBotModels.swift in Sources */,
 				CC8F8BF92ACF1F89EE1627F9 /* AuthService.swift in Sources */,
 				9833E4086A52A2A5B405C4E7 /* ChallengeService.swift in Sources */,
 				748453AED889D7E4CD66A74D /* ProjectService.swift in Sources */,
 				3A794D3755DF28CDDA6127E2 /* SpatterKnowledgeBase.swift in Sources */,
 				A578A3A5DD22E83B0716D505 /* SpatterService.swift in Sources */,
-				F4273EE3A499F240CEE098AC /* SpatterBotService.swift in Sources */,
 				C668314D13B23F9F48B6AB67 /* StorageService.swift in Sources */,
 				65D744996A825ADFFD055E21 /* StripeService.swift in Sources */,
 				52A76CE1908B4AC8E550C620 /* SupabaseManager.swift in Sources */,
@@ -1139,12 +1113,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				78FB94D18EF96EE63AD9A65C /* SettingsView.swift in Sources */,
 				64B3E881E5784E27B2A680B4 /* SpatterChatView.swift in Sources */,
 				822DFAD68269AD08B8100EC6 /* SpatterOrbView.swift in Sources */,
-				D6513056AA33DCAF50967C59 /* SpatterAnalyticsView.swift in Sources */,
-				B18217780FDCD76471340017 /* SpatterBotConfigView.swift in Sources */,
-				CF0B333603180E431AE2EA22 /* SpatterCCSettingsView.swift in Sources */,
-				C2654786898B0727CE6578A4 /* SpatterCommandCenterView.swift in Sources */,
-				0DA4A8D7474A3161D01A4882 /* SpatterContentQueueView.swift in Sources */,
-				AB1B494A04D9F94ACBCE7F29 /* SpatterDashboardView.swift in Sources */,
 				B2779A8597C13DDDB16A9F29 /* SplashScreenView.swift in Sources */,
 				86E0DC95ACA1BBC245CCDF17 /* StudioCanvasView.swift in Sources */,
 				9D2E553F06403A4D4A9EBDEA /* StudioView.swift in Sources */,

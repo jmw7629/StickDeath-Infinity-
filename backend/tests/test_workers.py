@@ -294,12 +294,26 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(api.calls[-1][1]["note"], "failed: support_retention")
         self.assertNotIn("secret", json.dumps(report))
 
+    def test_configuration_report_sends_presence_booleans_only(self):
+        env = {"SDI_BACKEND_URL": "https://backend.example.test", "SDI_SERVICE_KEY": "service-secret-value",
+               "SDI_YOUTUBE_CLIENT_FILE": "/run/secrets/yt", "SDI_MAIL_SENDER_DOMAIN": ""}
+        presence = sweeps.configuration_presence(env)
+        self.assertEqual(presence, {"sdi_backend_url": True, "sdi_service_key": True, "sdi_youtube_client_file": True,
+                                    "sdi_youtube_token_file": False, "sdi_stripe_webhook_secret_file": False,
+                                    "sdi_mail_sender_domain": False, "sdi_mail_credentials_file": False})
+        api = FakeAPI({"worker_configuration": [True, False, RuntimeError("Job service response unavailable")]})
+        self.assertEqual(sweeps.report_configuration(api, env), {"state": "ok"})
+        self.assertEqual(api.calls[-1], ("worker_configuration", {"worker": "service-sweeps", "settings": presence}))
+        self.assertNotIn("service-secret-value", json.dumps(api.calls))
+        self.assertEqual(sweeps.report_configuration(api, env), {"state": "refused"})
+        self.assertEqual(sweeps.report_configuration(api, env), {"state": "failed", "error": "RuntimeError"})
+
     def test_main_refuses_to_run_without_configuration(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             self.assertEqual(sweeps.main(["--all"], environment={}), 2)
             self.assertEqual(sweeps.main(["--list", "--all"], environment={}), 0)
-            api = FakeAPI({"billing_reconcile": [{"expired_now": 0}], "worker_heartbeat": [True]})
+            api = FakeAPI({"billing_reconcile": [{"expired_now": 0}], "worker_heartbeat": [True], "worker_configuration": [True]})
             self.assertEqual(sweeps.main(["--only", "billing_reconcile"], environment={}, api_factory=lambda: api), 0)
         self.assertIn("not configured", err.getvalue())
         self.assertIn("billing_reconcile", out.getvalue())

@@ -30,6 +30,25 @@ private func describePCMComparison(_ actual: Data, _ expected: Data) {
     let rms = samples == 0 ? 0 : sqrt(squaredDelta / Double(samples))
     print("MOVIE_AUDIO PCM headerMatches=\(actual.prefix(44) == expected.prefix(44)) changedSamples=\(changed)/\(samples) firstChangedSample=\(firstChangedSample ?? -1) maximumDeltaLSB=\(maximumDelta) rmsDeltaLSB=\(rms)")
 }
+/// Two independent AAC decodes of the same movie range are not bit-identical on
+/// every macOS runner: the decoder's priming and rounding can move samples by a
+/// least-significant bit or two. Equivalence means the same 44-byte WAV header and
+/// frame count, every 16-bit sample within 4 LSB and a mean difference under 1 LSB.
+/// Handoff checks (the same bytes carried through attachment and save) stay exact.
+private func pcmEquivalent(_ left: Data, _ right: Data) -> Bool {
+    guard left.count == right.count, left.count > 44, (left.count - 44) % 2 == 0,
+          left.prefix(44) == right.prefix(44) else { return false }
+    var maximum = 0, total = 0
+    left.withUnsafeBytes { a in right.withUnsafeBytes { b in
+        let x = a.bindMemory(to: Int16.self), y = b.bindMemory(to: Int16.self)
+        for index in 22..<x.count {
+            let delta = abs(Int(Int16(littleEndian: x[index])) - Int(Int16(littleEndian: y[index])))
+            maximum = max(maximum, delta); total += delta
+        }
+    } }
+    let samples = (left.count - 44) / 2
+    return maximum <= 4 && total < samples
+}
 private func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
     if try !condition() { throw Failure(message: message) }
 }
@@ -205,10 +224,10 @@ private actor PreparedAudioReceipt {
             "Movie import was not one canonical edit")
         try require((session.measurements[assetID]?.peaks.max() ?? 0) > 0.4, "Prepared import lost measured waveform")
         guard let preparedBytes = await preparedReceipt.snapshot() else { throw Failure(message: "Missing prepared-audio receipt") }
-        print("MOVIE_AUDIO attachment matches handoff=\(bytes == preparedBytes) separate decode matches=\(bytes == fast.audio.originalData) byteCounts=\(bytes.count)/\(preparedBytes.count)/\(fast.audio.originalData.count)")
+        print("MOVIE_AUDIO attachment matches handoff=\(bytes == preparedBytes) separate decode identical=\(bytes == fast.audio.originalData) equivalent=\(pcmEquivalent(bytes, fast.audio.originalData)) byteCounts=\(bytes.count)/\(preparedBytes.count)/\(fast.audio.originalData.count)")
         try require(bytes == preparedBytes, "Attachment changed the actual prepared movie PCM")
         describePCMComparison(bytes, fast.audio.originalData)
-        try require(bytes == fast.audio.originalData, "Prepared import changed selected movie PCM")
+        try require(pcmEquivalent(bytes, fast.audio.originalData), "Prepared import selected different movie PCM than the direct extraction")
         try requireAsync(await vm.save(), "Movie project save failed")
         let saved = try storage.loadAnimation(id: projectID)!
         try require(saved.audioTracks.count == 1 && saved.audioTracks[0].audioData == bytes,

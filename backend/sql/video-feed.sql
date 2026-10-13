@@ -42,10 +42,16 @@ alter table sdi_private.feed_reports enable row level security;
 alter table sdi_private.feed_budget enable row level security;
 revoke all on sdi_private.feed_posts,sdi_private.feed_likes,sdi_private.feed_follows,sdi_private.feed_blocks,sdi_private.feed_reports,sdi_private.feed_budget from public,anon,authenticated;
 -- Publication service alone inserts approved posts. API returns only eligible video.
+-- Paging is snapshot-stable (#217, #220): page 0 returns an `as_of` instant and
+-- later pages sent with that instant exclude posts published after it, so new
+-- publications shift nothing until the member refreshes. A snapshot older than a
+-- day is refused. Trending's like-based rank is computed at request time and is
+-- documented as refresh-based, not frozen.
 create function sdi_private.feed_action(action text, post_id uuid default null, target uuid default null,
- enabled boolean default true, category text default 'recent', page integer default 0, reason text default null)
+ enabled boolean default true, category text default 'recent', page integer default 0, reason text default null,
+ as_of timestamptz default null)
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare actor_id uuid:=auth.uid(); entry sdi_private.feed_posts; n integer; items jsonb;
+declare actor_id uuid:=auth.uid(); entry sdi_private.feed_posts; n integer; items jsonb; snapshot timestamptz;
 begin
  if actor_id is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor_id and not is_anonymous) then
   return jsonb_build_object('error','Sign in with a full account.'); end if;
@@ -55,6 +61,8 @@ begin
  if n>60 then return jsonb_build_object('error','Please wait before trying again.'); end if;
  if action='list' then
   if page<0 or page>39 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
+  snapshot:=least(coalesce(as_of,clock_timestamp()),clock_timestamp());
+  if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
    select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,
     (select count(*) from sdi_private.feed_likes l where l.post=p.id) as likes,
@@ -62,6 +70,7 @@ begin
     exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator) as following
    from sdi_private.feed_posts p join public.sdi_watch_media m on m.id=p.media_id
    where p.visible and m.approved and m.owner_id=p.creator and m.render_digest is not null
+   and p.published_at<=snapshot
    and (m.expires_at is null or m.expires_at>clock_timestamp())
    and not exists(select 1 from sdi_private.feed_blocks b where (b.actor=actor_id and b.creator=p.creator) or (b.actor=p.creator and b.creator=actor_id))
    and (category<>'featured' or p.featured)
@@ -69,7 +78,7 @@ begin
    order by case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id and l.created_at>clock_timestamp()-interval '7 days') else 0 end desc,
     p.published_at desc,p.id desc limit 25 offset page*25
   ) item;
-  return jsonb_build_object('posts',items,'has_more',jsonb_array_length(items)=25);
+  return jsonb_build_object('posts',items,'has_more',jsonb_array_length(items)=25,'as_of',snapshot);
  end if;
  if action in('follow','block') then
   if target is null or target=actor_id or not exists(select 1 from auth.users where id=target) then return jsonb_build_object('error','Creator unavailable.'); end if;
@@ -99,11 +108,12 @@ begin
  end if;
  return jsonb_build_object('status','confirmed');
 end $$;
-revoke all on function sdi_private.feed_action(text,uuid,uuid,boolean,text,integer,text) from public;
-grant execute on function sdi_private.feed_action(text,uuid,uuid,boolean,text,integer,text) to authenticated;
+revoke all on function sdi_private.feed_action(text,uuid,uuid,boolean,text,integer,text,timestamptz) from public;
+grant execute on function sdi_private.feed_action(text,uuid,uuid,boolean,text,integer,text,timestamptz) to authenticated;
 create function public.sdi_feed_action(action text,post_id uuid default null,target uuid default null,
- enabled boolean default true,category text default 'recent',page integer default 0,reason text default null) returns jsonb
-language sql security invoker set search_path='' as $$select sdi_private.feed_action(action,post_id,target,enabled,category,page,reason)$$;
-revoke all on function public.sdi_feed_action(text,uuid,uuid,boolean,text,integer,text) from public,anon;
-grant execute on function public.sdi_feed_action(text,uuid,uuid,boolean,text,integer,text) to authenticated;
+ enabled boolean default true,category text default 'recent',page integer default 0,reason text default null,
+ as_of timestamptz default null) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.feed_action(action,post_id,target,enabled,category,page,reason,as_of)$$;
+revoke all on function public.sdi_feed_action(text,uuid,uuid,boolean,text,integer,text,timestamptz) from public,anon;
+grant execute on function public.sdi_feed_action(text,uuid,uuid,boolean,text,integer,text,timestamptz) to authenticated;
 commit;

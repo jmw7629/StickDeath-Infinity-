@@ -28,6 +28,8 @@ struct StudioDocument: Codable, Equatable {
     var gridSettings: StudioGridSettings?
     var onionEnabled = false
     var onionSettings: StudioOnionSettings?
+    /// Optional reference-source record for Spatter briefs (#279); never footage.
+    var spatterSource: SpatterSourceReference? = nil
     var createdAt: Date
     var modifiedAt: Date
     var revision = 0
@@ -50,7 +52,7 @@ struct StudioDocument: Codable, Equatable {
             activeFrameID: activeFrameID, activeLayerID: activeLayerID,
             audioClips: audioClips, mutedAudioTracks: mutedAudioTracks, audioTrackVolumes: audioTrackVolumes,
             audioTrackPans: audioTrackPans, soloedAudioTracks: soloedAudioTracks, gridEnabled: gridEnabled, gridSettings: gridSettings, onionEnabled: onionEnabled,
-            onionSettings: onionSettings, createdAt: date, modifiedAt: date, revision: 0)
+            onionSettings: onionSettings, spatterSource: spatterSource, createdAt: date, modifiedAt: date, revision: 0)
         try copy.validate()
         return copy
     }
@@ -2365,5 +2367,44 @@ struct StudioCanvasAnchor: Equatable, Hashable, Sendable {
         guard isValid else { return .zero }
         return Offset(dx: Int((Double(newWidth - oldWidth) * x).rounded()),
                       dy: Int((Double(newHeight - oldHeight) * y).rounded()))
+    }
+}
+
+// MARK: - Web/YouTube source references and the rights gate (#279)
+
+/// Where a brief's reference material came from and on what basis it may be
+/// used. Output is always independently generated stick-figure content; a
+/// reference never contributes footage, frames or audio.
+struct SpatterSourceReference: Codable, Equatable {
+    enum RightsBasis: String, Codable, CaseIterable {
+        case ownerAuthorized, licensed, creatorConfirmed, unknown
+        var label: String {
+            switch self {
+            case .ownerAuthorized: return "owner-authorized"; case .licensed: return "licensed"
+            case .creatorConfirmed: return "creator-confirmed"; case .unknown: return "unknown"
+            }
+        }
+    }
+    let url: URL
+    let rightsBasis: RightsBasis
+    let recordedAt: Date
+    var note: String? = nil
+    static let maximumNoteBytes = 500
+    enum Failure: LocalizedError, Equatable {
+        case url, note
+        var errorDescription: String? {
+            switch self {
+            case .url: return "A source reference needs an https URL of at most 2,048 bytes without embedded credentials."
+            case .note: return "A source note is plain text of at most 500 bytes."
+            }
+        }
+    }
+    func validate() throws {
+        let text = url.absoluteString
+        guard url.scheme?.lowercased() == "https", let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
+              text.utf8.count <= 2048, !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.url }
+        if let note {
+            guard note.utf8.count <= Self.maximumNoteBytes, !note.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && !CharacterSet.whitespacesAndNewlines.contains($0) }) else { throw Failure.note }
+        }
     }
 }

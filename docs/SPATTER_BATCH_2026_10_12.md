@@ -132,3 +132,57 @@ Deferred (need macOS/Xcode): `Tests/SpatterMotionRecipe`,
 `Tests/SpatterStudioEditSession`, `Tests/SpatterConversation`,
 `Tests/SpatterPersonalMemory`, `Tests/SpatterStickFigure`, the new
 `Tests/SpatterEval` runner, and the native app build.
+
+## October 13 continuation (wave 3, agent D) — epic #31 evidence
+
+* **#206 briefs → animations.** `SpatterMultiClauseBrief` plans one to three actors with
+  up to six clauses each from an eleven-verb vocabulary (walk, run, jump, wave, fall, punch,
+  kick, sit, duck, throw, explode), per-clause durations, 0.5–60 s and a deterministic seed,
+  and emits one `appendFrames` command per brief (a new typed `StudioCommand` that creates
+  up to 240 frames of plain primitives in one history step). Poses are generated per tick
+  with constant bone lengths; identical consecutive poses merge into held frames; briefs
+  that exceed the generated-element budget hold poses for 2–4 ticks or are refused with the
+  longest supported length. A `SpatterStoryboard` (schema `spatter_storyboard` v1) is attached
+  to every receipt.
+* **#280 impact primitives.** `SpatterImpactPrimitive` (seed, origin, direction, intensity,
+  palette) produces streaks, pooling and fade over 2–24 frames; the `explodes` action uses it.
+  Style sheet: `docs/SPATTER_IMPACT_STYLE_SPEC.md`; creative tuning is owner-managed.
+* **#204 registry.** New grammars: tween with easing, frame clipboard (copy / paste / both),
+  project settings (size, FPS), brush stroke in all thirteen families; catalogue v3 with 37
+  grammars; `SpatterInstructionRouter` is the single classifier shared by the session,
+  batches, preview and tests. Fill-at-point is not added: the fill path lives in
+  `StudioFillService` (SwiftUI) and is not reachable from the Foundation command executor
+  without changing CI source lists. "Select elements by description" is not added because
+  selection is view-model state, not a typed document command.
+* **#205 atomicity.** `SpatterInstructionBatch` applies 2–8 context-only lines as one
+  revision; `SpatterInstructionPreview.plan` shows the typed commands before Apply;
+  `SpatterStudioEditSession.revertAppliedEdit` removes exactly the created frames/layers
+  (`deleteFrameRange` + `deleteLayer`) while they are unchanged, even after unrelated edits.
+* **#213 quality gates.** `SpatterQualityReport` moved to the typecheckable grammar file,
+  gained `Thresholds`, `verdict()` and optional `MovieMeasurement` (decoded frame count,
+  duration, audio offset) findings; reports stay reviewer findings, never approval.
+* **#212 daily draft queue.** `backend/sql/spatter-draft-jobs.sql` (unique `target_date`,
+  state machine, ≤3 attempts, 15-minute leases, agent gate `spatter_daily_video`, missed
+  days recorded) with `backend/sql/tests/070_spatter_draft_jobs.sql`; deterministic planner
+  worker `backend/spatter/draft_queue.py` with fakes-only tests. Capacity and scheduling
+  remain OWNER-GATED ⭐; without a renderer every job fails with that message.
+* **#214 approval.** `render_reviews.storyboard` and `source_project_digest` columns; the
+  invalidation trigger now resets approval when either changes; `SpatterProjectDigest`
+  provides the canonical bytes on the device side.
+* **#279 sources.** `SpatterSourceReference`, `SpatterSourceRightsGate` (unknown basis
+  refused) and `SpatterSourceVideoBounds` (20–60 s target, 240-frame exporter note). Actual
+  source material stays OWNER-GATED ⭐; the `StudioDocument` field is a coordinator patch.
+* **#207/#208/#203.** Pricing guide (USD 4.99 / 9.99 monthly, annual not configured, no live
+  prices), `.library` and `.companion` contexts (the retired "messages" screen name is only an
+  alias), guide version `2026-10-13.1`; a test asserts active knowledge and the composed prompt
+  carry no messaging/call modules.
+* **#216.** `Tests/SpatterEval/briefs.v2.json` with 75 briefs (support/edit/create/export/
+  hostile); the runner accepts v1 and v2.
+* **#238/#260.** The unmounted SpatterCC views, `SpatterBotService` and `SpatterBotModels`
+  (client-side credential fields, seeded queues, a third-party model name) are deleted;
+  `docs/ci-candidates/pbxproj-remove-spattercc.patch` removes their project entries.
+
+Verification on this Linux host: the new `Tests/SpatterPlanner` suite (11 cases through the
+real `StudioCommandExecutor`/`StudioDocumentEditor`) passes with stub SwiftUI/UIKit modules;
+Python 18/18; SQL harness 7/7 with the README apply order extended; the macOS Spatter suites
+are parse-checked only and remain DEFERRED (not run). See `REPORT.md` for exact commands.

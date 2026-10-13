@@ -72,8 +72,10 @@ private func postJSON(_ id: String, creator: String, likes: Int, liked: Bool = f
             let a = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 3).utf8))
             let b = try decoder.decode(FeedPost.self, from: Data(postJSON(postB, creator: creatorB, likes: 1).utf8))
             let aUpdated = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 4).utf8))
-            try timeline.merge(page: 0, posts: [a, b], hasMore: true)
-            try timeline.merge(page: 1, posts: [aUpdated], hasMore: true)
+            try timeline.merge(page: 0, posts: [a, b], hasMore: true, asOf: "2026-10-13T01:00:00+00:00")
+            try require(timeline.asOf == "2026-10-13T01:00:00+00:00", "page 0 snapshot kept")
+            do { try timeline.merge(page: 1, posts: [], hasMore: true, asOf: "2026-10-13T02:00:00+00:00"); throw Failure(description: "accepted a page from another snapshot") } catch CommunityError.stale {}
+            try timeline.merge(page: 1, posts: [aUpdated], hasMore: true, asOf: "2026-10-13T01:00:00+00:00")
             try require(timeline.posts.count == 2 && timeline.posts[0].likes == 4 && timeline.nextPage == 2, "identity merge kept position and refreshed count")
             do { try timeline.merge(page: 5, posts: [], hasMore: true); throw Failure(description: "accepted out-of-order page") } catch CommunityError.stale {}
             let negative = try decoder.decode(FeedPost.self, from: Data(postJSON(postB, creator: creatorB, likes: -1).utf8))
@@ -81,6 +83,8 @@ private func postJSON(_ id: String, creator: String, likes: Int, liked: Bool = f
             var capped = FeedTimeline()
             for page in 0..<40 { try capped.merge(page: page, posts: [], hasMore: true) }
             try require(!capped.canLoadMore && capped.nextPage == 40, "40-page cap")
+            timeline.reset()
+            try require(timeline.asOf == nil && timeline.nextPage == 0, "reset drops the snapshot")
         }
 
         await test("optimistic like and follow change only the tapped card by one and roll back when unconfirmed") {
@@ -108,11 +112,16 @@ private func postJSON(_ id: String, creator: String, likes: Int, liked: Bool = f
         await test("feed client lists real pages, caches only page 0 for the offline label and never serves later pages from cache") {
             let transport = FakeTransport()
             let client = FeedClient(gateway: CommunityGateway(transport: transport), cache: .init(name: "feed", directory: root.appendingPathComponent("feed")))
-            transport.replies = [.success(#"{"posts":[\#(postJSON(postA, creator: creatorA, likes: 2))],"has_more":true}"#)]
-            let page = try await client.page(.trending, page: 0, account: "acct")
+            transport.replies = [.success(#"{"posts":[\#(postJSON(postA, creator: creatorA, likes: 2))],"has_more":true,"as_of":"2026-10-13T01:00:00.123456+00:00"}"#)]
+            let page = try await client.page(.trending, page: 0, account: "acct", asOf: "ignored-on-page-0")
             try require(page.posts.count == 1 && page.hasMore && page.source == .server, "server page")
+            try require(page.asOf == "2026-10-13T01:00:00.123456+00:00", "snapshot returned verbatim")
             let call = transport.calls[0]
             try require(call.name == "sdi_feed_action" && call.params["action"] as? String == "list" && call.params["category"] as? String == "trending" && call.params["page"] as? Int == 0, "list parameters")
+            try require(call.params["as_of"] == nil, "page 0 never sends a snapshot")
+            transport.replies = [.success(#"{"posts":[],"has_more":false,"as_of":"2026-10-13T01:00:00.123456+00:00"}"#)]
+            _ = try await client.page(.trending, page: 1, account: "acct", asOf: page.asOf)
+            try require(transport.calls.last?.params["as_of"] as? String == "2026-10-13T01:00:00.123456+00:00" && transport.calls.last?.params["page"] as? Int == 1, "later pages carry the page-0 snapshot")
             transport.replies = [.failure(CommunityError.transport("offline"))]
             let cached = try await client.page(.trending, page: 0, account: "acct")
             if case .cache = cached.source {} else { throw Failure(description: "offline page 0 did not come from the protected cache") }

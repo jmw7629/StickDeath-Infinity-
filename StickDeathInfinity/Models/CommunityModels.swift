@@ -364,6 +364,9 @@ struct FeedRequest: Encodable, Equatable {
     var category = FeedCategory.recent.rawValue
     var page = 0
     var reason: String? = nil
+    /// Snapshot instant returned by page 0; sent back on later pages so posts
+    /// published meanwhile shift nothing until the member refreshes (#217/#220).
+    var as_of: String? = nil
 }
 
 struct FeedPost: Codable, Identifiable, Equatable {
@@ -386,6 +389,8 @@ struct FeedListResponse: CommunityResponse {
     let status: String?
     let posts: [FeedPost]?
     let has_more: Bool?
+    /// Kept as the server's own text so it round-trips exactly.
+    let as_of: String?
 }
 
 enum FeedReportReason: String, CaseIterable { case rights, abuse, unsafe, spam
@@ -402,12 +407,18 @@ struct FeedTimeline: Equatable {
     private(set) var nextPage = 0
     private(set) var hasMore = true
     private(set) var inFlight: Set<UUID> = []
+    /// Server snapshot instant from page 0, sent with every later page of this timeline.
+    private(set) var asOf: String?
 
-    mutating func reset() { posts = []; nextPage = 0; hasMore = true; inFlight = [] }
+    mutating func reset() { posts = []; nextPage = 0; hasMore = true; inFlight = []; asOf = nil }
 
     /// Merge a page; existing cards keep their position with refreshed values.
-    mutating func merge(page: Int, posts incoming: [FeedPost], hasMore more: Bool) throws {
+    /// The first page's snapshot is kept; a later page carrying a different
+    /// snapshot belongs to another listing and is refused as stale.
+    mutating func merge(page: Int, posts incoming: [FeedPost], hasMore more: Bool, asOf snapshot: String? = nil) throws {
         guard page == nextPage else { throw CommunityError.stale }
+        if page == 0 { asOf = snapshot }
+        else if let snapshot, let asOf, snapshot != asOf { throw CommunityError.stale }
         guard incoming.count <= Self.pageSize else { throw CommunityError.invalidResponse("The feed page exceeded the server bound.") }
         for post in incoming {
             guard post.likes >= 0 else { throw CommunityError.invalidResponse("The feed reported a negative count.") }

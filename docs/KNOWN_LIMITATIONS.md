@@ -57,7 +57,7 @@ limitations list, not a claim that everything else is verified.
 
 | Limitation | Source |
 | --- | --- |
-| Account deletion is not implemented; the service throws `accountDeletionUnavailable` | `Services/Auth/AuthService.swift:487-491` |
+| Account deletion is a server request with a seven-day cooling-off period; it is refused with `accountDeletionUnavailable` where the `account-lifecycle.sql` candidate is not installed | `Services/Auth/AuthService.swift` (`requestAccountDeletion`) |
 | "Sign-in is unavailable. Your local Studio is ready." when identity providers are not configured | `Views/Auth/WelcomeView.swift:52` |
 | Profile: "Projects counts saved animations on this device. Published, followers and likes are unavailable." / "Analytics unavailable" / "Plan unavailable" | `Views/Profile/ProfileView.swift:82,131,63,102` |
 | "Avatar and portfolio editing are not available here." | `Views/Profile/EditProfileView.swift:25` |

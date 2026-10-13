@@ -453,13 +453,47 @@ private final class NetworkTrap: URLProtocol {
                     let answer = vm.messages.last!.content
                     try require(expected.allSatisfy { answer.contains($0) } && answer.contains("Guidance only"), "Account/rooms guidance missing fact: \(question)")
                 }
-                try require(calls == 0 && SpatterAIViewModel.currentGuideVersion == "2026-10-12.1", "Guide used cloud or version was not bumped")
+                try require(calls == 0 && SpatterAIViewModel.currentGuideVersion == "2026-10-13.1", "Guide used cloud or version was not bumped")
                 for fact in ["catalog v\(SpatterInstructionCatalog.version)", "selectionTranslate", "imagePlacement", "textUpdate", "pan L100–R100 and solo",
-                             "SHA-256", "In-app account deletion is not available yet", "revocable, expiring code"] {
+                             "SHA-256", "In-app account deletion is not available yet", "revocable, expiring code",
+                             "multiClauseBrief", "tween", "frameClipboard", "projectSettings", "brushStroke", "batch",
+                             "USD 4.99 per month and USD 9.99 per month", "Preview plan", "Revert Spatter edit"] {
                     try require(SpatterAIViewModel.currentStudioCapabilities.contains(fact), "Capability text missing: \(fact)")
                 }
-                try require(SpatterInstructionCatalog.grammars.count == 31 && SpatterInstructionCatalog.commandNames.contains("translateElements")
-                    && SpatterInstructionCatalog.commandNames.contains("updateText"), "Catalog does not list the reachable commands")
+                try require(SpatterInstructionCatalog.version == 3 && SpatterInstructionCatalog.grammars.count == 37 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                    && SpatterInstructionCatalog.commandNames.contains("updateText") && SpatterInstructionCatalog.commandNames.contains("appendFrames")
+                    && SpatterInstructionCatalog.commandNames.contains("tweenFrames"), "Catalog does not list the reachable commands")
+                // Pricing (#207): planned price points only, no live prices, annual not configured, nothing charged.
+                for question in ["How much does the pro plan cost?", "Is there an annual price?", "What are the subscription tiers?"] {
+                    try require(vm.submit(question, context: .general), "Pricing request rejected")
+                    try await idle(vm)
+                    let answer = vm.messages.last!.content
+                    try require(answer.contains("USD 4.99 per month and USD 9.99 per month") && answer.contains("Annual pricing is not configured")
+                        && answer.contains("cannot see live store prices") && !answer.contains("$3") && answer.contains("Guidance only"), "Pricing answer invented or incomplete: \(question)")
+                }
+                try require(calls == 0, "Pricing guidance used the cloud")
+                // Library context (#203): no document is shared and the guide says so.
+                try require(vm.submit("How do I export an MP4?", context: .library), "Library request rejected")
+                try await idle(vm)
+                try require(vm.messages.last!.content.contains("Project library: no project is open") && SpatterContext.library.studio == nil
+                    && (try SpatterContext.library.promptSummary()).contains("Screen=library") && SpatterContext.messages == SpatterContext.companion
+                    && SpatterContext.companion.currentScreen == "companion", "Library/companion contexts wrong")
+            }
+            try await test("local knowledge and the composed prompt contain no messaging or call modules") {
+                // #208: personality is kept, retired communication guidance never ranks, is never searchable and never reaches the prompt.
+                let retiredWords = ["livekit", "video call", "voice call", "messenger", "direct message", "screen share", "webrtc"]
+                for module in SpatterKnowledgeBase.activeModules {
+                    let text = (module.title + " " + module.summary + " " + module.knowledge.joined(separator: " ")).lowercased()
+                    try require(!retiredWords.contains { text.contains($0) }, "Active module \(module.id) still carries retired communication guidance")
+                }
+                try require(SpatterKnowledgeBase.activeModules.contains { $0.id == "003_spatter_personality" }, "Personality module was lost")
+                for screen in ["studio", "companion", "library", "rooms", "home", "profile", "general", "messages"] {
+                    let context = SpatterKnowledgeBase.buildContext(for: screen, tool: nil, maxTokens: 3000).lowercased()
+                    try require(!retiredWords.contains { context.contains($0) }, "Screen \(screen) context leaks retired modules")
+                }
+                let prompt = SpatterCloudPrompt.compose(personality: "You are Spatter.", embeddedKnowledge: SpatterKnowledgeBase.buildContext(for: "companion"),
+                    runtimeKnowledge: "", contextSummary: try SpatterContext.library.promptSummary(), capabilities: SpatterAIViewModel.currentStudioCapabilities).lowercased()
+                try require(!retiredWords.contains { prompt.contains($0) } && prompt.contains("screen=library"), "Composed prompt leaks retired modules or drops the library context")
             }
             try await test("drawing help explains actual families and eraser limits while preserving intent priority") {
                 var calls = 0

@@ -5,11 +5,15 @@ import UniformTypeIdentifiers
 
 struct ExportPanel: View {
     @ObservedObject var vm: StudioViewModel
+    /// The movie and GIF states are owned by StudioView so a completed direct
+    /// export's receipt stays observable from the Spatter panel while this panel
+    /// is open (#215). Closing this panel still closes both sessions.
+    @ObservedObject var movie: StudioMoviePanelState
+    @ObservedObject var gif: StudioGIFPanelState
     var directRequest: StudioMoviePanelState.DirectRequest? = nil
+    var directGIFRequest: StudioGIFPanelState.DirectRequest? = nil
     var onDirectRequestConsumed: () -> Void = {}
     @StateObject private var session = StudioExportSession()
-    @StateObject private var movie = StudioMoviePanelState()
-    @StateObject private var gif = StudioGIFPanelState()
     @State private var background: StudioExportService.Background = .white
     @State private var frameScope = "All"
     @State private var firstFrame = 1
@@ -54,7 +58,7 @@ struct ExportPanel: View {
                             proxy.scrollTo("studio.export.movie.result", anchor: .top)
                         })
                     } else if vm.exportFormat == .gif {
-                        StudioGIFExportControls(vm: vm, gif: gif, onReady: {
+                        StudioGIFExportControls(vm: vm, gif: gif, directRequest: directGIFRequest, onDirectRequestConsumed: onDirectRequestConsumed, onReady: {
                             proxy.scrollTo("studio.export.gif.result", anchor: .top)
                         })
                     } else {

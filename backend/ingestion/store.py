@@ -39,7 +39,11 @@ def identifier(value: str) -> str:
 
 class UploadStore:
     def __init__(self, root: Path, *, total_quota: int, account_quota: int = MAX_BYTES,
-                 lifetime: int = 86400, clock: Callable[[], float] = time.time):
+                 lifetime: int = 86400, clock: Callable[[], float] = time.time, licensed_assets=None):
+        # Optional registry (assets.LicensedAssetRegistry). Declared asset credits
+        # are refused outright when no registry is configured: never admit an
+        # unchecked licence claim.
+        self.licensed_assets = licensed_assets
         if not 1 <= account_quota <= total_quota or not 60 <= lifetime <= 7 * 86400:
             raise ValueError("Invalid upload capacity or retention configuration.")
         self.root = Path(root)
@@ -119,8 +123,12 @@ class UploadStore:
     def begin(self, actor: str, request: str, metadata: dict):
         actor, request = identifier(actor), identifier(request)
         allowed = {"size", "sha256", "title", "source_revision", "destinations", "rights_summary", "consent_version", "made_for_kids"}
-        if not isinstance(metadata, dict) or set(metadata) != allowed:
+        if not isinstance(metadata, dict) or set(metadata) - {"asset_credits"} != allowed:
             raise IntakeError("Complete render metadata required.")
+        if "asset_credits" in metadata:
+            if self.licensed_assets is None:
+                raise IntakeError("Asset licence checks are not configured on this service. Submission refused.", 503)
+            metadata = dict(metadata, asset_credits=self.licensed_assets.check(metadata["asset_credits"]))
         if type(metadata["made_for_kids"]) is not bool:
             raise IntakeError("An explicit audience classification is required.")
         size = metadata["size"]
@@ -158,6 +166,11 @@ class UploadStore:
         with self._connect() as db:
             row = self._owned(db, actor, identifier(upload))
             return self._response(row)
+
+    def metadata(self, actor: str, upload: str) -> dict:
+        """The metadata as admitted at begin, including checked asset credits."""
+        with self._connect() as db:
+            return json.loads(self._owned(db, actor, identifier(upload))["metadata"])
 
     def append(self, actor: str, upload: str, offset: int, chunk: bytes, checksum: str):
         if type(offset) is not int or offset < 0 or not isinstance(chunk, bytes) or not 1 <= len(chunk) <= CHUNK_BYTES:

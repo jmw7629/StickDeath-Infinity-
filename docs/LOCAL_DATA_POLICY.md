@@ -48,8 +48,11 @@ Back and successful sign-in both return to the app shell with the same project.
   the whole `.sdi` revision store to
   `Documents/.sdi-recently-deleted/.migration-rollbacks/<id>-<uuid>/`. The legacy
   files are untouched and the project reopens through the legacy reader.
-- Account deletion is not available in this build. The service refuses it and
-  the UI says so; nothing local is affected either way.
+- Account deletion is a server request (`sdi_account_lifecycle`): the app files
+  it, shows the seven-day cooling-off date and can cancel it while pending; the
+  service worker completes it. The app never deletes server data itself, and
+  nothing local is affected either way. On a server without the lifecycle
+  candidate the request is refused and the UI says so.
 
 ## Backup inclusion
 
