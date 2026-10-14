@@ -225,4 +225,109 @@ end $$;
 revoke all on function sdi_private.retain_artifact_after_approval() from public,anon,authenticated;
 create trigger retain_artifact_after_approval after update on sdi_private.render_reviews
 for each row execute function sdi_private.retain_artifact_after_approval();
+-- Keyset (cursor) paging for the social wall (#217, #220). Each page is ordered by
+-- (score desc, published_at desc, id desc) and the next page starts strictly after
+-- the last row's key, so posts published, liked or removed meanwhile can neither
+-- duplicate nor skip a row the member has not reached. `score` is 0 except in
+-- Trending, where it counts likes inside the seven days ending at the snapshot
+-- instant; likes recorded after the snapshot do not move rows. An unlike or a
+-- moderation removal can still lower or drop a row: that row is simply absent or
+-- appears once more further down, which the client de-duplicates by identity.
+-- `can_download` is the creator's export permission AND a current paid
+-- entitlement of the viewer (billing.sql); the Free plan cannot download (#219).
+create index if not exists feed_posts_recent on sdi_private.feed_posts(published_at desc,id desc) where visible;
+create index if not exists feed_likes_post_time on sdi_private.feed_likes(post,created_at);
+create function sdi_private.feed_page(category text default 'recent', page_cursor text default null, as_of timestamptz default null)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare actor_id uuid:=auth.uid(); n integer; items jsonb; snapshot timestamptz; total integer; paid boolean;
+ parts text[]; c_score bigint; c_published timestamptz; c_id uuid; last_row jsonb; next_cursor text;
+begin
+ if actor_id is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor_id and not is_anonymous) then
+  return jsonb_build_object('error','Sign in with a full account.'); end if;
+ insert into sdi_private.feed_budget values(actor_id,clock_timestamp(),1)
+ on conflict(actor) do update set attempts=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then 1 else feed_budget.attempts+1 end,
+ started_at=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then clock_timestamp() else feed_budget.started_at end returning attempts into n;
+ if n>60 then return jsonb_build_object('error','Please wait before trying again.'); end if;
+ if category is null or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
+ if page_cursor is not null then
+  if as_of is null then return jsonb_build_object('error','A feed cursor needs its snapshot. Refresh the feed.'); end if;
+  if length(page_cursor)>120 or page_cursor !~ '^[0-9]{1,9}\|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z\|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+   return jsonb_build_object('error','Invalid feed cursor. Refresh the feed.'); end if;
+  parts:=string_to_array(page_cursor,'|');
+  begin
+   c_score:=parts[1]::bigint; c_published:=parts[2]::timestamptz; c_id:=parts[3]::uuid;
+  exception when others then return jsonb_build_object('error','Invalid feed cursor. Refresh the feed.');
+  end;
+ end if;
+ snapshot:=least(coalesce(as_of,clock_timestamp()),clock_timestamp());
+ if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
+ paid:=exists(select 1 from sdi_private.entitlements e where e.user_id=actor_id);
+ with eligible as (
+  select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,
+   case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id
+    and l.created_at>snapshot-interval '7 days' and l.created_at<=snapshot) else 0 end::bigint as score
+  from sdi_private.feed_posts p join public.sdi_watch_media m on m.id=p.media_id
+  where p.visible and m.approved and m.owner_id=p.creator and m.render_digest is not null
+  and p.published_at<=snapshot
+  and (m.expires_at is null or m.expires_at>clock_timestamp())
+  and not sdi_private.creator_restricted(p.creator)
+  and not exists(select 1 from sdi_private.feed_blocks b where (b.actor=actor_id and b.creator=p.creator) or (b.actor=p.creator and b.creator=actor_id))
+  and (category<>'featured' or p.featured)
+  and (category<>'following' or exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator))
+ ), window_rows as (
+  select * from eligible e
+  where page_cursor is null or (e.score,e.published_at,e.id)<(c_score,c_published,c_id)
+  order by e.score desc,e.published_at desc,e.id desc limit 26
+ ), numbered as (
+  select w.*,row_number() over(order by w.score desc,w.published_at desc,w.id desc) as position from window_rows w
+ )
+ select count(*)::integer,
+  coalesce(jsonb_agg(jsonb_build_object('id',x.id,'creator',x.creator,'creator_name',x.creator_name,'caption',x.caption,
+   'published_at',x.published_at,'allow_export',x.allow_export,'can_download',x.allow_export and paid,'title',x.title,'url',x.url,
+   'score',x.score,
+   'likes',(select count(*) from sdi_private.feed_likes l where l.post=x.id),
+   'liked',exists(select 1 from sdi_private.feed_likes l where l.post=x.id and l.actor=actor_id),
+   'following',exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=x.creator))
+   order by x.position) filter(where x.position<=25),'[]'::jsonb),
+  (select jsonb_build_object('score',y.score,'published_at',y.published_at,'id',y.id) from numbered y where y.position=25)
+ into total,items,last_row from numbered x;
+ if total>25 then
+  next_cursor:=(last_row->>'score')||'|'||to_char((last_row->>'published_at')::timestamptz at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')||'|'||(last_row->>'id');
+ end if;
+ return jsonb_build_object('posts',items,'has_more',total>25,'next_cursor',next_cursor,'as_of',snapshot,'download_requires_plan',not paid);
+end $$;
+revoke all on function sdi_private.feed_page(text,text,timestamptz) from public,anon;
+grant execute on function sdi_private.feed_page(text,text,timestamptz) to authenticated;
+create function public.sdi_feed_page(category text default 'recent', page_cursor text default null, as_of timestamptz default null) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.feed_page(category,page_cursor,as_of)$$;
+revoke all on function public.sdi_feed_page(text,text,timestamptz) from public,anon;
+grant execute on function public.sdi_feed_page(text,text,timestamptz) to authenticated;
+
+-- Creator totals for the profile (#224): counted from the same eligible rows the
+-- feed shows, never estimated. A blocked or restricted creator is unavailable.
+-- `following` is returned only to the account itself.
+create function sdi_private.creator_stats(subject uuid default null) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare viewer uuid:=auth.uid(); target uuid:=coalesce(subject,auth.uid()); posts bigint; likes bigint; followers bigint; follows bigint;
+begin
+ if viewer is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=viewer and not is_anonymous) then
+  return jsonb_build_object('error','Sign in with a full account.'); end if;
+ if not exists(select 1 from auth.users where id=target and not is_anonymous)
+  or (target<>viewer and (sdi_private.creator_restricted(target)
+   or exists(select 1 from sdi_private.feed_blocks b where (b.actor=viewer and b.creator=target) or (b.actor=target and b.creator=viewer)))) then
+  return jsonb_build_object('error','Profile unavailable.'); end if;
+ select count(*),coalesce(sum((select count(*) from sdi_private.feed_likes l where l.post=p.id)),0) into posts,likes
+ from sdi_private.feed_posts p join public.sdi_watch_media m on m.id=p.media_id
+ where p.creator=target and p.visible and m.approved and m.owner_id=p.creator and m.render_digest is not null
+  and (m.expires_at is null or m.expires_at>clock_timestamp());
+ select count(*) into followers from sdi_private.feed_follows f where f.creator=target and not sdi_private.creator_restricted(f.actor);
+ if target=viewer then select count(*) into follows from sdi_private.feed_follows f where f.actor=target; end if;
+ return jsonb_build_object('subject',target,'published_videos',posts,'likes_received',likes,'followers',followers,'following',follows);
+end $$;
+revoke all on function sdi_private.creator_stats(uuid) from public,anon;
+grant execute on function sdi_private.creator_stats(uuid) to authenticated;
+create function public.sdi_creator_stats(subject uuid default null) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.creator_stats(subject)$$;
+revoke all on function public.sdi_creator_stats(uuid) from public,anon;
+grant execute on function public.sdi_creator_stats(uuid) to authenticated;
 commit;

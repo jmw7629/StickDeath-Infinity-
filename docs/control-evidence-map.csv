@@ -93,6 +93,7 @@ challenges.list.error,StickDeathInfinity/Views/Challenges/ChallengesView.swift,C
 challenges.list.refresh,StickDeathInfinity/Views/Challenges/ChallengesView.swift,ChallengesView,"button 'Refresh challenges' -> load, binds 0.phase",n-a,unmapped,deferred
 feed.card,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text 'Export not permitted by the creator; sharing lin',n-a,unmapped,deferred
 feed.card.export,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,label,n-a,unmapped,deferred
+feed.card.export-plan,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text 'The creator permits saving this video; saving fi',n-a,#219,deferred
 feed.card.like,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,label,n-a,unmapped,deferred
 feed.card.menu,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,image 'Report video',n-a,unmapped,deferred
 feed.card.play,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text,n-a,unmapped,deferred
@@ -103,6 +104,8 @@ feed.home.load-more,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedVie
 feed.home.notice,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,container 'feed.home.notice' (identifier-derived; review source),n-a,unmapped,deferred
 feed.home.offline,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,container 'feed.home.offline' (identifier-derived; review source),n-a,unmapped,deferred
 feed.home.refresh,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,button 'Refresh feed' -> load,n-a,unmapped,deferred
+feed.player.retry,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityVideoPlayer,button 'Retry' -> model.load,n-a,#219,deferred
+feed.player.status,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityVideoPlayer,button 'Close' -> dismiss,n-a,#219,deferred
 onboarding.back,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,label,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.next,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,next-page button 'onboarding.next' (identifier-derived; review source),n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.position,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
@@ -115,6 +118,7 @@ profile.delete-account.notice,StickDeathInfinity/Views/Profile/ProfileView.swift
 profile.delete-account.status,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,text 'Sign Out' -> authVM.signOut,n-a,#135 #262,deferred
 profile.edit.avatar-notice,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text,n-a,#224,deferred
 profile.edit.avatar-picker,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,label -> binds avatarItem,n-a,#224,deferred
+profile.edit.avatar-remove,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,label 'Remove avatar',n-a,#224,deferred
 profile.edit.bio,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text editor 'Bio' -> binds bio,n-a,#224,deferred
 profile.edit.notice,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text,n-a,#224,deferred
 profile.edit.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,button 'Edit username and bio' -> authVM.captureProfileEdit,n-a,#224,deferred
@@ -139,6 +143,7 @@ profile.reviews.allow-export,StickDeathInfinity/Views/Profile/ProfileView.swift,
 profile.reviews.publish-feed,StickDeathInfinity/Views/Profile/ProfileView.swift,CreatorReviewsView,button 'Publish approved video to the SDI feed',n-a,#224,deferred
 profile.sign-in,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Sign in or create an account' -> binds 0,n-a,#134 #136 #137,deferred
 profile.statistics,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,text,n-a,#224,deferred
+profile.statistics.problem,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,text 'Projects counts saved animations on this device.',n-a,#224,deferred
 profile.subscription-status,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,"text 'Pricing, renewal and purchase information are no'",n-a,#258,deferred
 rooms.browser.create,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Create room',no,#228 #234,deferred
 rooms.browser.empty,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'No accepted rooms.',no,#228 #234,deferred

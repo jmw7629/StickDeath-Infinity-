@@ -30,4 +30,42 @@ create policy users_update_own on public.users for update to authenticated using
 create function sdi_private.users_touch() returns trigger language plpgsql set search_path='' as $$
 begin new.updated_at=clock_timestamp(); return new; end $$;
 create trigger users_touch before update on public.users for each row execute function sdi_private.users_touch();
+-- Handles are unique regardless of letter case (#224). A changed username must
+-- follow the public handle rules the app enforces (CreatorHandle): 3-30 ASCII
+-- letters, digits or underscores, starting with a letter or digit, not reserved.
+-- Sign-up rows keep the original 1-80 character check until the member edits.
+create unique index users_username_ci on public.users(lower(username)) where username is not null;
+create function sdi_private.users_handle_rules() returns trigger language plpgsql set search_path='' as $$
+begin
+ if new.username is distinct from old.username then
+  if new.username is null or new.username !~ '^[A-Za-z0-9][A-Za-z0-9_]{2,29}$'
+   or lower(new.username) in('admin','administrator','owner','moderator','support','system','official',
+    'stickdeath','stickdeathinfinity','sdi','spatter','root') then
+   raise exception 'Choose a 3-30 character handle of letters, digits or underscores that is not reserved.' using errcode='23514';
+  end if;
+ end if;
+ return new;
+end $$;
+create trigger users_handle_rules before update of username on public.users for each row execute function sdi_private.users_handle_rules();
+-- Avatar storage (#224): a public-read bucket holding one bounded JPEG per member
+-- at `<account>/avatar.jpg` (AvatarImagePolicy). Members may write, replace and
+-- delete only their own object. Applied only where the Supabase storage schema
+-- exists; the local SQL harness has no storage schema and skips this block.
+do $avatars$
+begin
+ if to_regclass('storage.buckets') is not null and to_regclass('storage.objects') is not null then
+  execute $q$insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types)
+   values('avatars','avatars',true,307200,array['image/jpeg'])
+   on conflict(id) do update set public=true,file_size_limit=307200,allowed_mime_types=array['image/jpeg']$q$;
+  execute $q$create policy avatars_owner_read on storage.objects for select to authenticated
+   using (bucket_id='avatars' and name=(auth.uid()::text||'/avatar.jpg'))$q$;
+  execute $q$create policy avatars_owner_insert on storage.objects for insert to authenticated
+   with check (bucket_id='avatars' and name=(auth.uid()::text||'/avatar.jpg'))$q$;
+  execute $q$create policy avatars_owner_update on storage.objects for update to authenticated
+   using (bucket_id='avatars' and name=(auth.uid()::text||'/avatar.jpg'))
+   with check (bucket_id='avatars' and name=(auth.uid()::text||'/avatar.jpg'))$q$;
+  execute $q$create policy avatars_owner_delete on storage.objects for delete to authenticated
+   using (bucket_id='avatars' and name=(auth.uid()::text||'/avatar.jpg'))$q$;
+ end if;
+end $avatars$;
 commit;

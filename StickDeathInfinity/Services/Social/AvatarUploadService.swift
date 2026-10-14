@@ -68,6 +68,26 @@ enum AvatarUploadService {
         guard AuthService.shared.currentProfile?.avatarURL == stamped else { throw Failure.unconfirmed }
         return checked
     }
+
+    enum Removal: Equatable { case removed, profileClearedFileRetained }
+    /// Remove the avatar: the profile reference is cleared first (so the profile
+    /// never points at a deleted file), then the account's own stored object is
+    /// deleted. If the delete fails the caller is told the file was retained.
+    static func remove(account: String) async throws -> Removal {
+        let client: SupabaseClient
+        do { client = try SupabaseManager.shared.client } catch { throw Failure.notConfigured }
+        guard let session = client.auth.currentSession, !session.isExpired,
+              session.user.id.uuidString.lowercased() == account.lowercased() else { throw Failure.signedOut }
+        try await AuthService.shared.updateProfile(["avatar_url": .null])
+        guard AuthService.shared.currentProfile?.avatarURL == nil else { throw Failure.unconfirmed }
+        try Task.checkCancellation()
+        do {
+            _ = try await client.storage.from(AvatarImagePolicy.bucket).remove(paths: [AvatarImagePolicy.objectPath(account: account)])
+            return .removed
+        } catch {
+            return .profileClearedFileRetained
+        }
+    }
 }
 
 private extension AvatarUploadService.Failure {

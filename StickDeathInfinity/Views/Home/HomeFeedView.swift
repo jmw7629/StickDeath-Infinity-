@@ -1,10 +1,13 @@
 import SwiftUI
 import AVKit
+import Combine
 
-/// Social video wall over `sdi_feed_action`: approved renditions only, server
-/// ranking for Trending/Recent/Following/Featured, bounded pages, idempotent
-/// likes/follows with rollback, HTTPS playback and sharing, and file export
-/// only where the creator permits it. No text posts, comments or chat.
+/// Social video wall over `sdi_feed_page` (keyset pages) and `sdi_feed_action`
+/// (reactions): approved renditions only, server ranking for Trending/Recent/
+/// Following/Featured, bounded pages, idempotent likes/follows with rollback,
+/// HTTPS playback with loading/error states and sharing, and file export only
+/// where the creator permits it and the viewer's plan includes downloads.
+/// No text posts, comments or chat.
 struct HomeFeedView: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
@@ -16,7 +19,7 @@ struct HomeFeedView: View {
     @State private var notice: String?
     @State private var offlineUpdatedAt: Date?
     @State private var epoch = UUID()
-    @State private var playback: FeedPlayback?
+    @State private var playback: FeedPlaybackItem?
     @State private var exporting: UUID?
     @State private var exportFile: FeedExportFile?
     @State private var blocking: FeedPost?
@@ -78,13 +81,10 @@ struct HomeFeedView: View {
         .communityScreen()
         .task(id: identity) {
             epoch = UUID(); timeline.reset(); loading = false; loaded = false
-            playback?.player.pause(); playback = nil; error = nil; notice = nil; offlineUpdatedAt = nil; exporting = nil
+            playback = nil; error = nil; notice = nil; offlineUpdatedAt = nil; exporting = nil
             if phase == .active { await load(reset: true) }
         }
-        .sheet(item: $playback) { item in
-            VideoPlayer(player: item.player).onAppear { item.player.play() }.onDisappear { item.player.pause() }
-                .accessibilityLabel("Playing \(item.title)")
-        }
+        .sheet(item: $playback) { item in CommunityVideoPlayer(url: item.url, title: item.title) }
         .sheet(item: $exportFile, onDismiss: { exportFile?.cleanUp(); exportFile = nil }) { file in
             ShareLink(item: file.url) { Label("Save or share \(file.title)", systemImage: "square.and.arrow.down").frame(minHeight: 44) }
                 .padding().presentationDetents([.fraction(0.25)])
@@ -95,7 +95,7 @@ struct HomeFeedView: View {
         } message: { post in
             Text("You will no longer see \(post.creator_name)'s videos and they will not see yours. This does not report them.")
         }
-        .onDisappear { playback?.player.pause(); playback = nil }
+        .onDisappear { playback = nil }
     }
 
     private func card(_ post: FeedPost) -> some View {
@@ -124,7 +124,7 @@ struct HomeFeedView: View {
             }
             Button {
                 guard let url = post.safeURL else { error = "Video address is unavailable."; return }
-                playback?.player.pause(); playback = FeedPlayback(player: AVPlayer(url: url), title: post.title)
+                playback = FeedPlaybackItem(url: url, title: post.title)
             } label: {
                 VStack(spacing: 14) {
                     Image(systemName: "play.rectangle.fill").font(.system(size: 56)).foregroundStyle(StudioCraftTheme.accentText)
@@ -156,7 +156,12 @@ struct HomeFeedView: View {
                 }
                 Spacer()
             }.font(.specialElite(13, relativeTo: .footnote))
-            if !FeedExportPolicy.canExport(post) { Text("Export not permitted by the creator; sharing links is allowed.").communityCaption() }
+            switch FeedExportPolicy.state(post) {
+            case .allowed: EmptyView()
+            case .needsPaidPlan: Text("The creator permits saving this video; saving files needs a paid plan. Sharing the link is allowed.").communityCaption()
+                    .accessibilityIdentifier("feed.card.export-plan")
+            case .notPermitted: Text("Export not permitted by the creator; sharing links is allowed.").communityCaption()
+            }
         }
         .accessibilityIdentifier("feed.card")
     }
@@ -169,9 +174,9 @@ struct HomeFeedView: View {
         loading = true
         defer { if revision == epoch { loading = false } }
         do {
-            let result = try await CommunityServices.feed.page(category, page: page, account: account, asOf: timeline.asOf)
+            let result = try await CommunityServices.feed.page(category, page: page, account: account, asOf: timeline.asOf, cursor: timeline.nextCursor)
             guard !Task.isCancelled, revision == epoch, account == auth.userId else { return }
-            try timeline.merge(page: page, posts: result.posts, hasMore: result.hasMore, asOf: result.asOf)
+            try timeline.merge(page: page, posts: result.posts, hasMore: result.hasMore, asOf: result.asOf, cursor: result.cursor)
             if case .cache(let updatedAt) = result.source { offlineUpdatedAt = updatedAt } else { offlineUpdatedAt = nil }
             loaded = true; error = nil
         } catch { if revision == epoch { loaded = true; self.error = CommunityGateway.normalize(error).errorDescription } }
@@ -240,7 +245,96 @@ struct HomeFeedView: View {
     }
 }
 
-private struct FeedPlayback: Identifiable { let id = UUID(); let player: AVPlayer; let title: String }
+private struct FeedPlaybackItem: Identifiable { let id = UUID(); let url: URL; let title: String }
+
+/// Plays one approved HTTPS rendition after an explicit tap. Shows loading,
+/// slow-start, buffering and failure states from the player itself, caps
+/// bit rate and resolution on expensive (cellular/hotspot) networks and keeps
+/// a short forward buffer. Retry builds a fresh item; closing stops playback.
+/// No account token is attached to the media request.
+struct CommunityVideoPlayer: View {
+    let url: URL
+    let title: String
+    @StateObject private var model = CommunityVideoPlayerModel()
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VideoPlayer(player: model.player).accessibilityLabel("Video: \(title)")
+            if let message = model.state.message {
+                VStack(spacing: 12) {
+                    if case .failed = model.state {
+                        Image(systemName: "exclamationmark.triangle").font(.largeTitle).accessibilityHidden(true)
+                    } else { ProgressView().tint(.white) }
+                    Text(message).font(.specialElite(14, relativeTo: .callout)).multilineTextAlignment(.center)
+                    if case .failed = model.state {
+                        HStack(spacing: 12) {
+                            Button("Retry") { model.load(url) }.buttonStyle(CommunitySecondaryButtonStyle())
+                                .accessibilityIdentifier("feed.player.retry")
+                            Button("Close") { dismiss() }.buttonStyle(CommunitySecondaryButtonStyle())
+                        }
+                    }
+                }
+                .foregroundStyle(.white).padding(20)
+                .background(.black.opacity(0.7)).clipShape(RoundedRectangle(cornerRadius: 12))
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("feed.player.status")
+            }
+        }
+        .onAppear { model.load(url) }
+        .onDisappear { model.stop() }
+    }
+}
+
+@MainActor
+final class CommunityVideoPlayerModel: ObservableObject {
+    let player = AVPlayer()
+    @Published private(set) var state: FeedPlaybackState = .loading
+    private var observers: Set<AnyCancellable> = []
+    private var started = Date()
+    private var ended = false
+    private var slowTimer: Task<Void, Never>?
+
+    func load(_ url: URL) {
+        stop()
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = FeedPlaybackPolicy.forwardBufferSeconds
+        item.preferredPeakBitRateForExpensiveNetworks = FeedPlaybackPolicy.expensiveNetworkPeakBitRate
+        item.preferredMaximumResolutionForExpensiveNetworks = CGSize(width: FeedPlaybackPolicy.expensiveNetworkMaximumHeight * 16 / 9,
+                                                                     height: FeedPlaybackPolicy.expensiveNetworkMaximumHeight)
+        started = Date(); ended = false; state = .loading
+        item.publisher(for: \.status).receive(on: RunLoop.main).sink { [weak self] _ in self?.refresh() }.store(in: &observers)
+        player.publisher(for: \.timeControlStatus).receive(on: RunLoop.main).sink { [weak self] _ in self?.refresh() }.store(in: &observers)
+        NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime, object: item).receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.ended = true; self?.refresh() }.store(in: &observers)
+        NotificationCenter.default.publisher(for: .AVPlayerItemFailedToPlayToEndTime, object: item).receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refresh(forcedFailure: true) }.store(in: &observers)
+        player.replaceCurrentItem(with: item)
+        player.play()
+        slowTimer = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(FeedPlaybackPolicy.slowStartSeconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.refresh()
+        }
+    }
+    func stop() {
+        slowTimer?.cancel(); slowTimer = nil
+        observers.removeAll()
+        player.pause(); player.replaceCurrentItem(with: nil)
+    }
+    private func refresh(forcedFailure: Bool = false) {
+        guard let item = player.currentItem else { return }
+        if item.status == .readyToPlay || item.status == .failed { slowTimer?.cancel() }
+        state = FeedPlaybackState.resolve(itemReady: item.status == .readyToPlay,
+                                          itemFailed: forcedFailure || item.status == .failed,
+                                          waiting: player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+                                          playing: player.timeControlStatus == .playing,
+                                          ended: ended,
+                                          elapsed: Date().timeIntervalSince(started),
+                                          failureText: nil)
+    }
+}
 private struct FeedExportFile: Identifiable {
     let id = UUID(); let url: URL; let title: String
     func cleanUp() { try? FileManager.default.removeItem(at: url) }
