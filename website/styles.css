@@ -312,3 +312,6 @@ footer div a{display:inline-flex;align-items:center;justify-content:center;min-h
 @media(max-width:1000px){.products,.merch-teaser{grid-template-columns:repeat(2,1fr)}.clips{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:580px){.products,.merch-teaser,.clips{grid-template-columns:1fr}.hero-controls{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){#splash{display:none}.reveal{opacity:1;transform:none}}
+
+/* Embedded in an OS window (?embed=1): no site chrome, tighter gutters. */
+html.embed .header,html.embed footer,html.embed .skip,html.embed #splash{display:none}html.embed body{background:var(--surface)}html.embed .page-hero{padding-top:20px;padding-bottom:10px}html.embed .page-hero h1{font-size:2rem}html.embed .play{margin-top:10px}html.embed .wrap{padding-left:16px;padding-right:16px}

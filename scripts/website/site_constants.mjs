@@ -20,6 +20,7 @@ export const PAGES = [
   { file: 'play.html', indexable: true },
   { file: 'store.html', indexable: true },
   { file: 'brand.html', indexable: true },
+  { file: 'os.html', indexable: true },
   { file: '404.html', indexable: false, reason: 'error page' },
   { file: 'account.html', indexable: false, reason: 'account page (config-gated shell)' },
   { file: 'admin.html', indexable: false, reason: 'command center shell (config-gated; server-authorized)' },
