@@ -40,14 +40,25 @@ struct StudioBrushSettings: Codable, Equatable {
     /// Both endpoint alphas must match the caller's paint alpha. Variable-alpha
     /// gradients are rejected by the renderer until separately implemented.
     var gradientEndColor: StudioBrushColor?
+    /// Airbrush only: paint keeps flowing while the stylus dwells or moves
+    /// slowly. Zero (the historical default) means spacing-only dabs.
+    var buildup: Double = 0
+    /// Watercolor only: how far seeded pigment blooms spread past the brush
+    /// edge. Zero keeps the historical watercolor geometry unchanged.
+    var bleed: Double = 0
+    /// Neon only: composite the finished tube additively (plus-lighter) so the
+    /// glow brightens, never darkens, the artwork underneath.
+    var additiveGlow = false
 
     init(family: StudioBrushFamily = .round, size: Double = 3, opacity: Double = 1,
          smoothing: Double = 3, pressureEnabled: Bool = true, tipAngleDegrees: Double = 45,
-         texture: Double = 0.5, grain: Double = 0.3, gradientEndColor: StudioBrushColor? = nil, tiltEnabled: Bool = false) {
+         texture: Double = 0.5, grain: Double = 0.3, gradientEndColor: StudioBrushColor? = nil, tiltEnabled: Bool = false,
+         buildup: Double = 0, bleed: Double = 0, additiveGlow: Bool = false) {
         self.family = family; self.size = size; self.opacity = opacity; self.smoothing = smoothing
         self.pressureEnabled = pressureEnabled; self.tipAngleDegrees = tipAngleDegrees
         self.texture = texture; self.grain = grain; self.gradientEndColor = gradientEndColor
         self.tiltEnabled = tiltEnabled
+        self.buildup = buildup; self.bleed = bleed; self.additiveGlow = additiveGlow
     }
 
     func validate() throws {
@@ -55,7 +66,8 @@ struct StudioBrushSettings: Codable, Equatable {
         guard size.isFinite, (0.25...512).contains(size), opacity.isFinite, (0...1).contains(opacity),
               smoothing.isFinite, (0...10).contains(smoothing), tipAngleDegrees.isFinite,
               (0..<180).contains(tipAngleDegrees), texture.isFinite, (0...1).contains(texture),
-              grain.isFinite, (0...1).contains(grain) else {
+              grain.isFinite, (0...1).contains(grain), buildup.isFinite, (0...1).contains(buildup),
+              bleed.isFinite, (0...1).contains(bleed) else {
             throw StudioBrushError.invalidSettings("Brush settings are outside the supported finite ranges.")
         }
         guard !tiltEnabled || family == .calligraphy else { throw StudioBrushError.invalidSettings("Pencil tilt is supported by the Calligraphy nib.") }
@@ -67,6 +79,7 @@ struct StudioBrushSettings: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case version, family, size, opacity, smoothing, pressureEnabled, tipAngleDegrees, texture, grain, gradientEndColor, tiltEnabled
+        case buildup, bleed, additiveGlow
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -81,6 +94,9 @@ struct StudioBrushSettings: Codable, Equatable {
         grain = try c.decodeIfPresent(Double.self, forKey: .grain) ?? 0.3
         gradientEndColor = try c.decodeIfPresent(StudioBrushColor.self, forKey: .gradientEndColor)
         tiltEnabled = try c.decodeIfPresent(Bool.self, forKey: .tiltEnabled) ?? false
+        buildup = try c.decodeIfPresent(Double.self, forKey: .buildup) ?? 0
+        bleed = try c.decodeIfPresent(Double.self, forKey: .bleed) ?? 0
+        additiveGlow = try c.decodeIfPresent(Bool.self, forKey: .additiveGlow) ?? false
         try validate()
     }
     func encode(to encoder: Encoder) throws {
@@ -92,6 +108,11 @@ struct StudioBrushSettings: Codable, Equatable {
         try c.encode(tipAngleDegrees, forKey: .tipAngleDegrees); try c.encode(texture, forKey: .texture)
         try c.encode(grain, forKey: .grain); try c.encodeIfPresent(gradientEndColor, forKey: .gradientEndColor)
         try c.encode(tiltEnabled, forKey: .tiltEnabled)
+        // Historical settings keep byte-identical JSON; new keys appear only
+        // when a creator actually changes them.
+        if buildup != 0 { try c.encode(buildup, forKey: .buildup) }
+        if bleed != 0 { try c.encode(bleed, forKey: .bleed) }
+        if additiveGlow { try c.encode(additiveGlow, forKey: .additiveGlow) }
     }
 }
 
