@@ -31,6 +31,16 @@ output only, no serverless functions and no paid plan change. Either way:
 - The admin shell (`website/admin.html`) and account page stay `noindex` and are gated by
   `admin-config.js` / `account-config.js`, both `null` in the repository.
 
+## Deploy workflow (added 2026-10-14)
+
+`.github/workflows/website-deploy.yml` verifies the help centre and discovery files, writes the
+`CNAME` file for `stickdeathinfinity.com` and deploys `website/` to GitHub Pages. It is
+`workflow_dispatch` only until the owner: (1) enables Pages with Source = GitHub Actions in the
+repository settings, (2) adds the custom domain there, (3) creates the DNS records at the registrar
+(`A` records for the apex to GitHub Pages' addresses and a `CNAME` for `www`, per GitHub's current
+docs), and (4) uncomments the `push` trigger so merges to `main` redeploy. The two Pages actions are
+referenced by version tag until the owner reviews and pins them by SHA like the other workflows.
+
 ## Procedure
 
 1. **Review build.** Deploy a commit to a preview URL (Pages branch deployment or Vercel preview).

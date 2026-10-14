@@ -45,7 +45,7 @@ const site = path.join(repo, 'website');
 const jsonIndex = process.argv.indexOf('--json');
 const jsonOut = jsonIndex > -1 ? process.argv[jsonIndex + 1] : null;
 
-const PAGES = ['index.html', 'studio.html', 'community.html', 'screens.html', 'play.html', 'store.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
+const PAGES = ['index.html', 'studio.html', 'community.html', 'screens.html', 'play.html', 'store.html', 'brand.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
 const VIEWPORTS = [{ name: '320x640', width: 320, height: 640 }, { name: '390x844', width: 390, height: 844 }, { name: '1440x900', width: 1440, height: 900 }];
 // 2026-10-14 rebuild: the home page shows real captures (lazy WebP) and the unmodified
 // Special Elite TTF stays at 166 KB, so the transfer and request budgets moved from
