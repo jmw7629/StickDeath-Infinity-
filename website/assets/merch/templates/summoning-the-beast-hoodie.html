@@ -1,0 +1,26 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css"></head><body><div class="grid"></div><span class="tag">Summoning the Beast</span>
+<div class="card"><svg viewBox="0 0 400 400"><defs>
+<filter id="rough" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="7"/><feDisplacementMap in="SourceGraphic" scale="2.2"/></filter>
+<filter id="distress"><feTurbulence type="fractalNoise" baseFrequency="1.6" numOctaves="1" seed="3" result="n"/><feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -0.9 1.32" result="m"/><feComposite in="SourceGraphic" in2="m" operator="in"/></filter>
+<filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#000" flood-opacity=".55"/></filter>
+<linearGradient id="fold" x1="0" x2="1"><stop offset="0" stop-color="#000" stop-opacity=".35"/><stop offset=".18" stop-color="#000" stop-opacity="0"/><stop offset=".82" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></linearGradient>
+<linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".10"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".25"/></linearGradient>
+<radialGradient id="spot" cx=".5" cy=".42" r=".6"><stop offset="0" stop-color="#2b2b31"/><stop offset="1" stop-color="#0c0c0e"/></radialGradient>
+</defs><rect width="400" height="400" fill="url(#spot)" opacity=".85"/><g filter="url(#shadow)"><path d="M120 92 Q150 40 200 38 Q250 40 280 92 L346 170 L346 346 L318 352 L304 190 L300 362 L100 362 L96 190 L82 352 L54 346 L54 170 Z" fill="#1f1f24"/><path d="M120 92 Q150 40 200 38 Q250 40 280 92 L346 170 L346 346 L318 352 L304 190 L300 362 L100 362 L96 190 L82 352 L54 346 L54 170 Z" fill="url(#fold)"/><path d="M150 80 Q200 130 250 80 Q240 50 200 48 Q160 50 150 80Z" fill="#000" opacity=".35"/><path d="M188 120 v30 M212 120 v30" stroke="#ddd" stroke-width="2"/><path d="M140 290 h120 l14 60 h-148z" fill="#000" opacity=".22"/></g><circle cx="200" cy="226" r="62" fill="none" stroke="#e0202a" stroke-width="3" filter="url(#glow)"/><circle cx="200" cy="226" r="52" fill="none" stroke="#e0202a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="259" y="216" width="6" height="12" fill="#d9d2c3"/><path d="M262 216 q-4 -6 0 -12 q4 6 0 12z" fill="#ff7a1a" filter="url(#glow)"/><rect x="228" y="269.6935750346352" width="6" height="12" fill="#d9d2c3"/><path d="M231 269.6935750346352 q-4 -6 0 -12 q4 6 0 12z" fill="#ff7a1a" filter="url(#glow)"/><rect x="166" y="269.6935750346352" width="6" height="12" fill="#d9d2c3"/><path d="M169 269.6935750346352 q-4 -6 0 -12 q4 6 0 12z" fill="#ff7a1a" filter="url(#glow)"/><rect x="135" y="216" width="6" height="12" fill="#d9d2c3"/><path d="M138 216 q-4 -6 0 -12 q4 6 0 12z" fill="#ff7a1a" filter="url(#glow)"/><rect x="165.99999999999997" y="162.3064249653648" width="6" height="12" fill="#d9d2c3"/><path d="M168.99999999999997 162.3064249653648 q-4 -6 0 -12 q4 6 0 12z" fill="#ff7a1a" filter="url(#glow)"/><rect x="228" y="162.3064249653648" width="6" height="12" fill="#d9d2c3"/><path d="M231 162.3064249653648 q-4 -6 0 -12 q4 6 0 12z" fill="#ff7a1a" filter="url(#glow)"/>
+<g transform="translate(200 250) scale(0.5)" stroke-linecap="round" stroke-linejoin="round">
+<g fill="none" stroke="#000" stroke-width="11">
+<path d="M-6 -62 C-2 -30 4 -4 0 34"/>
+<path d="M-4 -40 C-40 -40 -66 -14 -74 18 M-4 -40 C30 -46 58 -26 70 4"/>
+<path d="M0 34 C-14 58 -30 70 -34 100 M0 34 C18 56 34 66 40 100"/>
+<path d="M-34 100 l-18 4 M40 100 l20 2"/>
+</g>
+<g fill="#000"><path d="M-74 18 l-14 26 l10 -6 l2 20 l8 -16 l10 14 l-2 -24 l12 4z"/><path d="M70 4 l18 20 l-10 -2 l2 20 l-10 -14 l-8 14 l-2 -22 l-10 6z"/>
+<path d="M-6 -50 l-14 -6 l10 -8 l-16 -8 l14 -4z" opacity=".9"/><path d="M-2 -18 l-16 -4 l12 -8 z M0 8 l-15 -2 l11 -8 z"/>
+<ellipse cx="-8" cy="-84" rx="25" ry="22"/>
+<path d="M-26 -98 C-46 -112 -50 -130 -40 -146 C-38 -128 -30 -116 -16 -106 Z"/><path d="M8 -100 C24 -116 22 -134 10 -148 C14 -128 6 -116 -4 -106 Z"/></g>
+<g fill="#e0202a" filter="url(#glow)"><path d="M-22 -90 l12 4 l-12 4 z"/><path d="M6 -90 l-12 4 l12 4 z"/></g>
+<path d="M-24 -74 l6 6 l6 -6 l6 6 l6 -6 l6 6" fill="none" stroke="#efeae0" stroke-width="3"/>
+</g><text x="200" y="320" text-anchor="middle" font-size="22" fill="#efeae0" letter-spacing="2" filter="url(#distress)" >SUMMONING</text><text x="200" y="342" text-anchor="middle" font-size="22" fill="#e0202a" letter-spacing="2" filter="url(#distress)" >THE BEAST</text></svg></div>
+<span class="label">Heavyweight hoodie · back print</span></body></html>

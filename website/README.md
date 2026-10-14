@@ -94,3 +94,9 @@ JavaScript syntax and whitespace checks passed for this slice. Actual browser co
 - **Privacy window.** Local usage counters are off by default and never sent anywhere; "Forget everything" clears all site storage.
 - **Discord.** The community chat is the owner's Discord server (`https://discord.gg/mVUxqbB5c`, #StickDeath_Infinity): a Discord window and icon on the desktop, a section on community.html and a footer link on every page. The app itself still has no chat.
 - Harness: 619/619 checks, including snapping, reload memory, the menu, CRT, icon drag, privacy counters and the screensaver.
+
+## Merch artwork (2026-10-14)
+
+- `scripts/website/merch_art.mjs` draws 22 original product mock-ups themed on the classic StickDeath series (Super Beast, Walk in the Park, Summoning the Beast, Body Count, S.W.A.T., Escape from Greenville and Green Gene, Anti-Auto Theft, Stickzilla, StickDeath Penitentiary, Stick Tour, Anger Management, Survivor). All art is new vector drawing built from primitives in that script; nothing is traced or copied from the original Flash files. It writes `assets/merch/templates/*.html` plus `products.json` (name, series tag, label, alt text).
+- `scripts/website/render_merch.mjs` renders them to 800×800 WebP (`--check` verifies they are current).
+- The store page is an image gallery. Product names, sizes, prices and checkout come from Shopify once `store-config.js` is filled in.

@@ -313,8 +313,8 @@ async function main() {
     const storeContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const storePage = await storeContext.newPage();
     const storeRequests = []; storePage.on('request', (r) => storeRequests.push(r.url()));
     await storePage.goto(base + 'store.html', { waitUntil: 'load' }); await storePage.waitForTimeout(400);
-    const storeState = await storePage.evaluate(() => ({ status: document.querySelector('#store-status').textContent, prices: [...document.querySelectorAll('.price')].map((p) => p.textContent), cartHidden: document.querySelector('#cart').hidden, products: document.querySelectorAll('.product').length }));
-    record('store shows the planned line-up without prices or cart when unconfigured', storeState.products === 8 && storeState.cartHidden && storeState.prices.every((p) => p === 'Price on opening') && storeState.status.includes('not open yet'), JSON.stringify(storeState).slice(0, 200), 'store.html@390x844');
+    const storeState = await storePage.evaluate(() => ({ status: document.querySelector('#store-status').textContent, prices: [...document.querySelectorAll('.price')].map((p) => p.textContent), cartHidden: document.querySelector('#cart').hidden, products: document.querySelectorAll('.merch img').length, captions: document.querySelectorAll('.merch figcaption').length }));
+    record('store shows the 22-design merch gallery without prices or cart when unconfigured', storeState.products === 22 && storeState.captions === 22 && storeState.cartHidden && storeState.prices.length === 0 && storeState.status.includes('not open yet'), JSON.stringify(storeState).slice(0, 200), 'store.html@390x844');
     record('store requests only its own files when unconfigured', storeRequests.every((u) => u.startsWith(base)), `${storeRequests.length} requests`, 'store.html@390x844');
     await storeContext.close();
     // index.html: splash is decorative and gone within three seconds; hero speed slider changes the animation.
@@ -476,8 +476,8 @@ async function main() {
     const accountStatic = await (async () => { await nojsPage.goto(base + 'account.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Sign-in requires JavaScript' }); })();
     record('noscript guidance visible with JavaScript disabled', noscriptVisible, '', LONG + '@390x844 no-js');
     record('account page states that sign-in requires JavaScript when it is off', accountStatic, '', 'account.html@390x844 no-js');
-    const storeStatic = await (async () => { await nojsPage.goto(base + 'store.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Live prices and the cart need JavaScript' }); })();
-    record('store page states that prices need JavaScript when it is off', storeStatic, '', 'store.html@390x844 no-js');
+    const storeStatic = await (async () => { await nojsPage.goto(base + 'store.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The cart needs JavaScript' }); })();
+    record('store page states that the cart needs JavaScript when it is off', storeStatic, '', 'store.html@390x844 no-js');
     const adminStatic = await (async () => { await nojsPage.goto(base + 'admin.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The command center is not configured' }); })();
     record('admin shell states "not configured" without JavaScript', adminStatic, '', 'admin.html@390x844 no-js');
     await nojs.close();
