@@ -235,6 +235,11 @@ struct ProfileSettingsView: View {
             Section("Studio") {
                 Text("Change grid, onion skin and project settings in the Studio menu. Those controls apply to the actual project.")
             }
+            if authVM.isAuthenticated {
+                Section("Your data") {
+                    AccountDataExportRow()
+                }
+            }
             Section("Diagnostics") {
                 DiagnosticsSettingsView()
             }

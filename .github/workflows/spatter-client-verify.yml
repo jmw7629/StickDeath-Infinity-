@@ -1773,6 +1773,12 @@ jobs:
             Tests/Diagnostics/main.swift \
             -o "$RUNNER_TEMP/sdi-diagnostics-tests"
           "$RUNNER_TEMP/sdi-diagnostics-tests"
+      - name: Scan release sources for credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/backend/test_scan_release_secrets.py
+          python3 scripts/backend/scan_release_secrets.py
       - name: Verify cancellable Studio edits and factual persistence state
         shell: bash
         run: |

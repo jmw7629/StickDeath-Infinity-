@@ -226,6 +226,9 @@ settings.diagnostics.queued,StickDeathInfinity/Services/Diagnostics/DiagnosticsS
 settings.diagnostics.send,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,button,n-a,#291,deferred
 settings.diagnostics.status,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,text,n-a,#291,deferred
 settings.diagnostics.toggle,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,"text 'Daily counts of launches, crashes, hangs and ter' -> binds 0",n-a,#291,deferred
+settings.export-data,StickDeathInfinity/Views/Settings/SettingsView.swift,AccountDataExportRow,progress,n-a,#262,deferred
+settings.export-data.message,StickDeathInfinity/Views/Settings/SettingsView.swift,AccountDataExportRow,text 'Includes the records the service keeps for your ',n-a,#262,deferred
+settings.export-data.share,StickDeathInfinity/Views/Settings/SettingsView.swift,AccountDataExportRow,label 'Save or share the export',n-a,#262,deferred
 settings.sign-out,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign Out' -> authVM.signOut,n-a,unmapped,deferred
 spatter.artwork.order-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Send selected artwork backward',no,#203,deferred
 spatter.audio.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,example-command chips 'spatter.audio.examples' (identifier-derived; review source),no,#203,testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen

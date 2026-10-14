@@ -215,24 +215,32 @@ grant execute on function public.sdi_admin_health() to authenticated;
 -- they can be deleted only after the 400-day retention window (by a service
 -- sweep). Applies to the access, agent, account, moderation and permission audits
 -- and to the operations report log below.
-create function sdi_private.audit_append_only() returns trigger language plpgsql set search_path='' as $$
+-- Named audit_retention_hold so security-audit-integrity.sql (#256) can own the
+-- generic append-only guard for every *_audit table. That guard governs updates
+-- to *_audit tables (only foreign-key set-null is allowed); this hold refuses
+-- updates elsewhere (ops_reports) and enforces the 400-day window, except inside
+-- the account purge.
+create function sdi_private.audit_retention_hold() returns trigger language plpgsql set search_path='' as $$
 begin
- if tg_op='UPDATE' then raise exception 'Audit records are append-only (%).',tg_table_name using errcode='42501'; end if;
+ if tg_op='UPDATE' then
+  if tg_table_name like '%\_audit' then return new; end if;
+  raise exception 'Audit records are append-only (%).',tg_table_name using errcode='42501'; end if;
+ if coalesce(current_setting('sdi.audit_purge',true),'')='on' then return old; end if;
  if old.created_at>clock_timestamp()-interval '400 days' then
   raise exception 'Audit records are kept for 400 days (%).',tg_table_name using errcode='42501'; end if;
  return old;
 end $$;
-revoke all on function sdi_private.audit_append_only() from public,anon,authenticated;
-create trigger admin_access_audit_append_only before update or delete on sdi_private.admin_access_audit
- for each row execute function sdi_private.audit_append_only();
-create trigger agent_audit_append_only before update or delete on sdi_private.agent_audit
- for each row execute function sdi_private.audit_append_only();
-create trigger admin_user_audit_append_only before update or delete on sdi_private.admin_user_audit
- for each row execute function sdi_private.audit_append_only();
-create trigger moderation_audit_append_only before update or delete on sdi_private.moderation_audit
- for each row execute function sdi_private.audit_append_only();
-create trigger admin_permission_audit_append_only before update or delete on sdi_private.admin_permission_audit
- for each row execute function sdi_private.audit_append_only();
+revoke all on function sdi_private.audit_retention_hold() from public,anon,authenticated;
+create trigger admin_access_audit_retention_hold before update or delete on sdi_private.admin_access_audit
+ for each row execute function sdi_private.audit_retention_hold();
+create trigger agent_audit_retention_hold before update or delete on sdi_private.agent_audit
+ for each row execute function sdi_private.audit_retention_hold();
+create trigger admin_user_audit_retention_hold before update or delete on sdi_private.admin_user_audit
+ for each row execute function sdi_private.audit_retention_hold();
+create trigger moderation_audit_retention_hold before update or delete on sdi_private.moderation_audit
+ for each row execute function sdi_private.audit_retention_hold();
+create trigger admin_permission_audit_retention_hold before update or delete on sdi_private.admin_permission_audit
+ for each row execute function sdi_private.audit_retention_hold();
 
 -- Backups, restore drills, releases, rollbacks and retention sweeps (#257). The
 -- host's jobs report outcomes here through a service-only function; the record
@@ -251,8 +259,8 @@ create table sdi_private.ops_reports (
 alter table sdi_private.ops_reports enable row level security;
 revoke all on sdi_private.ops_reports from public,anon,authenticated;
 create index ops_reports_recent on sdi_private.ops_reports(kind,outcome,created_at desc);
-create trigger ops_reports_append_only before update or delete on sdi_private.ops_reports
- for each row execute function sdi_private.audit_append_only();
+create trigger ops_reports_retention_hold before update or delete on sdi_private.ops_reports
+ for each row execute function sdi_private.audit_retention_hold();
 create function sdi_private.ops_report(kind text,outcome text,label text default '',metrics jsonb default '{}') returns jsonb
 language plpgsql security definer set search_path='' as $$
 #variable_conflict use_variable
