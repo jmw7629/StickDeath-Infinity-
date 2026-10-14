@@ -576,8 +576,11 @@ studio.layers.open,StickDeathInfinity/Views/Studio/StudioView.swift,StudioBottom
 studio.library,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,text 'StickDeath Studio',no,#195,testAccessibilityAuditLibraryAndStudioAtAccessibilityTextSize testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen testGuestProfileProjectsAndSettingsNavigation testRealCanvasStrokeUndoRedo testWelcomeGuideNavigationAndLocalCompletion helper:createProjectIfLibraryIsShown
 studio.library.count,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,text,no,#195,testProjectLibraryLastRowWithExpandedCreation
 studio.library.import-backup,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,text 'Import project backup',no,#286,testPortableProjectFilesBackupImportCancelAndColdReopen
-studio.library.import.drop-missing-audio,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Import without missing sounds' -> vm.importPortableProject,yes,#195,deferred
+studio.library.import.conflict.cancel,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Cancel',no,#170 #195,deferred
+studio.library.import.conflict.copy,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Import as a separate copy' -> binds 0,no,#170 #195,deferred
+studio.library.import.drop-missing-audio,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Import without missing sounds',no,#195,deferred
 studio.library.import.drop-missing-audio.dismiss,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Dismiss',no,#195,deferred
+studio.library.import.verification,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,text,no,#170 #195,deferred
 studio.library.menu.duplicate,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,label 'Duplicate Project' -> vm.duplicateProject,no,#195,deferred
 studio.library.menu.remove,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,label 'Move to Recently Deleted',no,#195,deferred
 studio.library.menu.rename,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,label 'Rename…',no,#195,deferred
@@ -655,6 +658,16 @@ studio.storage.cancel-review,StickDeathInfinity/Views/Studio/StudioProjectLibrar
 studio.storage.clear-cache,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button 'Clear working cache',no,#171 #167,deferred
 studio.storage.confirm-remove-revisions,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,"button 'Remove reviewed old versions' -> cancel, dismiss, binds 0",no,#171 #167,testObsoleteRevisionCleanupCancelConfirmAndColdReopen
 studio.storage.error,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text,no,#171 #167,deferred
+studio.storage.free,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,container 'studio.storage.free' (identifier-derived; review source),no,#171 #167,deferred
+studio.storage.free.critical,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'Very little space is left. Saves may fail; when ',no,#171 #167,deferred
+studio.storage.free.low,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'Space is getting low. Imports check for room fir',no,#171 #167,deferred
+studio.storage.free.unknown,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'This device did not report free space. Saves sti' -> vm.obsoleteRevisionCleanupRequest,no,#171 #167,deferred
+studio.storage.leftovers.confirm,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button -> binds 0,no,#171 #167,deferred
+studio.storage.leftovers.exports,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,container 'studio.storage.leftovers.exports' (identifier-derived; review source),no,#171 #167,deferred
+studio.storage.leftovers.remove-exports,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button 'Remove leftover export copies',no,#171 #167,deferred
+studio.storage.leftovers.remove-scratch,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button 'Remove abandoned working files',no,#171 #167,deferred
+studio.storage.leftovers.result,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text,no,#171 #167,deferred
+studio.storage.leftovers.scratch,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'Files left in the apps temporary folder by an im',no,#171 #167,deferred
 studio.storage.list,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,list container 'studio.storage.list' (identifier-derived; review source),no,#171 #167,testObsoleteRevisionCleanupCancelConfirmAndColdReopen
 studio.storage.notice,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text,no,#171 #167,deferred
 studio.storage.project-picker,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,project picker 'studio.storage.project-picker' (identifier-derived; review source),no,#171 #167,testObsoleteRevisionCleanupCancelConfirmAndColdReopen
@@ -666,6 +679,8 @@ studio.storage.revision-result,StickDeathInfinity/Views/Studio/StudioProjectLibr
 studio.storage.revision-scanning,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,progress,no,#171 #167,deferred
 studio.storage.scanning,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,"progress 'Measures Documents and disk caches, including ev'",no,#171 #167,deferred
 studio.storage.total,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,storage total text 'studio.storage.total' (identifier-derived; review source),no,#171 #167,deferred
+studio.storage.waveforms,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'The temporary folder could not be measured. Noth',no,#171 #167,deferred
+studio.storage.waveforms.clear,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button 'Clear waveform previews',no,#171 #167,deferred
 studio.text.alignment,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,"text 'Alignment' -> binds vm.textStyle.size, binds vm.textStyle.alignment, binds 0.rawValue.capitalized",no,#148,deferred
 studio.text.apply,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Apply' -> vm.applyTextEditing,yes,#148,testEditableTextColdReopenAndEditableSource helper:createEditableTextFixture helper:verifyEditableText
 studio.text.bold,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,toggle 'Bold' -> binds vm.textStyle.bold,no,#148,deferred

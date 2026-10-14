@@ -232,6 +232,13 @@ jobs:
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
+            StickDeathInfinity/Services/Project/StudioPortableBundleFormat.swift \
+            StickDeathInfinity/Services/Project/StudioPortableBundleInventory.swift \
+            StickDeathInfinity/Services/Project/StudioPortableImportLedger.swift \
+            StickDeathInfinity/Services/Storage/StudioStorageBudget.swift \
+            StickDeathInfinity/Services/Storage/StudioStorageCleanup.swift \
+            Tests/StudioStorageManagement/DeviceDataLifecycle.swift \
             Tests/StudioStorageManagement/main.swift \
             -o "$RUNNER_TEMP/sdi-storage-management-tests"
           "$RUNNER_TEMP/sdi-storage-management-tests"
