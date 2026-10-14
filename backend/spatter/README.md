@@ -30,7 +30,7 @@ Response:
 Errors use the same envelope with `error` instead of `reply`:
 `400` malformed/unsupported, `401` missing/invalid/expired token, `403` non-user
 role, `413` too large, `429` daily budget exhausted, `502` provider failure,
-`503` not configured. The client maps 503 and 429 to honest unavailable states.
+`503` not configured (or metering refusal; see Metering). The client maps 503 and 429 to honest unavailable states.
 The legacy `{"choices":[{"message":{"content"}}]}` shape is still decoded by the
 client but is not produced here.
 
@@ -47,64 +47,82 @@ client but is not produced here.
 The token is read from the `Authorization` header only, never from the body or
 query, and is never logged. The handler re-checks `exp` against its own clock.
 
-## Per-user daily budget table
 
-The budget collaborator is backed by one table; the SQL below is a deployment
-candidate, not an applied migration (same policy as `backend/sql/README.md`):
+`jwt_hs256.make_hs256_verifier(secret, issuer)` implements this contract for
+HS256 projects with the standard library (constant-time signature check, `alg`
+must be `HS256`, `exp`/`nbf` with 30 s leeway, audience and issuer). The
+deployment passes the secret from its own environment; the module never reads
+or logs it. Asymmetric (JWKS) projects need a verifier built on a vetted crypto
+library; `jwt_hs256` refuses those tokens instead of guessing.
 
-```sql
-create table if not exists public.spatter_daily_budget (
-  user_id uuid not null references auth.users(id) on delete cascade,
-  budget_day date not null,
-  used integer not null default 0 check (used >= 0),
-  daily_limit integer not null default 40 check (daily_limit >= 0),
-  updated_at timestamptz not null default now(),
-  primary key (user_id, budget_day)
-);
-alter table public.spatter_daily_budget enable row level security;
--- Users may read their own row; only the service role writes.
-create policy "spatter budget self read" on public.spatter_daily_budget
-  for select using (auth.uid() = user_id);
+## Metering (#209): plan allowances, safety limits and the emergency stop
 
--- Atomic reserve: returns remaining units, or null when exhausted.
-create or replace function public.sdi_spatter_reserve(p_user uuid)
-returns table(remaining integer, resets_at timestamptz)
-language plpgsql security definer set search_path = public as $$
-declare v_day date := (now() at time zone 'utc')::date; v_used int; v_limit int;
-begin
-  insert into spatter_daily_budget(user_id, budget_day) values (p_user, v_day)
-    on conflict (user_id, budget_day) do nothing;
-  select used, daily_limit into v_used, v_limit from spatter_daily_budget
-    where user_id = p_user and budget_day = v_day for update;
-  if v_used >= v_limit then return; end if;
-  update spatter_daily_budget set used = used + 1, updated_at = now()
-    where user_id = p_user and budget_day = v_day;
-  return query select v_limit - v_used - 1, (v_day + 1)::timestamptz at time zone 'utc';
-end $$;
-revoke all on function public.sdi_spatter_reserve(uuid) from public, anon, authenticated;
+Pass `meter=metering.SqlMeter(rpc)` to `handle` (the legacy `budget` argument is
+kept for the original daily-budget tests). `SqlMeter` calls the service-only RPC
+`public.sdi_spatter_usage_meter` defined at the end of
+`backend/sql/spatter-draft-jobs.sql` (unapplied deployment candidate, tested by
+`backend/sql/tests/070_spatter_draft_jobs.sql`). Order of checks, all server-side:
 
-create or replace function public.sdi_spatter_release(p_user uuid) returns void
-language sql security definer set search_path = public as $$
-  update spatter_daily_budget set used = greatest(used - 1, 0), updated_at = now()
-    where user_id = p_user and budget_day = (now() at time zone 'utc')::date;
-$$;
-revoke all on function public.sdi_spatter_release(uuid) from public, anon, authenticated;
+1. account exists and is not suspended/banned (`account_controls`);
+2. agent emergency stop (`sdi_private.agent_global.emergency_stop`) → 503 `emergency_stop`;
+3. global daily ceiling → 503 `global_limit` (**defaults to 0, i.e. closed, until the owner sets it**);
+4. per-account per-minute rate (default 6) → 429 `rate_limited` + `retryAfterSeconds`;
+5. per-account daily safety cap (default 100) → 429 `daily_safety_limit`;
+6. plan allowance from `sdi_private.entitlements` → 429 `plan_allowance_exhausted` + `upgrade`:
+   * `free` (and trial without a paid entitlement): 5 prompts, one-time until the owner confirms otherwise;
+   * `creator` (USD 4.99/month): 15 prompts per billing period, keyed to `paid_through`, so a renewal opens a new period;
+   * `pro` (USD 9.99/month): no plan allowance; steps 1–5 still apply.
+
+A reservation is taken only after the provider is known to be configured, and
+settled exactly once: `commit` with provider usage units after a reply,
+`release` (refunds every counter) after a provider failure. Stale reservations
+are swept as committed, never silently refunded. Prompt text is never stored.
+
+Successful metered replies carry `allowance` instead of the daily `budget`:
+
+```json
+{"schemaVersion": 1, "reply": "…", "usage": {"units": 9}, "allowance": {"plan": "creator", "period": "billing_period", "remaining": 14, "resetsAt": "2026-11-01T00:00:00Z"}}
 ```
 
-`handler.InMemoryBudget` implements the same semantics for tests. The default
-limit (40 units/day) is a placeholder the owner sets; the handler reserves a unit
-only after the provider is known to be configured and refunds it when the
-provider call fails, so an unconfigured deployment never drains budgets.
+`remaining` is `null` for `pro`; `resetsAt` is `null` for the one-time free
+allowance. Error bodies add `code` (and `retryable` for 502). Signed-in users read
+their own allowance with `public.sdi_spatter_my_usage()` (for Settings); the owner
+reads/changes limits with `public.sdi_spatter_usage_admin('get'|'set', …)`,
+revisioned, reason-required and audited in `sdi_private.agent_audit`.
+
+## Provider routing
+
+`providers.ProviderRouter` holds the active `RouteConfig(provider, model,
+timeout_seconds ≤ 60, max_attempts 1–3)`. A model or provider switch replaces
+the configuration atomically and is validated against the injected adapters.
+Each attempt runs with a timeout; timeouts and adapter-declared transient
+failures are retried with backoff, permanent failures are not. Adapter
+exception text is never propagated (it can contain key material). An empty
+router reports `configured == False` and the handler answers 503 without
+touching any allowance.
 
 ## Tests
 
-`python3 -m unittest backend.spatter.test_handler -v` runs the contract with
-fakes: JWT acceptance/rejection, expiry, role refusal, bounds, 503 without a
-provider (and no budget consumption), 429 exhaustion with reset time, 502 refund,
-and the exact success envelope. No sockets, no provider, no database.
+`python3 -I -m pytest backend/spatter -q` (or `python3 -m unittest
+backend.spatter.test_handler backend.spatter.test_metering`) runs the contract
+with fakes: JWT acceptance/rejection (including a real HS256 verifier with a
+per-run random key), expiry, role refusal, bounds, 503 without a provider (no
+allowance consumed), every metering refusal code, free/creator/pro allowances,
+renewal reset, refund-once settlement, meter outage, retries, timeouts, model
+switches and credential non-disclosure. No sockets, provider or database.
+`scripts/backend/run_sql_tests.sh` runs the SQL rules on a throwaway PostgreSQL.
 
-## Remaining (deferred by owner instruction)
+## Remaining (owner-gated or deferred)
 
-Choosing and configuring a provider, deploying the function, applying the SQL,
-and the model-switch/rate-limit integration runs. Account-level cost reporting
-beyond `usage.units` is not defined yet. Nothing here claims a live deployment.
+* Owner: choose and configure a provider adapter and model, deploy the
+  function, apply the SQL, and set `global_daily_cap` above 0.
+* Owner questions still open on #209: whether the 5 free prompts are one-time
+  or monthly (implemented as one-time), whether bring-your-own provider keys
+  bypass the creator allowance, and which providers come first. BYO keys are
+  not implemented.
+* The iOS client still renders only the legacy daily `budget`; reading
+  `allowance`/`code` needs a change in `StickDeathInfinity/App/SpatterBackendClient.swift`
+  (see docs/SPATTER_WAVE4_2026_10_14.md). Until then metered replies show no
+  remaining count rather than a mislabelled one.
+* Live integration runs (real provider failures, rate limits, token expiry
+  against a deployed project) are deferred. Nothing here claims a deployment.
