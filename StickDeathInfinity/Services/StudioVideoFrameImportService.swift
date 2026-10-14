@@ -35,6 +35,74 @@ actor StudioVideoFrameImportService {
             guard result.isFinite, result < (sourceEndSeconds ?? 3600) else { throw Failure.outsideTrim }
             return result
         }
+        /// Inverse of `sourceTime`: the Studio time at which `sourceSeconds`
+        /// appears. Reference frames and an extracted soundtrack use this one
+        /// mapping, so a source event lands at the same Studio time in both.
+        func projectTime(sourceSeconds: Double) throws -> Double {
+            _ = try sourceTime(projectSeconds: projectStartSeconds)
+            guard sourceSeconds.isFinite, sourceSeconds >= sourceStartSeconds,
+                  sourceSeconds < (sourceEndSeconds ?? 3600) else { throw Failure.outsideTrim }
+            return projectStartSeconds + (sourceSeconds - sourceStartSeconds) / speed
+        }
+        /// Studio duration of the trimmed source interval: `(end - start) / speed`.
+        func projectDuration(sourceDuration: Double) throws -> Double {
+            _ = try sourceTime(projectSeconds: projectStartSeconds)
+            guard sourceDuration.isFinite, sourceDuration > 0 else { throw Failure.outsideVideo }
+            let end = min(sourceEndSeconds ?? sourceDuration, sourceDuration)
+            guard end > sourceStartSeconds else { throw Failure.outsideVideo }
+            return (end - sourceStartSeconds) / speed
+        }
+    }
+
+    /// Measured properties of the selected movie (#199), read from the owned
+    /// copy with AVFoundation. Nothing here is estimated from the file name or
+    /// container type; absent values stay nil or zero instead of being invented.
+    struct Metadata: Equatable, Sendable {
+        let durationSeconds: Double
+        let byteCount: Int
+        let naturalWidth: Int
+        let naturalHeight: Int
+        /// Display size after the track's preferred transform.
+        let orientedWidth: Int
+        let orientedHeight: Int
+        /// Display rotation in degrees (0, 90, 180, 270); nil for a transform
+        /// that is not a right-angle rotation.
+        let rotationDegrees: Int?
+        let isMirrored: Bool
+        /// Track's nominal rate; 0 when the container reports none.
+        let nominalFrameRate: Double
+        /// Shortest sample duration; nil when the container reports none.
+        let minimumFrameDurationSeconds: Double?
+        /// True when the shortest frame is more than 1% shorter than the nominal
+        /// frame duration, i.e. timestamps are not uniform.
+        let hasVariableFrameRate: Bool
+        let hasAudio: Bool
+
+        var summary: String {
+            let rate = nominalFrameRate > 0
+                ? String(format: "%.3g fps", nominalFrameRate) + (hasVariableFrameRate ? " (variable)" : "")
+                : "unknown frame rate"
+            let rotation = rotationDegrees.map { $0 == 0 ? "" : " · rotated \($0)°" } ?? " · non-right-angle transform"
+            return String(format: "%.3f s · %d×%d · ", durationSeconds, orientedWidth, orientedHeight) + rate + rotation
+                + (isMirrored ? " · mirrored" : "") + (hasAudio ? " · has audio" : " · no audio")
+                + String(format: " · %.1f MB", Double(byteCount) / 1_048_576)
+        }
+
+        /// Right-angle rotation and mirroring encoded by a preferred transform.
+        static func orientation(a: Double, b: Double, c: Double, d: Double) -> (degrees: Int?, mirrored: Bool) {
+            guard [a, b, c, d].allSatisfy({ $0.isFinite }) else { return (nil, false) }
+            let mirrored = a * d - b * c < 0
+            let angle = atan2(b, a) * 180 / .pi
+            let quarter = (angle / 90).rounded()
+            guard abs(angle - quarter * 90) < 0.5 else { return (nil, mirrored) }
+            let degrees: Int? = ((Int(quarter) * 90) % 360 + 360) % 360
+            return (degrees, mirrored)
+        }
+        static func isVariable(nominalFrameRate: Double, minimumFrameDuration: Double?) -> Bool {
+            guard nominalFrameRate.isFinite, nominalFrameRate > 0, let minimum = minimumFrameDuration,
+                  minimum.isFinite, minimum > 0 else { return false }
+            return abs(1 / minimum - nominalFrameRate) / nominalFrameRate > 0.01
+        }
     }
 
     struct Frame: Sendable {
@@ -44,6 +112,8 @@ actor StudioVideoFrameImportService {
         let mapping: Mapping
         let actualSeconds: Double
         let durationSeconds: Double
+        /// Measured properties of the source movie this frame came from.
+        let metadata: Metadata
     }
     enum Failure: LocalizedError {
         case busy, invalidTime, invalidMapping, outsideTrim, unsupportedVideo, geometry, outsideVideo, encoding, timedOut, sequenceLimit
@@ -94,9 +164,10 @@ actor StudioVideoFrameImportService {
         let owned = try StudioImageProviderFile.materialize(from: url, scratchParent: scratchParent)
         do {
             let copiedURL = try owned.url()
+            let byteCount = try Self.byteCount(copiedURL)
             let frames = try await withThrowingTaskGroup(of: [Frame].self) { group in
                 group.addTask { try await Self.decodeSequence(copiedURL, name: owned.displayName,
-                    requests: requests, mapping: mapping) }
+                    requests: requests, mapping: mapping, byteCount: byteCount) }
                 group.addTask {
                     try await Task.sleep(nanoseconds: 30_000_000_000)
                     throw Failure.timedOut
@@ -117,37 +188,108 @@ actor StudioVideoFrameImportService {
         }
     }
 
-    private struct Request: Sendable { let projectSeconds: Double; let sourceSeconds: Double }
-    private static func decodeSequence(_ url: URL, name: String, requests: [Request],
-                                       mapping: Mapping) async throws -> [Frame] {
-        let asset = AVURLAsset(url: url, options: [
+    /// Reads the movie's measured metadata from an owned copy without decoding
+    /// any frame (#199). The same limits, cancellation, 30-second deadline and
+    /// owned-copy cleanup apply as for extraction; no document is changed.
+    func inspect(from url: URL, scratchParent: URL = FileManager.default.temporaryDirectory) async throws -> Metadata {
+        try Task.checkCancellation()
+        guard !busy else { throw Failure.busy }
+        guard ["mp4", "mov"].contains(url.pathExtension.lowercased()) else { throw Failure.unsupportedVideo }
+        busy = true
+        defer { busy = false }
+        let owned = try StudioImageProviderFile.materialize(from: url, scratchParent: scratchParent)
+        do {
+            let copiedURL = try owned.url()
+            let byteCount = try Self.byteCount(copiedURL)
+            let metadata = try await withThrowingTaskGroup(of: Metadata.self) { group in
+                group.addTask {
+                    let asset = Self.asset(copiedURL)
+                    return try await withTaskCancellationHandler {
+                        try await Self.loadMetadata(asset, byteCount: byteCount).metadata
+                    } onCancel: { asset.cancelLoading() }
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                    throw Failure.timedOut
+                }
+                defer { group.cancelAll() }
+                guard let result = try await group.next() else { throw Failure.unsupportedVideo }
+                return result
+            }
+            try Task.checkCancellation()
+            _ = try owned.url()
+            try owned.cleanup()
+            return metadata
+        } catch {
+            let operation = error
+            do { try owned.cleanup() }
+            catch { throw StudioImageProviderFile.Failure.operationAndCleanupFailed(operation: operation) }
+            throw operation
+        }
+    }
+
+    private static func byteCount(_ url: URL) throws -> Int {
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size > 0 else { throw Failure.unsupportedVideo }
+        return size
+    }
+    private static func asset(_ url: URL) -> AVURLAsset {
+        AVURLAsset(url: url, options: [
             AVURLAssetPreferPreciseDurationAndTimingKey: true,
             AVURLAssetReferenceRestrictionsKey: AVAssetReferenceRestrictions.forbidAll.rawValue
         ])
+    }
+    /// Validates the movie and returns its single video track with measured metadata.
+    private static func loadMetadata(_ asset: AVURLAsset, byteCount: Int) async throws
+        -> (metadata: Metadata, duration: CMTime) {
+        try Task.checkCancellation()
+        guard try await asset.load(.isReadable), !(try await asset.load(.hasProtectedContent)) else { throw Failure.unsupportedVideo }
+        let duration = try await asset.load(.duration)
+        guard duration.isNumeric, duration.seconds > 0, duration.seconds <= 3600 else { throw Failure.unsupportedVideo }
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        guard tracks.count == 1, let track = tracks.first else { throw Failure.unsupportedVideo }
+        let size = try await track.load(.naturalSize)
+        let transform = try await track.load(.preferredTransform)
+        let oriented = CGRect(origin: .zero, size: size).applying(transform).standardized.size
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
+              size.width <= CGFloat(maximumDimension), size.height <= CGFloat(maximumDimension),
+              size.width * size.height <= CGFloat(maximumPixels),
+              oriented.width.isFinite, oriented.height.isFinite,
+              oriented.width > 0, oriented.height > 0,
+              oriented.width <= CGFloat(maximumDimension), oriented.height <= CGFloat(maximumDimension) else { throw Failure.geometry }
+        let nominal = Double(try await track.load(.nominalFrameRate))
+        let minimum = try await track.load(.minFrameDuration)
+        let minimumSeconds: Double? = minimum.isNumeric && minimum.seconds > 0 ? minimum.seconds : nil
+        let audio = try await asset.loadTracks(withMediaType: .audio)
+        let orientation = Metadata.orientation(a: Double(transform.a), b: Double(transform.b),
+                                               c: Double(transform.c), d: Double(transform.d))
+        let metadata = Metadata(durationSeconds: duration.seconds, byteCount: byteCount,
+            naturalWidth: Int(size.width.rounded()), naturalHeight: Int(size.height.rounded()),
+            orientedWidth: Int(oriented.width.rounded()), orientedHeight: Int(oriented.height.rounded()),
+            rotationDegrees: orientation.degrees, isMirrored: orientation.mirrored,
+            nominalFrameRate: nominal.isFinite && nominal > 0 ? nominal : 0,
+            minimumFrameDurationSeconds: minimumSeconds,
+            hasVariableFrameRate: Metadata.isVariable(nominalFrameRate: nominal, minimumFrameDuration: minimumSeconds),
+            hasAudio: !audio.isEmpty)
+        return (metadata, duration)
+    }
+
+    private struct Request: Sendable { let projectSeconds: Double; let sourceSeconds: Double }
+    private static func decodeSequence(_ url: URL, name: String, requests: [Request],
+                                       mapping: Mapping, byteCount: Int) async throws -> [Frame] {
+        let asset = Self.asset(url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
         generator.maximumSize = CGSize(width: maximumDimension, height: maximumDimension)
         return try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            guard try await asset.load(.isReadable), !(try await asset.load(.hasProtectedContent)) else { throw Failure.unsupportedVideo }
-            let duration = try await asset.load(.duration)
-            guard duration.isNumeric, duration.seconds > 0, duration.seconds <= 3600 else { throw Failure.unsupportedVideo }
+            let loaded = try await loadMetadata(asset, byteCount: byteCount)
+            let duration = loaded.duration, metadata = loaded.metadata
             guard requests.allSatisfy({ $0.sourceSeconds < duration.seconds }) else { throw Failure.outsideVideo }
             if let end = mapping.sourceEndSeconds, end > duration.seconds { throw Failure.outsideVideo }
-            let tracks = try await asset.loadTracks(withMediaType: .video)
-            guard tracks.count == 1, let track = tracks.first else { throw Failure.unsupportedVideo }
-            let size = try await track.load(.naturalSize)
-            let transform = try await track.load(.preferredTransform)
-            let oriented = CGRect(origin: .zero, size: size).applying(transform).standardized.size
-            guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
-                  size.width <= CGFloat(maximumDimension), size.height <= CGFloat(maximumDimension),
-                  size.width * size.height <= CGFloat(maximumPixels),
-                  oriented.width.isFinite, oriented.height.isFinite,
-                  oriented.width > 0, oriented.height > 0,
-                  oriented.width <= CGFloat(maximumDimension), oriented.height <= CGFloat(maximumDimension) else { throw Failure.geometry }
-            guard size.width * size.height * CGFloat(requests.count) <= CGFloat(maximumSequencePixels) else { throw Failure.sequenceLimit }
+            let sourcePixels = CGFloat(metadata.naturalWidth * metadata.naturalHeight)
+            guard sourcePixels * CGFloat(requests.count) <= CGFloat(maximumSequencePixels) else { throw Failure.sequenceLimit }
             var frames: [Frame] = []
             frames.reserveCapacity(requests.count)
             var pngBytes = 0, pixels = 0
@@ -171,7 +313,7 @@ actor StudioVideoFrameImportService {
                     width: image.width, height: image.height, normalizedPNG: png)
                 frames.append(Frame(image: imported, requestedSeconds: request.projectSeconds,
                     sourceRequestedSeconds: time.seconds, mapping: mapping, actualSeconds: result.actualTime.seconds,
-                    durationSeconds: duration.seconds))
+                    durationSeconds: duration.seconds, metadata: metadata))
                 await Task.yield()
             }
             return frames
