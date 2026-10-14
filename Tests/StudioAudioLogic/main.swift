@@ -181,6 +181,131 @@ func near(_ a: Float, _ b: Float, _ tolerance: Float = 0.01) -> Bool { abs(a - b
             pass("library sound credits resolve by digest and refuse mismatched or untrusted attribution")
         }
 
+        // 7. Transport seconds <-> ticks survive the binary floating-point round trip (#180).
+        do {
+            typealias T = StudioAudioTransport
+            var naiveMisses = 0
+            for fps in [1, 8, 12, 15, 23, 24, 25, 29, 30, 48, 50, 59, 60, 120] {
+                let total = 216_000
+                for tick in 0..<total {
+                    let seconds = T.seconds(atTick: tick, fps: fps)
+                    if Int((seconds * Double(fps)).rounded(.down)) != tick { naiveMisses += 1 }
+                    guard T.tick(atSeconds: seconds, fps: fps, totalTicks: total) == tick else {
+                        throw TestFailure(message: "Boundary tick \(tick) at \(fps) FPS mapped to another tick")
+                    }
+                    if tick > 0, T.tick(atSeconds: seconds - 1.0 / 48_000, fps: fps, totalTicks: total) != tick - 1 {
+                        throw TestFailure(message: "One sample before tick \(tick) at \(fps) FPS did not stay in the previous tick")
+                    }
+                    if T.tick(atSeconds: (Double(tick) + 0.5) / Double(fps), fps: fps, totalTicks: total) != tick {
+                        throw TestFailure(message: "Mid-tick time left tick \(tick) at \(fps) FPS")
+                    }
+                    let safe = T.floorSafeSeconds(seconds, fps: fps)
+                    if Int((safe * Double(fps)).rounded(.down)) != tick || safe < seconds || safe - seconds > 1e-9 {
+                        throw TestFailure(message: "Floor-safe time for tick \(tick) at \(fps) FPS is wrong or moved too far")
+                    }
+                }
+            }
+            try require(naiveMisses > 0, "The floor-only conversion is expected to miss some boundaries (e.g. tick 123 at 15 FPS)")
+            try require(Int((T.seconds(atTick: 123, fps: 15) * 15).rounded(.down)) == 122
+                        && T.tick(atSeconds: T.seconds(atTick: 123, fps: 15), fps: 15, totalTicks: 1000) == 123,
+                        "Known 15 FPS boundary is corrected")
+            try require(T.tick(atSeconds: 1e9, fps: 24, totalTicks: 48) == 48 && T.tick(atSeconds: -1, fps: 24, totalTicks: 48) == 0
+                        && T.tick(atSeconds: .nan, fps: 24, totalTicks: 48) == 0 && T.tick(atSeconds: 1, fps: 0, totalTicks: 48) == 0,
+                        "Out-of-range and invalid times clamp instead of inventing ticks")
+            pass("transport seconds and ticks round-trip at every frame boundary for 14 frame rates over 216000 ticks (floor-only misses \(naiveMisses))")
+        }
+
+        // 8. Frame clock agrees with the linear exposure walk for every tick.
+        do {
+            let holds = [1, 2, 3, 6, 1, 12, 24, 1, 1, 60, 5, 7]
+            guard let clock = StudioAudioTransport.FrameClock(fps: 24, frameTicks: holds) else { throw TestFailure(message: "Valid clock rejected") }
+            func linear(_ tick: Int) -> Int {
+                var remaining = max(0, tick)
+                for (index, ticks) in holds.enumerated() {
+                    if remaining < ticks { return index }
+                    remaining -= ticks
+                }
+                return holds.count - 1
+            }
+            try require(clock.totalTicks == holds.reduce(0, +) && clock.frameCount == holds.count, "Totals")
+            for tick in -2...(clock.totalTicks + 3) {
+                try require(clock.frameIndex(atTick: tick) == linear(tick), "Frame clock disagrees at tick \(tick)")
+            }
+            for index in holds.indices {
+                try require(clock.frameIndex(atSeconds: clock.startSeconds(ofFrame: index)) == index, "Frame \(index) start resolves to another frame")
+            }
+            try require(StudioAudioTransport.FrameClock(fps: 24, frameTicks: []) == nil && StudioAudioTransport.FrameClock(fps: 0, frameTicks: [1]) == nil
+                        && StudioAudioTransport.FrameClock(fps: 24, frameTicks: [1, 0]) == nil, "Invalid clocks are refused")
+            pass("frame clock binary search matches the canonical exposure walk and every frame start")
+        }
+
+        // 9. Audio-clock drift stays bounded over long playback; loops and seeks
+        // re-anchor, clock skew is corrected in bounded steps and a stuck output is reported.
+        do {
+            let bound = StudioAudioDriftMonitor.bound(fps: 24)
+            try require(abs(bound - 1.0 / 24) < 1e-12 && StudioAudioDriftMonitor.bound(fps: 1) == 1.0 / 12
+                        && StudioAudioDriftMonitor.bound(fps: 240) == 1.0 / 120, "Bound is one frame clamped to 1/120...1/12 s")
+            let clock = StudioAudioTransport.FrameClock(fps: 24, frameTicks: Array(repeating: 1, count: 24 * 1200))
+            // 20 minutes at a 60 Hz display clock, player position quantized to 10 ms output buffers.
+            var long = StudioAudioDriftMonitor(bound: bound, frameClock: clock)
+            for step in 0..<72_000 {
+                let host = Double(step) / 60
+                long.observe(host: host, player: (host * 100).rounded(.down) / 100)
+            }
+            try require(long.report.samples == 71_999 && long.report.driftCorrections == 0 && long.report.discontinuities == 0
+                        && !long.report.stalled && long.report.maximumDrift <= 0.010_001 && long.report.maximumFrameError <= 1,
+                        "Long playback drift: \(long.report)")
+            // A loop every 7 s re-anchors without counting as drift.
+            var loops = StudioAudioDriftMonitor(bound: bound)
+            for step in 0..<3600 {
+                let host = Double(step) / 60
+                loops.observe(host: host, player: host.truncatingRemainder(dividingBy: 7))
+            }
+            try require(loops.report.discontinuities == 8 && loops.report.driftCorrections == 0 && !loops.report.stalled, "Loops: \(loops.report)")
+            // 0.1% clock skew over ten minutes is corrected in bounded steps.
+            var skew = StudioAudioDriftMonitor(bound: bound)
+            for step in 0..<36_000 {
+                let host = Double(step) / 60
+                skew.observe(host: host, player: host * 1.001)
+            }
+            try require((13...15).contains(skew.report.driftCorrections) && skew.report.maximumDrift < bound + 0.000_1, "Skew: \(skew.report)")
+            // A player that claims to play but stops advancing is a stall within one second.
+            var stuck = StudioAudioDriftMonitor(bound: bound)
+            var stalledAt: Double?
+            for step in 0..<480 {
+                let host = Double(step) / 60
+                if stuck.observe(host: host, player: min(host, 5)) == .stalled { stalledAt = host; break }
+            }
+            try require(stalledAt.map { (6.0...6.02).contains($0) } == true && stuck.report.stalled, "Stall not reported: \(String(describing: stalledAt))")
+            stuck.reset()
+            try require(stuck.report == StudioAudioDriftMonitor.Report() && stuck.observe(host: 0, player: 0) == .anchored, "Reset")
+            pass("audio-clock drift stays within one frame over 20 minutes; loops, skew corrections and stalls are measured")
+        }
+
+        // 10. Audible scrub requests coalesce to the newest position and never leave the timeline.
+        do {
+            var planner = StudioAudioScrubPlanner()
+            guard case .start(let first) = planner.request(time: 1, timelineDuration: 10) else { throw TestFailure(message: "First scrub did not start") }
+            try require(first.start == 1 && abs(first.end - 1.15) < 1e-9 && planner.inFlight, "Grain range \(first)")
+            try require(planner.request(time: 2, timelineDuration: 10) == .queued && planner.request(time: 3, timelineDuration: 10) == .queued
+                        && planner.pending == 3, "Requests while preparing keep only the newest")
+            guard case .start(let next) = planner.finished(timelineDuration: 10) else { throw TestFailure(message: "Queued scrub did not start") }
+            try require(next.start == 3 && planner.pending == nil, "Newest queued position starts next")
+            try require(planner.finished(timelineDuration: 10) == .ignored && !planner.inFlight, "Nothing queued")
+            guard case .start = planner.request(time: 4, timelineDuration: 10) else { throw TestFailure(message: "Scrub after idle refused") }
+            try require(planner.request(time: 5, timelineDuration: 10) == .queued, "Second request queues")
+            planner.clearPending()
+            try require(planner.inFlight && planner.pending == nil && planner.finished(timelineDuration: 10) == .ignored,
+                        "Stopping keeps the in-flight grain accounted for and drops queued positions")
+            guard case .start(let tail) = planner.request(time: 9.95, timelineDuration: 10) else { throw TestFailure(message: "Tail scrub refused") }
+            try require(tail.end <= 10 && tail.length > 0, "Grain is clipped to the timeline end")
+            planner.cancel()
+            try require(planner.request(time: 10, timelineDuration: 10) == .ignored && planner.request(time: .nan, timelineDuration: 10) == .ignored
+                        && planner.request(time: -0.1, timelineDuration: 10) == .ignored && !planner.inFlight, "Outside positions are ignored")
+            try require(StudioAudioScrubPlanner(grainSeconds: 5).grainSeconds == 0.5 && StudioAudioScrubPlanner(grainSeconds: 0).grainSeconds == 0.05, "Grain bounds")
+            pass("audible scrub planner coalesces to the newest position inside the timeline")
+        }
+
         print("STUDIO_AUDIO_LOGIC=PASS groups=\(groups)")
     }
     static func require2<T>(_ value: T?) throws -> T {
