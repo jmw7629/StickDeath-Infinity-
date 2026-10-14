@@ -9,6 +9,8 @@
 # grants intact, and no plaintext secret-looking value in the dump. It exercises the
 # procedure, not the live project: production backups are the host's managed
 # backups and must be rehearsed there by the owner with the same checks.
+# It also confirms that the audit append-only guard, the closed legacy messaging
+# surface and the credential slots (references only) survive the restore.
 # Usage: scripts/backend/verify_backup.sh [--keep]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -86,6 +88,15 @@ echo "== grants intact: anon=0 service-only=$SVC_FN"
 ENTITLED="$("${PSQL[@]}" -d restored -tA -c "select count(*) from sdi_private.entitlements")"
 [ "$ENTITLED" = "1" ] || { echo "Entitlement view did not come back ($ENTITLED)" >&2; exit 1; }
 echo "== fixture entitlement readable after restore"
+UNGUARDED="$("${PSQL[@]}" -d restored -tA -c "select sdi_private.audit_integrity_report()->>'unguarded'")"
+AUDITS="$("${PSQL[@]}" -d restored -tA -c "select jsonb_array_length(sdi_private.audit_integrity_report()->'tables')")"
+[ "$UNGUARDED" = "0" ] || { echo "Audit tables without the append-only guard after restore: $UNGUARDED" >&2; exit 1; }
+echo "== append-only guard intact on $AUDITS audit tables"
+EXPOSED="$("${PSQL[@]}" -d restored -tA -c "select sdi_private.legacy_communication_exposure()::text")"
+[ "$EXPOSED" = '{"functions": [], "relations": []}' ] || { echo "Client-reachable legacy messaging objects after restore: $EXPOSED" >&2; exit 1; }
+echo "== no client-reachable legacy messaging or calling objects"
+SLOTS="$("${PSQL[@]}" -d restored -tA -c "select count(*)||' slots, '||count(*) filter(where store_ref is not null)||' with a stored reference' from sdi_private.credential_slots")"
+echo "== credential slots restored ($SLOTS; values live only in the secret store, never in this dump)"
 if "$PGBIN/pg_restore" -l "$DUMP" | grep -qiE 'password|secret'; then echo "Dump catalogue mentions password/secret objects" >&2; exit 1; fi
 if strings "$DUMP" | grep -qE 'sk_live|sk_test|whsec_|-----BEGIN'; then echo "Dump contains credential-shaped text" >&2; exit 1; fi
 echo "== no credential-shaped content in the dump"

@@ -1,9 +1,15 @@
 // ═══════════════════════════════════════════════════════════════════
 // SubscriptionView — Settings → Subscription
 //
-// Contract: docs/BILLING_CONTRACT.md
-// - Shows only real StoreKit data: product display prices once loaded,
-//   and the current entitlement from Apple's signed transaction.
+// Contract: docs/BILLING_CONTRACT.md (#259)
+// - Renders `StripeService.billing` (the StoreKit state machine in
+//   BillingPlanCatalog.swift) through `BillingCopy`: plan, renewal or
+//   cancellation date, grace/billing retry, pending, revoked, server
+//   verification state and Spatter prompt allowance.
+// - Prices are Apple's `Product.displayPrice`; trial copy appears only when
+//   the App Store reports an eligible free-trial offer. Annual plans appear
+//   only when the build configuration enables them.
+// - Manage/cancel opens Apple's subscription sheet; restore runs AppStore.sync.
 // - No simulated purchase, no invented renewal date, no hard-coded price.
 // - This view is compiled but not mounted anywhere yet.
 // ═══════════════════════════════════════════════════════════════════
@@ -13,8 +19,11 @@ import StoreKit
 
 struct SubscriptionView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     @StateObject private var store = StripeService.shared
     @State private var showPurchase = false
+    @State private var showManage = false
+    @State private var period: BillingPeriod = .monthly
     @State private var selectedProductID: String?
     @State private var purchaseError: String?
 
@@ -30,9 +39,11 @@ struct SubscriptionView: View {
                         .foregroundColor(.secondary)
                         .font(.title3)
                 }
+                .accessibilityLabel(showPurchase ? "Back to subscription" : "Close")
                 Text(showPurchase ? "Choose Plan" : "Subscription")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(.white)
+                    .accessibilityAddTraits(.isHeader)
                 Spacer()
             }
             .padding()
@@ -46,6 +57,11 @@ struct SubscriptionView: View {
         }
         .background(Color(hex: "0A0A14"))
         .navigationBarHidden(true)
+        .manageSubscriptionsSheet(isPresented: $showManage)
+        .onChange(of: showManage) { _, presented in
+            // Apple's sheet may have cancelled or changed the plan.
+            if !presented { Task { await store.refreshEntitlements() } }
+        }
         .task {
             if store.productLoadState == .notLoaded {
                 await store.loadProducts()
@@ -54,17 +70,28 @@ struct SubscriptionView: View {
         }
     }
 
-    // MARK: - Current plan (real entitlement only)
+    // MARK: - Current plan (state machine only)
+
+    private var status: (title: String, detail: String) {
+        BillingCopy.status(store.billing, catalog: store.catalog, locale: locale, timeZone: .current)
+    }
+
+    private var currentPlan: BillingPlanDefinition? {
+        if let entitlement = store.billing.activeEntitlement {
+            return store.catalog.plan(forProductID: entitlement.productID)
+        }
+        return store.catalog.plans.first { $0.tier == .free }
+    }
 
     var currentPlanView: some View {
         ScrollView {
             VStack(spacing: 16) {
                 statusCard
 
-                if let notice = store.reconciliationNotice {
-                    Text(notice)
+                if let message = store.billing.message {
+                    Text(message)
                         .font(.system(size: 11))
-                        .foregroundColor(.orange)
+                        .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                 }
 
@@ -73,6 +100,10 @@ struct SubscriptionView: View {
                         .font(.system(size: 11))
                         .foregroundColor(.red)
                         .multilineTextAlignment(.center)
+                }
+
+                if let plan = currentPlan {
+                    entitlementList(plan)
                 }
 
                 Button(action: { showPurchase = true }) {
@@ -85,21 +116,20 @@ struct SubscriptionView: View {
                         .cornerRadius(12)
                 }
 
+                if isSubscribed {
+                    Button(action: { showManage = true }) {
+                        secondaryLabel("Manage or Cancel Subscription")
+                    }
+                }
+
                 Button(action: {
                     Task { await store.restorePurchases() }
                 }) {
-                    Text(store.isProcessing ? "Restoring..." : "Restore Purchases")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(14)
-                        .background(Color.white.opacity(0.06))
-                        .cornerRadius(12)
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.1)))
+                    secondaryLabel(store.isProcessing ? "Restoring..." : "Restore Purchases")
                 }
                 .disabled(store.isProcessing)
 
-                Text("Billed by Apple through the App Store. Manage or cancel in Settings → Apple ID → Subscriptions. Projects stay on this device.")
+                Text(BillingCopy.manageNote)
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -108,84 +138,95 @@ struct SubscriptionView: View {
         }
     }
 
-    private var isSubscribed: Bool {
-        if case .active = store.subscriptionStatus { return true }
-        return false
+    private var isSubscribed: Bool { store.billing.activeEntitlement != nil }
+
+    private func secondaryLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13))
+            .foregroundColor(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(14)
+            .background(Color.white.opacity(0.06))
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.1)))
     }
 
-    @ViewBuilder
     private var statusCard: some View {
-        switch store.subscriptionStatus {
-        case .active(let entitlement):
-            VStack(spacing: 8) {
-                Text(planName(for: entitlement.productID))
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(.white)
-                Text("Active")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.green)
+        VStack(spacing: 8) {
+            Text(status.title)
+                .font(.system(size: 20, weight: .bold))
+                .foregroundColor(.white)
+            Text(status.detail)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            if let entitlement = store.billing.activeEntitlement {
                 if let product = store.availableProducts.first(where: { $0.id == entitlement.productID }) {
-                    Text("\(product.displayPrice)/month")
+                    Text(BillingCopy.price(product.displayPrice, period: entitlement.period))
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
                 }
-                Text("Purchased \(entitlement.purchaseDate.formatted(date: .abbreviated, time: .omitted))")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                if let expiration = entitlement.expirationDate {
-                    Text("Current period ends \(expiration.formatted(date: .abbreviated, time: .omitted))")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
+                Text(BillingCopy.server(store.billing.server))
+                    .font(.system(size: 10))
+                    .foregroundColor(.orange)
+                    .multilineTextAlignment(.center)
                 Text("Transaction \(entitlement.transactionID)")
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(.secondary)
             }
-            .frame(maxWidth: .infinity)
-            .padding()
-            .background(Color.white.opacity(0.04))
-            .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
-
-        case .pending:
-            infoCard(title: "Purchase pending",
-                     detail: "Apple is waiting for approval (for example Ask to Buy). The plan activates when Apple confirms it.")
-
-        case .none:
-            infoCard(title: "No active subscription",
-                     detail: "You are using the free Studio. Nothing is billed.")
-        }
-    }
-
-    private func infoCard(title: String, detail: String) -> some View {
-        VStack(spacing: 8) {
-            Text(title)
-                .font(.system(size: 20, weight: .bold))
-                .foregroundColor(.white)
-            Text(detail)
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding()
         .background(Color.white.opacity(0.04))
         .cornerRadius(12)
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
+        .accessibilityElement(children: .combine)
     }
 
-    private func planName(for productID: String) -> String {
-        if let product = store.availableProducts.first(where: { $0.id == productID }) {
-            return product.displayName.isEmpty ? productID : product.displayName
+    private func entitlementList(_ plan: BillingPlanDefinition) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Your plan includes")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.white)
+            ForEach(plan.entitlements, id: \.text) { entitlement in
+                entitlementRow(entitlement)
+            }
+            // The server has no prompt count to report yet, so nothing is invented.
+            Text(BillingCopy.prompts(plan.promptAllowance, remaining: nil))
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            if plan.entitlements.contains(where: { !$0.isLive }) {
+                Text("* " + BillingCopy.pendingEntitlementNote)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
         }
-        switch StoreProductID.tier(for: productID) {
-        case .creator: return "Creator (monthly)"
-        case .pro:     return "Pro (monthly)"
-        case .free, .studio: return productID
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color.white.opacity(0.04))
+        .cornerRadius(12)
+    }
+
+    private func entitlementRow(_ entitlement: BillingEntitlement) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: entitlement.isLive ? "checkmark" : "clock")
+                .font(.system(size: 10))
+                .foregroundColor(entitlement.isLive ? .green : .secondary)
+                .accessibilityHidden(true)
+            Text(entitlement.text + (entitlement.isLive ? "" : " *"))
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(entitlement.isLive ? entitlement.text : "\(entitlement.text), pending")
     }
 
     // MARK: - Plans (real StoreKit products only)
+
+    private var periodProducts: [Product] {
+        let ids = Set(store.catalog.plans(for: period).compactMap(\.productID))
+        return store.availableProducts.filter { ids.contains($0.id) && store.plan(for: $0)?.period == period }
+    }
 
     var purchaseView: some View {
         ScrollView {
@@ -209,7 +250,15 @@ struct SubscriptionView: View {
                         .foregroundColor(.white)
 
                 case .loaded:
-                    ForEach(store.availableProducts, id: \.id) { product in
+                    if store.catalog.periods.count > 1 {
+                        Picker("Billing period", selection: $period) {
+                            Text("Monthly").tag(BillingPeriod.monthly)
+                            Text("Annual").tag(BillingPeriod.annual)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    ForEach(periodProducts, id: \.id) { product in
                         productRow(product)
                     }
 
@@ -230,7 +279,7 @@ struct SubscriptionView: View {
                             .cornerRadius(12)
                             .opacity(store.isProcessing || selectedProduct == nil ? 0.6 : 1.0)
                     }
-                    .disabled(store.isProcessing || selectedProduct == nil)
+                    .disabled(store.isProcessing || selectedProduct == nil || !store.billing.canStartPurchase)
                 }
 
                 VStack(spacing: 2) {
@@ -238,9 +287,10 @@ struct SubscriptionView: View {
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
-                    Text("Cancel anytime in Settings → Apple ID → Subscriptions")
+                    Text("Subscriptions renew automatically until cancelled in Apple subscription settings.")
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
                 }
                 .padding(.top, 8)
             }
@@ -250,36 +300,35 @@ struct SubscriptionView: View {
 
     private var selectedProduct: Product? {
         guard let id = selectedProductID else { return nil }
-        return store.availableProducts.first { $0.id == id }
+        return periodProducts.first { $0.id == id }
     }
 
     private var subscribeLabel: String {
         guard let product = selectedProduct else { return "Select a plan" }
-        return "Subscribe — \(product.displayPrice)/month"
+        return "Subscribe — " + BillingCopy.price(product.displayPrice, period: period)
     }
 
     private func productRow(_ product: Product) -> some View {
         let isSelected = selectedProductID == product.id
+        let plan = store.plan(for: product)
         return Button(action: { selectedProductID = product.id }) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(product.displayName.isEmpty ? product.id : product.displayName)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(plan.map(BillingCopy.planTitle) ?? product.displayName)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white)
-                    if !product.description.isEmpty {
-                        Text(product.description)
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                Spacer()
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text(product.displayPrice)
-                        .font(.system(size: 20, weight: .heavy))
+                    Spacer()
+                    Text(BillingCopy.price(product.displayPrice, period: period))
+                        .font(.system(size: 15, weight: .heavy))
                         .foregroundColor(.white)
-                    Text("/month")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                }
+                if let trial = store.trialCopy(for: product) {
+                    Text(trial)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.green)
+                }
+                if let plan {
+                    ForEach(plan.entitlements, id: \.text) { entitlementRow($0) }
                 }
             }
             .padding()
@@ -290,6 +339,7 @@ struct SubscriptionView: View {
                     .stroke(isSelected ? Color.red : Color.white.opacity(0.06), lineWidth: 2)
             )
         }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func notConfiguredCard(detail: String) -> some View {
@@ -317,6 +367,9 @@ struct SubscriptionView: View {
             showPurchase = false
         } catch StripeService.PaymentError.cancelled {
             // User backed out of Apple's sheet; nothing to report.
+        } catch StripeService.PaymentError.pending {
+            // Ask to Buy: the status card explains it; nothing was billed.
+            showPurchase = false
         } catch {
             purchaseError = error.localizedDescription
         }

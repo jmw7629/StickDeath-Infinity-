@@ -7,6 +7,10 @@ struct StudioBrushRenderer {
     static let maximumInputPoints = 100_000
     static let maximumDabs = 8_192
     static let maximumMarks = 65_536
+    /// Airbrush dwell dabs per second at Build-up 100%, and the most extra
+    /// dabs one held position can add; beyond that the soft rings saturate.
+    static let buildupDabsPerSecond = 60.0
+    static let maximumBuildupDabsPerPosition = 64
 
     struct Mark: Equatable {
         enum Shape: Equatable { case ellipse, rectangle }
@@ -19,11 +23,14 @@ struct StudioBrushRenderer {
         let opacity: Double
         let gradientEndColor: StudioBrushColor?
         let brightCore: Bool
+        /// Neon with Additive glow: the finished stroke composites plus-lighter.
+        let additiveGlow: Bool
         let sampledPointCount: Int
         let seed: UInt64
         let bounds: CGRect
         fileprivate init(marks: [Mark], settings: StudioBrushSettings, count: Int, seed: UInt64) {
             self.marks = marks; opacity = settings.opacity; brightCore = settings.family == .neon
+            additiveGlow = settings.family == .neon && settings.additiveGlow
             gradientEndColor = settings.family == .gradient ? settings.gradientEndColor : nil
             sampledPointCount = count; self.seed = seed
             var footprint = CGRect.null
@@ -41,6 +48,7 @@ struct StudioBrushRenderer {
         var speed: Double?
         var distance: Double = 0
         var tilt: StudioPencilTilt? = nil
+        var time: Double? = nil
     }
     private struct Random {
         var state: UInt64
@@ -97,17 +105,25 @@ struct StudioBrushRenderer {
                 let dx = Double(point.x - points[index - 1].x), dy = Double(point.y - points[index - 1].y)
                 speed = min(1_000_000, hypot(dx, dy) / (time - before))
             }
-            filtered.append(Sample(x: x, y: y, pressure: Double(point.pressure ?? 1), speed: speed, tilt: point.tilt))
+            filtered.append(Sample(x: x, y: y, pressure: Double(point.pressure ?? 1), speed: speed, tilt: point.tilt,
+                                   time: point.timestamp))
             previousX = x; previousY = y
         }
         // Smoothing never drops the exact final input position.
         if let end = points.last, previousX != Double(end.x) || previousY != Double(end.y) {
-            filtered.append(Sample(x: Double(end.x), y: Double(end.y), pressure: Double(end.pressure ?? 1), speed: filtered.last?.speed, tilt: end.tilt))
+            filtered.append(Sample(x: Double(end.x), y: Double(end.y), pressure: Double(end.pressure ?? 1), speed: filtered.last?.speed, tilt: end.tilt,
+                                   time: end.timestamp))
         }
         var dabs = [filtered[0]], totalDistance = 0.0, nextDistance = spacing
+        // Airbrush build-up: measured elapsed time owes dabs at a fixed rate.
+        // Dabs already placed by spacing pay that debt, so quick strokes are
+        // unchanged and only dwelling/slow motion accumulates extra paint.
+        let buildupRate = settings.family == .airbrush ? settings.buildup * buildupDabsPerSecond : 0
+        var buildupDebt = 0.0, extraAtPosition = 0, buildupAnchor = 0.0
         for index in 1..<filtered.count {
             if index % 256 == 0 { try checkCancellation() }
             let a = filtered[index - 1], b = filtered[index]
+            let dabsBeforeSegment = dabs.count
             let length = hypot(b.x - a.x, b.y - a.y)
             guard totalDistance + length <= Double(maximumDabs - 1) * spacing else {
                 throw StudioBrushError.workLimit("The stroke exceeds the 8,192-dab rendering budget; split it into shorter strokes.")
@@ -126,6 +142,25 @@ struct StudioBrushRenderer {
                     pressure: a.pressure + (b.pressure - a.pressure) * t, speed: b.speed, distance: nextDistance,
                     tilt: a.tilt.flatMap { first in b.tilt.map { first.interpolated(to: $0, fraction: t) } }))
                 nextDistance += spacing
+            }
+            if buildupRate > 0, let start = a.time, let finish = b.time, finish > start {
+                // The per-position cap restarts once the nozzle has moved half
+                // a brush width; slow drags keep accumulating along the path.
+                if totalDistance + length - buildupAnchor >= settings.size * 0.5 {
+                    extraAtPosition = 0; buildupAnchor = totalDistance + length
+                }
+                buildupDebt = max(0, buildupDebt + (finish - start) * buildupRate - Double(dabs.count - dabsBeforeSegment))
+                while buildupDebt >= 1 {
+                    buildupDebt -= 1
+                    // Paint beyond saturation has no visible effect; keep
+                    // the debt bounded instead of failing a long hold.
+                    guard extraAtPosition < maximumBuildupDabsPerPosition else { buildupDebt = 0; break }
+                    guard dabs.count < maximumDabs else {
+                        throw StudioBrushError.workLimit("The airbrush build-up exceeds the rendering budget; split it into shorter strokes.")
+                    }
+                    var held = b; held.distance = totalDistance + length; dabs.append(held)
+                    extraAtPosition += 1
+                }
             }
             totalDistance += length
         }
@@ -169,6 +204,20 @@ struct StudioBrushRenderer {
                     let diameter = size * (0.015 + settings.grain * 0.045)
                     try mark(.ellipse, dab.x + cos(angle)*radius, dab.y + sin(angle)*radius,
                         diameter, diameter, 0, 0.12 + settings.texture * 0.2)
+                }
+                if settings.bleed > 0 {
+                    // Bleed: faint seeded blooms whose centres sit near or past
+                    // the brush edge, so wet pigment creeps outward irregularly.
+                    // Drawn after the historical marks, so Bleed 0 keeps the
+                    // exact previous random sequence and pixels.
+                    for _ in 0..<4 {
+                        let angle = random.unit() * .pi * 2
+                        let radius = size * (0.4 + settings.bleed * (0.25 + random.unit() * 0.35))
+                        let diameter = size * (0.25 + settings.bleed * 0.35) * (0.6 + random.unit() * 0.4)
+                        try mark(.ellipse, dab.x + cos(angle)*radius, dab.y + sin(angle)*radius,
+                            diameter, diameter * (0.55 + random.unit() * 0.45), random.unit() * .pi,
+                            0.012 + settings.bleed * 0.028)
+                    }
                 }
             case .neon:
                 // Colored halo and a bright narrow core use the same geometry in
@@ -242,11 +291,16 @@ struct StudioBrushRenderer {
         guard !geometry.marks.isEmpty else { return }
         context.saveGState(); defer { context.restoreGState() }
         context.clip(to: geometry.bounds)
+        // The finished stroke composites with this mode; every mark inside
+        // the layers below still draws normally.
+        if geometry.additiveGlow { context.setBlendMode(.plusLighter) }
         // The outer layer preserves the caller's opacity/blend state. The
         // inner layer applies brush opacity once, despite overlapping dabs.
         context.beginTransparencyLayer(auxiliaryInfo: nil)
+        context.setBlendMode(.normal)
         context.setAlpha(opacity)
         context.beginTransparencyLayer(auxiliaryInfo: nil)
+        context.setBlendMode(.normal)
         context.setFillColorSpace(colorSpace)
         for mark in geometry.marks {
             let tint = mixed(color, geometry.brightCore ? StudioBrushColor(red: 1, green: 1, blue: 1, alpha: color.alpha) : geometry.gradientEndColor, mark.colorMix)
@@ -266,7 +320,9 @@ struct StudioBrushRenderer {
         guard !geometry.marks.isEmpty else { return }
         var group = context; group.opacity *= opacity
         group.clip(to: Path(geometry.bounds))
+        if geometry.additiveGlow { group.blendMode = .plusLighter }
         group.drawLayer { local in
+            local.blendMode = .normal
             for mark in geometry.marks {
                 let tint = mixed(color, geometry.brightCore ? StudioBrushColor(red: 1, green: 1, blue: 1, alpha: color.alpha) : geometry.gradientEndColor, mark.colorMix)
                 var stamp = local; stamp.opacity *= mark.opacity

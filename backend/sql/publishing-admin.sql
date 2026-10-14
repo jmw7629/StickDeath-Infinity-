@@ -69,3 +69,25 @@ create function public.sdi_publishing_admin(action text,job uuid default null,re
 revoke all on function public.sdi_publishing_admin(text,uuid,bigint,text,integer) from public,anon;
 grant execute on function public.sdi_publishing_admin(text,uuid,bigint,text,integer) to authenticated;
 commit;
+
+-- Stored failure reasons stay free of secrets whichever worker writes them (#245).
+-- Workers already store fixed sentences; this guard removes links (signed or
+-- session URLs), bearer values and credential-looking parameters before the
+-- reason reaches the creator's status or the admin list.
+begin;
+create function sdi_private.safe_failure(reason text) returns text
+language sql immutable set search_path='' as $$
+ select case when reason is null then null else left(btrim(
+  regexp_replace(regexp_replace(regexp_replace(reason,
+   '[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+','[link removed]','g'),
+   'bearer[[:space:]]+[^[:space:]]+','[credential removed]','gi'),
+   '\m(access_token|refresh_token|id_token|token|secret|password|api_key|apikey|key|signature|sig|code)[[:space:]]*[=:][[:space:]]*[^[:space:]&,;]+',
+   '\1=[removed]','gi')),500) end
+$$;
+revoke all on function sdi_private.safe_failure(text) from public,anon,authenticated;
+create function sdi_private.publish_job_safe_failure() returns trigger language plpgsql security definer set search_path='' as $$
+begin new.last_error=sdi_private.safe_failure(new.last_error); return new; end $$;
+revoke all on function sdi_private.publish_job_safe_failure() from public,anon,authenticated;
+create trigger publish_job_safe_failure before insert or update of last_error on sdi_private.publish_jobs
+for each row execute function sdi_private.publish_job_safe_failure();
+commit;

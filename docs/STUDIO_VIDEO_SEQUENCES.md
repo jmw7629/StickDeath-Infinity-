@@ -12,3 +12,21 @@ This is a bounded editable reference sequence, not a linked movie track. Re-extr
 
 - Exports never render reference layers: `StudioDocument.hidingReferenceLayers` hides layers flagged `isReference` before PNG, GIF and MP4 rendering and before the mixed-MP4 capture proof. The flag is a `Models.swift`/`StudioViewModel.swift` change (the "Video reference" layer created by `attachImportedImageSequence` must set it) that belongs to the model owner; the export side is in place.
 - Still open, truthfully: the imported movie is not copied into project media (#199) and the trim/speed mapping used for a reference sequence or an extracted soundtrack is not persisted in the project (#200, #201); the extraction itself, orientation handling, bounded decode and the Files/Photos permission and cancel paths exist. The rotoscope panel copy continues to say the movie is not copied.
+
+## Measured metadata (wave 4, #199/#200)
+
+`StudioVideoFrameImportService.Metadata` holds properties measured with AVFoundation from the owned copy:
+
+- duration and file size
+- natural and oriented size
+- right-angle rotation and mirroring from the preferred transform
+- nominal frame rate and shortest frame duration
+- a variable-frame-rate flag: shortest frame more than 1% off nominal
+- audio-track presence
+
+Every extracted `Frame` carries it. `inspect(from:)` returns the same values without decoding a frame, under the same limits, deadline, cancellation and owned-copy cleanup. Absent values stay nil or zero, and nothing is estimated from the file name. The macOS suite checks these values against the generated fixtures (96×64; rotated 90° to 64×96; no audio) and checks inspection against extraction. Native run deferred.
+
+Still open, outside this change's file ownership:
+
+- Showing `metadata.summary` in the Rotoscope preview notice needs a one-line change in `StudioImageImportSession` (the notice for a single extracted frame).
+- Retaining the movie in the project, persisting the mapping and setting the `isReference` layer flag are model and view-model changes. Until then the panel copy still says the movie is not copied.

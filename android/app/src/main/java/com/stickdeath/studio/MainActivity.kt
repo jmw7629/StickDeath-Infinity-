@@ -37,11 +37,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import com.stickdeath.studio.diagnostics.DiagnosticsSettingsSection
+import com.stickdeath.studio.diagnostics.DiagnosticsStore
 
 class MainActivity : ComponentActivity() {
     private val studio: StudioViewModel by viewModels()
+    private val account: com.stickdeath.studio.connect.AccountViewModel by viewModels()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) handleAuthCallback(intent)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xffff343f)), typography = studioTypography) {
                 Surface(Modifier.fillMaxSize()) { StudioApp(studio) }
@@ -49,6 +53,16 @@ class MainActivity : ComponentActivity() {
         }
     }
     override fun onStop() { studio.stopScenePlayback(); studio.save(); super.onStop() }
+    override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handleAuthCallback(intent) }
+    /** Only the app's own OAuth redirect is handled; the in-memory PKCE verifier makes it single-use. */
+    private fun handleAuthCallback(received: android.content.Intent?) {
+        val intent = received ?: return
+        val data = intent.data ?: return
+        if (data.scheme == "stickdeath" && data.host == "auth" && data.path == "/callback") {
+            account.completeOAuth(data.toString())
+            intent.data = null
+        }
+    }
 }
 
 @Composable private fun StudioApp(vm: StudioViewModel) {
@@ -745,7 +759,7 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
 @Composable private fun SpatterPanel(vm: StudioViewModel, doc: Document, enabled: Boolean) {
     var instruction by remember(doc.id) { mutableStateOf("") }
     val parsed = remember(instruction) { runCatching { SpatterCommandBridge.parse(instruction) } }
-    Text("Spatter runs one complete instruction from this fixed grammar on your open project, as one Undo step. ${AndroidIdentity.currentState().summary} Free-form requests, generation and daily drafts are unavailable on Android.")
+    Text("Spatter runs one complete instruction from this fixed grammar on your open project, as one Undo step. Free-form cloud guidance appears below when configured and signed in; generation and daily drafts are unavailable on Android.")
     OutlinedTextField(instruction, { instruction = it.take(1024) }, label = { Text("Instruction") }, maxLines = 3, modifier = Modifier.fillMaxWidth(), enabled = enabled)
     if (instruction.isNotBlank()) Text(parsed.fold({ "Will: ${SpatterCommandBridge.describe(it)}" }, { it.message ?: "Unsupported instruction." }))
     Button({
@@ -755,12 +769,12 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
     if (vm.message.isNotEmpty()) Text(vm.message)
     Text("Examples (tap to fill)")
     SpatterCommandBridge.examples.forEach { example -> TextButton({ instruction = example }) { Text(example) } }
+    com.stickdeath.studio.connect.SpatterCloudSection()
 }
 
 /** Honest connection state, local notification preferences and local crash diagnostics. */
 @Composable private fun AccountPanel(vm: StudioViewModel) {
-    val session = remember { AndroidIdentity.currentState() }
-    Text(session.summary)
+    com.stickdeath.studio.connect.ConnectedAccountSection()
     Text(BackendContract.IDENTITY)
     Text("Planned server contract: ${BackendContract.rpcs.size} member RPCs across " +
         BackendArea.entries.filter { BackendContract.rpcs(it).isNotEmpty() }.joinToString { "${it.label} (${BackendContract.rpcs(it).size})" } +
@@ -788,6 +802,8 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
     Text("${reports.size} local crash report(s). Reports are redacted (no names, paths, project contents or identifiers), kept at most 30 days / five files, and never uploaded. No analytics SDK is installed.")
     reports.firstOrNull()?.let { latest -> Text(vm.readCrashReport(latest).lineSequence().take(12).joinToString("\n"), style = MaterialTheme.typography.bodySmall) }
     if (reports.isNotEmpty()) TextButton({ vm.deleteCrashReports() }) { Text("Delete local crash reports") }
+    val diagnosticsContext = LocalContext.current
+    DiagnosticsSettingsSection(remember { DiagnosticsStore(diagnosticsContext) })
 }
 
 private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, radius: Float): List<Pair<String, Point>> {

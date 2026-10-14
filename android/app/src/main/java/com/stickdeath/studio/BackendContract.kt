@@ -1,9 +1,10 @@
 package com.stickdeath.studio
 
-/** Offline description of the server contract the Android client will speak once the owner
- * configures identity providers and the backend candidates in `backend/sql/` are applied. Nothing
- * here opens a connection: the manifest declares no INTERNET permission, so every connected
- * feature reports [SessionState.NotConfigured] honestly instead of inventing data. */
+/** Description of the server contract the Android client speaks (see the `connect` package for the
+ * GoTrue session, PostgREST gateway, feed/profile/Rooms clients and Spatter transport). Nothing
+ * here opens a connection. Unless the owner supplies public Supabase values at build time the
+ * merged manifest declares no INTERNET permission and every connected feature reports
+ * [SessionState.NotConfigured] honestly instead of inventing data. */
 enum class BackendArea(val label: String) {
     Identity("Account"), Feed("Video feed"), Rooms("Rooms"), WarRoom("War Room"), Challenges("Challenges"),
     Achievements("Badges"), Profile("Profile"), Billing("Subscription"), Support("Support"),
@@ -21,6 +22,8 @@ object BackendContract {
     /** Client-facing RPCs only (service-role workers and admin consoles stay server/web side). */
     val rpcs: List<BackendRpc> = listOf(
         BackendRpc("sdi_feed_action", BackendArea.Feed, "video-feed.sql", BackendAccess.Member, "Approved-video wall pages, likes, follows, blocks and reports."),
+        BackendRpc("sdi_feed_page", BackendArea.Feed, "feed-integrity.sql", BackendAccess.Member, "Keyset approved-video wall pages."),
+        BackendRpc("sdi_creator_stats", BackendArea.Feed, "feed-integrity.sql", BackendAccess.Member, "Counted creator totals."),
         BackendRpc("sdi_room_action", BackendArea.Rooms, "room-invitations.sql", BackendAccess.Member, "Invitation codes, consent, approval, rotation, revocation and membership."),
         BackendRpc("sdi_room_manage", BackendArea.Rooms, "rooms-v2.sql", BackendAccess.Member, "Shared project reference, title, view/edit permission and member roles."),
         BackendRpc("sdi_room_command", BackendArea.Rooms, "rooms-v2.sql", BackendAccess.Member, "Versioned shared edit commands with conflict responses."),
@@ -62,10 +65,12 @@ sealed class SessionState {
 }
 
 object AndroidIdentity {
-    /** Providers the owner has configured for Android; none until credentials are provisioned privately. */
-    val configuredProviders: Set<IdentityProvider> = emptySet()
-    /** The manifest declares no network permission, so no provider can be contacted. */
-    const val NETWORK_PERMISSION_DECLARED = false
+    /** Providers the owner configured for this build (BuildConfig); none by default. */
+    val configuredProviders: Set<IdentityProvider>
+        get() = com.stickdeath.studio.connect.BackendConfig.parseProviders(BuildConfig.SDI_OAUTH_PROVIDERS)
+            .map { IdentityProvider.valueOf(it.title) }.toSet()
+    /** True only for builds given public Supabase values; the default build declares no network permission. */
+    val NETWORK_PERMISSION_DECLARED: Boolean get() = BuildConfig.SDI_NETWORK_DECLARED
     fun currentState(configured: Set<IdentityProvider> = configuredProviders, network: Boolean = NETWORK_PERMISSION_DECLARED): SessionState = when {
         !network -> SessionState.NotConfigured("this build declares no network access, so sign-in, feed, Rooms, War Room, challenges, billing and Spatter cloud assistance are unavailable.")
         configured.isEmpty() -> SessionState.NotConfigured("no identity provider is configured for Android yet.")

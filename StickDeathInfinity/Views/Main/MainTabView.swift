@@ -66,6 +66,10 @@ struct MainTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sdiCommunityOpenStudio)) { _ in
             withAnimation(.easeInOut(duration: 0.15)) { activeTab = .studio }
         }
+        // Returning from a room's shared project re-selects the Rooms tab.
+        .onReceive(NotificationCenter.default.publisher(for: .sdiCommunityReturnToRoom)) { _ in
+            withAnimation(.easeInOut(duration: 0.15)) { activeTab = .rooms }
+        }
     }
 
     // MARK: - Bottom Nav Bar

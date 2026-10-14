@@ -232,6 +232,13 @@ jobs:
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
+            StickDeathInfinity/Services/Project/StudioPortableBundleFormat.swift \
+            StickDeathInfinity/Services/Project/StudioPortableBundleInventory.swift \
+            StickDeathInfinity/Services/Project/StudioPortableImportLedger.swift \
+            StickDeathInfinity/Services/Storage/StudioStorageBudget.swift \
+            StickDeathInfinity/Services/Storage/StudioStorageCleanup.swift \
+            Tests/StudioStorageManagement/DeviceDataLifecycle.swift \
             Tests/StudioStorageManagement/main.swift \
             -o "$RUNNER_TEMP/sdi-storage-management-tests"
           "$RUNNER_TEMP/sdi-storage-management-tests"
@@ -810,6 +817,17 @@ jobs:
             Tests/StudioFillRegion/main.swift \
             -o "$RUNNER_TEMP/sdi-fill-region-tests"
           "$RUNNER_TEMP/sdi-fill-region-tests"
+      - name: Verify gradient fill, selection masks, wand regions and element hit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
+            Tests/StudioPixelTools/main.swift \
+            -o "$RUNNER_TEMP/sdi-pixel-tools-tests"
+          "$RUNNER_TEMP/sdi-pixel-tools-tests"
       - name: Verify deterministic native brush geometry and actual pixels
         shell: bash
         run: |
@@ -1722,9 +1740,45 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
+            StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift \
             Tests/SpatterPlanner/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-planner-tests"
           "$RUNNER_TEMP/sdi-spatter-planner-tests"
+      - name: Verify six quick-share destinations and format choices
+        shell: bash
+        run: |
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Views/Studio/Panels/StudioQuickShareDestinations.swift \
+            Tests/StudioQuickShare/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-quick-share"
+          timeout 60s "$RUNNER_TEMP/sdi-studio-quick-share"
+      - name: Verify billing plan catalogue, StoreKit state machine and plan copy
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
+            Tests/BillingPlans/main.swift \
+            -o "$RUNNER_TEMP/sdi-billing-plans-tests"
+          "$RUNNER_TEMP/sdi-billing-plans-tests"
+      - name: Verify opt-in diagnostics contract, queue and uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/Diagnostics/DiagnosticsReport.swift \
+            StickDeathInfinity/Services/Diagnostics/DiagnosticsQueue.swift \
+            StickDeathInfinity/Services/Diagnostics/DiagnosticsUploader.swift \
+            StickDeathInfinity/Services/Diagnostics/DiagnosticsMetricKit.swift \
+            Tests/Diagnostics/main.swift \
+            -o "$RUNNER_TEMP/sdi-diagnostics-tests"
+          "$RUNNER_TEMP/sdi-diagnostics-tests"
+      - name: Scan release sources for credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/backend/test_scan_release_secrets.py
+          python3 scripts/backend/scan_release_secrets.py
       - name: Verify cancellable Studio edits and factual persistence state
         shell: bash
         run: |

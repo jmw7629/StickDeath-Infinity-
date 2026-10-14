@@ -173,6 +173,77 @@ enum SpatterCloudPrompt {
     }
 }
 
+// MARK: - Grounded local help (#207)
+
+/// One source a local help answer is grounded in. Current guides are verified
+/// against the shipping build; creative and historical modules are reference
+/// material only and are labelled so they are never mistaken for capability.
+struct SpatterHelpSource: Equatable {
+    enum Kind: String {
+        case currentGuide = "Current Studio guide"
+        case creativeReference = "Creative reference"
+        case historicalReference = "Historical reference (not proof of a shipping feature)"
+    }
+    let kind: Kind
+    let id: String
+    let title: String
+    var citation: String { "\(kind.rawValue): \(title) [\(id)]" }
+}
+
+/// Foundation-only grounding helpers for the local guide: ranking over active
+/// modules only, a citation footer and the honest "I don't know" answer.
+enum SpatterGroundedHelp {
+    /// Words that carry no topic. Kept identical to the local guide's ranking.
+    static let stopWords: Set<String> = ["a", "an", "the", "i", "my", "me", "to", "how", "do", "does", "can", "you",
+                                         "please", "is", "and", "of", "for", "with", "in", "it", "what"]
+    /// Minimum score for a module to count as grounding. A single body-only
+    /// word match (score 1) is too weak to cite; it yields "I don't know".
+    static let minimumScore = 3
+
+    /// Active (non-retired) modules ranked for a query; bounded work for any input.
+    static func rankedModules(for query: String, limit: Int = 3) -> [(module: SpatterKnowledgeModule, score: Int)] {
+        let tokens = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }
+            .map(String.init).filter { $0.count > 1 && !stopWords.contains($0) }.prefix(32))
+        guard !tokens.isEmpty, limit > 0 else { return [] }
+        let ranked = SpatterKnowledgeBase.activeModules.compactMap { module -> (module: SpatterKnowledgeModule, score: Int)? in
+            let title = module.title.lowercased(), summary = module.summary.lowercased()
+            let body = module.knowledge.joined(separator: " ").lowercased()
+            let score = tokens.reduce(0) { $0 + (title.contains($1) ? 5 : 0) + (summary.contains($1) ? 3 : 0) + (body.contains($1) ? 1 : 0) }
+            return score >= minimumScore ? (module: module, score: score) : nil
+        }.sorted { $0.score == $1.score ? $0.module.id < $1.module.id : $0.score > $1.score }
+        return Array(ranked.prefix(limit))
+    }
+
+    /// Historical/creative sources for a query, never including retired modules.
+    static func sources(for query: String, creativeIDs: Set<String> = [], limit: Int = 2) -> [SpatterHelpSource] {
+        rankedModules(for: query, limit: limit).map { item in
+            SpatterHelpSource(kind: creativeIDs.contains(item.module.id) ? .creativeReference : .historicalReference,
+                              id: item.module.id, title: String(item.module.title.prefix(120)))
+        }
+    }
+
+    /// "Sources:" footer appended to a local answer. Empty input yields an
+    /// explicit "no verified source" line rather than an invented citation.
+    static func sourcesFooter(_ sources: [SpatterHelpSource], guideVersion: String) -> String {
+        guard !sources.isEmpty else {
+            return "Sources: none. No verified guide or bundled module covers this (guide \(guideVersion))."
+        }
+        var seen = Set<String>()
+        let lines = sources.filter { seen.insert($0.id).inserted }.prefix(4).map { "• " + $0.citation }
+        return "Sources (guide \(guideVersion)):\n" + lines.joined(separator: "\n")
+    }
+
+    /// The honest answer when nothing verified covers a question. It escalates
+    /// to the user's support route without claiming a ticket, account access,
+    /// refunds or any action was taken.
+    static func unknownAnswer(projectLine: String, guideVersion: String) -> String {
+        "💀 \(projectLine)I don't know. Nothing in the current Studio guide or the bundled modules answers this, and I won't guess. "
+            + "If a control is missing or fails, keep your project and report the exact message through the support route available to you. "
+            + "I cannot inspect your account, issue refunds, open a support ticket or change anything from this conversation.\n\n"
+            + sourcesFooter([], guideVersion: guideVersion) + "\nGuidance only; no project changes were made."
+    }
+}
+
 // The preserved module tables remain members of SpatterKnowledgeBase.
 extension SpatterKnowledgeBase {
 

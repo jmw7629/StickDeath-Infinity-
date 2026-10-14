@@ -24,6 +24,10 @@ struct ExportPanel: View {
     @State private var separateLayers = false
     @State private var shareRequest: StudioExportShareRequest?
     @State private var saveRequest: StudioImageExportFileRequest?
+    /// Six configurable quick-share shortcuts (#242); persisted per device.
+    @State private var quickShare = StudioQuickShareConfiguration.load()
+    @State private var quickShareNote: String?
+    @State private var customizingQuickShare = false
 
     private var supportedFormat: StudioExportService.Format? {
         switch vm.exportFormat {
@@ -223,6 +227,7 @@ struct ExportPanel: View {
                         exportDestination("📤", "Share via system sheet",
                             "After an export is ready, Share hands the files to the iOS share sheet. Save to Files, Photos (for MP4/GIF) or any installed app that accepts them. Studio does not post to TikTok, YouTube or Instagram itself.")
                             .accessibilityIdentifier("studio.export.share-explanation")
+                        quickShareSection(proxy: proxy)
                     }
                     Text("No watermark is added. Files are named after the project (ASCII letters, digits, '-' and '_'; otherwise \"animation\"). PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC with library sound credits in its manifest. GIF uses reduced colors, a white background and no audio. Video reference layers are never exported.")
                         .font(.specialElite(10))
@@ -270,6 +275,97 @@ struct ExportPanel: View {
             Text(notice).foregroundColor(.white.opacity(0.75))
                 .font(.specialElite(11))
                 .accessibilityIdentifier("studio.export.status")
+        }
+    }
+
+    /// Six shortcuts that prepare the right rendered file and hand it to the iOS
+    /// share sheet (#242). They never post, upload or claim delivery.
+    @ViewBuilder private func quickShareSection(proxy: ScrollViewProxy) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("QUICK SHARE")
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(quickShare.slots) { destination in
+                    Button { runQuickShare(destination, proxy: proxy) } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: destination.symbol).font(.system(size: 16))
+                            Text(destination.title).font(.specialElite(10)).lineLimit(1).minimumScaleFactor(0.7)
+                            Text(quickShare.file(for: destination).label).font(.specialElite(8)).foregroundColor(.white.opacity(0.5))
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08)))
+                    }
+                    .accessibilityLabel("Quick share to \(destination.title)")
+                    .accessibilityIdentifier("studio.export.quick-share.\(destination.rawValue)")
+                }
+            }
+            if let quickShareNote {
+                Text(quickShareNote)
+                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.75))
+                    .accessibilityIdentifier("studio.export.quick-share.note")
+            }
+            DisclosureGroup(isExpanded: $customizingQuickShare) {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(0..<StudioQuickShareConfiguration.slotCount, id: \.self) { slot in
+                        let destination = quickShare.slots[slot]
+                        VStack(alignment: .leading, spacing: 4) {
+                            Picker("Shortcut \(slot + 1)", selection: Binding(
+                                get: { quickShare.slots[slot] },
+                                set: { quickShare.assign($0, toSlot: slot); quickShare.save() })) {
+                                ForEach(StudioQuickShareDestination.allCases) { Text($0.title).tag($0) }
+                            }
+                            .pickerStyle(.menu)
+                            if destination.acceptedFiles.count > 1 {
+                                Picker("File for \(destination.title)", selection: Binding(
+                                    get: { quickShare.file(for: destination) },
+                                    set: { quickShare.setPreferredFile($0, for: destination); quickShare.save() })) {
+                                    ForEach(destination.acceptedFiles, id: \.self) { Text($0.label).tag($0) }
+                                }
+                                .pickerStyle(.segmented)
+                            }
+                        }
+                    }
+                    Button("Restore default shortcuts") { quickShare.reset(); quickShare.save(); quickShareNote = nil }
+                        .font(.specialElite(11))
+                        .accessibilityIdentifier("studio.export.quick-share.reset")
+                    Text("Choices stay on this device. A shortcut prepares the rendered file and opens the iOS share sheet; the app you pick there does the posting. Direct posting from Studio is not available.")
+                        .font(.specialElite(9)).foregroundColor(.white.opacity(0.5))
+                }
+                .padding(.top, 6)
+            } label: {
+                Text("Customize shortcuts").font(.specialElite(11))
+            }
+            .tint(.white)
+            .accessibilityIdentifier("studio.export.quick-share.customize")
+        }
+        .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#12121a")))
+    }
+
+    private func runQuickShare(_ destination: StudioQuickShareDestination, proxy: ScrollViewProxy) {
+        var ready: Set<StudioQuickShareFile> = []
+        if movie.session.output != nil { ready.insert(.mp4) }
+        if gif.session.output != nil { ready.insert(.gif) }
+        if session.output != nil && session.previewImage != nil { ready.insert(.png) }
+        let plan = StudioQuickSharePlan.plan(for: destination, configuration: quickShare, ready: ready)
+        guard !(session.isRunning || session.isSharing || movie.isBusy || gif.isBusy) else {
+            quickShareNote = "Wait for the current export or share to finish, then use \(destination.title) again."
+            return
+        }
+        quickShareNote = plan.instruction
+        let anchor: String?
+        switch plan.file {
+        case .mp4: vm.exportFormat = .mp4; anchor = "studio.export.movie.result"
+        case .gif: vm.exportFormat = .gif; anchor = "studio.export.gif.result"
+        case .png:
+            if vm.exportFormat != .spritesheet { vm.exportFormat = .png }
+            anchor = nil
+        }
+        guard case .share(let file, _) = plan else { return }
+        if file == .png {
+            // The PNG files are owned by this panel's session: hand them over now.
+            shareExport()
+        } else if let anchor {
+            // The MP4/GIF Share button lives with its result; bring it into view.
+            DispatchQueue.main.async { withAnimation { proxy.scrollTo(anchor, anchor: .top) } }
         }
     }
 

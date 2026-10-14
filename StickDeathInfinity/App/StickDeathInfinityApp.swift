@@ -81,6 +81,7 @@ struct StickDeathInfinityApp: App {
     var body: some Scene {
         WindowGroup {
             AppFlowView()
+                .task { DiagnosticsRuntime.shared.start() }
                 .environmentObject(authVM)
                 .environmentObject(themeVM)
                 .environmentObject(spatterVM)

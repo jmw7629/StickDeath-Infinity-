@@ -1,9 +1,12 @@
 # Crash reporting and product diagnostics design (#291)
 
-Status 2026-10-13: **design only**. Nothing in this document is implemented; no diagnostics are
-collected by the iOS, Android or web source today, and no vendor SDK is added by this design
-(owner policy: no new paid services, no third-party analytics, nothing that can capture drawings,
-prompts, credentials or project contents).
+Status 2026-10-14: the opt-in counter pipeline is implemented in source; see
+`docs/DIAGNOSTICS.md` for the contract, retention and verification state. Where this design and
+that document differ (counters only, no stack frames; no account hash in stored rows; 90-day day
+rows, 35-day receipts), `docs/DIAGNOSTICS.md` is authoritative. Product analytics beyond the
+`app_launch` counter remain design only. No vendor SDK is added (owner policy: no new paid
+services, no third-party analytics, nothing that can capture drawings, prompts, credentials or
+project contents).
 
 ## Principles
 

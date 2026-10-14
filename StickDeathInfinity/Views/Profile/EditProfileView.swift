@@ -48,6 +48,13 @@ struct EditProfileView: View {
                             .buttonStyle(CommunitySecondaryButtonStyle())
                             .disabled(avatarUploading || isSaving || capture == nil)
                             .accessibilityIdentifier("profile.edit.avatar-picker")
+                            if currentAvatarURL != nil || avatarPreview != nil {
+                                Button(role: .destructive) { Task { await removeAvatar() } } label: {
+                                    Label("Remove avatar", systemImage: "trash").frame(minHeight: 44)
+                                }
+                                .disabled(avatarUploading || isSaving || capture == nil)
+                                .accessibilityIdentifier("profile.edit.avatar-remove")
+                            }
                             Text("Square JPEG up to \(AvatarImagePolicy.maximumSide) px and \(AvatarImagePolicy.maximumBytes / 1024) KB, stored under your account only. The original photo stays on this device.")
                                 .communityCaption()
                         }
@@ -116,6 +123,24 @@ struct EditProfileView: View {
     }
     private var currentAvatarURL: URL? { CommunityMediaURL.checked(authVM.user?.avatarURL) }
     private func invalidate() { capture = nil; saveTask?.cancel() }
+
+    @MainActor private func removeAvatar() async {
+        guard !avatarUploading, let captured = capture else { return }
+        avatarUploading = true; avatarNotice = nil
+        defer { avatarUploading = false }
+        do {
+            let result = try await AvatarUploadService.remove(account: captured.userID)
+            guard capture == captured else { return }
+            avatarPreview = nil
+            switch result {
+            case .removed: avatarNotice = "Avatar updated: removed from your profile and storage."
+            case .profileClearedFileRetained: avatarNotice = "Avatar updated: removed from your profile. The stored file could not be deleted; your next avatar upload replaces it."
+            }
+        } catch {
+            guard capture == captured else { return }
+            avatarNotice = (error as? LocalizedError)?.errorDescription ?? "The avatar was not changed."
+        }
+    }
 
     @MainActor private func uploadAvatar(_ item: PhotosPickerItem) async {
         guard !avatarUploading, let captured = capture else { return }

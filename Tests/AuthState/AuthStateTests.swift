@@ -596,6 +596,39 @@ import Supabase
         XCTAssertNil(AuthFixtureTransport.deletionRow, "A refused request must not have been stored")
         XCTAssertNotNil(service.currentUser, "Deletion flows must not sign the account out or delete anything client-side")
     }
+
+    func testAccountExportReturnsServerBytesAndReportsRefusals() async throws {
+        do {
+            _ = try await AuthService().exportAccountData()
+            XCTFail("Export without an account claimed success")
+        } catch AuthService.AuthError.notAuthenticated { }
+
+        let (service, _, transport, _, _) = try await profileFixture()
+        defer { transport.invalidateAndCancel() }
+        AuthFixtureTransport.resetLifecycle()
+        let data = try await service.exportAccountData()
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual((object["consents"] as? [Any])?.count, 1, "The server document is returned unmodified")
+        XCTAssertEqual(object["note"] as? String, "Editable projects and originals stay on your device and are not stored or exported by the service.")
+        XCTAssertEqual(AuthFixtureTransport.lifecycleActions, ["export"])
+
+        // The file is written with complete protection into its own folder and named by UTC date.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("auth-export-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = try AuthService.writeAccountExport(data, now: ISO8601DateFormatter().date(from: "2026-10-14T23:30:00Z")!, directory: directory)
+        XCTAssertEqual(url.lastPathComponent, "stickdeath-account-export-2026-10-14.json")
+        XCTAssertEqual(try Data(contentsOf: url), data)
+        XCTAssertNotEqual(url.deletingLastPathComponent().standardizedFileURL, directory.standardizedFileURL, "Each export gets its own removable folder")
+
+        // The daily limit and other refusals are surfaced verbatim; nothing is returned.
+        AuthFixtureTransport.lifecycleRefusal = "Three exports per day. Try again later."
+        do {
+            _ = try await service.exportAccountData()
+            XCTFail("Refused export returned data")
+        } catch AuthService.AuthError.accountOperationRefused(let reason) {
+            XCTAssertEqual(reason, "Three exports per day. Try again later.")
+        }
+    }
 }
 private final class AuthFixtureStorage: AuthLocalStorage, @unchecked Sendable {
     private let lock = NSLock()
@@ -721,6 +754,10 @@ private final class AuthFixtureTransport: URLProtocol {
                 }
                 Self.lifecycleRow = nil
                 respond(200, ["status": "cancelled"])
+            case "export":
+                respond(200, ["generated_at": "2026-10-14T23:30:00.123456+00:00",
+                              "note": "Editable projects and originals stay on your device and are not stored or exported by the service.",
+                              "account": ["id": "fixture"], "consents": [["policy": "terms", "version": "terms-v1"]], "push_devices": []])
             default:
                 respond(200, ["error": "Unsupported account operation."])
             }
