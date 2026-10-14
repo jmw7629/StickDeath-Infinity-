@@ -1,5 +1,39 @@
 # StickDeath Infinity product website source
 
+Rebuilt on 2026-10-14 for `https://stickdeathinfinity.com/` (the address the owner named; hosting and
+DNS remain owner actions, see `docs/WEBSITE_HOSTING.md`). Static and buildless: open `index.html`
+locally or serve the folder. Zero third-party requests, no analytics, no trackers, no storage.
+
+## Pages (2026-10-14)
+
+| Page | Purpose | Indexable |
+| --- | --- | --- |
+| `index.html` | Home: hero with an original six-frame flipbook illustration, tool marquee, Studio overview with real captures, numbers read from the source, Spatter, Community, platform status, pricing status, help desk, support summary, data & trust | yes |
+| `studio.html` | Studio tour: project creation, the 30-tool catalogue, brushes, selections, layers and blend modes, frames and timing, sound, pictures and rotoscope, Spatter, export | yes |
+| `community.html` | Rooms, War Room, feed and challenges, publishing permissions, accounts, each with a built / needs-owner-backend / deliberately-not-built legend | yes |
+| `screens.html` | 30 real simulator captures grouped by area, each labelled with its source revision | yes |
+| `play.html` + `play.js` | Browser flipbook toy: up to 12 frames, pen/eraser, swatches, onion skin, undo, playback 2–24 fps, GIF (own LZW writer) and PNG spritesheet downloads; keyboard drawing; nothing stored or uploaded | yes |
+| `404.html`, `account.html`, `admin.html`, `policies/*` | unchanged roles; new navigation chrome | no |
+
+Captures in `screens/` are single frames from the CI UI-journey screen recordings (artifact
+`native-studio-39f29cb…-1-0`, run 38516791084, source `39f29cb`, 2026-10-14; `welcome.webp` from
+`30e90cf`; `audio.webp`, `grid.webp`, `shapes.webp`, `rooms.webp` from `960241f`, 2026-10-12),
+downscaled to 480 px WebP. Every caption carries the revision. Nothing is a mock-up.
+
+Numbers on the pages were read from the source on 2026-10-14: 30 `DrawingTool` cases, 13 brush
+families (`StudioBrush.swift`), 18 blend modes (`StudioCraftLayers.swift`), 2,127 sounds
+(`StudioSounds/catalogue.json`), 207 + 1,818 pictures (`StudioImages/*.json`), 4 export formats,
+plans Creator USD 4.99 and Pro USD 9.99 monthly from `docs/BILLING_CONTRACT.md` (planned, not on sale).
+
+Checks: `node scripts/website/check_help.mjs --check`, `node scripts/website/build_site.mjs --check`,
+`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node scripts/website/a11y_perf.mjs`. The harness now also
+audits the four new pages and runs a flipbook journey on `play.html` (stroke, duplicate, add, play,
+GIF and PNG downloads). Measured results are in `docs/WEBSITE_INVENTORY.md` §6.
+
+---
+
+## History before the rebuild
+
 Local-only, buildless product/help implementation for issues #270/#272. Open `index.html` locally or serve this directory later with the team's approved static host. No dependencies, bundling or framework setup are required. No existing public marketing/review site, hosting configuration or audience was changed.
 
 Implemented: responsive home/product/platform/pricing-status sections, accessible expanding mobile navigation and keyboard focus, searchable category-filtered help with direct article fragments, real browser-local problem-summary download, data-use explanation and license links. No fabricated downloads, prices, user counts, testimonials, account state or ticket submission. No chat/calls, analytics, SDKs, provider calls, project uploads or persistent browser storage.

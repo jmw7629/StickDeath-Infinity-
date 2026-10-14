@@ -2,7 +2,7 @@
 (() => {
   const menu = document.querySelector('.menu');
   const nav = document.querySelector('#navigation');
-  const compact = matchMedia('(max-width:580px)');
+  const compact = matchMedia('(max-width:700px)');
   // Menu/nav visibility is CSS-driven per viewport (styles.css), so this script never changes layout on load.
   const expanded = () => menu.getAttribute('aria-expanded') === 'true';
   function setExpanded(open) { menu.setAttribute('aria-expanded', String(open)); nav.classList.toggle('open', open); }
@@ -10,10 +10,17 @@
   nav.addEventListener('click', event => { if (event.target.closest('a') && compact.matches) setExpanded(false); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && compact.matches && expanded()) { setExpanded(false); menu.focus(); } });
   compact.addEventListener('change', () => setExpanded(false));
+  // Hero flipbook frame counter (index.html only). Fixed-width text, so no layout shift.
+  const counter = document.querySelector('.flipbook .counter b');
+  if (counter && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const frames = Number(counter.dataset.frames) || 6; let frame = 0;
+    setInterval(() => { frame = (frame + 1) % frames; counter.textContent = String(frame + 1).padStart(2, '0'); }, 200);
+  }
   const input = document.querySelector('#query');
   const results = document.querySelector('#help-results');
   const count = document.querySelector('#help-count');
   const filters = [...document.querySelectorAll('[data-filter]')];
+  if (!input || !results) return; // pages without the help desk stop here
   let category = 'all';
   // Articles come from help/articles.json through help/help-data.js and help.js.
   const articles = window.STUDIO_HELP || [];
@@ -66,6 +73,7 @@
   });
   render();routeHelp();
   const supportForm = document.querySelector('#support-form');
+  if (!supportForm) return;
   const supportStatus = document.querySelector('#support-status');
   const supportReview = document.querySelector('#support-review');
   const supportPreview = document.querySelector('#support-preview');

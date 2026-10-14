@@ -9,13 +9,14 @@
 //     (inline links inside running text exempt, as in WCAG 2.5.8), exactly one h1 and no skipped
 //     heading levels, main/nav/header landmarks, img alt, labelled form controls, visible focus
 //     outline on the first Tab stop, text contrast ≥4.5:1 (≥3:1 for large text)
-//   * index.html: skip link → #main, menu aria-expanded + Escape (compact viewports),
+//   * index.html: skip link → #main, menu aria-expanded + Escape (compact viewports ≤700px),
+//   * play.html: pointer drawing changes the canvas, Add frame + Duplicate + Play/Stop, GIF and PNG downloads fire download events,
 //     help search "lasso" (expected count computed from help/articles.json), filter aria-pressed,
 //     every #help/<id> fragment opens and focuses its topic, support form validation → Review →
 //     Download event → clipboard → Reset
 //   * reducedMotion: 'reduce' → scroll-behavior auto; javaScriptEnabled: false → noscript shown
 //   * perf via CDP at 390×844: Slow-4G (150 ms RTT, ~1.6 Mbps down) and 4× CPU throttle;
-//     LCP, CLS, request count and transfer bytes against budgets: total ≤250 KB, requests ≤8,
+//     LCP, CLS, request count and transfer bytes against budgets: total ≤420 KB, requests ≤12,
 //     LCP ≤2.5 s, CLS ≤0.05
 // Exit code 1 on any failure. Numbers printed are measured in this run, nothing is estimated.
 
@@ -44,10 +45,13 @@ const site = path.join(repo, 'website');
 const jsonIndex = process.argv.indexOf('--json');
 const jsonOut = jsonIndex > -1 ? process.argv[jsonIndex + 1] : null;
 
-const PAGES = ['index.html', '404.html', 'screens.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
+const PAGES = ['index.html', 'studio.html', 'community.html', 'screens.html', 'play.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
 const VIEWPORTS = [{ name: '320x640', width: 320, height: 640 }, { name: '390x844', width: 390, height: 844 }, { name: '1440x900', width: 1440, height: 900 }];
-const BUDGET = { bytes: 250_000, requests: 8, lcpMs: 2500, cls: 0.05 };
-const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
+// 2026-10-14 rebuild: the home page shows real captures (lazy WebP) and the unmodified
+// Special Elite TTF stays at 166 KB, so the transfer and request budgets moved from
+// 250 KB / 8 to 420 KB / 12. LCP and CLS budgets are unchanged.
+const BUDGET = { bytes: 420_000, requests: 12, lcpMs: 2500, cls: 0.05 };
+const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
 
 const results = [];
 const measurements = {};
@@ -180,7 +184,7 @@ async function indexBehaviour(context, base, viewport, articles) {
   const afterSkip = await page.evaluate(() => ({ hash: location.hash, activeIsMain: document.activeElement === document.querySelector('#main') }));
   record('skip link is first Tab stop, visible, targets #main and focuses main', skip.isSkip && skip.visible && skip.href === '#main' && afterSkip.hash === '#main' && afterSkip.activeIsMain, JSON.stringify({ ...skip, ...afterSkip }), scope);
   // Menu (compact only).
-  const compact = viewport.width <= 580;
+  const compact = viewport.width <= 700;
   const menu = page.locator('.menu');
   if (compact) {
     const hiddenBefore = await menu.isHidden();
@@ -289,6 +293,29 @@ async function main() {
       await indexBehaviour(context, base, viewport, articles);
       await context.close();
     }
+    // play.html: the browser flipbook draws, adds frames, plays and downloads.
+    const playContext = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
+    const playPage = await playContext.newPage();
+    const playErrors = []; playPage.on('pageerror', (e) => playErrors.push(String(e))); playPage.on('console', (m) => { if (m.type() === 'error') playErrors.push(m.text()); });
+    await playPage.goto(base + 'play.html', { waitUntil: 'load' });
+    const paper = playPage.locator('#play-canvas'); const box = await paper.boundingBox();
+    const before = await playPage.evaluate(() => document.querySelector('#play-canvas').toDataURL().length);
+    await playPage.mouse.move(box.x + box.width * 0.3, box.y + box.height * 0.3); await playPage.mouse.down();
+    await playPage.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.6, { steps: 12 }); await playPage.mouse.up();
+    const after = await playPage.evaluate(() => document.querySelector('#play-canvas').toDataURL().length);
+    record('play: pointer stroke changes the canvas', after !== before, `${before} → ${after} data-URL chars`, 'play.html@390x844');
+    await playPage.click('#play-duplicate'); await playPage.click('#play-add');
+    const label = await playPage.locator('#play-frame-label').textContent();
+    record('play: duplicate + add frame → frame 3 of 3', label.trim() === 'Frame 3 of 3', label.trim(), 'play.html@390x844');
+    await playPage.click('#play-toggle'); const playingText = await playPage.locator('#play-toggle').textContent();
+    await playPage.click('#play-toggle'); const stoppedText = await playPage.locator('#play-toggle').textContent();
+    record('play: Play toggles to Stop and back', playingText.trim() === 'Stop' && stoppedText.trim() === 'Play', `${playingText.trim()} / ${stoppedText.trim()}`, 'play.html@390x844');
+    const gif = await Promise.all([playPage.waitForEvent('download', { timeout: 15000 }).catch(() => null), playPage.click('#play-gif')]);
+    record('play: GIF download fires', Boolean(gif[0]) && gif[0].suggestedFilename().endsWith('.gif'), gif[0] ? gif[0].suggestedFilename() : 'no download', 'play.html@390x844');
+    const png = await Promise.all([playPage.waitForEvent('download', { timeout: 15000 }).catch(() => null), playPage.click('#play-png')]);
+    record('play: PNG spritesheet download fires', Boolean(png[0]) && png[0].suggestedFilename().endsWith('.png'), png[0] ? png[0].suggestedFilename() : 'no download', 'play.html@390x844');
+    record('play: no page errors during the flipbook journey', playErrors.length === 0, playErrors.join(' | ').slice(0, 300), 'play.html@390x844');
+    await playContext.close();
     // Missing path serves 404.html with status 404.
     const probe = await browser.newContext(); const probePage = await probe.newPage();
     const response = await probePage.goto(base + 'does-not-exist.html');

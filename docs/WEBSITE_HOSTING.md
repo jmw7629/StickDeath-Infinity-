@@ -1,15 +1,17 @@
 # Website hosting, domain, deployment and rollback (#269)
 
-Status 2026-10-13: no hosting project, DNS record or deployment configuration exists in this
-repository, and the production domain is **not verified** (owner gate). This document fixes the
-procedure so the first deployment is reversible; it does not claim any deployment happened.
+Status 2026-10-14: the owner named the production address, `https://stickdeathinfinity.com/`, and the
+pages now declare it as their canonical origin (`scripts/website/site_constants.mjs`). No hosting
+project, DNS record or deployment configuration exists in this repository yet, and no deployment has
+happened. The Vercel account connected to the workspace holds no project or domain for it (checked
+2026-10-14). This document fixes the procedure so the first deployment is reversible.
 
 ## What exists and is preserved
 
 | Item | State | Rule |
 | --- | --- | --- |
 | Website source | `website/` (static, buildless, zero third-party requests) | the only source of truth; generated files (`help-data.js`, `robots.txt`, `sitemap.xml`, `policies/attribution.html`, `og-card.png`) are rebuilt by `scripts/website/*.mjs` |
-| Canonical base | `scripts/website/site_constants.mjs` (`https://stickdeath-infinity.invalid/`) | `.invalid` cannot resolve, so a stray deployment can never pass for the live address; change it only after the domain is verified, then run `node scripts/website/build_site.mjs` |
+| Canonical base | `scripts/website/site_constants.mjs` (`https://stickdeathinfinity.com/`) | set on 2026-10-14 from the owner's instruction; `node scripts/website/build_site.mjs` rewrites every self-URL, `robots.txt` and `sitemap.xml` from it |
 | Owner-only review deployment (V59) | external host, source `e0ac4fe`, outside this repository | leave untouched; it is reference evidence, not the product site, and its link stays off public pages |
 | Design reference (`sd-infinity-preview`) | moved to the owner's Mac SSD | owner keeps a private manifest (path, SHA-256, capture date) per `docs/OPERATING_RUNBOOK.md`; historical messaging, pricing and sample metrics in it are reference only |
 
