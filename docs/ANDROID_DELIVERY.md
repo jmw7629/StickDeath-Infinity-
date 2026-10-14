@@ -14,8 +14,8 @@ Native Kotlin was selected for direct touch/stylus, Canvas, MediaCodec, AudioTra
 | Studio assets | Reuses licensed native sound and image bundles; local favorites/recent imports; source credits in imported artwork/clips | Optional native image-pack parity, complete device decoding and rights/update acceptance |
 | Audio/media | Bounded WAV/compressed audio import (300 s cap within the 4 MiB source budget) and mixing; one video still at the animation playhead | Full video tracks, trim/orientation/timing, audio extraction, voice recording and device media acceptance |
 | Sharing | Files exports with iOS-layout manifests, transparent PNG option, `.sdi` export of the supported subset; rendered-file Sharesheet | Receiving-app and URI lifetime acceptance; direct destination services and official-channel publication remain separate |
-| Identity and Spatter | `BackendContract`/`SessionState` scaffolds with an honest "not connected" account panel; local `SpatterCommandBridge` grammar (the iOS instruction sentences) applied through document history | Secure native sign-in/session restoration, authenticated provider transport, grounded assistance and generation (owner-configured providers; no INTERNET permission yet) |
-| Social and collaboration | No invented feed/rooms/users; the member RPC catalogue is described offline and cross-checked against `backend/sql` | Authorized video feed, opt-in shared-project rooms, War Room and optional profile statistics using the same server contracts as iOS |
+| Identity and Spatter | `connect/` package: Supabase GoTrue email, guest and PKCE OAuth (Apple/Google/GitHub/Microsoft when configured) with Keystore-encrypted session restore and refresh; Spatter cloud transport to the owner's provider-neutral backend; local `SpatterCommandBridge` grammar unchanged. Unconfigured builds stay network-free and say so | Owner-supplied public project values and provider setup; live end-to-end journeys against a test backend; grounded assistance context and generation; MFA/admin stays on iOS/web |
+| Social and collaboration | `FeedClient` (wall pages, like/follow/block/report), `ProfileClient` (records, badges, portfolio, export permission) and `RoomsClient` (invitation preview, consented admission request, owner-side invite/approve/remove/leave/close) over the same RPCs as iOS; Account panel shows the wall, own records and join-by-code | Challenges, War Room voting, shared-project command sync, room owner screens and live acceptance against a test backend |
 | Billing, notifications, admin | No live charges, push delivery or Android admin role is claimed; local notification preference model and local redacted crash reports exist | Store purchase/restore and signed entitlement reconciliation, FCM delivery, server-authorized admin access and distribution |
 
 No user-to-user text chat, phone or video calling is included. Spatter assistance and project collaboration remain in scope. Private drafts never imply publication permission; generated public releases require owner approval of the exact render.
@@ -85,9 +85,11 @@ A shared codec must preserve stable identities, layer order/locks/blends, frame 
 
 ### Data-safety form draft (current debug build)
 
+These answers describe the default build, which has no Supabase values and therefore no INTERNET permission. A build given `sdi.supabaseUrl`/`sdi.supabasePublishableKey` (see "Connected client" below) declares INTERNET and collects account identifiers (email, user ID), feed interactions (likes, follows, blocks, reports), room membership requests and, if used, Spatter questions; every row below must be re-answered for it.
+
 | Question | Answer for this build | Basis |
 | --- | --- | --- |
-| Does the app collect or share user data? | No data collected, no data shared | No INTERNET permission; nothing leaves the device |
+| Does the app collect or share user data? | No data collected, no data shared | No INTERNET permission in the default build; nothing leaves the device |
 | Location, contacts, calendar, SMS, call logs | Not collected | No permissions requested |
 | Files and docs | Accessed only through the system document picker when the creator imports or exports; stored in app-private storage | `ActivityResultContracts.OpenDocument/CreateDocument`, `FileProvider` limited to `cache/studio-share/` |
 | Audio | Imported audio files are embedded in the local project; no microphone use | No `RECORD_AUDIO` permission |
@@ -95,9 +97,35 @@ A shared codec must preserve stable identities, layer order/locks/blends, frame 
 | App activity, diagnostics | Crash reports are written locally, redacted, kept 30 days / five files, never uploaded | `LocalCrashReporter` |
 | Encryption in transit | Not applicable (no network) | Revisit when providers are configured |
 | Data deletion | Uninstall removes all app data; in-app "Delete local crash reports" | `allowBackup="false"` |
-| Account creation | None in this build | `AndroidIdentity.currentState()` reports not configured |
+| Account creation | None in this build | `AccountState.NotConfigured` / `AndroidIdentity.currentState()` report not configured |
 
 This table must be re-answered before any release that adds identity, feed, Rooms, billing or push.
+
+## Connected client (#288)
+
+Source: `android/app/src/main/java/com/stickdeath/studio/connect/`. All network code is plain Kotlin behind one `HttpTransport` seam, so JVM tests script every reply and never open a socket.
+
+| Piece | Behaviour | iOS counterpart |
+| --- | --- | --- |
+| `BackendConfig` | HTTPS origin only; publishable key only (`sb_publishable_…` or an anon HS256 JWT; service-role keys refused); OAuth provider list fails closed on unknown names; Spatter endpoint refuses model-provider hosts | `AppConfig.supabaseConfiguration`, `oauthConfiguration`, `SpatterEndpoint` |
+| `GoTrueClient` / `SessionManager` | Email sign-in and sign-up (confirmation-pending reported, not signed in), anonymous guest, PKCE S256 OAuth with the `stickdeath://auth/callback` redirect (single-use in-memory verifier; `error=` callbacks reported, never exchanged; duplicate codes and fragments refused), refresh 60 s before expiry, local sign-out even when revocation fails | `AuthService` |
+| Session restore | Unexpired session restored without network; expired session refreshed, never promoted; revoked refresh token clears the vault and asks for sign-in; offline refresh keeps the stored session for an explicit Retry; damaged records are discarded | `AuthService.restoreSession` |
+| `KeystoreSessionVault` | AES-256-GCM with a non-exportable Android Keystore key, file in `noBackupFilesDir`; uninstall removes key and file | Keychain via the Supabase SDK |
+| `CommunityGateway` | `POST /rest/v1/rpc/<name>` and RLS row reads with the member JWT plus publishable `apikey`; null parameters omitted so SQL defaults apply; 4 MiB body bound; server `error` → `Server(message, code)`; 401/403 → signed out; other HTTP failures never shown verbatim; replies for an earlier account → `Stale` | `CommunityGateway`, `SupabaseCommunityTransport` |
+| `FeedClient`, `ProfileClient`, `RoomsClient` | Same RPC names, actions and response checks as iOS (25-post pages, 40-page cap, `as_of` snapshot; complete own records; 64-hex invitation codes, explicit consent, owner approval) | `FeedClient`, `ProfileClient`, `RoomsClient` |
+| `SpatterClient` | schemaVersion 1 payload with the member JWT to the owner's backend; legacy `choices` replies accepted; future schemas refused; 128 KiB limits; budget shown only when sane. Replies are guidance text and never edit the project | `SpatterBackendClient` |
+
+UI: the Account panel shows the real `AccountState`, sign-in/sign-up/guest/provider buttons, the video wall, own records and join-a-room-by-code; the Spatter panel gains a cloud guidance box. Unconfigured builds show "Not connected" and send nothing.
+
+### Owner-supplied configuration (public values only)
+
+Pass at build time, never commit: `-Psdi.supabaseUrl=https://<project>.supabase.co -Psdi.supabasePublishableKey=sb_publishable_… [-Psdi.oauthProviders=google,github,microsoft,apple] [-Psdi.spatterBackendUrl=https://…]` (or the `SDI_SUPABASE_URL`, `SDI_SUPABASE_PUBLISHABLE_KEY`, `SDI_OAUTH_PROVIDERS`, `SDI_SPATTER_BACKEND_URL` environment variables). Only when both Supabase values are present does Gradle merge `src/connected/AndroidManifest.xml`, which adds INTERNET, `singleTask` and the OAuth redirect filter. The owner must also add `stickdeath://auth/callback` to the Supabase redirect allow-list, enable each OAuth provider (and anonymous sign-ins, if guests are wanted) in Supabase, and apply the `backend/sql` candidates the clients call.
+
+### Verification state
+
+- JVM: the `connect` sources plus `BackendContract` were compiled with Kotlin 2.0.21 and their 40 JUnit tests (`BackendConfigTest`, `SessionManagerTest`, `CommunityClientsTest`, `SpatterClientTest`, `BackendContractTest`) passed in a standalone JVM Gradle project on the Linux host (2026-10-14), using a stand-in for the generated `BuildConfig`. This is not the Android Gradle build.
+- Android: `AccountViewModel`, `ConnectedPanels`, `KeystoreSessionVault`, the `MainActivity` wiring and the Gradle `buildConfig`/manifest switch have **not** compiled (no Android SDK here); deferred to the Android CI job.
+- Live: no request has been sent to any backend. Authenticated end-to-end journeys against a test backend remain open (#288).
 
 ### Store listing copy draft (owner approval required)
 
