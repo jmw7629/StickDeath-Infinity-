@@ -85,3 +85,12 @@ JavaScript syntax and whitespace checks passed for this slice. Actual browser co
 - **Account shell.** `account.html` reads `account-config.js` (`window.SDI_ACCOUNT_CONFIG = null`). Without configuration it states that accounts and billing are not connected; with a valid https portal URL it shows only a link. It never lists prices.
 - **Harness.** `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node scripts/website/a11y_perf.mjs` serves the folder from an in-process Node server and runs the accessibility, behavior, no-JS, reduced-motion, `file://` and throttled performance checks described in `docs/WEBSITE_INVENTORY.md`, where the measured results of the last run are recorded. Fixes made from its findings: 44px brand/nav/footer/table-link targets, long-token wrapping on policy pages, `novalidate` on the support form so the accessible status message replaces native bubbles, CSS-driven compact navigation (the JS used to hide the stacked nav after load, CLS 0.25 → 0), and a metric-matched local fallback face for Special Elite.
 - Hosting, domain, deployment and rollback configuration are still absent from the repository; see `docs/WEBSITE_INVENTORY.md`.
+
+## Desktop wave 3 (2026-10-14)
+
+- **Layout memory.** Open windows, their places, snapped/half/maximized state, the dock and moved desktop icons are kept in this browser (`localStorage` key `sdi-os`, every access guarded). Phones always start fresh.
+- **Edge snapping.** Dragging a title bar to the left or right edge snaps to that half at full height; the top edge maximizes. Dragging a snapped window away restores its normal size. Alt+Arrow keys do the same from the keyboard.
+- **Desktop menu.** Tidy windows, Close all, CRT scanlines (remembered), Screensaver now, Keyboard shortcuts, Privacy choices, Reset desktop. A bouncing-mark screensaver starts after two idle minutes (never with reduced motion).
+- **Privacy window.** Local usage counters are off by default and never sent anywhere; "Forget everything" clears all site storage.
+- **Discord.** The community chat is the owner's Discord server (`https://discord.gg/mVUxqbB5c`, #StickDeath_Infinity): a Discord window and icon on the desktop, a section on community.html and a footer link on every page. The app itself still has no chat.
+- Harness: 619/619 checks, including snapping, reload memory, the menu, CRT, icon drag, privacy counters and the screensaver.

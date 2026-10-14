@@ -189,7 +189,7 @@ ${inputRows}
 </ul>
 <p class="quiet">Regenerate with <code>node scripts/website/build_site.mjs</code>. If a credit file changes, this page changes with it.</p>
 </main>
-<footer class="wrap"><a class="brand" href="../index.html">STICKDEATH INFINITY</a><p>Generated attribution page</p><div><a href="terms-v1.html">Terms (draft)</a><a href="privacy-v1.html">Privacy (draft)</a><a href="publishing-v1.html">Publishing permissions (draft)</a><a href="../account.html">Account</a></div></footer>
+<footer class="wrap"><a class="brand" href="../index.html">STICKDEATH INFINITY</a><p>Generated attribution page</p><div><a href="terms-v1.html">Terms (draft)</a><a href="privacy-v1.html">Privacy (draft)</a><a href="publishing-v1.html">Publishing permissions (draft)</a><a href="../account.html">Account</a><a href="https://discord.gg/mVUxqbB5c" rel="noopener" target="_blank">Discord</a></div></footer>
 </body></html>
 `;
   emit('policies/attribution.html', attribution);

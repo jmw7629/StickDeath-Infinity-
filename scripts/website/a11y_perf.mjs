@@ -359,12 +359,66 @@ async function main() {
     await deskPage.click('#taskbar [data-task="win-juke"]'); await deskPage.waitForTimeout(100);
     const back = await deskPage.evaluate(() => ({ hidden: document.querySelector('#win-juke').hidden, task: Boolean(document.querySelector('#taskbar [data-task="win-juke"]')), l: document.querySelector('#win-juke').offsetLeft }));
     record('desktop: the dock button brings the window back where it was', !back.hidden && !back.task && back.l === dragged.l, JSON.stringify(back), 'index.html@1440x900');
+    // Edge snapping: drag the title bar to the left edge → left half at full height; drag it back out → normal size again.
+    const tb2 = await deskPage.locator('#win-juke .titlebar h2').boundingBox(); const deskBox = await deskPage.locator('#main').boundingBox();
+    await deskPage.mouse.move(tb2.x + tb2.width / 2, tb2.y + tb2.height / 2); await deskPage.mouse.down(); await deskPage.mouse.move(deskBox.x + 1, tb2.y + tb2.height / 2 + 40, { steps: 10 }); await deskPage.mouse.up(); await deskPage.waitForTimeout(100);
+    const snapped = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); const d = document.querySelector('#main').getBoundingClientRect(); return { l: w.offsetLeft, w: w.offsetWidth, h: w.offsetHeight, half: Math.abs(w.offsetWidth - d.width / 2) < 3, full: Math.abs(w.offsetHeight - d.height) < 3, cls: w.classList.contains('snapped') }; });
+    record('desktop: dragging to the left edge snaps the window to the left half', snapped.l === 0 && snapped.half && snapped.full && snapped.cls, JSON.stringify(snapped), 'index.html@1440x900');
+    const tb3 = await deskPage.locator('#win-juke .titlebar h2').boundingBox();
+    await deskPage.mouse.move(tb3.x + tb3.width / 2, tb3.y + tb3.height / 2); await deskPage.mouse.down(); await deskPage.mouse.move(tb3.x + tb3.width / 2 + 300, tb3.y + tb3.height / 2 + 120, { steps: 10 }); await deskPage.mouse.up(); await deskPage.waitForTimeout(100);
+    const unsnapped = await geoOf();
+    record('desktop: dragging a snapped window away restores its normal size', Math.abs(unsnapped.w - jukeBefore.w) < 3 && Math.abs(unsnapped.h - jukeBefore.h) < 3 && unsnapped.l > 100 && !(await deskPage.evaluate(() => document.querySelector('#win-juke').classList.contains('snapped'))), `${JSON.stringify(unsnapped)} vs ${JSON.stringify(jukeBefore)}`, 'index.html@1440x900');
+    // Layout memory: a reload brings the same windows back in the same places.
+    await deskPage.goto(base + 'index.html', { waitUntil: 'load' }); await deskPage.click('#boot-skip'); await deskPage.waitForTimeout(300);
+    const remembered = await deskPage.evaluate(() => { const j = document.querySelector('#win-juke'); return { juke: !j.hidden, l: j.offsetLeft, t: j.offsetTop, about: !document.querySelector('#win-about').hidden, status: document.querySelector('#status-windows').textContent, focusInJuke: j.contains(document.activeElement) }; });
+    record('desktop: a reload restores the open windows where they were', remembered.juke && remembered.about && remembered.l === unsnapped.l && remembered.t === unsnapped.t && remembered.status.startsWith('2 windows') && remembered.focusInJuke, JSON.stringify(remembered), 'index.html@1440x900');
     await deskPage.keyboard.press('Escape'); await deskPage.waitForTimeout(100);
     const escaped = await deskPage.evaluate(() => document.querySelector('#win-juke').hidden);
     record('desktop: Escape closes the front window', escaped, '', 'index.html@1440x900');
+    // Desktop menu: opens with aria-expanded, Shortcuts window, CRT toggle persists, Close all.
+    await deskPage.click('#desk-menu'); await deskPage.waitForTimeout(50);
+    const menuOpen = await deskPage.evaluate(() => ({ expanded: document.querySelector('#desk-menu').getAttribute('aria-expanded'), visible: !document.querySelector('#desk-menu-list').hidden, focusInMenu: document.querySelector('#desk-menu-list').contains(document.activeElement) }));
+    await deskPage.click('#desk-menu-list [data-act=keys]'); await deskPage.waitForTimeout(100);
+    const keysOpen = await deskPage.evaluate(() => ({ open: !document.querySelector('#win-keys').hidden, menuClosed: document.querySelector('#desk-menu-list').hidden, rows: document.querySelectorAll('#win-keys dt').length }));
+    record('desktop: the Desktop menu opens, focuses its first item and the Shortcuts item opens that window', menuOpen.expanded === 'true' && menuOpen.visible && menuOpen.focusInMenu && keysOpen.open && keysOpen.menuClosed && keysOpen.rows >= 6, JSON.stringify({ ...menuOpen, ...keysOpen }), 'index.html@1440x900');
+    await deskPage.click('#desk-menu'); await deskPage.click('#desk-menu-list [data-act=crt]'); await deskPage.waitForTimeout(50);
+    const crtOn = await deskPage.evaluate(() => ({ cls: document.documentElement.classList.contains('crt'), checked: document.querySelector('[data-act=crt]').getAttribute('aria-checked') }));
+    await deskPage.goto(base + 'index.html', { waitUntil: 'load' }); await deskPage.click('#boot-skip'); await deskPage.waitForTimeout(300);
+    const crtKept = await deskPage.evaluate(() => document.documentElement.classList.contains('crt'));
+    await deskPage.click('#desk-menu'); await deskPage.click('#desk-menu-list [data-act=crt]'); await deskPage.waitForTimeout(50);
+    record('desktop: CRT scanlines toggle sets aria-checked, applies the class and survives a reload', crtOn.cls && crtOn.checked === 'true' && crtKept && !(await deskPage.evaluate(() => document.documentElement.classList.contains('crt'))), JSON.stringify({ ...crtOn, crtKept }), 'index.html@1440x900');
+    // Icons: drag moves an icon, the place is remembered, and a plain click still opens the window.
+    const iconBox = await deskPage.locator('.icons button[data-open=studio]').boundingBox();
+    await deskPage.mouse.move(iconBox.x + iconBox.width / 2, iconBox.y + iconBox.height / 2); await deskPage.mouse.down(); await deskPage.mouse.move(iconBox.x + iconBox.width / 2 + 200, iconBox.y + iconBox.height / 2 + 150, { steps: 8 }); await deskPage.mouse.up(); await deskPage.waitForTimeout(100);
+    const iconMoved = await deskPage.evaluate(() => { const li = document.querySelector('.icons button[data-open=studio]').closest('li'); return { l: li.offsetLeft, t: li.offsetTop, studioOpen: !document.querySelector('#win-studio').hidden }; });
+    await deskPage.goto(base + 'index.html', { waitUntil: 'load' }); await deskPage.click('#boot-skip'); await deskPage.waitForTimeout(300);
+    const iconKept = await deskPage.evaluate(() => { const li = document.querySelector('.icons button[data-open=studio]').closest('li'); return { l: li.offsetLeft, t: li.offsetTop }; });
+    await deskPage.click('.icons button[data-open=studio]'); await deskPage.waitForTimeout(100);
+    const studioOpened = await deskPage.evaluate(() => !document.querySelector('#win-studio').hidden);
+    record('desktop: icons drag to a new place, keep it after a reload, and still open on click', iconMoved.l >= 190 && iconMoved.t >= 140 && !iconMoved.studioOpen && iconKept.l === iconMoved.l && iconKept.t === iconMoved.t && studioOpened, JSON.stringify({ iconMoved, iconKept, studioOpened }), 'index.html@1440x900');
+    // Privacy window: counters are off by default, count only when switched on, and Forget clears the layout.
+    await deskPage.click('.taskbar .tip'); await deskPage.waitForTimeout(100);
+    const privDefault = await deskPage.evaluate(() => ({ open: !document.querySelector('#win-privacy').hidden, diag: document.querySelector('#priv-diag').getAttribute('aria-checked'), counts: document.querySelector('#priv-counts').textContent }));
+    await deskPage.click('#priv-diag'); await deskPage.click('.menubar [data-open=clips]'); await deskPage.waitForTimeout(100); await deskPage.click('.taskbar .tip'); await deskPage.waitForTimeout(100);
+    const privOn = await deskPage.evaluate(() => ({ diag: document.querySelector('#priv-diag').getAttribute('aria-checked'), counts: document.querySelector('#priv-counts').textContent }));
+    await deskPage.click('#priv-diag');
+    const privOff = await deskPage.evaluate(() => document.querySelector('#priv-counts').textContent);
+    await deskPage.click('#priv-forget'); await deskPage.waitForTimeout(50);
+    const forgot = await deskPage.evaluate(() => ({ status: document.querySelector('#priv-forget-status').textContent, stored: (() => { try { return localStorage.length; } catch (_) { return -1; } })() }));
+    record('desktop: privacy counters are off by default, count window opens only while on, and Forget empties storage', privDefault.open && privDefault.diag === 'false' && privDefault.counts === 'Counters are off.' && privOn.diag === 'true' && /clips ×1/.test(privOn.counts) && /Not sent anywhere/.test(privOn.counts) && privOff === 'Counters are off.' && /Cleared/.test(forgot.status) && forgot.stored === 0, JSON.stringify({ privDefault, privOn, privOff, forgot }), 'index.html@1440x900');
+    // Screensaver: the menu starts it, focus lands on its button, any key dismisses it and focus returns.
+    await deskPage.click('#desk-menu'); await deskPage.click('#desk-menu-list [data-act=saver]'); await deskPage.waitForTimeout(150);
+    const saverOn = await deskPage.evaluate(() => ({ shown: !document.querySelector('#saver').hidden, focus: document.activeElement.id, moved: document.querySelector('#saver-mark').style.transform !== '' }));
+    await deskPage.keyboard.press('Escape'); await deskPage.waitForTimeout(50);
+    const saverOff = await deskPage.evaluate(() => ({ shown: !document.querySelector('#saver').hidden, focus: document.activeElement.id }));
+    record('desktop: the screensaver shows on demand, focuses its exit button, and a key press returns to the desktop', saverOn.shown && saverOn.focus === 'saver-back' && saverOn.moved && !saverOff.shown && saverOff.focus === 'desk-menu', JSON.stringify({ saverOn, saverOff }), 'index.html@1440x900');
+    // Close all from the menu, then the close box on a reopened window counts zero.
+    await deskPage.click('#desk-menu'); await deskPage.click('#desk-menu-list [data-act=closeall]'); await deskPage.waitForTimeout(100);
+    const allClosed = await deskPage.evaluate(() => document.querySelector('#status-windows').textContent);
+    await deskPage.click('.menubar [data-open=about]'); await deskPage.waitForTimeout(100);
     await deskPage.click('#win-about [data-close]'); await deskPage.waitForTimeout(100);
     const closedAll = await deskPage.evaluate(() => document.querySelector('#status-windows').textContent);
-    record('desktop: close box closes and the status bar counts zero', closedAll.startsWith('0 windows'), closedAll, 'index.html@1440x900');
+    record('desktop: Close all empties the desktop and the close box counts zero', allClosed.startsWith('0 windows') && closedAll.startsWith('0 windows'), `${allClosed} / ${closedAll}`, 'index.html@1440x900');
     record('desktop: no page errors during the window journey', deskErrors.length === 0, deskErrors.join(' | ').slice(0, 300), 'index.html@1440x900');
     await deskContext.close();
     // Phone: windows are freeform and draggable by touch-style pointer too.
