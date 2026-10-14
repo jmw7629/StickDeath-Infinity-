@@ -328,7 +328,7 @@ async function main() {
     const fpsState = await splashPage.evaluate(() => ({ out: document.querySelector('#hero-fps-value').textContent, dur: document.querySelector('.flipbook .pose').style.animationDuration }));
     record('hero speed slider retimes the flipbook', fpsState.out === '24 fps' && fpsState.dur === '0.25s', JSON.stringify(fpsState), LONG + '@390x844');
     await splashContext.close();
-    // index.html (desktop): menu opens a window; minimize → taskbar → restore; maximize fills the desktop and restore returns the size; close hides; Escape closes.
+    // index.html (desktop): menu opens a window; half size; maximize fills and restore returns the size; the flame docks the window and the dock brings it back; drag moves it; Escape and the close box close.
     const deskContext = await browser.newContext({ viewport: { width: 1440, height: 900 } }); const deskPage = await deskContext.newPage();
     const deskErrors = []; deskPage.on('pageerror', (e) => deskErrors.push(String(e))); deskPage.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
     await deskPage.goto(base + 'index.html', { waitUntil: 'load' }); await deskPage.click('#boot-skip'); await deskPage.waitForTimeout(300);
@@ -337,19 +337,28 @@ async function main() {
     await deskPage.click('.menubar [data-open=juke]'); await deskPage.waitForTimeout(200);
     const opened = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); return { hidden: w.hidden, active: w.classList.contains('active'), status: document.querySelector('#status-windows').textContent }; });
     record('desktop: menu bar opens the Jukebox window in front', !opened.hidden && opened.active && opened.status.startsWith('2 windows'), JSON.stringify(opened), 'index.html@1440x900');
-    const jukeBefore = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); return { w: w.offsetWidth, h: w.offsetHeight, l: w.offsetLeft, t: w.offsetTop }; });
+    const geoOf = () => deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); return { w: w.offsetWidth, h: w.offsetHeight, l: w.offsetLeft, t: w.offsetTop }; });
+    const jukeBefore = await geoOf();
+    // Drag the title bar 120px right and 60px down.
+    const tb = await deskPage.locator('#win-juke .titlebar h2').boundingBox();
+    await deskPage.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2); await deskPage.mouse.down(); await deskPage.mouse.move(tb.x + tb.width / 2 + 120, tb.y + tb.height / 2 + 60, { steps: 8 }); await deskPage.mouse.up();
+    const dragged = await geoOf();
+    record('desktop: dragging the title bar moves the window freely', dragged.l === jukeBefore.l + 120 && dragged.t === jukeBefore.t + 60, `${JSON.stringify(jukeBefore)} → ${JSON.stringify(dragged)}`, 'index.html@1440x900');
+    await deskPage.click('#win-juke [data-half]'); await deskPage.waitForTimeout(100);
+    const half = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); const d = document.querySelector('#main').getBoundingClientRect(); return { ok: Math.abs(w.offsetWidth - d.width / 2) < 3 && Math.abs(w.offsetHeight - d.height / 2) < 3, label: w.querySelector('[data-half]').getAttribute('aria-label') }; });
+    record('desktop: half size sets the window to half the desktop', half.ok && /Restore/.test(half.label), JSON.stringify(half), 'index.html@1440x900');
     await deskPage.click('#win-juke [data-max]'); await deskPage.waitForTimeout(100);
     const maxed = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); const d = document.querySelector('#main').getBoundingClientRect(); return { fills: Math.abs(w.offsetWidth - d.width) < 3 && Math.abs(w.offsetHeight - d.height) < 3, label: w.querySelector('[data-max]').getAttribute('aria-label') }; });
     record('desktop: maximize fills the desktop and relabels the control as Restore', maxed.fills && /Restore/.test(maxed.label), JSON.stringify(maxed), 'index.html@1440x900');
     await deskPage.click('#win-juke [data-max]'); await deskPage.waitForTimeout(100);
-    const restored = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); return { w: w.offsetWidth, h: w.offsetHeight, l: w.offsetLeft, t: w.offsetTop }; });
-    record('desktop: restore returns the window to its normal size and place', Math.abs(restored.w - jukeBefore.w) < 3 && Math.abs(restored.h - jukeBefore.h) < 3 && restored.l === jukeBefore.l && restored.t === jukeBefore.t, `${JSON.stringify(jukeBefore)} → ${JSON.stringify(restored)}`, 'index.html@1440x900');
-    await deskPage.click('#win-juke [data-min]'); await deskPage.waitForTimeout(100);
-    const minimized = await deskPage.evaluate(() => ({ hidden: document.querySelector('#win-juke').hidden, task: document.querySelector('#taskbar [data-task="win-juke"]')?.textContent || null, status: document.querySelector('#status-windows').textContent }));
-    record('desktop: minimize hides the window and puts it on the taskbar', minimized.hidden && minimized.task === 'Jukebox' && /1 minimized/.test(minimized.status), JSON.stringify(minimized), 'index.html@1440x900');
+    const restored = await geoOf();
+    record('desktop: restore returns the window to its normal size and dragged place', Math.abs(restored.w - jukeBefore.w) < 3 && Math.abs(restored.h - jukeBefore.h) < 3 && restored.l === dragged.l && restored.t === dragged.t, `${JSON.stringify(dragged)} → ${JSON.stringify(restored)}`, 'index.html@1440x900');
+    await deskPage.click('#win-juke [data-dock]'); await deskPage.waitForTimeout(100);
+    const docked = await deskPage.evaluate(() => ({ hidden: document.querySelector('#win-juke').hidden, task: document.querySelector('#taskbar [data-task="win-juke"]')?.textContent || null, status: document.querySelector('#status-windows').textContent }));
+    record('desktop: the flame saves the window to the dock', docked.hidden && docked.task === 'Jukebox' && /1 in the dock/.test(docked.status), JSON.stringify(docked), 'index.html@1440x900');
     await deskPage.click('#taskbar [data-task="win-juke"]'); await deskPage.waitForTimeout(100);
-    const back = await deskPage.evaluate(() => ({ hidden: document.querySelector('#win-juke').hidden, task: Boolean(document.querySelector('#taskbar [data-task="win-juke"]')), w: document.querySelector('#win-juke').offsetWidth }));
-    record('desktop: taskbar button restores the window at its normal size', !back.hidden && !back.task && Math.abs(back.w - jukeBefore.w) < 3, JSON.stringify(back), 'index.html@1440x900');
+    const back = await deskPage.evaluate(() => ({ hidden: document.querySelector('#win-juke').hidden, task: Boolean(document.querySelector('#taskbar [data-task="win-juke"]')), l: document.querySelector('#win-juke').offsetLeft }));
+    record('desktop: the dock button brings the window back where it was', !back.hidden && !back.task && back.l === dragged.l, JSON.stringify(back), 'index.html@1440x900');
     await deskPage.keyboard.press('Escape'); await deskPage.waitForTimeout(100);
     const escaped = await deskPage.evaluate(() => document.querySelector('#win-juke').hidden);
     record('desktop: Escape closes the front window', escaped, '', 'index.html@1440x900');
@@ -358,6 +367,15 @@ async function main() {
     record('desktop: close box closes and the status bar counts zero', closedAll.startsWith('0 windows'), closedAll, 'index.html@1440x900');
     record('desktop: no page errors during the window journey', deskErrors.length === 0, deskErrors.join(' | ').slice(0, 300), 'index.html@1440x900');
     await deskContext.close();
+    // Phone: windows are freeform and draggable by touch-style pointer too.
+    const phoneContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }); const phonePage = await phoneContext.newPage();
+    await phonePage.goto(base + 'index.html', { waitUntil: 'load' }); await phonePage.click('#boot-skip'); await phonePage.waitForTimeout(300);
+    const pBefore = await phonePage.evaluate(() => { const w = document.querySelector('#win-about'); const d = document.querySelector('#main').getBoundingClientRect(); return { l: w.offsetLeft, t: w.offsetTop, w: w.offsetWidth, fits: w.offsetWidth < d.width && w.offsetHeight < d.height }; });
+    const ptb = await phonePage.locator('#win-about .titlebar h2').boundingBox();
+    await phonePage.mouse.move(ptb.x + ptb.width / 2, ptb.y + ptb.height / 2); await phonePage.mouse.down(); await phonePage.mouse.move(ptb.x + ptb.width / 2 + 40, ptb.y + ptb.height / 2 + 90, { steps: 6 }); await phonePage.mouse.up();
+    const pAfter = await phonePage.evaluate(() => { const w = document.querySelector('#win-about'); return { l: w.offsetLeft, t: w.offsetTop }; });
+    record('phone: windows are freeform (smaller than the screen) and drag by the title bar', pBefore.fits && pAfter.l === pBefore.l + 40 && pAfter.t === pBefore.t + 90, `${JSON.stringify(pBefore)} → ${JSON.stringify(pAfter)}`, 'index.html@390x844');
+    await phoneContext.close();
     // play.html: the browser flipbook draws, adds frames, plays and downloads.
     const playContext = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
     const playPage = await playContext.newPage();

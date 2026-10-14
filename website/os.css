@@ -38,14 +38,21 @@ body.os *{box-sizing:border-box}
 .titlebar{display:flex;align-items:center;gap:8px;height:40px;border-bottom:2px solid var(--os-ink);background:repeating-linear-gradient(0deg,var(--os-paper) 0 2px,var(--os-ink) 2px 3px);padding:0 4px;cursor:grab;user-select:none;touch-action:none}
 .titlebar:active{cursor:grabbing}
 .window.active .titlebar{background:repeating-linear-gradient(0deg,var(--os-paper) 0 2px,var(--os-ink) 2px 3px)}
-.titlebar h2{margin:0 auto;font:14px var(--display);background:var(--os-paper);padding:2px 12px;letter-spacing:.08em;letter-spacing:.1em}
+.titlebar h2{margin:0 auto;font:14px var(--display);background:var(--os-paper);padding:2px 12px;letter-spacing:.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%}
 .titlebar .controls{display:flex;gap:0;background:var(--os-paper);padding:0 2px}
 .titlebar button{width:44px;height:36px;background:var(--os-paper);border:0;display:grid;place-items:center;cursor:pointer;padding:0}
-.titlebar button i{display:block;width:16px;height:16px;border:2px solid var(--os-ink);background:var(--os-paper);position:relative}
-.titlebar button i.m::after{content:'';position:absolute;left:1px;right:1px;top:5px;height:2px;background:var(--os-ink)}
-.titlebar button i.x::after{content:'';position:absolute;left:1px;right:1px;top:1px;height:3px;background:var(--os-ink)}
+.titlebar button i{display:block;width:16px;height:16px;border:2px solid var(--os-ink);background:var(--os-paper);position:relative;box-sizing:border-box}
+.titlebar button i.c::before,.titlebar button i.c::after{content:'';position:absolute;left:1px;top:5px;width:10px;height:2px;background:var(--os-ink);transform:rotate(45deg)}
+.titlebar button i.c::after{transform:rotate(-45deg)}
+.titlebar button i.h::after{content:'';position:absolute;left:0;top:0;bottom:0;width:50%;background:var(--os-ink)}
+.titlebar button i.x{background:var(--os-ink)}
+.titlebar button i.x::after{content:'';position:absolute;inset:3px;background:var(--os-paper)}
 .titlebar button:hover i,.titlebar button:focus-visible i{background:var(--os-ink)}
-.titlebar button:hover i::after,.titlebar button:focus-visible i::after{background:var(--os-paper)}
+.titlebar button:hover i.c::before,.titlebar button:hover i.c::after,.titlebar button:focus-visible i.c::before,.titlebar button:focus-visible i.c::after,.titlebar button:hover i.h::after,.titlebar button:focus-visible i.h::after{background:var(--os-paper)}
+.titlebar button:hover i.x::after,.titlebar button:focus-visible i.x::after{background:var(--os-ink)}
+.titlebar .dock-btn{width:44px;font-size:18px;line-height:1;background:var(--os-paper);margin-left:2px}
+.titlebar .dock-btn:hover,.titlebar .dock-btn:focus-visible{background:var(--os-ink)}
+.window.half .grip{display:block}
 .window.maximized{box-shadow:none;max-width:none;max-height:none}
 .window.maximized .titlebar{cursor:default}
 .grip{position:absolute;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 0 50%,var(--os-ink) 50% 58%,transparent 58% 72%,var(--os-ink) 72% 80%,transparent 80%)}
@@ -78,6 +85,7 @@ body.os *{box-sizing:border-box}
 .taskbar .tip{margin-left:auto}
 .taskbar .tasks{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
 .taskbar .tasks button{min-height:36px;min-width:44px;padding:0 12px;border:2px solid var(--os-ink);background:var(--os-paper);font:12px var(--display);letter-spacing:.08em;cursor:pointer;box-shadow:2px 2px 0 var(--os-ink)}
+.taskbar .tasks button::before{content:'🔥 ';font-size:13px}
 .taskbar .tasks button:hover,.taskbar .tasks button:focus-visible{background:var(--os-ink);color:var(--os-paper)}
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 @media(max-width:700px){.menubar{padding:0 4px;gap:0}.menubar h1{display:none}.menubar .right{display:none}.taskbar .tip,.taskbar #status-windows{display:none}.icons{grid-template-columns:repeat(4,1fr);left:8px;right:8px;top:8px;gap:4px}.icons button{width:auto}.wallpaper{display:none}.window{max-height:none}.menubar .right span.clock{display:none}}
