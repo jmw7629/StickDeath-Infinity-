@@ -24,6 +24,7 @@ DEPENDENCIES = {
     # The planner suite routes every catalogue example and executes typed commands.
     "Tests/SpatterPlanner/main.swift": {
         "StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift",
         "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
         "StickDeathInfinity/Models/StudioCommands.swift",
     },
