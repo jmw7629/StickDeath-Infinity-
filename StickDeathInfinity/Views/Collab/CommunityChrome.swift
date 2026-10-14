@@ -27,6 +27,9 @@ extension Notification.Name {
     /// Posted after a room's shared project was opened in the shared editor so
     /// the tab host can show the Studio tab without closing other work.
     static let sdiCommunityOpenStudio = Notification.Name("sdi.community.openStudio")
+    /// Posted by the tab host or Studio to come back to the room whose shared
+    /// project is open in Studio (RoomSessionCoordinator.returnRoom).
+    static let sdiCommunityReturnToRoom = Notification.Name("sdi.community.returnToRoom")
 }
 
 struct CommunityCard<Content: View>: View {
