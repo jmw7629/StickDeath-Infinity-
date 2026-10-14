@@ -32,6 +32,8 @@ admin.challenges.schedule,StickDeathInfinity/Views/Admin/AdminDashboardView.swif
 admin.challenges.select,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text 'Scheduled challenges',n-a,#210 #285,deferred
 admin.challenges.starts,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,date picker 'Opens' -> binds startsAt,n-a,#210 #285,deferred
 admin.challenges.title,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text field 'Title (1–100)' -> binds title,n-a,#210 #285,deferred
+admin.configuration.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,"text 'Each service worker reports which named settings' -> binds 0.replacingOccurrences, binds 0",n-a,#248 #210,deferred
+admin.configuration.worker,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,text 'No worker has reported its configuration.',n-a,#248 #210,deferred
 admin.finance.configure-annual,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,button 'Record owner configuration for this annual produ',n-a,#210 #285,deferred
 admin.finance.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,text,n-a,#210 #285,deferred
 admin.finance.product-id,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,text field 'Provider product id' -> binds productID,n-a,#210 #285,deferred
@@ -42,6 +44,18 @@ admin.finance.section,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,Ad
 admin.health.emergency-stop,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminHealthContent,text 'AGENT EMERGENCY STOP IS ACTIVE',n-a,#210 #285,deferred
 admin.health.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminHealthContent,text,n-a,#210 #285,deferred
 admin.health.refresh,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminHealthContent,button 'Refresh health' -> load,n-a,#210 #285,deferred
+admin.inbox.agent,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,"text 'Agent' -> binds agentFilter, binds 0.title, binds 0.key",n-a,#284 #210,deferred
+admin.inbox.approve,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,button 'Approve',n-a,#284 #210,deferred
+admin.inbox.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,text,n-a,#284 #210,deferred
+admin.inbox.query,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,"text field 'Search references, errors or audit reasons' -> binds query",n-a,#284 #210,deferred
+admin.inbox.reason,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,"text field 'Required reason for a decision' -> binds 0, binds reason",n-a,#284 #210,deferred
+admin.inbox.refresh,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,button 'Refresh',n-a,#284 #210,deferred
+admin.inbox.reject,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,button 'Reject',n-a,#284 #210,deferred
+admin.inbox.search,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,button 'Search history',n-a,#284 #210,deferred
+admin.inbox.state,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,"text 'Run state' -> binds stateFilter, binds 0.capitalized, binds 0",n-a,#284 #210,deferred
+admin.operations.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,text,n-a,#257 #210,deferred
+admin.operations.refresh,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,button 'Refresh' -> load,n-a,#257 #210,deferred
+admin.operations.release,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,"text -> binds 0.label.isEmpty, binds 0.label, binds 0.at.formatted",n-a,#257 #210,deferred
 admin.overview.status,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDashboardContent,text 'Recent activity is not connected.',n-a,#210 #285,deferred
 admin.review.history,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text 'Spatter video — owner approval required',n-a,#210 #285,deferred
 admin.review.renew-preview,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,button 'Renew private preview' -> load,n-a,#210 #285,deferred

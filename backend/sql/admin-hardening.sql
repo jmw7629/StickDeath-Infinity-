@@ -211,4 +211,111 @@ grant execute on function sdi_private.admin_health() to authenticated;
 create function public.sdi_admin_health() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.admin_health()$$;
 revoke all on function public.sdi_admin_health() from public,anon;
 grant execute on function public.sdi_admin_health() to authenticated;
+-- Append-only audit (#257, #284, #285, #247): audit rows cannot be edited, and
+-- they can be deleted only after the 400-day retention window (by a service
+-- sweep). Applies to the access, agent, account, moderation and permission audits
+-- and to the operations report log below.
+create function sdi_private.audit_append_only() returns trigger language plpgsql set search_path='' as $$
+begin
+ if tg_op='UPDATE' then raise exception 'Audit records are append-only (%).',tg_table_name using errcode='42501'; end if;
+ if old.created_at>clock_timestamp()-interval '400 days' then
+  raise exception 'Audit records are kept for 400 days (%).',tg_table_name using errcode='42501'; end if;
+ return old;
+end $$;
+revoke all on function sdi_private.audit_append_only() from public,anon,authenticated;
+create trigger admin_access_audit_append_only before update or delete on sdi_private.admin_access_audit
+ for each row execute function sdi_private.audit_append_only();
+create trigger agent_audit_append_only before update or delete on sdi_private.agent_audit
+ for each row execute function sdi_private.audit_append_only();
+create trigger admin_user_audit_append_only before update or delete on sdi_private.admin_user_audit
+ for each row execute function sdi_private.audit_append_only();
+create trigger moderation_audit_append_only before update or delete on sdi_private.moderation_audit
+ for each row execute function sdi_private.audit_append_only();
+create trigger admin_permission_audit_append_only before update or delete on sdi_private.admin_permission_audit
+ for each row execute function sdi_private.audit_append_only();
+
+-- Backups, restore drills, releases, rollbacks and retention sweeps (#257). The
+-- host's jobs report outcomes here through a service-only function; the record
+-- holds a kind, an outcome, a version-shaped label and whole-number metrics. No
+-- free text, host name, path, bucket, connection string or credential can be
+-- stored, so the authenticated read below cannot leak topology. Nothing here
+-- starts a backup, restore or deployment: control stays with the host.
+create table sdi_private.ops_reports (
+ id uuid primary key default gen_random_uuid(),
+ kind text not null check(kind in('backup','restore_drill','release','rollback','retention_sweep')),
+ outcome text not null check(outcome in('succeeded','failed')),
+ label text not null default '' check(label='' or label ~ '^(v?[0-9]{1,6}(\.[0-9]{1,6}){0,3}([-+][0-9A-Za-z]{1,20}(\.[0-9A-Za-z]{1,20}){0,3})?|[0-9a-f]{7,40})$'),
+ metrics jsonb not null default '{}' check(jsonb_typeof(metrics)='object' and length(metrics::text)<=1024),
+ created_at timestamptz not null default clock_timestamp()
+);
+alter table sdi_private.ops_reports enable row level security;
+revoke all on sdi_private.ops_reports from public,anon,authenticated;
+create index ops_reports_recent on sdi_private.ops_reports(kind,outcome,created_at desc);
+create trigger ops_reports_append_only before update or delete on sdi_private.ops_reports
+ for each row execute function sdi_private.audit_append_only();
+create function sdi_private.ops_report(kind text,outcome text,label text default '',metrics jsonb default '{}') returns jsonb
+language plpgsql security definer set search_path='' as $$
+#variable_conflict use_variable
+declare entry record; n integer:=0; id uuid;
+begin
+ if kind is null or kind not in('backup','restore_drill','release','rollback','retention_sweep') or outcome is null or outcome not in('succeeded','failed') then
+  return jsonb_build_object('error','Unknown report kind or outcome.'); end if;
+ if label is null or not (label='' or label ~ '^(v?[0-9]{1,6}(\.[0-9]{1,6}){0,3}([-+][0-9A-Za-z]{1,20}(\.[0-9A-Za-z]{1,20}){0,3})?|[0-9a-f]{7,40})$') then
+  return jsonb_build_object('error','Labels are a version number or a commit hash only.'); end if;
+ if metrics is null or jsonb_typeof(metrics)<>'object' or length(metrics::text)>1024 then return jsonb_build_object('error','Metrics must be a small object.'); end if;
+ for entry in select e.key,e.value from jsonb_each(metrics) e loop
+  n:=n+1;
+  if n>20 or entry.key !~ '^[a-z_]{1,40}$' or jsonb_typeof(entry.value)<>'number' or entry.value::text !~ '^[0-9]{1,15}$' then
+   return jsonb_build_object('error','Metrics are named whole numbers only.'); end if;
+ end loop;
+ insert into sdi_private.ops_reports(kind,outcome,label,metrics) values(kind,outcome,label,metrics) returning ops_reports.id into id;
+ return jsonb_build_object('status','recorded','id',id);
+end $$;
+revoke all on function sdi_private.ops_report(text,text,text,jsonb) from public,anon,authenticated;
+grant execute on function sdi_private.ops_report(text,text,text,jsonb) to service_role;
+create function public.sdi_ops_report(kind text,outcome text,label text default '',metrics jsonb default '{}') returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.ops_report(kind,outcome,label,metrics)$$;
+revoke all on function public.sdi_ops_report(text,text,text,jsonb) from public,anon,authenticated;
+grant execute on function public.sdi_ops_report(text,text,text,jsonb) to service_role;
+
+-- Read-only operations status for administrators with the overview capability.
+-- Staleness: a backup is due daily (26 h), a restore drill monthly (35 days), a
+-- retention sweep every two days. A missing report reads as stale, not healthy.
+create function sdi_private.admin_operations() returns jsonb language plpgsql security definer set search_path='' as $$
+declare denial jsonb; recent jsonb; last_backup timestamptz; last_drill timestamptz;
+begin
+ denial:=sdi_private.admin_gate('admin_operations','overview',false,120);
+ if denial is not null then return denial; end if;
+ select max(created_at) into last_backup from sdi_private.ops_reports where kind='backup' and outcome='succeeded';
+ select max(created_at) into last_drill from sdi_private.ops_reports where kind='restore_drill' and outcome='succeeded';
+ select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into recent from (
+  select o.kind,o.outcome,o.label,o.metrics,o.created_at from sdi_private.ops_reports o order by o.created_at desc,o.id limit 20) item;
+ return jsonb_build_object(
+  'backup',jsonb_build_object('last_succeeded_at',last_backup,
+   'last_failed_at',(select max(created_at) from sdi_private.ops_reports where kind='backup' and outcome='failed'),
+   'stale',last_backup is null or last_backup<clock_timestamp()-interval '26 hours'),
+  'restore_drill',jsonb_build_object('last_succeeded_at',last_drill,
+   'last_failed_at',(select max(created_at) from sdi_private.ops_reports where kind='restore_drill' and outcome='failed'),
+   'stale',last_drill is null or last_drill<clock_timestamp()-interval '35 days'),
+  'release',(select jsonb_build_object('label',o.label,'at',o.created_at) from sdi_private.ops_reports o
+   where o.kind='release' and o.outcome='succeeded' order by o.created_at desc limit 1),
+  'rollback',(select jsonb_build_object('label',o.label,'at',o.created_at,'outcome',o.outcome) from sdi_private.ops_reports o
+   where o.kind='rollback' order by o.created_at desc limit 1),
+  'retention_sweep',jsonb_build_object(
+   'last_succeeded_at',(select max(created_at) from sdi_private.ops_reports where kind='retention_sweep' and outcome='succeeded'),
+   'last_failed_at',(select max(created_at) from sdi_private.ops_reports where kind='retention_sweep' and outcome='failed'),
+   'stale',coalesce((select max(created_at) from sdi_private.ops_reports where kind='retention_sweep' and outcome='succeeded')<clock_timestamp()-interval '2 days',true)),
+  'retention',jsonb_build_object(
+   'render_artifacts_live',sdi_private.count_if_exists('sdi_private.render_artifacts','expires_at>clock_timestamp()'),
+   'render_artifacts_expired',sdi_private.count_if_exists('sdi_private.render_artifacts','expires_at<=clock_timestamp()'),
+   'deletion_requests_blocked',sdi_private.count_if_exists('sdi_private.deletion_requests','state=''blocked''')),
+  'recent',recent,
+  'note','Reported by host jobs as outcomes and counts only. Hosts, paths and credentials are never stored; backups, restores and deployments are controlled on the host, not here.',
+  'measured_at',clock_timestamp());
+end $$;
+revoke all on function sdi_private.admin_operations() from public,anon;
+grant execute on function sdi_private.admin_operations() to authenticated;
+create function public.sdi_admin_operations() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.admin_operations()$$;
+revoke all on function public.sdi_admin_operations() from public,anon;
+grant execute on function public.sdi_admin_operations() to authenticated;
 commit;

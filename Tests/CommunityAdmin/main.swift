@@ -174,6 +174,77 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
             try require(transport.calls.map { $0.params["page"] as? Int } == [0, 1], "page parameters")
         }
 
+        await test("operations status fails closed on missing milestones, host-like labels and text metrics") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let milestone = #"{"last_succeeded_at":"2026-10-12T03:00:00Z","last_failed_at":null,"stale":false}"#
+            let never = #"{"last_succeeded_at":null,"last_failed_at":null,"stale":true}"#
+            transport.replies = [.success(#"{"backup":\#(milestone),"restore_drill":\#(never),"retention_sweep":\#(milestone),"release":{"label":"1.4.0","at":"2026-10-10T00:00:00Z"},"rollback":null,"retention":{"render_artifacts_live":3,"render_artifacts_expired":0,"deletion_requests_blocked":null},"recent":[{"kind":"backup","outcome":"succeeded","label":"","metrics":{"bytes":123456},"created_at":"2026-10-12T03:00:00Z"},{"kind":"rollback","outcome":"succeeded","label":"3f2a9c1","metrics":{},"created_at":"2026-10-11T03:00:00Z"}],"note":"n","measured_at":"2026-10-12T20:33:11Z"}"#)]
+            let status = try await client.operations()
+            try require(status.backup?.stale == false && status.restore_drill?.stale == true && status.restore_drill?.last_succeeded_at == nil, "never-reported drill is stale, not healthy")
+            try require(status.release?.label == "1.4.0" && status.retention?["deletion_requests_blocked"] == .some(nil) && status.recent?.first?.metrics["bytes"] == 123456, "release, nullable retention and metrics decoded")
+            transport.replies = [.success(#"{"backup":\#(milestone),"restore_drill":\#(milestone),"recent":[],"measured_at":"2026-10-12T20:33:11Z"}"#)]
+            do { _ = try await client.operations(); throw Failure(description: "missing retention milestone accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"backup":\#(milestone),"restore_drill":\#(milestone),"retention_sweep":\#(milestone),"release":{"label":"db.internal.example.com","at":"2026-10-10T00:00:00Z"},"recent":[],"measured_at":"2026-10-12T20:33:11Z"}"#)]
+            do { _ = try await client.operations(); throw Failure(description: "host-like release label accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"backup":\#(milestone),"restore_drill":\#(milestone),"retention_sweep":\#(milestone),"recent":[{"kind":"terminal","outcome":"succeeded","label":"","metrics":{},"created_at":"2026-10-12T03:00:00Z"}],"measured_at":"2026-10-12T20:33:11Z"}"#)]
+            do { _ = try await client.operations(); throw Failure(description: "unknown report kind accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"backup":\#(milestone),"restore_drill":\#(milestone),"retention_sweep":\#(milestone),"recent":[{"kind":"backup","outcome":"failed","label":"","metrics":{"bucket":"s3://x"},"created_at":"2026-10-12T03:00:00Z"}],"measured_at":"2026-10-12T20:33:11Z"}"#)]
+            do { _ = try await client.operations(); throw Failure(description: "text metric accepted") } catch CommunityError.invalidResponse {}
+            try require(AdminIdentifier.isReleaseLabel("v2.0.1-rc.1") && AdminIdentifier.isReleaseLabel("a1b2c3d") && !AdminIdentifier.isReleaseLabel("prod-db-1") && !AdminIdentifier.isReleaseLabel("1.2.3/../x"), "label rule mirrors the server")
+        }
+
+        await test("provider configuration shows presence only and rejects host-like or inconsistent entries") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            transport.replies = [.success(#"{"workers":[{"worker":"service-sweeps","reported_at":"2026-10-12T20:00:00Z","stale":false,"settings":{"stripe_webhook_secret":true,"youtube_client":false},"missing":["youtube_client"]}],"note":"Presence only."}"#)]
+            let configuration = try await client.configuration()
+            try require(configuration.workers?.first?.missing == ["youtube_client"] && configuration.workers?.first?.settings["stripe_webhook_secret"] == true, "presence decoded")
+            transport.replies = [.success(#"{"workers":[{"worker":"db.internal:5432","reported_at":"2026-10-12T20:00:00Z","stale":false,"settings":{},"missing":[]}]}"#)]
+            do { _ = try await client.configuration(); throw Failure(description: "host-like worker accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"workers":[{"worker":"w","reported_at":"2026-10-12T20:00:00Z","stale":false,"settings":{"key":true},"missing":["key"]}]}"#)]
+            do { _ = try await client.configuration(); throw Failure(description: "inconsistent missing list accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"workers":[{"worker":"w","reported_at":"2026-10-12T20:00:00Z","stale":false,"settings":{"key":"sk_live_x"},"missing":[]}]}"#)]
+            do { _ = try await client.configuration(); throw Failure(description: "a setting value was decoded") } catch CommunityError.invalidResponse {}
+        }
+
+        await test("proposal decisions need a reason and a pending proposal, and confirm the expected state") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            transport.replies = [.success(#"{"proposals":[{"id":"\#(review.uuidString)","agent_key":"marketing_proposals","kind":"email_blast","summary":"Send the blast","payload":{"draft":"d1"},"estimated_cost_minor":4800,"cap_reason":"monthly cost cap","state":"pending","proposed_at":"2026-10-12T20:00:00Z","expires_at":"2026-10-26T20:00:00Z","decided_by":null,"decided_at":null,"decision_note":"","outcome":"","revision":1}],"pending":1}"#)]
+            let inbox = try await client.proposalInbox()
+            try require(inbox.pending == 1 && inbox.proposals.first?.cap_reason == "monthly cost cap", "inbox decoded")
+            let proposal = inbox.proposals[0]
+            do { _ = try await client.decideProposal(proposal, approve: true, reason: " "); throw Failure(description: "decision without reason sent") } catch CommunityError.server {}
+            try require(transport.calls.count == 1, "nothing sent without a reason")
+            transport.replies = [.success(#"{"status":"confirmed","state":"approved","revision":2}"#)]
+            try require(try await client.decideProposal(proposal, approve: true, reason: "Within plan") == "approved", "approval confirmed")
+            try require(transport.calls.last?.params["action"] as? String == "approve" && transport.calls.last?.params["revision"] as? Int == 1 && transport.calls.last?.params["reason"] as? String == "Within plan", "decision payload")
+            transport.replies = [.success(#"{"status":"confirmed","state":"rejected"}"#)]
+            do { _ = try await client.decideProposal(proposal, approve: true, reason: "x"); throw Failure(description: "mismatched state accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"error":"Owner permission required for proposal decisions."}"#)]
+            do { _ = try await client.decideProposal(proposal, approve: false, reason: "x"); throw Failure(description: "owner refusal accepted") } catch CommunityError.server {}
+        }
+
+        await test("run and audit history send bounded filters and decode pages") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            do { _ = try await client.agentRunHistory(agent: nil, state: "deleted"); throw Failure(description: "unknown state sent") } catch CommunityError.invalidResponse {}
+            do { _ = try await client.agentAudit(agent: nil, page: 200); throw Failure(description: "page bound ignored") } catch CommunityError.invalidResponse {}
+            do { _ = try await client.agentAudit(agent: nil, query: String(repeating: "q", count: 101)); throw Failure(description: "long query sent") } catch CommunityError.invalidResponse {}
+            try require(transport.calls.isEmpty, "nothing sent for invalid filters")
+            transport.replies = [.success(#"{"runs":[],"has_more":false,"page":2}"#)]
+            let runs = try await client.agentRunHistory(agent: "support_triage", state: "failed", query: " batch ", page: 2)
+            let payload = transport.calls.last?.params["payload"] as? [String: Any]
+            try require(runs.items.isEmpty && !runs.hasMore && payload?["state"] as? String == "failed" && payload?["query"] as? String == "batch" && payload?["page"] as? String == "2" && transport.calls.last?.params["action"] as? String == "runs", "run filter payload")
+            transport.replies = [.success(#"{"audit":[{"id":"\#(review.uuidString)","actor":"\#(actor.uuidString)","agent_key":null,"action":"emergency_stop true","reason":"incident","created_at":"2026-10-12T20:00:00Z"}],"has_more":true,"page":0}"#)]
+            let audit = try await client.agentAudit(agent: nil, query: "incident")
+            try require(audit.items.first?.agent_key == nil && audit.hasMore, "audit page decoded")
+            transport.replies = [.success(#"{"agents":[{"key":"support_triage","title":"Support","paused":true,"permissions":["read"],"per_run_cost_cap_minor":100,"last_error":"Cost cap exceeded; agent paused for owner review.","last_started":"2026-10-12T20:00:00Z","pending_proposals":0}],"emergency_stop":false}"#)]
+            let console = try await client.agentConsole()
+            try require(console.first?.per_run_cost_cap_minor == 100 && console.first?.pending_proposals == 0 && console.first?.last_error?.contains("Cost cap") == true, "console extras decoded")
+        }
+
         print("COMMUNITY_ADMIN_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed) passed \(failed) failed")
         if failed > 0 { exit(1) }
     }

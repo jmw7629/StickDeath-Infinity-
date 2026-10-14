@@ -28,7 +28,8 @@ struct AdminDashboardView: View {
     /// Seeing a tab grants nothing; every reply is server-authorized with MFA.
     private var visibleTabs: [(id: String, icon: String, label: String)] {
         guard usesLiveOverview else { return tabs }
-        let needed = ["dashboard": "overview", "health": "overview", "agents": "overview", "analytics": "overview",
+        let needed = ["dashboard": "overview", "health": "overview", "operations": "overview", "agents": "overview",
+                      "agentInbox": "overview", "analytics": "overview",
                       "users": "users", "approvals": "reviews", "decisions": "reviews", "spatter": "reviews",
                       "publishing": "publishing", "moderation": "moderation", "warReports": "moderation",
                       "warAppeals": "moderation", "content": "moderation", "challenges": "moderation",
@@ -39,6 +40,7 @@ struct AdminDashboardView: View {
     let tabs: [(id: String, icon: String, label: String)] = [
         ("dashboard", "chart.bar.fill", "Dashboard"),
         ("health", "waveform.path.ecg", "Service health"),
+        ("operations", "externaldrive.badge.checkmark", "Backups & releases"),
         ("users", "person.2.fill", "Users"),
         ("permissions", "key", "Permissions"),
         ("content", "doc.fill", "Content"),
@@ -47,6 +49,7 @@ struct AdminDashboardView: View {
         ("publishing", "arrow.up.doc", "Publishing"),
         ("challenges", "trophy.fill", "Challenges"),
         ("agents", "cpu.fill", "Agents"),
+        ("agentInbox", "tray.and.arrow.down", "Agent inbox & log"),
         ("moderation", "shield.fill", "Moderation"),
         ("warReports", "flag", "War Room reports"),
         ("warAppeals", "arrow.uturn.backward.circle", "War Room appeals"),
@@ -136,6 +139,8 @@ struct AdminDashboardView: View {
                             else { AdminDashboardContent(state: overview.state) }
                         case "health":
                             AdminHealthContent()
+                        case "operations":
+                            AdminOperationsStatusContent()
                         case "users":
                             AdminUsersContent()
                         case "permissions":
@@ -152,6 +157,8 @@ struct AdminDashboardView: View {
                             AdminChallengesContent()
                         case "agents":
                             AdminAgentsContent()
+                        case "agentInbox":
+                            AdminAgentInboxContent()
                         case "moderation":
                             AdminModerationContent()
                         case "warReports":
@@ -215,7 +222,7 @@ struct AdminDashboardView: View {
 
 /// Shown before a privileged action when the recent re-authentication window
 /// is not current (#210). Nothing is sent until the member verifies again.
-private struct AdminStepUpBanner: View {
+struct AdminStepUpBanner: View {
     let message: String
     @State private var showing = false
     var body: some View {
@@ -398,6 +405,8 @@ struct AdminUsersContent: View {
                     if let reports = user.feed_report_count {
                         Text("\(reports) feed reports received (all outcomes)").font(.caption)
                     }
+                    // Present only for administrators holding the finance capability.
+                    if let plan = user.plan { Text("Plan: \(plan.capitalized)").font(.caption) }
                     if let last = user.last_sign_in_at { Text("Last sign-in \(last.formatted())").font(.caption) }
                     Button("Account history") { historyUser = user }
                         .accessibilityIdentifier("admin.users.history")
@@ -464,7 +473,12 @@ struct AdminUsersContent: View {
         do {
             let response: AdminDirectoryResponse = try await client.rpc("sdi_users_action", params: AdminUserRequest(action: pending.action, subject: pending.user.id, reason: pending.reason)).execute().value
             guard !Task.isCancelled, epoch == generation, account == auth.userId, auth.isAuthenticated, phase == .active else { return }
-            if let problem = response.error { error = problem; busy = false; return }
+            if let problem = response.error {
+                // The server requires a recent second factor for state changes (admin_gate).
+                let refusal = CommunityServices.admin.noteRefusal(CommunityError.server(message: problem, code: response.code))
+                if refusal.isStepUpRequired { stepUp = problem } else { error = problem }
+                busy = false; return
+            }
             guard response.status == "confirmed" else { error = "Action was not confirmed."; busy = false; return }
             busy = false; reason = ""; await load(reset: true, submittedQuery: appliedSearch)
         } catch { if epoch == generation, account == auth.userId, phase == .active { self.error = "Action was not confirmed. Refresh before retrying." } }
@@ -486,12 +500,14 @@ private struct AdminUserRequest: Encodable {
     var subject: UUID? = nil; var query = ""; var page = 0; var reason = ""
 }
 private struct AdminDirectoryResponse: Decodable {
-    let status: String?; let error: String?; let users: [AdminDirectoryUser]?; let has_more: Bool?
+    let status: String?; let error: String?; var code: String? = nil; let users: [AdminDirectoryUser]?; let has_more: Bool?
 }
 private struct AdminDirectoryUser: Decodable, Identifiable {
     let id: UUID; let username: String; let masked_email: String?; let state: String
     let created_at: Date; let last_sign_in_at: Date?; let content_count: Int
     let sign_in_methods: [String]?; let feed_report_count: Int?
+    /// Billing tier (`free`, `creator`, `pro`); null unless the server granted finance visibility.
+    var plan: String? = nil
 }
 
 // MARK: - Content Tab

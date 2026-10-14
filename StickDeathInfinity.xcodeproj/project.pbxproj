@@ -181,6 +181,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		3C6F4E28BC29F667C4FD4EFE /* BillingPlanCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF83562AAB826F0BA1537DF /* BillingPlanCatalog.swift */; };
 		F9F7A2F67CE4BC8C4B26E3D2 /* StudioGradientFill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FF8974972A03216F4C7544A /* StudioGradientFill.swift */; };
 		FF8ADF2C438A85029DFB72F6 /* StudioSelectionMask.swift in Sources */ = {isa = PBXBuildFile; fileRef = 073BADE86CF10AA441768DD6 /* StudioSelectionMask.swift */; };
+		61DAE96D955B1015053892B2 /* AdminOperationsPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A09D9A926AFC6A1736450B9 /* AdminOperationsPanels.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -371,6 +372,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		8FF83562AAB826F0BA1537DF /* BillingPlanCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift"; sourceTree = SOURCE_ROOT; };
 		5FF8974972A03216F4C7544A /* StudioGradientFill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioGradientFill.swift"; sourceTree = SOURCE_ROOT; };
 		073BADE86CF10AA441768DD6 /* StudioSelectionMask.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioSelectionMask.swift"; sourceTree = SOURCE_ROOT; };
+		4A09D9A926AFC6A1736450B9 /* AdminOperationsPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -591,6 +593,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		4A6CA8964B099D03D70149E6 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				FA295816535F2ED95CA5599F /* Admin */,
 				CADE69133361D0E471AFF879 /* Collab */,
 				90132A03E62C27C079B40BC6 /* Auth */,
 				A1E8E02D27AC9EF0C0FD6320 /* Challenges */,
@@ -864,6 +867,14 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			path = Panels;
 			sourceTree = "<group>";
 		};
+		FA295816535F2ED95CA5599F /* Admin */ = {
+			isa = PBXGroup;
+			children = (
+				4A09D9A926AFC6A1736450B9 /* AdminOperationsPanels.swift */,
+			);
+			path = Admin;
+			sourceTree = "<group>";
+		};
 		/* End PBXGroup section */
 
 		/* Begin PBXNativeTarget section */
@@ -979,6 +990,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				61DAE96D955B1015053892B2 /* AdminOperationsPanels.swift in Sources */,
 				FF8ADF2C438A85029DFB72F6 /* StudioSelectionMask.swift in Sources */,
 				F9F7A2F67CE4BC8C4B26E3D2 /* StudioGradientFill.swift in Sources */,
 				3C6F4E28BC29F667C4FD4EFE /* BillingPlanCatalog.swift in Sources */,

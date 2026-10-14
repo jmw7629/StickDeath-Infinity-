@@ -34,6 +34,7 @@
   let pendingFactor = null;
   const PANELS = [
     { title: 'Health and queues', rpc: 'sdi_admin_health', params: {} },
+    { title: 'Backups, releases and retention', rpc: 'sdi_admin_operations', params: {} },
     { title: 'Provider configuration (presence only)', rpc: 'sdi_admin_configuration', params: {} },
     { title: 'My permissions', rpc: 'sdi_admin_permissions', params: { action: 'mine' } },
     { title: 'Render approvals (pending)', rpc: 'sdi_review_action', params: { action: 'list' } },
@@ -44,6 +45,7 @@
     { title: 'Finance reconciliation (90 days)', rpc: 'sdi_finance_report', params: { action: 'reconciliation' } },
     { title: 'Agents', rpc: 'sdi_agent_admin', params: { action: 'list' } },
     { title: 'Agent proposals (inbox)', rpc: 'sdi_agent_proposal_admin', params: { action: 'inbox' } },
+    { title: 'Agent audit log (latest 50)', rpc: 'sdi_agent_admin', params: { action: 'audit' } },
     { title: 'Announcements', rpc: 'sdi_announce_admin', params: { action: 'list' } },
     { title: 'Marketing workspace', rpc: 'sdi_marketing_action', params: { action: 'list' } },
     { title: 'Policy versions', rpc: 'sdi_consent_action', params: { action: 'list' } }
@@ -78,6 +80,8 @@
     show('admin-console', false); show('admin-signin', true); show('admin-mfa-form', false); show('admin-password-form', true);
     show('admin-enrol-form', false); show('admin-newpassword-form', false);
     $('admin-panels').replaceChildren();
+    for (const id of ['admin-users-result', 'admin-history-result']) { const el = $(id); if (el) el.replaceChildren(); }
+    for (const id of ['admin-account-result', 'admin-proposal-result', 'admin-stop-result']) { const el = $(id); if (el) el.textContent = ''; }
     setStatus('Signed out.', message || 'No session is held. Sign in to continue.');
     if (token) call('/auth/v1/logout', { token }).catch(() => {});
   }
@@ -320,6 +324,69 @@
     if (result && result.status === 'confirmed') { $('admin-proposal-reason').value = ''; buildPanels(); }
   }
 
+  // Shows a server answer in `out`: a refusal verbatim, otherwise the rows.
+  function showAnswer(out, result, rowsKey) {
+    if (!result || typeof result !== 'object') { out.replaceChildren(renderValue('No answer. Nothing was changed.')); return; }
+    if (result.error || result.code) { const p = document.createElement('p'); p.className = 'note'; p.textContent = `Server answer: ${result.error || result.code}`; out.replaceChildren(p); return; }
+    const rows = Array.isArray(result[rowsKey]) ? result[rowsKey] : [];
+    const parts = [rows.length ? renderValue(rows) : renderValue('No matching rows.')];
+    if (result.has_more) parts.push(renderValue('More results exist: open the next page.'));
+    out.replaceChildren(...parts);
+  }
+  const pageNumber = (raw) => { const n = Number.parseInt(String(raw).trim() || '1', 10); return Number.isInteger(n) && n >= 1 && n <= 200 ? n - 1 : null; };
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  async function searchUsers(event) {
+    event.preventDefault();
+    const out = $('admin-users-result');
+    const query = $('admin-users-query').value.trim();
+    const page = pageNumber($('admin-users-page').value);
+    if (query.length > 100 || page === null) { out.replaceChildren(renderValue('Use at most 100 characters and a page from 1 to 200; nothing was sent.')); return; }
+    out.replaceChildren(renderValue('Loading…'));
+    try { showAnswer(out, await rpc('sdi_users_action', { action: 'list', query, page }), 'users'); }
+    catch (_) { out.replaceChildren(renderValue('The request did not complete.')); }
+  }
+
+  async function accountAction(event) {
+    event.preventDefault();
+    const out = $('admin-account-result');
+    const subject = $('admin-account-subject').value.trim();
+    const action = $('admin-account-action').value;
+    const reason = $('admin-account-reason').value.trim();
+    if (!UUID_RE.test(subject) || !['note', 'signout', 'suspend', 'ban', 'restore'].includes(action) || !reason || reason.length > 2000 || !$('admin-account-confirm').checked) {
+      out.textContent = 'An account id, an action, a reason and the confirmation are required; nothing was sent.'; return;
+    }
+    try {
+      const result = await rpc('sdi_users_action', { action, subject, reason });
+      if (result && result.status === 'confirmed') {
+        out.textContent = `${action} confirmed and audited.`;
+        $('admin-account-reason').value = ''; $('admin-account-confirm').checked = false;
+      } else if (result && result.code === 'step_up_required') {
+        out.textContent = 'The server requires a recent second factor: sign out and sign in again with your authenticator, then retry. Nothing was changed.';
+      } else {
+        out.textContent = `Server answer: ${(result && (result.error || result.code)) || 'no confirmation'}. Nothing was changed.`;
+      }
+    } catch (_) { out.textContent = 'The request did not complete. Refresh the directory before retrying.'; }
+  }
+
+  async function searchHistory(event) {
+    event.preventDefault();
+    const out = $('admin-history-result');
+    const kind = $('admin-history-kind').value === 'audit' ? 'audit' : 'runs';
+    const agent = $('admin-history-agent').value.trim();
+    const state = $('admin-history-state').value;
+    const query = $('admin-history-query').value.trim();
+    const page = pageNumber($('admin-history-page').value);
+    if ((agent && !/^[a-z0-9_]{1,40}$/.test(agent)) || query.length > 100 || page === null || (state && !['running', 'succeeded', 'failed', 'stopped'].includes(state))) {
+      out.replaceChildren(renderValue('Check the agent key, search text (100 characters) and page (1 to 200); nothing was sent.')); return;
+    }
+    const payload = { query, page: String(page) };
+    if (kind === 'runs' && state) payload.state = state;
+    out.replaceChildren(renderValue('Loading…'));
+    try { showAnswer(out, await rpc('sdi_agent_admin', { action: kind, agent: agent || null, payload }), kind); }
+    catch (_) { out.replaceChildren(renderValue('The request did not complete.')); }
+  }
+
   // --- wire up ----------------------------------------------------------------------
   const providerHost = $('admin-providers');
   if (providers.length) {
@@ -343,6 +410,9 @@
   $('admin-refresh').addEventListener('click', () => enterConsole());
   $('admin-stop-form').addEventListener('submit', emergencyStop);
   $('admin-proposal-form').addEventListener('submit', decideProposal);
+  $('admin-users-form').addEventListener('submit', searchUsers);
+  $('admin-account-form').addEventListener('submit', accountAction);
+  $('admin-history-form').addEventListener('submit', searchHistory);
   show('admin-signin', true);
   setStatus('Backend configured; not signed in.', `Sign in to ${new URL(base).hostname}. Nothing is stored in this browser; the session ends on reload or expiry.`);
   adoptFragment().catch(() => setStatus('Sign-in redirect could not be read.', 'Sign in again.'));

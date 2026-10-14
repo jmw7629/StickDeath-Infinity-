@@ -34,9 +34,15 @@ revoke all on function sdi_private.report_revision() from public;
 create trigger report_revision before update on sdi_private.feed_reports for each row execute function sdi_private.report_revision();
 create function sdi_private.moderation_action(action text,report uuid default null,version bigint default null,note text default '') returns jsonb
 language plpgsql security definer set search_path='' as $$
-declare result jsonb; r sdi_private.feed_reports; p sdi_private.feed_posts; video public.sdi_watch_media;
+declare result jsonb; r sdi_private.feed_reports; p sdi_private.feed_posts; video public.sdi_watch_media; denial jsonb;
 begin
  if not sdi_private.admin_can('moderation') or not sdi_private.account_active() then return jsonb_build_object('error','Current admin MFA authorization required.');end if;
+ -- Decisions are rate limited per administrator with a denial audit (admin_gate,
+ -- admin-hardening.sql, resolved at run time).
+ if action in('dismiss','remove') then
+  denial:=sdi_private.admin_gate('moderation_action.'||action,'moderation',false,60);
+  if denial is not null then return denial; end if;
+ end if;
  if action='list' then
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into result from (
    select r.id,r.reason,r.version,r.created_at,p.caption,p.creator,m.title,m.url,m.render_digest
