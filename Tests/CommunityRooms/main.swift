@@ -41,6 +41,11 @@ private func record(_ revision: Int, op: UUID = UUID(), author: UUID = member) -
     #"{"revision":\#(revision),"op_id":"\#(op.uuidString)","author":"\#(author.uuidString)","base_revision":\#(revision - 1),"kind":"frame.add","payload":{"frame":\#(revision)},"created_at":"2026-10-12T20:00:00+00:00"}"#
 }
 
+private let asset = UUID(uuidString: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")!
+private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), author: UUID = member) -> String {
+    #"{"revision":\#(revision),"op_id":"\#(op.uuidString)","author":"\#(author.uuidString)","base_revision":\#(revision - 1),"kind":"frame.update","payload":{"target":"\#(target)"},"created_at":"2026-10-12T20:00:00+00:00"}"#
+}
+
 @main @MainActor struct CommunityRoomsTests {
     static func main() async {
         setvbuf(stdout, nil, _IONBF, 0)
@@ -154,9 +159,10 @@ private func record(_ revision: Int, op: UUID = UUID(), author: UUID = member) -
             let conflict = try decoder.decode(RoomCommandResponse.self, from: Data(#"{"error":"conflict","head":6,"missing":[\#(record(5)),\#(record(6))]}"#.utf8))
             guard case .conflict(let head, let missing) = sync.handleAppend(conflict, for: second) else { throw Failure(description: "conflict not surfaced") }
             try require(head == 6 && missing.count == 2 && sync.pending.count == 1 && sync.nextAppend() == nil, "conflict keeps the local edit and blocks sends until remote edits are applied")
-            try require(sync.lastProblem?.contains("2 remote edits") == true, "conflict explanation names the count")
+            try require(sync.held?.opID == second && sync.held?.overlapping.count == 2 && sync.lastProblem?.contains("same part") == true, "untargeted edit overlapping remote edits is held for a decision")
             for remote in sync.remoteCommandsToApply(author: owner) { sync.acknowledgeRemote(remote) }
-            try require(sync.head == 6 && sync.nextAppend()?.base_revision == 6, "head rebased after applying remote edits")
+            try require(sync.head == 6 && sync.nextAppend() == nil, "held edit is not re-sent silently after applying remote edits")
+            try require(sync.resolveHeld(keepMine: true) && sync.nextAppend()?.base_revision == 6, "keeping mine re-sends on the new head")
             let dup = try decoder.decode(RoomCommandResponse.self, from: Data(#"{"status":"duplicate","revision":7,"head":7}"#.utf8))
             try require(sync.handleAppend(dup, for: second) == .duplicate(revision: 7) && sync.head == 7, "duplicate reply after a retried send is idempotent")
             let ended = try decoder.decode(RoomCommandResponse.self, from: Data(#"{"error":"Room is unavailable."}"#.utf8))
@@ -201,19 +207,183 @@ private func record(_ revision: Int, op: UUID = UUID(), author: UUID = member) -
             try require(coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(3)])), "editor enqueues")
             try require(coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(4)])), "second edit enqueues")
             transport.replies = [.success(#"{"status":"applied","revision":3}"#), .success(#"{"error":"conflict","head":5,"missing":[\#(record(4)),\#(record(5))]}"#)]
-            try require(await coordinator.drain() == .conflict(2) && coordinator.head == 3 && coordinator.pendingLocalCount == 1 && coordinator.pendingRemoteCount == 2, "first edit applied, second blocked by conflict")
+            try require(await coordinator.drain() == .held(2) && coordinator.head == 3 && coordinator.pendingLocalCount == 1 && coordinator.pendingRemoteCount == 2, "first edit applied, second held by an overlapping conflict")
             try require(transport.calls.count == 2 && transport.calls[1].params["base_revision"] as? Int == 3, "second append fenced on the advanced head")
             var applied: [Int] = []
             coordinator.applyRemote = { record in applied.append(record.revision); return true }
             transport.replies = [.success(#"{"commands":[],"head":5}"#)]
             _ = await coordinator.catchUp()
             try require(applied == [4, 5] && coordinator.head == 5 && coordinator.pendingRemoteCount == 0, "remote edits applied in order through the hook")
+            try require(await coordinator.drain() == .held(2) && transport.calls.count == 3, "nothing sent until the creator decides")
+            try require(coordinator.resolveHeldConflict(keepMine: true), "creator keeps their edit on top")
             transport.replies = [.success(#"{"status":"applied","revision":6}"#)]
             try require(await coordinator.drain() == .sent(1) && coordinator.head == 6, "blocked edit sent after rebasing")
             transport.replies = [.success(#"{"error":"Room is unavailable."}"#)]
             _ = coordinator.publishLocalEdit(kind: "frame.add", payload: .object([:]))
             try require(await coordinator.drain() == .stopped("Room is unavailable.") && coordinator.session == nil, "revoked access ends the session")
             try require(await coordinator.drain() == .idle, "no session means nothing is sent")
+        }
+
+        await test("server rebase: own revision is skipped once the remote edits below it are applied") {
+            let sync = RoomCommandSync(room: room, head: 3)
+            let mine = UUID(), theirs = UUID()
+            try require(sync.enqueue(kind: "frame.update", payload: .object(["target": .string("frame:a")]), opID: mine), "enqueue targeted edit")
+            let decoder = CommunityCoding.decoder()
+            let rebased = try decoder.decode(RoomCommandResponse.self, from: Data(#"{"status":"rebased","revision":5,"head":5,"missing":[\#(targeted(4, "frame:b", op: theirs))]}"#.utf8))
+            guard case .rebased(let revision, let missing) = sync.handleAppend(rebased, for: mine) else { throw Failure(description: "rebase not recognised") }
+            try require(revision == 5 && missing.count == 1 && sync.head == 3 && sync.pending.isEmpty && sync.held == nil, "own edit acknowledged, remote edit still to apply")
+            let page = try decoder.decode(RoomCommandResponse.self, from: Data(#"{"commands":[\#(targeted(4, "frame:b", op: theirs)),\#(targeted(5, "frame:a", op: mine, author: owner))],"head":5}"#.utf8))
+            _ = sync.handleCatchUp(page)
+            guard let next = sync.nextRemoteToApply() else { throw Failure(description: "remote edit missing") }
+            try require(next.op_id == theirs, "the other creator's edit is applied first")
+            sync.acknowledgeRemote(next)
+            try require(sync.head == 5 && sync.inbox.isEmpty && sync.nextRemoteToApply() == nil, "head skips over the own rebased revision")
+            try require((sync.ownCommands[mine] ?? nil) == "frame:a", "own edit recorded with its target for undo")
+        }
+
+        await test("conflicts: disjoint ones re-fence, overlapping ones wait for keep or discard") {
+            let decoder = CommunityCoding.decoder()
+            let sync = RoomCommandSync(room: room, head: 0)
+            let first = UUID()
+            _ = sync.enqueue(kind: "frame.update", payload: .object(["target": .string("frame:a")]), opID: first)
+            let disjoint = try decoder.decode(RoomCommandResponse.self, from: Data(#"{"error":"conflict","head":1,"missing":[\#(targeted(1, "frame:b"))],"overlap":[]}"#.utf8))
+            _ = sync.handleAppend(disjoint, for: first)
+            try require(sync.held == nil && sync.lastProblem?.contains("Apply 1 remote edit") == true, "disjoint conflict is not held")
+            if let next = sync.nextRemoteToApply() { sync.acknowledgeRemote(next) }
+            try require(sync.nextAppend()?.base_revision == 1, "disjoint edit re-sent on the new head")
+            let overlap = try decoder.decode(RoomCommandResponse.self, from: Data(#"{"error":"conflict","head":2,"missing":[\#(targeted(2, "frame:a"))]}"#.utf8))
+            _ = sync.handleAppend(overlap, for: first)
+            try require(sync.held?.opID == first && sync.held?.target == "frame:a", "same-target conflict held")
+            if let next = sync.nextRemoteToApply() { sync.acknowledgeRemote(next) }
+            try require(sync.nextAppend() == nil, "held edit never sent silently")
+            try require(sync.resolveHeld(keepMine: false) && sync.pending.isEmpty && sync.nextAppend() == nil, "discarding mine drops the edit")
+            try require(!sync.resolveHeld(keepMine: true), "nothing left to resolve")
+        }
+
+        await test("undo ownership: only own acknowledged edits, once; revoked editing keeps edits local") {
+            let decoder = CommunityCoding.decoder()
+            let sync = RoomCommandSync(room: room, head: 0)
+            let edit = UUID()
+            _ = sync.enqueue(kind: "layer.rename", payload: .object(["target": .string("layer:1"), "name": .string("Sky")]), opID: edit)
+            _ = sync.handleAppend(try decoder.decode(RoomCommandResponse.self, from: Data(#"{"status":"applied","revision":1}"#.utf8)), for: edit)
+            try require(!sync.enqueueUndo(of: UUID()), "another creator's edit cannot be undone")
+            let undo = UUID()
+            try require(sync.enqueueUndo(of: edit, opID: undo), "own edit can be undone")
+            try require(!sync.enqueueUndo(of: edit), "undo not queued twice")
+            try require(sync.pending.first?.payload.objectValue?["undo_op"]?.stringValue == edit.uuidString.lowercased() && sync.pending.first?.target == "layer:1", "undo payload names the edit and inherits its target")
+            _ = sync.handleAppend(try decoder.decode(RoomCommandResponse.self, from: Data(#"{"status":"applied","revision":2}"#.utf8)), for: undo)
+            try require(sync.undone.contains(edit) && !sync.enqueueUndo(of: edit), "undone edit cannot be undone again")
+            let later = UUID()
+            _ = sync.enqueue(kind: "frame.add", payload: .object(["target": .string("frame:9")]), opID: later)
+            let revoked = try decoder.decode(RoomCommandResponse.self, from: Data(#"{"error":"You can view this project but not edit it."}"#.utf8))
+            try require(sync.handleAppend(revoked, for: later) == .refused("You can view this project but not edit it."), "revocation surfaced")
+            try require(sync.editingRevoked && !sync.accessEnded && sync.nextAppend() == nil && sync.pending.count == 1, "edits stay local after revocation")
+            try require(!sync.enqueue(kind: "frame.add", payload: .object([:])), "no new shared edits after revocation")
+        }
+
+        await test("asset send validates locally, transfers bounded chunks and finalises against the server hash") {
+            let transport = FakeTransport()
+            let transfer = RoomAssetTransfer(gateway: CommunityGateway(transport: transport))
+            let file = Data((0..<40_000).map { UInt8($0 % 251) })
+            guard let digest = RoomAssetPolicy.sha256Hex(file) else { throw Failure(description: "hashing unavailable") }
+            do { _ = try await transfer.send(room: room, file: file, name: "clip.mov", mime: RoomAssetPolicy.mime(forExtension: "mov"), license: .ownWork, attribution: ""); throw Failure(description: "video accepted") }
+            catch RoomAssetTransfer.TransferError.invalid {}
+            do { _ = try await transfer.send(room: room, file: file, name: "a.png", mime: "image/png", license: .ccBy, attribution: " "); throw Failure(description: "CC BY without attribution") }
+            catch RoomAssetTransfer.TransferError.invalid {}
+            do { _ = try await transfer.send(room: room, file: Data(count: RoomAssetPolicy.maximumBytes + 1), name: "a.png", mime: "image/png", license: .ownWork, attribution: ""); throw Failure(description: "oversized file") }
+            catch RoomAssetTransfer.TransferError.invalid {}
+            try require(transport.calls.isEmpty, "nothing sent for invalid files")
+            transport.replies = [
+                .success(#"{"status":"declared","asset_id":"\#(asset.uuidString)","state":"receiving","chunk_size":32768,"chunk_count":2,"expires_at":"2026-10-14T21:00:00+00:00"}"#),
+                .success(#"{"status":"stored","received":1}"#), .success(#"{"status":"stored","received":2}"#),
+                .success(#"{"status":"available","asset_id":"\#(asset.uuidString)","expires_at":"2026-10-17T20:00:00+00:00"}"#)]
+            var progress: [Int] = []
+            let outcome = try await transfer.send(room: room, file: file, name: " punch.png ", mime: "image/png", license: .ownWork, attribution: "") { sent, _ in progress.append(sent) }
+            try require(outcome == .available(asset) && progress == [1, 2], "two chunks sent then finalised")
+            let declare = transport.calls[0].params
+            try require(declare["action"] as? String == "declare" && declare["sha256"] as? String == digest && declare["byte_size"] as? Int == 40_000 && declare["name"] as? String == "punch.png" && declare["license"] as? String == "own-work", "declare payload")
+            let chunk0 = (transport.calls[1].params["data"] as? String).flatMap { Data(base64Encoded: $0) }
+            try require(chunk0 == file.prefix(32_768) && transport.calls[2].params["chunk_index"] as? Int == 1 && transport.calls[3].params["action"] as? String == "finalize", "chunks carry exact bytes in order")
+        }
+
+        await test("asset send resumes from server-held chunks, retries an incomplete finalise and reports corruption") {
+            let transport = FakeTransport()
+            let transfer = RoomAssetTransfer(gateway: CommunityGateway(transport: transport))
+            let file = Data((0..<40_000).map { UInt8($0 % 13) })
+            transport.replies = [
+                .success(#"{"status":"existing","asset_id":"\#(asset.uuidString)","state":"receiving","chunk_size":32768,"chunk_count":2,"expires_at":"2026-10-14T21:00:00+00:00"}"#),
+                .success(#"{"asset_id":"\#(asset.uuidString)","state":"receiving","chunk_count":2,"expires_at":"2026-10-14T21:00:00+00:00","received":[0]}"#),
+                .success(#"{"status":"stored","received":2}"#),
+                .success(#"{"error":"incomplete","received":[1]}"#),
+                .success(#"{"status":"stored","received":2}"#),
+                .success(#"{"status":"available","asset_id":"\#(asset.uuidString)","expires_at":"2026-10-17T20:00:00+00:00"}"#)]
+            try require(try await transfer.send(room: room, file: file, name: "a.wav", mime: "audio/wav", license: .cc0, attribution: "") == .available(asset), "resumed transfer completes")
+            let indexes = transport.calls.filter { $0.params["action"] as? String == "put" }.compactMap { $0.params["chunk_index"] as? Int }
+            try require(indexes == [1, 0], "only missing chunks were sent")
+            transport.replies = [.success(#"{"status":"existing","asset_id":"\#(asset.uuidString)","state":"available","chunk_size":32768,"chunk_count":2,"expires_at":"2026-10-17T20:00:00+00:00"}"#)]
+            try require(try await transfer.send(room: room, file: file, name: "a.wav", mime: "audio/wav", license: .cc0, attribution: "") == .alreadyShared(asset), "identical file already shared")
+            transport.replies = [
+                .success(#"{"status":"declared","asset_id":"\#(asset.uuidString)","state":"receiving","chunk_size":32768,"chunk_count":2,"expires_at":"2026-10-14T21:00:00+00:00"}"#),
+                .success(#"{"status":"stored","received":1}"#), .success(#"{"status":"stored","received":2}"#),
+                .success(#"{"error":"The transferred file was corrupt and has been discarded. Send it again."}"#)]
+            do { _ = try await transfer.send(room: room, file: file, name: "a.wav", mime: "audio/wav", license: .cc0, attribution: ""); throw Failure(description: "corruption hidden") }
+            catch RoomAssetTransfer.TransferError.corrupt {}
+            transport.replies = [.success(#"{"error":"Only editors can share assets in this room."}"#)]
+            do { _ = try await transfer.send(room: room, file: file, name: "a.wav", mime: "audio/wav", license: .cc0, attribution: ""); throw Failure(description: "refusal hidden") }
+            catch RoomAssetTransfer.TransferError.refused(let message) { try require(message.contains("Only editors"), "server refusal surfaced") }
+        }
+
+        await test("asset receive verifies every chunk and the whole-file hash, resumes, and saves without overwriting") {
+            let transport = FakeTransport()
+            let transfer = RoomAssetTransfer(gateway: CommunityGateway(transport: transport))
+            let file = Data((0..<40_000).map { UInt8(($0 * 7) % 256) })
+            guard let digest = RoomAssetPolicy.sha256Hex(file) else { throw Failure(description: "hashing unavailable") }
+            transport.replies = [.success(#"{"assets":[{"asset_id":"\#(asset.uuidString)","name":"../punch.png","mime":"image/png","byte_size":40000,"chunk_count":2,"sha256":"\#(digest)","license":"cc-by","attribution":"Ann","state":"available","expires_at":"2026-10-17T20:00:00+00:00","created_at":"2026-10-14T20:00:00+00:00","mine":false,"received":2}],"chunk_size":32768}"#)]
+            let listed = try await transfer.list(room: room)
+            try require(listed.count == 1 && listed[0].licenseTitle.contains("CC BY"), "assets listed with licence")
+            func chunkReply(_ index: Int, _ bytes: Data, sha: String = digest) -> String {
+                #"{"asset_id":"\#(asset.uuidString)","chunk_index":\#(index),"chunk_count":2,"sha256":"\#(sha)","data":"\#(bytes.base64EncodedString(options: .lineLength76Characters).replacingOccurrences(of: "\r\n", with: "\\n"))"}"#
+            }
+            var download = RoomAssetTransfer.Download(asset: listed[0])
+            transport.replies = [.success(chunkReply(0, file.prefix(32_768))), .failure(CommunityError.transport("offline"))]
+            do { _ = try await transfer.receive(room: room, &download); throw Failure(description: "offline hidden") } catch CommunityError.transport {}
+            try require(download.chunks.count == 1, "partial download kept for resume")
+            transport.replies = [.success(chunkReply(1, file.suffix(from: 32_768)))]
+            let received = try await transfer.receive(room: room, &download)
+            try require(received == file && transport.calls.last?.params["chunk_index"] as? Int == 1, "resumed from chunk 1 and verified")
+            var tampered = RoomAssetTransfer.Download(asset: listed[0])
+            var bad = Data(file.suffix(from: 32_768)); bad[bad.startIndex] ^= 0xFF
+            transport.replies = [.success(chunkReply(0, file.prefix(32_768))), .success(chunkReply(1, bad))]
+            do { _ = try await transfer.receive(room: room, &tampered); throw Failure(description: "tampered file accepted") }
+            catch RoomAssetTransfer.TransferError.corrupt { try require(tampered.chunks.isEmpty, "corrupt download discarded") }
+            var short = RoomAssetTransfer.Download(asset: listed[0])
+            transport.replies = [.success(chunkReply(0, file.prefix(100)))]
+            do { _ = try await transfer.receive(room: room, &short); throw Failure(description: "short chunk accepted") } catch RoomAssetTransfer.TransferError.corrupt {}
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-room-assets-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: base) }
+            let saved = try RoomAssetInbox.save(received, asset: listed[0], room: room, base: base)
+            let written = try Data(contentsOf: saved)
+            try require(saved.deletingLastPathComponent().standardizedFileURL == RoomAssetInbox.directory(base: base, room: room).standardizedFileURL && saved.lastPathComponent.hasSuffix("_punch.png") && written == file, "saved inside the room transfer folder")
+            try require(try RoomAssetInbox.save(received, asset: listed[0], room: room, base: base) == saved, "saving again is idempotent")
+            try Data("other".utf8).write(to: saved)
+            do { _ = try RoomAssetInbox.save(received, asset: listed[0], room: room, base: base); throw Failure(description: "overwrote a different file") }
+            catch RoomAssetTransfer.TransferError.refused {}
+            do { _ = try RoomAssetInbox.save(Data("x".utf8), asset: listed[0], room: room, base: base); throw Failure(description: "saved unverified data") }
+            catch RoomAssetTransfer.TransferError.corrupt {}
+        }
+
+        await test("active-project handoff survives leaving Rooms for Studio and ends with the session") {
+            let coordinator = RoomSessionCoordinator(client: nil)
+            coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+            try require(coordinator.handoff == nil, "no handoff without a session")
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: member)
+            coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+            try require(coordinator.isHandedOff(room: room) && coordinator.returnRoom == room, "handoff recorded for the return trip")
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: false, account: member)
+            try require(coordinator.session?.canEdit == false && coordinator.isHandedOff(room: room), "permission change keeps the handoff")
+            try require(!coordinator.publishLocalEdit(kind: "frame.add", payload: .object([:])), "viewer after downgrade cannot publish")
+            coordinator.end(reason: "Room access ended. Your device copy of the project is unchanged.")
+            try require(coordinator.handoff == nil && coordinator.session == nil && coordinator.endReason?.contains("unchanged") == true, "ending clears the handoff with a truthful reason")
         }
 
         print("COMMUNITY_ROOMS_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed) passed \(failed) failed")

@@ -140,8 +140,21 @@ profile.reviews.publish-feed,StickDeathInfinity/Views/Profile/ProfileView.swift,
 profile.sign-in,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Sign in or create an account' -> binds 0,n-a,#134 #136 #137,deferred
 profile.statistics,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,text,n-a,#224,deferred
 profile.subscription-status,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,"text 'Pricing, renewal and purchase information are no'",n-a,#258,deferred
+rooms.assets,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,container 'rooms.assets' (identifier-derived; review source),no,#233 #234,deferred
+rooms.assets.attribution,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,text field -> binds attribution,no,#233 #234,deferred
+rooms.assets.cancel,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button 'Cancel' -> cancel,no,#233 #234,deferred
+rooms.assets.choose,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button 'Choose a file to send',no,#233 #234,deferred
+rooms.assets.consent,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,toggle 'I have the rights to share this file with this r' -> binds consent,no,#233 #234,deferred
+rooms.assets.download,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button 'Save to this device',no,#233 #234,deferred
+rooms.assets.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,text 'Shared assets',no,#233 #234,deferred
+rooms.assets.license,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,"text 'Licence' -> binds license, binds 0.title, binds 0",no,#233 #234,deferred
+rooms.assets.notice,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,container 'rooms.assets.notice' (identifier-derived; review source),no,#233 #234,deferred
+rooms.assets.progress,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,text,no,#233 #234,deferred
+rooms.assets.refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button 'Refresh assets' -> refresh,no,#233 #234,deferred
+rooms.assets.send,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button,no,#233 #234,deferred
+rooms.assets.withdraw,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button,no,#233 #234,deferred
 rooms.browser.create,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Create room',no,#228 #234,deferred
-rooms.browser.empty,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'No accepted rooms.',no,#228 #234,deferred
+rooms.browser.empty,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'No accepted rooms. Rooms appear here once you cr',no,#228 #234,deferred
 rooms.browser.refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Refresh rooms' -> load,no,#228 #234,deferred
 rooms.browser.room,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,"text 'Your rooms' -> load, binds 0",no,#228 #234,deferred
 rooms.calendar,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,progress -> load,no,#297,deferred
@@ -162,12 +175,15 @@ rooms.member.role,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetai
 rooms.not-configured,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'Collaborate by agreement. Invitation codes never',no,#228 #234,deferred
 rooms.notice,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,container 'rooms.notice' (identifier-derived; review source),no,#228 #234,deferred
 rooms.quotas,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomQuotaPanel,container 'rooms.quotas' (identifier-derived; review source),no,#228 #234,deferred
-rooms.quotas.transfer-unavailable,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomQuotaPanel,text 'Quotas and transfers',no,#228 #234,deferred
+rooms.quotas.transfers,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomQuotaPanel,text 'Quotas and transfers',no,#233 #234,deferred
 rooms.report.detail,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,"text field 'What happened? (optional, up to 2000 characters)' -> binds draft.detail",no,#228 #234,deferred
 rooms.report.reason,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,"text 'Reason' -> binds draft.reason, binds 0.title, binds 0",no,#228 #234,deferred
 rooms.report.submit,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,button -> submit,no,#228 #234,deferred
 rooms.requests.item,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'Your pending requests',no,#228 #234,deferred
 rooms.room.back,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Back to rooms' -> auth.userId.flatMap,no,#228 #234,deferred
+rooms.room.conflict,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,-> binds 0,no,#232 #234,deferred
+rooms.room.conflict-discard,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Discard mine',no,#232 #234,deferred
+rooms.room.conflict-keep,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Keep mine on top',no,#232 #234,deferred
 rooms.room.copy-code,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,label 'Copy',no,#228 #234,deferred
 rooms.room.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text,no,#228 #234,deferred
 rooms.room.invite,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Create 24-hour invite',no,#228 #234,deferred
