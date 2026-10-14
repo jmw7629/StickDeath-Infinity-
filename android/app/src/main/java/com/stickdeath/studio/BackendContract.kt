@@ -22,6 +22,8 @@ object BackendContract {
     /** Client-facing RPCs only (service-role workers and admin consoles stay server/web side). */
     val rpcs: List<BackendRpc> = listOf(
         BackendRpc("sdi_feed_action", BackendArea.Feed, "video-feed.sql", BackendAccess.Member, "Approved-video wall pages, likes, follows, blocks and reports."),
+        BackendRpc("sdi_feed_page", BackendArea.Feed, "feed-integrity.sql", BackendAccess.Member, "Keyset approved-video wall pages."),
+        BackendRpc("sdi_creator_stats", BackendArea.Feed, "feed-integrity.sql", BackendAccess.Member, "Counted creator totals."),
         BackendRpc("sdi_room_action", BackendArea.Rooms, "room-invitations.sql", BackendAccess.Member, "Invitation codes, consent, approval, rotation, revocation and membership."),
         BackendRpc("sdi_room_manage", BackendArea.Rooms, "rooms-v2.sql", BackendAccess.Member, "Shared project reference, title, view/edit permission and member roles."),
         BackendRpc("sdi_room_command", BackendArea.Rooms, "rooms-v2.sql", BackendAccess.Member, "Versioned shared edit commands with conflict responses."),

@@ -37,6 +37,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import com.stickdeath.studio.diagnostics.DiagnosticsSettingsSection
+import com.stickdeath.studio.diagnostics.DiagnosticsStore
 
 class MainActivity : ComponentActivity() {
     private val studio: StudioViewModel by viewModels()
@@ -800,6 +802,8 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
     Text("${reports.size} local crash report(s). Reports are redacted (no names, paths, project contents or identifiers), kept at most 30 days / five files, and never uploaded. No analytics SDK is installed.")
     reports.firstOrNull()?.let { latest -> Text(vm.readCrashReport(latest).lineSequence().take(12).joinToString("\n"), style = MaterialTheme.typography.bodySmall) }
     if (reports.isNotEmpty()) TextButton({ vm.deleteCrashReports() }) { Text("Delete local crash reports") }
+    val diagnosticsContext = LocalContext.current
+    DiagnosticsSettingsSection(remember { DiagnosticsStore(diagnosticsContext) })
 }
 
 private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, radius: Float): List<Pair<String, Point>> {
