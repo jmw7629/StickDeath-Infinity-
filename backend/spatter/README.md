@@ -69,9 +69,25 @@ kept for the original daily-budget tests). `SqlMeter` calls the service-only RPC
 4. per-account per-minute rate (default 6) → 429 `rate_limited` + `retryAfterSeconds`;
 5. per-account daily safety cap (default 100) → 429 `daily_safety_limit`;
 6. plan allowance from `sdi_private.entitlements` → 429 `plan_allowance_exhausted` + `upgrade`:
-   * `free` (and trial without a paid entitlement): 5 prompts, one-time until the owner confirms otherwise;
-   * `creator` (USD 4.99/month): 15 prompts per billing period, keyed to `paid_through`, so a renewal opens a new period;
-   * `pro` (USD 9.99/month): no plan allowance; steps 1–5 still apply.
+   * `free`: **5 suggested prompts per UTC calendar month, no free text** (owner
+     decision 2026-10-14). The request must carry `suggestedPromptId` from the
+     fixed allowlist (`suggested_prompts.py`, mirrored by
+     `sdi_private.spatter_suggested_prompt_ids()` and the iOS
+     `SpatterSuggestedPrompt.all`; `test_suggested_prompts.py` keeps all three
+     identical). Without one the request is refused with 403
+     `suggested_prompt_required` + `upgrade: creator_or_pro` before anything is
+     counted (this check runs right after the emergency stop); an unknown id is
+     400 `unknown_suggested_prompt`. For Free the handler discards every client
+     message (history and client system prompt included) and sends only a fixed
+     server system line plus the canonical prompt text for that id. The
+     allowance resets at 00:00 UTC on the first of the next month;
+   * `creator` (USD 4.99/month): 15 prompts per billing period, keyed to `paid_through`, so a renewal opens a new period; free text allowed;
+   * `pro` (USD 9.99/month): unlimited by plan; steps 1–5 still apply.
+   * The free trial applies to both paid plans: a `trialing` subscription is
+     metered as its own tier (Creator or Pro), not as Free.
+   * Creator and Pro members may add their own AI key in the app. Those requests
+     go directly from the device to the member's provider and never reach this
+     handler or the meter, so they do not count against the allowance.
 
 A reservation is taken only after the provider is known to be configured, and
 settled exactly once: `commit` with provider usage units after a reply,
@@ -84,8 +100,8 @@ Successful metered replies carry `allowance` instead of the daily `budget`:
 {"schemaVersion": 1, "reply": "…", "usage": {"units": 9}, "allowance": {"plan": "creator", "period": "billing_period", "remaining": 14, "resetsAt": "2026-11-01T00:00:00Z"}}
 ```
 
-`remaining` is `null` for `pro`; `resetsAt` is `null` for the one-time free
-allowance. Error bodies add `code` (and `retryable` for 502). Signed-in users read
+`remaining` is `null` for `pro`; `resetsAt` is the next calendar month for
+`free` (`period: "calendar_month"`) and the renewal date for `creator`. Error bodies add `code` (and `retryable` for 502). Signed-in users read
 their own allowance with `public.sdi_spatter_my_usage()` (for Settings); the owner
 reads/changes limits with `public.sdi_spatter_usage_admin('get'|'set', …)`,
 revisioned, reason-required and audited in `sdi_private.agent_audit`.
@@ -116,13 +132,13 @@ switches and credential non-disclosure. No sockets, provider or database.
 
 * Owner: choose and configure a provider adapter and model, deploy the
   function, apply the SQL, and set `global_daily_cap` above 0.
-* Owner questions still open on #209: whether the 5 free prompts are one-time
-  or monthly (implemented as one-time), whether bring-your-own provider keys
-  bypass the creator allowance, and which providers come first. BYO keys are
-  not implemented.
-* The iOS client still renders only the legacy daily `budget`; reading
-  `allowance`/`code` needs a change in `StickDeathInfinity/App/SpatterBackendClient.swift`
-  (see docs/SPATTER_WAVE4_2026_10_14.md). Until then metered replies show no
-  remaining count rather than a mislabelled one.
+* Owner decisions 2026-10-14 (implemented in source): Free = 5 suggested
+  prompts per month; Creator $4.99 = 15 prompts per month + own AI key; Pro
+  $9.99 = unlimited + own AI key; trial on both paid plans. See
+  docs/SPATTER_BILLING_DECISIONS_2026_10_14.md.
+* The iOS client now decodes `allowance` and reads the remaining count from
+  `sdi_spatter_my_usage`; non-2xx JSON error bodies (`code`, `retryAfterSeconds`)
+  are still not read by the bounded transport, so the client refreshes the
+  server usage after a refusal instead.
 * Live integration runs (real provider failures, rate limits, token expiry
   against a deployed project) are deferred. Nothing here claims a deployment.

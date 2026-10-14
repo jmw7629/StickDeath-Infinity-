@@ -96,7 +96,7 @@ end $$;
 -- #209 cloud-advice metering: plan allowances, safety/rate/global limits,
 -- emergency stop, exactly-once settlement and owner-only limit changes.
 do $$
-declare owner uuid; viewer uuid; free_user uuid; creator uuid; pro uuid; banned uuid; r jsonb; rid uuid; i integer; rev bigint;
+declare owner uuid; viewer uuid; free_user uuid; creator uuid; pro uuid; banned uuid; trial_c uuid; trial_p uuid; r jsonb; rid uuid; i integer; rev bigint;
  paid timestamptz:=date_trunc('second',clock_timestamp())+interval '20 days';
 begin
  owner:=sdi_test.admin('meter-owner',true,array[]::text[]); viewer:=sdi_test.admin('meter-viewer',false,array['overview']);
@@ -107,7 +107,7 @@ begin
  insert into sdi_private.account_controls(user_id,state,reason) values(banned,'suspended','Test.');
 
  -- Closed by default: the global ceiling is 0 until the owner sets it.
- r:=sdi_private.spatter_usage_meter('reserve',free_user);
+ r:=sdi_private.spatter_usage_meter('reserve',free_user,p_suggested_prompt=>'animation_tips');
  perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='global_limit','global ceiling defaults closed: '||r::text);
  perform sdi_test.check((select count(*) from sdi_private.spatter_usage_reservations)=0,'a refusal reserves nothing');
 
@@ -132,21 +132,41 @@ begin
  perform sdi_test.check(exists(select 1 from sdi_private.agent_audit where agent_key='spatter_advice' and actor=owner),'limit change audited');
  perform sdi_test.logout();
 
- -- Free: 5 one-time prompts; per-minute rate applies first (cap 3).
- for i in 1..3 loop r:=sdi_private.spatter_usage_meter('reserve',free_user);
-  perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='free' and (r->>'remaining')::integer=5-i and r->>'period'='one_time','free reserve '||i||': '||r::text);
+ -- Free (owner decision 2026-10-14): suggested prompts only, 5 per UTC calendar
+ -- month. Free text and unknown ids are refused before anything is counted.
+ r:=sdi_private.spatter_usage_meter('reserve',free_user);
+ perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='suggested_prompt_required' and r->>'upgrade'='creator_or_pro','free text refused on Free: '||r::text);
+ r:=sdi_private.spatter_usage_meter('reserve',free_user,p_suggested_prompt=>'write my essay');
+ perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='unknown_suggested_prompt','unknown suggested prompt refused: '||r::text);
+ perform sdi_test.check(not exists(select 1 from sdi_private.spatter_usage_counters where user_id=free_user),'refused free text counts nothing');
+ perform sdi_test.check(sdi_private.spatter_suggested_prompt_ids()=array['animation_tips','scene_ideas','fight_choreography','style_advice'],'suggested prompt allowlist');
+ -- Per-minute rate applies first (cap 3).
+ for i in 1..3 loop r:=sdi_private.spatter_usage_meter('reserve',free_user,p_suggested_prompt=>'scene_ideas');
+  perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='free' and (r->>'remaining')::integer=5-i and r->>'period'='calendar_month'
+   and (r->>'resets_at')::timestamptz=(date_trunc('month',clock_timestamp() at time zone 'utc')+interval '1 month') at time zone 'utc','free reserve '||i||': '||r::text);
   perform sdi_private.spatter_usage_meter('settle',null,(r->>'reservation')::uuid,'commit',3);
  end loop;
- r:=sdi_private.spatter_usage_meter('reserve',free_user);
+ r:=sdi_private.spatter_usage_meter('reserve',free_user,p_suggested_prompt=>'scene_ideas');
  perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='rate_limited' and (r->>'retry_after_seconds')::integer between 1 and 60,'per-minute rate enforced: '||r::text);
  update sdi_private.spatter_usage_counters set used=0 where user_id=free_user and bucket like 'minute:%';
- for i in 4..5 loop r:=sdi_private.spatter_usage_meter('reserve',free_user);
+ for i in 4..5 loop r:=sdi_private.spatter_usage_meter('reserve',free_user,p_suggested_prompt=>'style_advice');
   perform sdi_test.check((r->>'allowed')::boolean and (r->>'remaining')::integer=5-i,'free reserve '||i);
   perform sdi_private.spatter_usage_meter('settle',null,(r->>'reservation')::uuid,'commit',1);
  end loop;
  update sdi_private.spatter_usage_counters set used=0 where user_id=free_user and bucket like 'minute:%';
- r:=sdi_private.spatter_usage_meter('reserve',free_user);
- perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='plan_allowance_exhausted' and r->>'upgrade'='creator_or_pro','free allowance exhausted after 5: '||r::text);
+ r:=sdi_private.spatter_usage_meter('reserve',free_user,p_suggested_prompt=>'fight_choreography');
+ perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='plan_allowance_exhausted' and r->>'upgrade'='creator_or_pro'
+  and r->>'period'='calendar_month' and r->>'resets_at' is not null,'free allowance exhausted after 5 this month: '||r::text);
+ perform sdi_test.check((select used from sdi_private.spatter_usage_counters where user_id=free_user
+  and bucket='month:'||to_char(clock_timestamp() at time zone 'utc','YYYY-MM'))=5,'free usage lives in the calendar-month bucket');
+ -- A new calendar month opens a fresh allowance: last month's bucket no longer applies.
+ update sdi_private.spatter_usage_counters set bucket='month:2000-01' where user_id=free_user and bucket like 'month:%';
+ update sdi_private.spatter_usage_counters set used=0 where user_id=free_user and bucket like 'minute:%';
+ r:=sdi_private.spatter_usage_meter('reserve',free_user,p_suggested_prompt=>'animation_tips');
+ perform sdi_test.check((r->>'allowed')::boolean and (r->>'remaining')::integer=4,'next month resets the free allowance: '||r::text);
+ perform sdi_private.spatter_usage_meter('settle',null,(r->>'reservation')::uuid,'release');
+ -- A paid plan may send a suggested prompt or free text.
+ update sdi_private.spatter_usage_counters set used=0 where user_id=creator and bucket like 'minute:%';
 
  -- Release refunds every counter exactly once; a second settlement is refused.
  r:=sdi_private.spatter_usage_meter('reserve',creator);
@@ -178,6 +198,15 @@ begin
  r:=sdi_private.spatter_usage_meter('reserve',pro);
  perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='daily_safety_limit','pro still hits the daily safety cap: '||r::text);
 
+ -- The free trial applies to both paid plans: a trialing subscription meters as its own tier.
+ trial_c:=sdi_test.user('meter-trial-creator'); trial_p:=sdi_test.user('meter-trial-pro');
+ insert into sdi_private.subscriptions(user_id,provider,provider_subscription_id,product_id,status,paid_through,last_event_at)
+  values(trial_c,'stripe','sub_meter_tc','meter.creator','trialing',paid,clock_timestamp()),(trial_p,'stripe','sub_meter_tp','meter.pro','trialing',paid,clock_timestamp());
+ r:=sdi_private.spatter_usage_meter('reserve',trial_c);
+ perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='creator' and (r->>'remaining')::integer=14,'creator trial meters as Creator with free text: '||r::text);
+ r:=sdi_private.spatter_usage_meter('reserve',trial_p);
+ perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='pro' and r->'remaining'='null'::jsonb,'pro trial meters as Pro: '||r::text);
+
  -- Restricted accounts and the emergency stop refuse before counting.
  r:=sdi_private.spatter_usage_meter('reserve',banned);
  perform sdi_test.check(r->>'code'='account_restricted','suspended account refused');
@@ -194,6 +223,11 @@ begin
  perform sdi_test.check(r->>'plan'='creator' and (r->>'remaining')::integer=14 and (r->>'limit')::integer=15 and r->>'service'='metered' and not r ? 'bucket','own usage view: '||r::text);
  r:=sdi_private.spatter_usage_admin('get');
  perform sdi_test.check(r->>'error' like 'Current administrator%','members cannot read global usage');
+ perform sdi_test.logout();
+ perform sdi_test.login(free_user);
+ r:=sdi_private.spatter_my_usage();
+ perform sdi_test.check(r->>'plan'='free' and (r->>'limit')::integer=5 and r->>'period'='calendar_month' and (r->>'suggested_prompts_only')::boolean
+  and r->>'resets_at' is not null,'free usage view: '||r::text);
  perform sdi_test.logout();
  r:=sdi_private.spatter_my_usage();
  perform sdi_test.check(r->>'error' like 'Sign in%','anonymous caller sees no allowance');

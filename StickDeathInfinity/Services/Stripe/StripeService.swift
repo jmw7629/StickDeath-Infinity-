@@ -168,7 +168,8 @@ final class StripeService: ObservableObject {
 
     /// Plan copy for a loaded product's trial, only when Apple reports eligibility.
     func trialCopy(for product: Product) -> String? {
-        BillingCopy.trial(days: introductoryTrialDays(for: product), eligible: introOfferEligibility[product.id] == true)
+        BillingCopy.trial(for: catalog.plan(forProductID: product.id), days: introductoryTrialDays(for: product),
+                          eligible: introOfferEligibility[product.id] == true)
     }
 
     /// The catalogue plan a loaded product belongs to.

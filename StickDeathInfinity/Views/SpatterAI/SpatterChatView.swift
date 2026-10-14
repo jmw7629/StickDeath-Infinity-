@@ -66,22 +66,15 @@ struct SpatterChatView: View {
                     }
                 }
 
-                // Quick actions
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        quickAction("💡 Animation tips")
-                        quickAction("🎬 Scene ideas")
-                        quickAction("🔥 Fight choreography")
-                        quickAction("🎨 Style advice")
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                }
+                // Suggested prompts (the only cloud prompts on the Free plan)
+                SpatterSuggestionChips(vm: spatterVM, onFill: { input = $0 },
+                                       onSend: { _ = spatterVM.submitSuggested($0, context: .companion) })
                 .background(Color.sdSurface)
 
                 // Input
                 HStack(spacing: 12) {
-                    TextField("Ask Spatter for advice...", text: $input)
+                    TextField(spatterVM.freeTextLocked ? "Choose a suggested prompt above" : "Ask Spatter for advice...", text: $input)
+                        .disabled(spatterVM.freeTextLocked)
                         .accessibilityIdentifier("spatter.messages.input")
                         .font(.system(size: 14))
                         .foregroundColor(.sdTextPrimary)
@@ -99,7 +92,7 @@ struct SpatterChatView: View {
                             .font(.system(size: 32))
                             .foregroundColor(input.isEmpty ? .sdTextMuted : .sdRed)
                     }
-                    .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spatterVM.isThinking)
+                    .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spatterVM.isThinking || spatterVM.freeTextLocked)
                     .accessibilityIdentifier("spatter.messages.send")
                 }
                 .padding(.horizontal, 16)
@@ -125,6 +118,7 @@ struct SpatterChatView: View {
                         .accessibilityIdentifier("spatter.messages.budget")
                 }
             }
+            SpatterPlanControls(vm: spatterVM, accountID: authVM.userId)
             if let notice = spatterVM.notice {
                 Text(notice).font(.caption).foregroundColor(.sdTextSecondary)
                     .accessibilityIdentifier("spatter.messages.notice")
@@ -136,27 +130,6 @@ struct SpatterChatView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
         .background(Color.sdSurface)
-    }
-
-    private func quickAction(_ text: String) -> some View {
-        Button {
-            input = text.replacingOccurrences(of: "💡 ", with: "")
-                .replacingOccurrences(of: "🎬 ", with: "")
-                .replacingOccurrences(of: "🔥 ", with: "")
-                .replacingOccurrences(of: "🎨 ", with: "")
-        } label: {
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundColor(.sdTextSecondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.sdSurface2)
-                .cornerRadius(16)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.sdBorder, lineWidth: 1)
-                )
-        }
     }
 }
 

@@ -62,6 +62,11 @@ webhook secret, SQL executor); the deployment wraps them in its edge-function ru
   the canonical set (`active, trialing, grace, past_due, cancelled, expired, revoked,
   refunded`) with `paid_through = current_period_end` and ledger rows from
   `balance_transaction` amounts and fees.
+- Trials (owner decision 2026-10-14): the free trial applies to both paid plans.
+  A `trialing` subscription on either the Creator or the Pro price maps to
+  `trialing` for that tier (`contract.TRIAL_TIERS`), and the entitlement view and
+  the Spatter meter treat it as that tier. Trial length is Stripe/App Store
+  configuration; checkout requests carry no trial or amount fields.
 - Replays and delayed deliveries are safe: `provider_events(provider,event_id)` is
   unique and older events never move a subscription backwards.
 

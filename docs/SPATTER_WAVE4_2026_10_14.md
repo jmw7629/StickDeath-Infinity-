@@ -35,10 +35,11 @@ In source, tested on Linux:
   new SQL block executes, then removed.
 
 Owner-gated: choose/configure a provider adapter and model, deploy the
-function, apply the SQL, set `global_daily_cap` > 0. Open owner questions from
-the #209 thread: whether the 5 free prompts are one-time or monthly; whether
-BYO provider keys bypass the creator allowance and which providers come first
-(BYO keys are **not** implemented).
+function, apply the SQL, set `global_daily_cap` > 0. The open owner questions
+were answered on 2026-10-14 and are implemented in source (Free = 5 suggested
+prompts per month, own AI key on Creator and Pro, trial on both paid plans):
+see `docs/SPATTER_BILLING_DECISIONS_2026_10_14.md`, which supersedes the
+one-time free allowance and the "BYO keys not implemented" note above.
 
 ### Client patch needed (outside D2 file ownership)
 
