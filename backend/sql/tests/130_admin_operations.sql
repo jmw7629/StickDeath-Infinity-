@@ -13,7 +13,7 @@ begin
  perform sdi_test.login(viewer,'aal2');
  r:=sdi_private.admin_operations();
  perform sdi_test.check((r->'backup'->>'stale')::boolean and r->'backup'->>'last_succeeded_at' is null,'no backup report is stale: '||r::text);
- perform sdi_test.check((r->'restore_drill'->>'stale')::boolean and r->'release' = 'null'::jsonb,'no drill or release reported');
+ perform sdi_test.check((r->'restore_drill'->>'stale')::boolean and (r->'retention_sweep'->>'stale')::boolean and r->'release' = 'null'::jsonb,'no drill, sweep or release reported');
  perform sdi_test.logout();
 
  -- Host jobs report outcomes; hosts, paths and free text are refused.

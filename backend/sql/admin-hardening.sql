@@ -279,8 +279,8 @@ revoke all on function public.sdi_ops_report(text,text,text,jsonb) from public,a
 grant execute on function public.sdi_ops_report(text,text,text,jsonb) to service_role;
 
 -- Read-only operations status for administrators with the overview capability.
--- Staleness: a backup is due daily (26 h), a restore drill monthly (35 days). A
--- missing report is shown as never reported, not as healthy.
+-- Staleness: a backup is due daily (26 h), a restore drill monthly (35 days), a
+-- retention sweep every two days. A missing report reads as stale, not healthy.
 create function sdi_private.admin_operations() returns jsonb language plpgsql security definer set search_path='' as $$
 declare denial jsonb; recent jsonb; last_backup timestamptz; last_drill timestamptz;
 begin
@@ -301,8 +301,11 @@ begin
    where o.kind='release' and o.outcome='succeeded' order by o.created_at desc limit 1),
   'rollback',(select jsonb_build_object('label',o.label,'at',o.created_at,'outcome',o.outcome) from sdi_private.ops_reports o
    where o.kind='rollback' order by o.created_at desc limit 1),
+  'retention_sweep',jsonb_build_object(
+   'last_succeeded_at',(select max(created_at) from sdi_private.ops_reports where kind='retention_sweep' and outcome='succeeded'),
+   'last_failed_at',(select max(created_at) from sdi_private.ops_reports where kind='retention_sweep' and outcome='failed'),
+   'stale',coalesce((select max(created_at) from sdi_private.ops_reports where kind='retention_sweep' and outcome='succeeded')<clock_timestamp()-interval '2 days',true)),
   'retention',jsonb_build_object(
-   'last_sweep_at',(select max(created_at) from sdi_private.ops_reports where kind='retention_sweep' and outcome='succeeded'),
    'render_artifacts_live',sdi_private.count_if_exists('sdi_private.render_artifacts','expires_at>clock_timestamp()'),
    'render_artifacts_expired',sdi_private.count_if_exists('sdi_private.render_artifacts','expires_at<=clock_timestamp()'),
    'deletion_requests_blocked',sdi_private.count_if_exists('sdi_private.deletion_requests','state=''blocked''')),
