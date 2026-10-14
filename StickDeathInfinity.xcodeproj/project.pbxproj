@@ -177,6 +177,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		9AE12A21DE3C70A990A621FD /* CommunityChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA88ECF7ECD59A7B32AC204C /* CommunityChrome.swift */; };
 		EB101BFC249B15DF959F78F4 /* StudioFilesSavePresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDC71D132ED80FA9A6723AB0 /* StudioFilesSavePresenter.swift */; };
 		F1974A37832F2433A98005B1 /* SpatterStudioControlRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22443092EEAD8DEC27825D7F /* SpatterStudioControlRegistry.swift */; };
+		421366D2B85B1F6CCB2F8D59 /* StudioQuickShareDestinations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 678148737E00790CCCBC27E6 /* StudioQuickShareDestinations.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -363,6 +364,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		CA88ECF7ECD59A7B32AC204C /* CommunityChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Collab/CommunityChrome.swift"; sourceTree = SOURCE_ROOT; };
 		DDC71D132ED80FA9A6723AB0 /* StudioFilesSavePresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioFilesSavePresenter.swift"; sourceTree = SOURCE_ROOT; };
 		22443092EEAD8DEC27825D7F /* SpatterStudioControlRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift"; sourceTree = SOURCE_ROOT; };
+		678148737E00790CCCBC27E6 /* StudioQuickShareDestinations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioQuickShareDestinations.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -847,6 +849,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		FFD5B6ABA6744D1B1B3E630C /* Panels */ = {
 			isa = PBXGroup;
 			children = (
+				678148737E00790CCCBC27E6 /* StudioQuickShareDestinations.swift */,
 				DDC71D132ED80FA9A6723AB0 /* StudioFilesSavePresenter.swift */,
 			);
 			path = Panels;
@@ -967,6 +970,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				421366D2B85B1F6CCB2F8D59 /* StudioQuickShareDestinations.swift in Sources */,
 				F1974A37832F2433A98005B1 /* SpatterStudioControlRegistry.swift in Sources */,
 				EB101BFC249B15DF959F78F4 /* StudioFilesSavePresenter.swift in Sources */,
 				9AE12A21DE3C70A990A621FD /* CommunityChrome.swift in Sources */,

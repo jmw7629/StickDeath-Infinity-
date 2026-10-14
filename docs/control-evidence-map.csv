@@ -448,6 +448,9 @@ studio.export.movie.spatter-receipt,StickDeathInfinity/Views/Studio/Panels/Studi
 studio.export.movie.submit-review,StickDeathInfinity/Views/Studio/Panels/StudioMovieExportControls.swift,StudioMovieExportControls,"label 'Submit this MP4 for review' -> session.beginSharing, vm.document.name.prefix",no,#182 #183 #184 #185,deferred
 studio.export.open,StickDeathInfinity/Views/Studio/StudioHeaderBar.swift,StudioHeaderBar,image 'Export' -> vm.activePanel,no,#182 #183 #184 #185,helper:assertStudioChromeReachable helper:closeExportPanel helper:openExportPanel
 studio.export.preview,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,image 'Exported PNG preview',no,#182 #183 #184 #185,testMP4ExportReceiptAndNativeShareCancellation testPNGExportPreviewAndNativeShareCancellation testSpritesheetSizeErrorThenPNGExportRecovery helper:waitForPNGPreview
+studio.export.quick-share.customize,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,text 'Customize shortcuts',no,#242,deferred
+studio.export.quick-share.note,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,text,no,#242,deferred
+studio.export.quick-share.reset,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,"button 'Restore default shortcuts' -> binds 0, binds 0.label",no,#242,deferred
 studio.export.receipt,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,"text -> binds 0.label, binds 0",no,#182 #183 #184 #185,deferred
 studio.export.save-files,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,image 'Save to Files',no,#182 #183 #184 #185,deferred
 studio.export.scale,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,"text 'Export scale' -> binds scale, binds 0.label, binds 0",no,#182 #183 #184 #185,deferred

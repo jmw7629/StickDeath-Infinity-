@@ -15,8 +15,8 @@ declare bad text; service_expected text[]:=array[
  'sdi_account_deletion_run','sdi_agent_proposal_finish','sdi_agent_proposals_due','sdi_agent_propose','sdi_agent_run_begin','sdi_agent_run_finish','sdi_agent_run_heartbeat','sdi_announcement_claim','sdi_announcement_finish',
  'sdi_award_achievements','sdi_billing_apply_event','sdi_billing_reconcile','sdi_challenge_finalize','sdi_consent_verify','sdi_email_recipients',
  'sdi_email_suppress','sdi_feed_publish_claim','sdi_feed_publish_finish','sdi_feed_removal_claim','sdi_feed_removal_finish','sdi_marketing_cadence_due',
- 'sdi_marketing_claim','sdi_marketing_finish','sdi_preview_renew','sdi_provision_owner','sdi_publish_claim','sdi_publish_finish','sdi_publish_progress',
- 'sdi_publish_removal_claim','sdi_publish_removal_finish','sdi_publish_removal_renew','sdi_publish_renew','sdi_publish_uncertain','sdi_register_upload',
+ 'sdi_marketing_claim','sdi_marketing_finish','sdi_preview_renew','sdi_provision_owner','sdi_publication_release_candidates','sdi_publish_claim','sdi_publish_finish','sdi_publish_progress',
+ 'sdi_publish_removal_claim','sdi_publish_removal_finish','sdi_publish_removal_renew','sdi_publish_renew','sdi_publish_uncertain','sdi_register_upload','sdi_release_published_upload',
  'sdi_retire_upload','sdi_spatter_draft_claim','sdi_spatter_draft_progress','sdi_support_retention','sdi_upload_preview','sdi_war_expire_proposals','sdi_war_finalize','sdi_worker_configuration','sdi_worker_heartbeat'];
  service_actual text[]; client_count integer;
 begin

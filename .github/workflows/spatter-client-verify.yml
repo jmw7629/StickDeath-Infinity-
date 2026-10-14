@@ -1726,6 +1726,14 @@ jobs:
             Tests/SpatterPlanner/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-planner-tests"
           "$RUNNER_TEMP/sdi-spatter-planner-tests"
+      - name: Verify six quick-share destinations and format choices
+        shell: bash
+        run: |
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Views/Studio/Panels/StudioQuickShareDestinations.swift \
+            Tests/StudioQuickShare/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-quick-share"
+          timeout 60s "$RUNNER_TEMP/sdi-studio-quick-share"
       - name: Verify cancellable Studio edits and factual persistence state
         shell: bash
         run: |
