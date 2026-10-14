@@ -14,13 +14,13 @@ export const SITE_NAME = 'StickDeath Infinity';
 // Policy drafts stay non-indexable until legal review and owner approval.
 export const PAGES = [
   { file: 'index.html', indexable: true, canonicalPath: '' },
+  { file: 'about.html', indexable: true },
   { file: 'studio.html', indexable: true },
   { file: 'community.html', indexable: true },
   { file: 'screens.html', indexable: true },
   { file: 'play.html', indexable: true },
   { file: 'store.html', indexable: true },
   { file: 'brand.html', indexable: true },
-  { file: 'os.html', indexable: true },
   { file: '404.html', indexable: false, reason: 'error page' },
   { file: 'account.html', indexable: false, reason: 'account page (config-gated shell)' },
   { file: 'admin.html', indexable: false, reason: 'command center shell (config-gated; server-authorized)' },

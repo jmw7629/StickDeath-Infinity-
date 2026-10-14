@@ -45,7 +45,8 @@ const site = path.join(repo, 'website');
 const jsonIndex = process.argv.indexOf('--json');
 const jsonOut = jsonIndex > -1 ? process.argv[jsonIndex + 1] : null;
 
-const PAGES = ['index.html', 'studio.html', 'community.html', 'screens.html', 'play.html', 'store.html', 'brand.html', 'os.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
+const LONG = 'about.html'; // the long-form page (help desk, support form, hero); index.html is the desktop
+const PAGES = ['index.html', 'about.html', 'studio.html', 'community.html', 'screens.html', 'play.html', 'store.html', 'brand.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
 const VIEWPORTS = [{ name: '320x640', width: 320, height: 640 }, { name: '390x844', width: 390, height: 844 }, { name: '1440x900', width: 1440, height: 900 }];
 // 2026-10-14 rebuild: the home page shows real captures (lazy WebP) and the unmodified
 // Special Elite TTF stays at 166 KB, so the transfer and request budgets moved from
@@ -153,7 +154,7 @@ async function auditPage(page, base, file, viewport) {
   // Reveal every data-reveal section (scroll through once) so the audit covers the whole page.
   await page.evaluate(async () => { for (let y = 0; y <= document.body.scrollHeight; y += 400) { window.scrollTo(0, y); await new Promise((r) => setTimeout(r, 15)); } window.scrollTo(0, 0); });
   await page.waitForTimeout(900);
-  if (file === 'index.html') await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
+  if (file === LONG) await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
   const audit = await page.evaluate(auditScript);
   record('no console errors / page errors', errors.length === 0, errors.join(' | ').slice(0, 300), scope);
   record('zero third-party requests', offsite.length === 0, offsite.join(', ').slice(0, 300), scope);
@@ -176,10 +177,10 @@ async function auditPage(page, base, file, viewport) {
 }
 
 async function indexBehaviour(context, base, viewport, articles) {
-  const scope = `index.html@${viewport.name}`;
+  const scope = `${LONG}@${viewport.name}`;
   const page = await context.newPage();
   const errors = []; page.on('pageerror', (e) => errors.push(String(e))); page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
-  await page.goto(base + 'index.html', { waitUntil: 'load' });
+  await page.goto(base + LONG, { waitUntil: 'load' });
   // Skip link.
   await page.keyboard.press('Tab');
   const skip = await page.evaluate(() => { const el = document.activeElement; const r = el.getBoundingClientRect(); return { isSkip: el.classList.contains('skip'), href: el.getAttribute('href'), visible: r.top >= 0 && r.height > 0 }; });
@@ -219,7 +220,7 @@ async function indexBehaviour(context, base, viewport, articles) {
   // Fragment routing for every article.
   const routeFailures = [];
   for (const article of articles) {
-    await page.goto(base + 'index.html#help/' + article.id, { waitUntil: 'load' });
+    await page.goto(base + LONG + '#help/' + article.id, { waitUntil: 'load' });
     try {
       await page.waitForSelector(`#article-${article.id}[open]`, { timeout: 3000 });
       const focused = await page.evaluate((id) => document.activeElement === document.querySelector(`#article-${id} summary`), article.id);
@@ -228,7 +229,7 @@ async function indexBehaviour(context, base, viewport, articles) {
   }
   record(`every #help/<id> fragment opens and focuses its topic (${articles.length} ids)`, routeFailures.length === 0, routeFailures.join('; '), scope);
   // Support form flow.
-  await page.goto(base + 'index.html', { waitUntil: 'load' });
+  await page.goto(base + LONG, { waitUntil: 'load' });
   await page.click('#support-form button[type=submit]');
   const invalid = await page.textContent('#support-status');
   await page.fill('#problem', 'The exported GIF was silent even though the clip was audible.');
@@ -318,15 +319,45 @@ async function main() {
     await storeContext.close();
     // index.html: splash is decorative and gone within three seconds; hero speed slider changes the animation.
     const splashContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const splashPage = await splashContext.newPage();
-    await splashPage.goto(base + 'index.html', { waitUntil: 'load' });
+    await splashPage.goto(base + LONG, { waitUntil: 'load' });
     const splashEarly = await splashPage.evaluate(() => { const s = document.querySelector('#splash'); return s ? { present: true, ariaHidden: s.getAttribute('aria-hidden'), focusable: s.querySelectorAll('a,button,input,[tabindex]').length } : { present: false }; });
     await splashPage.waitForTimeout(3000);
     const splashLate = await splashPage.evaluate(() => Boolean(document.querySelector('#splash')));
-    record('home splash is decorative (aria-hidden, no focusable controls) and removed within 3 s', splashEarly.present && splashEarly.ariaHidden === 'true' && splashEarly.focusable === 0 && !splashLate, JSON.stringify({ splashEarly, splashLate }), 'index.html@390x844');
+    record('home splash is decorative (aria-hidden, no focusable controls) and removed within 3 s', splashEarly.present && splashEarly.ariaHidden === 'true' && splashEarly.focusable === 0 && !splashLate, JSON.stringify({ splashEarly, splashLate }), LONG + '@390x844');
     await splashPage.locator('#hero-fps').fill('24');
     const fpsState = await splashPage.evaluate(() => ({ out: document.querySelector('#hero-fps-value').textContent, dur: document.querySelector('.flipbook .pose').style.animationDuration }));
-    record('hero speed slider retimes the flipbook', fpsState.out === '24 fps' && fpsState.dur === '0.25s', JSON.stringify(fpsState), 'index.html@390x844');
+    record('hero speed slider retimes the flipbook', fpsState.out === '24 fps' && fpsState.dur === '0.25s', JSON.stringify(fpsState), LONG + '@390x844');
     await splashContext.close();
+    // index.html (desktop): menu opens a window; minimize → taskbar → restore; maximize fills the desktop and restore returns the size; close hides; Escape closes.
+    const deskContext = await browser.newContext({ viewport: { width: 1440, height: 900 } }); const deskPage = await deskContext.newPage();
+    const deskErrors = []; deskPage.on('pageerror', (e) => deskErrors.push(String(e))); deskPage.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
+    await deskPage.goto(base + 'index.html', { waitUntil: 'load' }); await deskPage.click('#boot-skip'); await deskPage.waitForTimeout(300);
+    const bootGone = await deskPage.evaluate(() => !document.querySelector('#boot') && !document.querySelector('#win-about').hidden);
+    record('desktop: skipping the boot shows the desktop with the About window', bootGone, '', 'index.html@1440x900');
+    await deskPage.click('.menubar [data-open=juke]'); await deskPage.waitForTimeout(200);
+    const opened = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); return { hidden: w.hidden, active: w.classList.contains('active'), status: document.querySelector('#status-windows').textContent }; });
+    record('desktop: menu bar opens the Jukebox window in front', !opened.hidden && opened.active && opened.status.startsWith('2 windows'), JSON.stringify(opened), 'index.html@1440x900');
+    const jukeBefore = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); return { w: w.offsetWidth, h: w.offsetHeight, l: w.offsetLeft, t: w.offsetTop }; });
+    await deskPage.click('#win-juke [data-max]'); await deskPage.waitForTimeout(100);
+    const maxed = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); const d = document.querySelector('#main').getBoundingClientRect(); return { fills: Math.abs(w.offsetWidth - d.width) < 3 && Math.abs(w.offsetHeight - d.height) < 3, label: w.querySelector('[data-max]').getAttribute('aria-label') }; });
+    record('desktop: maximize fills the desktop and relabels the control as Restore', maxed.fills && /Restore/.test(maxed.label), JSON.stringify(maxed), 'index.html@1440x900');
+    await deskPage.click('#win-juke [data-max]'); await deskPage.waitForTimeout(100);
+    const restored = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); return { w: w.offsetWidth, h: w.offsetHeight, l: w.offsetLeft, t: w.offsetTop }; });
+    record('desktop: restore returns the window to its normal size and place', Math.abs(restored.w - jukeBefore.w) < 3 && Math.abs(restored.h - jukeBefore.h) < 3 && restored.l === jukeBefore.l && restored.t === jukeBefore.t, `${JSON.stringify(jukeBefore)} → ${JSON.stringify(restored)}`, 'index.html@1440x900');
+    await deskPage.click('#win-juke [data-min]'); await deskPage.waitForTimeout(100);
+    const minimized = await deskPage.evaluate(() => ({ hidden: document.querySelector('#win-juke').hidden, task: document.querySelector('#taskbar [data-task="win-juke"]')?.textContent || null, status: document.querySelector('#status-windows').textContent }));
+    record('desktop: minimize hides the window and puts it on the taskbar', minimized.hidden && minimized.task === 'Jukebox' && /1 minimized/.test(minimized.status), JSON.stringify(minimized), 'index.html@1440x900');
+    await deskPage.click('#taskbar [data-task="win-juke"]'); await deskPage.waitForTimeout(100);
+    const back = await deskPage.evaluate(() => ({ hidden: document.querySelector('#win-juke').hidden, task: Boolean(document.querySelector('#taskbar [data-task="win-juke"]')), w: document.querySelector('#win-juke').offsetWidth }));
+    record('desktop: taskbar button restores the window at its normal size', !back.hidden && !back.task && Math.abs(back.w - jukeBefore.w) < 3, JSON.stringify(back), 'index.html@1440x900');
+    await deskPage.keyboard.press('Escape'); await deskPage.waitForTimeout(100);
+    const escaped = await deskPage.evaluate(() => document.querySelector('#win-juke').hidden);
+    record('desktop: Escape closes the front window', escaped, '', 'index.html@1440x900');
+    await deskPage.click('#win-about [data-close]'); await deskPage.waitForTimeout(100);
+    const closedAll = await deskPage.evaluate(() => document.querySelector('#status-windows').textContent);
+    record('desktop: close box closes and the status bar counts zero', closedAll.startsWith('0 windows'), closedAll, 'index.html@1440x900');
+    record('desktop: no page errors during the window journey', deskErrors.length === 0, deskErrors.join(' | ').slice(0, 300), 'index.html@1440x900');
+    await deskContext.close();
     // play.html: the browser flipbook draws, adds frames, plays and downloads.
     const playContext = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
     const playPage = await playContext.newPage();
@@ -359,19 +390,19 @@ async function main() {
     // Reduced motion.
     const reduced = await browser.newContext({ reducedMotion: 'reduce', viewport: { width: 390, height: 844 } });
     const reducedPage = await reduced.newPage();
-    await reducedPage.goto(base + 'index.html', { waitUntil: 'load' });
+    await reducedPage.goto(base + LONG, { waitUntil: 'load' });
     const motion = await reducedPage.evaluate(() => ({ matches: matchMedia('(prefers-reduced-motion: reduce)').matches, scrollBehavior: getComputedStyle(document.documentElement).scrollBehavior }));
-    record('prefers-reduced-motion → scroll-behavior auto', motion.matches && motion.scrollBehavior === 'auto', JSON.stringify(motion), 'index.html@390x844');
+    record('prefers-reduced-motion → scroll-behavior auto', motion.matches && motion.scrollBehavior === 'auto', JSON.stringify(motion), LONG + '@390x844');
     await reduced.close();
     // No JavaScript.
     const nojs = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
     const nojsPage = await nojs.newPage();
-    await nojsPage.goto(base + 'index.html', { waitUntil: 'load' });
+    await nojsPage.goto(base + LONG, { waitUntil: 'load' });
     // Playwright's isVisible() reports false for content rendered inside <noscript>, so measure in-page: the paragraph must have a box and non-hidden styles.
     const rendered = ({ text }) => { const el = [...document.querySelectorAll('noscript p, main p, main h2')].find((p) => p.textContent.includes(text)); if (!el) return false; const cs = getComputedStyle(el); return el.getClientRects().length > 0 && cs.display !== 'none' && cs.visibility !== 'hidden'; };
     const noscriptVisible = await nojsPage.evaluate(rendered, { text: 'Enable JavaScript for searchable help' });
     const accountStatic = await (async () => { await nojsPage.goto(base + 'account.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Sign-in requires JavaScript' }); })();
-    record('noscript guidance visible with JavaScript disabled', noscriptVisible, '', 'index.html@390x844 no-js');
+    record('noscript guidance visible with JavaScript disabled', noscriptVisible, '', LONG + '@390x844 no-js');
     record('account page states that sign-in requires JavaScript when it is off', accountStatic, '', 'account.html@390x844 no-js');
     const storeStatic = await (async () => { await nojsPage.goto(base + 'store.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Live prices and the cart need JavaScript' }); })();
     record('store page states that prices need JavaScript when it is off', storeStatic, '', 'store.html@390x844 no-js');
@@ -400,9 +431,9 @@ async function main() {
     const local = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const localPage = await local.newPage();
     const localErrors = []; localPage.on('pageerror', (e) => localErrors.push(String(e))); localPage.on('console', (m) => { if (m.type() === 'error') localErrors.push(m.text()); });
-    await localPage.goto('file://' + path.join(site, 'index.html'), { waitUntil: 'load' });
+    await localPage.goto('file://' + path.join(site, LONG), { waitUntil: 'load' });
     const localCount = await localPage.evaluate(() => document.querySelectorAll('#help-results details').length);
-    record(`file:// load renders all ${articles.length} help topics without errors`, localCount === articles.length && localErrors.length === 0, `${localCount} topics; ${localErrors.join(' | ').slice(0, 200)}`, 'index.html file://');
+    record(`file:// load renders all ${articles.length} help topics without errors`, localCount === articles.length && localErrors.length === 0, `${localCount} topics; ${localErrors.join(' | ').slice(0, 200)}`, LONG + ' file://');
     await local.close();
     await perf(browser, base);
   } finally {
