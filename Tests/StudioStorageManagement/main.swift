@@ -388,5 +388,7 @@ private func rejects(_ operation: () throws -> Void) throws {
                     "Cancel during removal failed to report completed work and release lease")
         try leaseStore.saveAnimation(leaseProject)
         print("PASS automatic idle expiry, deinit release and cancel-after-removal accurate partial receipt")
+        // #170/#171 lifecycle cases live in DeviceDataLifecycle.swift (same compile step).
+        try DeviceDataLifecycleTests.run(root: root.appendingPathComponent("lifecycle"))
     }
 }
