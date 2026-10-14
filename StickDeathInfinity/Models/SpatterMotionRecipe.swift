@@ -3030,6 +3030,15 @@ struct SpatterInstructionBatch: Equatable {
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision, action: .apply(commands))
     }
     var summary: String { "\(lines.count) instructions (" + lines.map { $0.kind.rawValue }.joined(separator: ", ") + ")" }
+    /// Shown when every line prepared but the combined typed request failed while
+    /// committing (a later line conflicting with an earlier one, a work budget or
+    /// a document limit). The executor stages a copy, so the editor, its history
+    /// and the clipboard are exactly as they were before Apply.
+    static func rollbackNotice(_ error: Error) -> String {
+        let reason = ((error as? LocalizedError)?.errorDescription ?? String(describing: error))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return "The batch could not be applied as a whole: \(reason.prefix(240)) Every line was rolled back; nothing changed and no Undo step was added."
+    }
 }
 
 /// Text shown before Apply: what the draft was recognized as and, when the
