@@ -345,3 +345,104 @@ class PushWorkerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PostPublicationCleanupTests(unittest.TestCase):
+    """#190: the staging copy goes only after the database fences a verified release."""
+
+    def setUp(self):
+        from backend.ingestion.store import UploadStore
+        self.root = Path(tempfile.mkdtemp())
+        os.chmod(self.root, 0o700)
+        self.store = UploadStore(self.root, total_quota=64 * 1024 * 1024, account_quota=32 * 1024 * 1024, lifetime=3600)
+        self.actor = str(uuid.uuid4())
+        self.review = str(uuid.uuid4())
+
+    def submitted(self, review=None):
+        payload = os.urandom(2048)
+        digest = hashlib.sha256(payload).hexdigest()
+        meta = {"size": len(payload), "sha256": digest, "title": "Clip", "source_revision": "rev1",
+                "destinations": ["feed"], "rights_summary": "Own work", "consent_version": "terms-v1", "made_for_kids": False}
+        upload = self.store.begin(self.actor, str(uuid.uuid4()), meta)["id"]
+        self.store.append(self.actor, upload, 0, payload, digest)
+        self.store.complete(self.actor, upload, validate_media=lambda p: None,
+                            register_review=lambda *a: review or self.review)
+        return upload
+
+    def state(self, upload):
+        return self.store.status(self.actor, upload)["state"]
+
+    def test_release_unlinks_only_after_database_fence(self):
+        from backend.publishing.cleanup import release_published
+        upload = self.submitted()
+        api = FakeAPI({"publication_release_candidates": [[{"upload": upload, "review": self.review}]],
+                       "release_published_upload": [True]})
+        report = release_published(api, self.store, limit=5)
+        self.assertEqual(report["released"], 1)
+        self.assertEqual(api.ops(), ["publication_release_candidates", "release_published_upload"])
+        self.assertEqual(api.calls[1][1], {"upload": upload, "review": self.review})
+        self.assertFalse((self.root / (upload + ".mp4")).exists())
+        self.assertEqual(self.state(upload), "expired")
+        # A repeated candidate (crash recovery window) is a no-op, not a second RPC.
+        again = FakeAPI({"publication_release_candidates": [[{"upload": upload, "review": self.review}]]})
+        self.assertEqual(release_published(again, self.store)["already_released"], 1)
+
+    def test_refusal_error_or_mismatch_keeps_the_file(self):
+        from backend.publishing.cleanup import release_published
+        refused = self.submitted()
+        failing = self.submitted(review=str(uuid.uuid4()))
+        mismatched = self.submitted(review=str(uuid.uuid4()))
+        api = FakeAPI({"publication_release_candidates": [[
+                           {"upload": refused, "review": self.review},
+                           {"upload": failing, "review": self.store.status(self.actor, failing)["review_id"]},
+                           {"upload": mismatched, "review": str(uuid.uuid4())},
+                           {"upload": "not-a-uuid", "review": self.review}]],
+                       "release_published_upload": [False, RuntimeError("unavailable")]})
+        report = release_published(api, self.store)
+        self.assertEqual((report["released"], report["kept"], report["failed"]), (0, 2, 1))
+        for upload in (refused, failing, mismatched):
+            self.assertTrue((self.root / (upload + ".mp4")).exists())
+            self.assertEqual(self.state(upload), "submitted")
+        # The mismatched review never reached the release RPC.
+        self.assertEqual(api.ops().count("release_published_upload"), 2)
+
+    def test_candidate_service_failure_removes_nothing(self):
+        from backend.publishing.cleanup import release_published
+        upload = self.submitted()
+        report = release_published(FakeAPI({"publication_release_candidates": [RuntimeError("down")]}), self.store)
+        self.assertEqual(report["failed"], 1)
+        self.assertTrue((self.root / (upload + ".mp4")).exists())
+
+    def test_unsubmitted_upload_is_never_released(self):
+        from backend.publishing.cleanup import release_published
+        meta = {"size": 10, "sha256": "0" * 64, "title": "Clip", "source_revision": "rev1",
+                "destinations": ["feed"], "rights_summary": "Own work", "consent_version": "terms-v1", "made_for_kids": False}
+        upload = self.store.begin(self.actor, str(uuid.uuid4()), meta)["id"]
+        api = FakeAPI({"publication_release_candidates": [[{"upload": upload, "review": self.review}]]})
+        self.assertEqual(release_published(api, self.store)["kept"], 1)
+        self.assertEqual(api.ops(), ["publication_release_candidates"])
+
+    def test_command_requires_execute_and_hides_errors(self):
+        from backend.publishing import cleanup
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                cleanup.main([])
+        err = io.StringIO()
+
+        def broken():
+            raise ValueError("https://backend.example.test secret path")
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(cleanup.main(["--execute"], factory=broken), 1)
+        self.assertNotIn("secret", err.getvalue())
+        out = io.StringIO()
+        api = FakeAPI({"publication_release_candidates": [[]]})
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cleanup.main(["--execute", "--limit", "3"], factory=lambda: (api, self.store)), 0)
+        self.assertEqual(json.loads(out.getvalue())["released"], 0)
+        self.assertEqual(api.calls[0][1], {"lim": 3})
+
+    def test_release_api_is_narrow(self):
+        from backend.publishing.cleanup import ReleaseAPI
+        api = ReleaseAPI("https://backend.example.test", "service-key")
+        with self.assertRaises(ValueError):
+            api.call("retire_upload")

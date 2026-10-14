@@ -185,6 +185,9 @@ final class StudioViewModel: ObservableObject {
     @Published var brushTipAngle: Double = 45 { didSet { rememberDrawingToolPreferences() } }
     @Published var brushTexture: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
     @Published var brushGrain: Double = 0.3 { didSet { rememberDrawingToolPreferences() } }
+    @Published var brushBuildup: Double = 0 { didSet { rememberDrawingToolPreferences() } }
+    @Published var brushBleed: Double = 0 { didSet { rememberDrawingToolPreferences() } }
+    @Published var brushAdditiveGlow = false { didSet { rememberDrawingToolPreferences() } }
     @Published var brushGradientEndColor: Color = .blue { didSet { rememberDrawingToolPreferences() } }
     @Published var fillTolerance: Double = 32 { didSet { rememberDrawingToolPreferences() } }
     @Published var fillExpand: Double = 0 { didSet { rememberDrawingToolPreferences() } }
@@ -446,11 +449,16 @@ final class StudioViewModel: ObservableObject {
         #endif
     }
     func brushDescriptor(elementID: String, seed: UInt64? = nil) throws -> StudioBrushDescriptor {
-        let value = StudioBrushDescriptor(version: pencilTiltEnabled && brushFamily == .calligraphy ? 2 : 1, family: brushFamily, seed: seed ?? StudioBrushRenderer.seed(for: elementID),
+        let buildup = brushFamily == .airbrush && brushBuildup > 0 ? brushBuildup : nil
+        let bleed = brushFamily == .watercolor && brushBleed > 0 ? brushBleed : nil
+        let additive: Bool? = brushFamily == .neon && brushAdditiveGlow ? true : nil
+        let version = buildup != nil || bleed != nil || additive != nil ? 3 : (pencilTiltEnabled && brushFamily == .calligraphy ? 2 : 1)
+        let value = StudioBrushDescriptor(version: version, family: brushFamily, seed: seed ?? StudioBrushRenderer.seed(for: elementID),
             smoothing: smoothing, pressureEnabled: pressureSensitivity, tipAngleDegrees: brushTipAngle,
             texture: brushTexture, grain: brushGrain,
             gradientEndColor: brushFamily == .gradient ? try StudioBrushGeometryCache.color(Self.hex(brushGradientEndColor)) : nil,
-            tiltEnabled: pencilTiltEnabled && brushFamily == .calligraphy ? true : nil)
+            tiltEnabled: pencilTiltEnabled && brushFamily == .calligraphy ? true : nil,
+            buildup: buildup, bleed: bleed, additiveGlow: additive)
         _ = try value.settings(width: strokeWidth, opacity: capturedStrokeOpacity)
         return value
     }
@@ -479,7 +487,8 @@ final class StudioViewModel: ObservableObject {
             wandTolerance: wandTolerance, wandContiguous: wandContiguous,
             wandSampleVisibleCanvas: wandSampleVisibleCanvas, wandMode: wandMode,
             shapeFill: shapeFillColor.map(Self.preferenceRGB),
-            eyedropperSampleSize: eyedropperSampleSize, eyedropperActiveLayerOnly: eyedropperActiveLayerOnly)
+            eyedropperSampleSize: eyedropperSampleSize, eyedropperActiveLayerOnly: eyedropperActiveLayerOnly,
+            brushBuildup: brushBuildup, brushBleed: brushBleed, brushAdditiveGlow: brushAdditiveGlow)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -498,6 +507,8 @@ final class StudioViewModel: ObservableObject {
         pencilTiltEnabled = value.pencilTiltEnabled ?? false
         brushFamily = value.family; brushTipAngle = value.tipAngle
         brushTexture = value.texture; brushGrain = value.grain
+        brushBuildup = value.brushBuildup ?? 0; brushBleed = value.brushBleed ?? 0
+        brushAdditiveGlow = value.brushAdditiveGlow ?? false
         brushGradientEndColor = Color(red: value.gradientEnd.red, green: value.gradientEnd.green,
                                      blue: value.gradientEnd.blue)
         mirrorMode = value.mirrorMode ?? .off
@@ -4769,8 +4780,13 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var shapeFill: StudioBrushColor? = nil
         var eyedropperSampleSize: Int? = nil
         var eyedropperActiveLayerOnly: Bool? = nil
+        var brushBuildup: Double? = nil
+        var brushBleed: Double? = nil
+        var brushAdditiveGlow: Bool? = nil
 
         var isValid: Bool {
+            (brushBuildup.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
+            (brushBleed.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
             (shapeFill.map { (try? $0.validate()) != nil && $0.alpha == 1 } ?? true) &&
             (eyedropperSampleSize.map { StudioDrawingToolPreferences.eyedropperSampleSizes.contains($0) } ?? true) &&
             (wandTolerance.map { $0.isFinite && (0...128).contains($0) } ?? true) &&

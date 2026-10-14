@@ -221,16 +221,19 @@ struct StudioTimeline: View {
         }
         guard !vm.document.audioClips.isEmpty else { vm.togglePlayback(); return }
         let id = vm.document.id, revision = vm.document.revision
-        let start = Double(vm.document.startTick(ofFrame: vm.currentFrameIndex))/Double(vm.fps)
+        let fps = vm.fps
+        let start = StudioAudioTransport.seconds(atTick: vm.document.startTick(ofFrame: vm.currentFrameIndex), fps: fps)
         let duration = vm.audioDuration
         _ = audioPlayback.play(document: vm.document, tracks: vm.projectAudioTracks,
             duration: duration, from: start, loop: vm.playbackLoops,
+            frameClock: StudioAudioTransport.FrameClock(fps: fps, frameTicks: vm.document.frames.map(\.durationTicks)),
             stillCurrent: {
                 vm.isEditing && scenePhase == .active && vm.activePanel == .none &&
                 vm.document.id == id && vm.document.revision == revision
             }, onTime: { time, playing in
                 guard vm.document.id == id, vm.document.revision == revision else { return }
-                vm.displayAudioPlaybackTime(min(duration, max(0, time)), playing: playing)
+                // Floor-safe: an exact frame-start time must not display the previous frame (#180).
+                vm.displayAudioPlaybackTime(min(duration, StudioAudioTransport.floorSafeSeconds(max(0, time), fps: fps)), playing: playing)
             })
         if let notice = audioPlayback.notice { vm.message = notice }
     }

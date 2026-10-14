@@ -1,6 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- No INTERNET permission: identity, feed, Rooms, War Room, billing, push and Spatter cloud
-         assistance stay honestly unavailable until the owner configures providers (BackendContract). -->
+    <!-- No INTERNET permission here. src/connected/AndroidManifest.xml adds it (and the OAuth redirect)
+         only when the owner supplies public Supabase values at build time; otherwise identity, feed,
+         Rooms, War Room, billing, push and Spatter cloud stay honestly unavailable (BackendContract). -->
     <application android:name=".StudioApplication" android:label="StickDeath Studio" android:theme="@style/AppTheme"
         android:allowBackup="false" android:supportsRtl="true">
         <provider android:name="androidx.core.content.FileProvider"

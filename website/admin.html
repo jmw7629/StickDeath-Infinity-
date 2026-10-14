@@ -67,6 +67,45 @@
 <p id="admin-identity" class="quiet"></p>
 <div class="actions"><button class="button" type="button" id="admin-signout">Sign out</button><button class="button" type="button" id="admin-refresh">Refresh permissions</button></div>
 <div id="admin-panels"></div>
+<h2>User directory</h2>
+<p class="quiet">Search by username or account id (users capability). Plan appears only for administrators with the finance capability; feed report counts only with moderation.</p>
+<form id="admin-users-form" class="support" novalidate>
+<label for="admin-users-query">Username or account id (optional)</label>
+<input id="admin-users-query" name="query" maxlength="100">
+<label for="admin-users-page">Page (from 1)</label>
+<input id="admin-users-page" name="page" inputmode="numeric" maxlength="3" value="1">
+<div class="actions"><button class="button" type="submit">Search</button></div>
+<div id="admin-users-result" aria-live="polite"></div>
+</form>
+<h3>Account action</h3>
+<p class="quiet">Suspend, ban, restore and sign-out take effect on the server immediately, revoke sessions where stated and need a recent second factor; every action requires a reason and is audited. A note is internal and sends nothing to the member. Administrator accounts cannot be changed here.</p>
+<form id="admin-account-form" class="support" novalidate>
+<label for="admin-account-subject">Account id (from the directory)</label>
+<input id="admin-account-subject" name="subject" maxlength="36" required>
+<label for="admin-account-action">Action</label>
+<select id="admin-account-action" name="action"><option value="note">Internal note</option><option value="signout">Force sign-out</option><option value="suspend">Suspend</option><option value="ban">Ban</option><option value="restore">Restore</option></select>
+<label for="admin-account-reason">Reason</label>
+<input id="admin-account-reason" name="reason" maxlength="2000" required>
+<label><input id="admin-account-confirm" type="checkbox" required> I checked the account id and the effect of this action.</label>
+<div class="actions"><button class="button" type="submit">Apply</button></div>
+<p id="admin-account-result" class="quiet" aria-live="polite"></p>
+</form>
+<h2>Agent run history and audit</h2>
+<p class="quiet">Searchable, paged (50 per page). Finished runs are kept 180 days and audit entries 400 days; audit entries cannot be edited.</p>
+<form id="admin-history-form" class="support" novalidate>
+<label for="admin-history-kind">Log</label>
+<select id="admin-history-kind" name="kind"><option value="runs">Runs</option><option value="audit">Audit</option></select>
+<label for="admin-history-agent">Agent key (optional)</label>
+<input id="admin-history-agent" name="agent" maxlength="40">
+<label for="admin-history-state">Run state</label>
+<select id="admin-history-state" name="state"><option value="">Any</option><option value="running">Running</option><option value="succeeded">Succeeded</option><option value="failed">Failed</option><option value="stopped">Stopped</option></select>
+<label for="admin-history-query">Search text (optional)</label>
+<input id="admin-history-query" name="query" maxlength="100">
+<label for="admin-history-page">Page (from 1)</label>
+<input id="admin-history-page" name="page" inputmode="numeric" maxlength="3" value="1">
+<div class="actions"><button class="button" type="submit">Search</button></div>
+<div id="admin-history-result" aria-live="polite"></div>
+</form>
 <h2>Agent proposals</h2>
 <p class="quiet">Actions an agent proposed above its caps wait here (owner only, recent MFA required). Approving hands the proposal to the worker; rejecting records the reason. Nothing runs until a decision, and pending proposals expire after fourteen days.</p>
 <form id="admin-proposal-form" class="support" novalidate>
@@ -92,7 +131,8 @@
 <h2>What this shell does and does not do</h2>
 <ul>
 <li>Reads: health and queues, approvals, users, moderation, publishing, support, finance records, agents, announcements, marketing, consent versions, through the existing RPC contracts. Each panel shows the server's answer, including <code>forbidden</code> or <code>step_up_required</code>, verbatim.</li>
-<li>Writes: only the emergency stop in this version; other mutations stay in the native Admin until their forms are added with the same reason and revision checks.</li>
+<li>Writes: the emergency stop, owner decisions on agent proposals and account actions (note, sign-out, suspend, ban, restore), each with a required reason and server-side audit. Render approvals, moderation decisions and other mutations stay in the native Admin, where the exact render is played before a decision.</li>
+<li>Backups, restore drills, releases and retention are shown as reported outcomes only; no control or terminal endpoint exists on this page.</li>
 <li>Sessions live in page memory only; reloading signs you out. Tokens are never written to storage.</li>
 <li>No secrets: the configuration holds the backend origin and the publishable key only. Service keys, provider credentials and host details never reach this page.</li>
 </ul>

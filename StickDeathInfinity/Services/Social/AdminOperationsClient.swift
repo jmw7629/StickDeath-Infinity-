@@ -3,7 +3,10 @@
 // RPC contracts: access/step-up (admin-hardening.sql), service health,
 // agent controls (agent-controls.sql), finance reads and owner-only product
 // configuration (billing.sql), room report queue (rooms-v2.sql), feed removal
-// appeals (rooms-v2.sql) and render decision history (admin-approval.sql).
+// appeals (rooms-v2.sql), render decision history (admin-approval.sql),
+// backup/release status (admin-hardening.sql), masked provider configuration
+// (worker-configuration.sql) and the agent proposal inbox, searchable run
+// history and audit log (agent-proposals.sql, agent-controls.sql).
 // Opening a panel grants nothing: every reply is server-authorized with MFA,
 // and sensitive actions are preceded by the recent re-authentication check.
 // ═══════════════════════════════════════════════════════════════════
@@ -64,6 +67,60 @@ final class AdminOperationsClient {
         let response = try await gateway.call("sdi_agent_admin", params: request, as: AdminAgentsResponse.self)
         guard response.status == "confirmed" else { throw CommunityError.invalidResponse("Agent change was not confirmed.") }
         return response.revision
+    }
+
+    /// Registry extras (#248, #284): per-run cost cap, last error, last start and
+    /// pending proposal depth. Same reply as `agents()`, decoded for the console.
+    func agentConsole() async throws -> [AdminAgentConsoleEntry] {
+        let response = try await gateway.call("sdi_agent_admin", params: AdminAgentRequest(action: "list"), as: AdminAgentConsoleResponse.self)
+        guard let agents = response.agents else { throw CommunityError.invalidResponse("Agent registry unavailable.") }
+        return agents
+    }
+    /// Searchable, paged run log. `state` is one of the server's run states.
+    func agentRunHistory(agent: String?, state: String? = nil, query: String = "", page: Int = 0) async throws -> AdminAgentHistoryPage<AdminAgentRun> {
+        let request = try AdminAgentHistoryFilter(state: state, query: query, page: page).request(action: "runs", agent: agent)
+        let response = try await gateway.call("sdi_agent_admin", params: request, as: AdminAgentHistoryResponse.self)
+        guard let runs = response.runs, runs.count <= 50, let more = response.has_more else { throw CommunityError.invalidResponse("Run log unavailable.") }
+        return AdminAgentHistoryPage(items: runs, hasMore: more, page: page)
+    }
+    /// Searchable, paged agent audit log (owner changes, emergency stops, proposal decisions).
+    func agentAudit(agent: String?, query: String = "", page: Int = 0) async throws -> AdminAgentHistoryPage<AdminAgentAuditEntry> {
+        let request = try AdminAgentHistoryFilter(state: nil, query: query, page: page).request(action: "audit", agent: agent)
+        let response = try await gateway.call("sdi_agent_admin", params: request, as: AdminAgentHistoryResponse.self)
+        guard let audit = response.audit, audit.count <= 50, let more = response.has_more else { throw CommunityError.invalidResponse("Audit log unavailable.") }
+        return AdminAgentHistoryPage(items: audit, hasMore: more, page: page)
+    }
+
+    // MARK: Agent proposal inbox (#284)
+    func proposalInbox(agent: String? = nil) async throws -> (proposals: [AdminAgentProposal], pending: Int) {
+        let response = try await gateway.call("sdi_agent_proposal_admin", params: AdminProposalRequest(action: "inbox", agent: agent), as: AdminProposalResponse.self)
+        guard let proposals = response.proposals, proposals.count <= 100, let pending = response.pending, pending >= 0 else {
+            throw CommunityError.invalidResponse("Proposal inbox unavailable.")
+        }
+        return (proposals, pending)
+    }
+    /// Owner decision on a pending proposal. Approval only hands it to the worker;
+    /// nothing executes from this client.
+    func decideProposal(_ proposal: AdminAgentProposal, approve: Bool, reason: String) async throws -> String {
+        let text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...2000).contains(text.count) else { throw CommunityError.server(message: "A reason is required.", code: nil) }
+        guard proposal.state == "pending" else { throw CommunityError.server(message: "Only a pending proposal can be decided.", code: nil) }
+        let response = try await gateway.call("sdi_agent_proposal_admin",
+            params: AdminProposalRequest(action: approve ? "approve" : "reject", proposal: proposal.id, revision: proposal.revision, reason: text),
+            as: AdminProposalResponse.self)
+        let expected = approve ? "approved" : "rejected"
+        guard response.status == "confirmed", response.state == expected else { throw CommunityError.invalidResponse("Decision was not confirmed.") }
+        return expected
+    }
+
+    // MARK: Provider configuration presence (#248)
+    func configuration() async throws -> AdminConfigurationResponse {
+        try await gateway.call("sdi_admin_configuration", params: [String: String](), as: AdminConfigurationResponse.self).validated()
+    }
+
+    // MARK: Backups, releases and retention (#257)
+    func operations() async throws -> AdminOperationsStatus {
+        try await gateway.call("sdi_admin_operations", params: [String: String](), as: AdminOperationsStatus.self).validated()
     }
 
     // MARK: Finance (#255)
@@ -138,5 +195,186 @@ final class AdminOperationsClient {
             if batch.count < 50 { break }
         }
         return (found.sorted { $0.created_at > $1.created_at }, searched)
+    }
+}
+
+// MARK: - Command-center contracts (#248, #257, #284)
+
+struct AdminAgentConsoleEntry: Decodable, Identifiable, Equatable {
+    var id: String { key }
+    let key: String
+    let title: String
+    let paused: Bool
+    let per_run_cost_cap_minor: Int?
+    let last_error: String?
+    let last_started: Date?
+    /// Null when the proposal inbox candidate is not installed.
+    let pending_proposals: Int?
+}
+struct AdminAgentConsoleResponse: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let agents: [AdminAgentConsoleEntry]?
+}
+
+struct AdminAgentAuditEntry: Decodable, Identifiable, Equatable {
+    let id: UUID; let actor: UUID; let agent_key: String?; let action: String; let reason: String; let created_at: Date
+}
+struct AdminAgentHistoryPage<Item: Equatable>: Equatable {
+    let items: [Item]; let hasMore: Bool; let page: Int
+}
+struct AdminAgentHistoryResponse: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let runs: [AdminAgentRun]?
+    let audit: [AdminAgentAuditEntry]?
+    let has_more: Bool?
+}
+/// Client bounds mirror the server's (`Invalid history filter.`), so an
+/// out-of-range filter is never sent.
+struct AdminAgentHistoryFilter: Equatable {
+    static let states = ["running", "succeeded", "failed", "stopped"]
+    var state: String?
+    var query: String
+    var page: Int
+    func request(action: String, agent: String?) throws -> AdminAgentRequest {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (0...199).contains(page), text.count <= 100 else { throw CommunityError.invalidResponse("History filter out of range.") }
+        if let state, !Self.states.contains(state) { throw CommunityError.invalidResponse("Unknown run state.") }
+        var fields: [String: CommunityJSONValue] = ["query": .string(text), "page": .string(String(page))]
+        if let state { fields["state"] = .string(state) }
+        return AdminAgentRequest(action: action, agent: agent, payload: .object(fields))
+    }
+}
+
+struct AdminAgentProposal: Decodable, Identifiable, Equatable {
+    let id: UUID
+    let agent_key: String
+    let kind: String
+    let summary: String
+    let estimated_cost_minor: Int
+    let cap_reason: String
+    let state: String
+    let proposed_at: Date
+    let expires_at: Date
+    let decided_by: UUID?
+    let decided_at: Date?
+    let decision_note: String?
+    let outcome: String?
+    let revision: Int
+}
+struct AdminProposalRequest: Encodable, Equatable {
+    let action: String
+    var proposal: UUID? = nil
+    var revision: Int? = nil
+    var reason = ""
+    var agent: String? = nil
+}
+struct AdminProposalResponse: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let status: String?
+    let state: String?
+    let proposals: [AdminAgentProposal]?
+    let pending: Int?
+}
+
+enum AdminIdentifier {
+    /// Lowercase letters, digits and underscore (plus `extra` bytes), 1...40 bytes.
+    static func isBounded(_ value: String, extra: Set<UInt8> = []) -> Bool {
+        (1...40).contains(value.utf8.count)
+            && value.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) || $0 == 95 || extra.contains($0) }
+    }
+    /// The server's label rule: empty, a version number (1.4.0, v2.0.1-rc.1) or a commit hash.
+    static let releaseLabelPattern = #"^(v?[0-9]{1,6}(\.[0-9]{1,6}){0,3}([-+][0-9A-Za-z]{1,20}(\.[0-9A-Za-z]{1,20}){0,3})?|[0-9a-f]{7,40})$"#
+    static func isReleaseLabel(_ value: String) -> Bool {
+        value.isEmpty || (value.utf8.count <= 120 && value.range(of: releaseLabelPattern, options: .regularExpression) != nil)
+    }
+}
+
+/// Presence-only provider configuration: setting names with booleans, never values.
+struct AdminWorkerConfiguration: Decodable, Identifiable, Equatable {
+    var id: String { worker }
+    let worker: String
+    let reported_at: Date
+    let stale: Bool
+    let settings: [String: Bool]
+    let missing: [String]
+}
+struct AdminConfigurationResponse: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let workers: [AdminWorkerConfiguration]?
+    let note: String?
+    /// Fail closed on anything that is not a bounded identifier, so a value that
+    /// looks like a host, URL or key is never displayed.
+    func validated() throws -> AdminConfigurationResponse {
+        guard let workers, workers.count <= 100 else { throw CommunityError.invalidResponse("Configuration reply incomplete.") }
+        for worker in workers {
+            guard AdminIdentifier.isBounded(worker.worker, extra: [45]), worker.settings.count <= 40,
+                  worker.settings.keys.allSatisfy({ AdminIdentifier.isBounded($0) }),
+                  worker.missing.allSatisfy({ worker.settings[$0] == false }) else {
+                throw CommunityError.invalidResponse("Configuration reply contained an unexpected identifier.")
+            }
+        }
+        return self
+    }
+}
+
+struct AdminOperationsMilestone: Decodable, Equatable {
+    let last_succeeded_at: Date?
+    let last_failed_at: Date?
+    let stale: Bool
+}
+struct AdminOperationsRelease: Decodable, Equatable {
+    let label: String
+    let at: Date
+    let outcome: String?
+}
+struct AdminOperationsReport: Decodable, Equatable {
+    let kind: String
+    let outcome: String
+    let label: String
+    let metrics: [String: Int]
+    let created_at: Date
+}
+/// Backups, restore drills, releases, rollbacks and retention as reported by
+/// host jobs (`sdi_admin_operations`). Read-only: no control endpoint exists.
+struct AdminOperationsStatus: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let backup: AdminOperationsMilestone?
+    let restore_drill: AdminOperationsMilestone?
+    let retention_sweep: AdminOperationsMilestone?
+    let release: AdminOperationsRelease?
+    let rollback: AdminOperationsRelease?
+    let retention: [String: Int?]?
+    let recent: [AdminOperationsReport]?
+    let note: String?
+    let measured_at: Date?
+
+    static let kinds: Set<String> = ["backup", "restore_drill", "release", "rollback", "retention_sweep"]
+    static let retentionTitles: [(key: String, title: String)] = [
+        ("render_artifacts_live", "Private renders within retention"),
+        ("render_artifacts_expired", "Private renders past expiry"),
+        ("deletion_requests_blocked", "Account deletions blocked"),
+    ]
+    /// Fail closed: a reply carries its measurement time and every milestone;
+    /// labels are version-shaped and metrics are named non-negative counts.
+    func validated() throws -> AdminOperationsStatus {
+        guard measured_at != nil, backup != nil, restore_drill != nil, retention_sweep != nil, let recent, recent.count <= 20 else {
+            throw CommunityError.invalidResponse("Operations reply incomplete.")
+        }
+        for report in recent {
+            guard Self.kinds.contains(report.kind), ["succeeded", "failed"].contains(report.outcome), AdminIdentifier.isReleaseLabel(report.label),
+                  report.metrics.count <= 20, report.metrics.allSatisfy({ AdminIdentifier.isBounded($0.key) && $0.value >= 0 }) else {
+                throw CommunityError.invalidResponse("Operations reply contained an unexpected record.")
+            }
+        }
+        for label in [release?.label, rollback?.label].compactMap({ $0 }) where !AdminIdentifier.isReleaseLabel(label) {
+            throw CommunityError.invalidResponse("Operations reply contained an unexpected label.")
+        }
+        for (_, value) in retention ?? [:] { if let value, value < 0 { throw CommunityError.invalidResponse("Negative retention count.") } }
+        return self
     }
 }

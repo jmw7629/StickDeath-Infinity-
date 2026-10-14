@@ -105,3 +105,33 @@ confirmed by the owner before any adapter is enabled; the module notes what each
 
 Tests: `backend/tests/test_workers.py` (fake RPC clients, fake hosting, fake transports).
 No upload, post or deployment has run.
+
+## Post-publication release, creator status and failure hygiene (2026-10-14)
+
+`cleanup.py` (`python3 -m backend.publishing.cleanup --execute [--limit N]`) removes
+the intake host's temporary render once publication is verified (#190). The
+database decides (`sdi_publication_release_candidates`, `sdi_release_published_upload`
+in `upload-retention.sql`): every destination of the current approved render must hold
+a `published` job with a provider receipt; nothing may be queued, leased, failed,
+reconciling, cancelling or awaiting removal; the last lease must be past the 60-second
+grace interval; renders with social/marketing reuse and feed copies with a pending
+appeal are kept. Release fences every artifact version (so `release_allowed` refuses
+new leases) before the host unlinks, is idempotent and is repeated for two days so a
+host that stops between the two steps finishes later. Any refusal or error keeps the
+file; expiry (`backend/ingestion/retention.py`) remains the fallback. The creator's
+original and editable project stay on the device. Nothing schedules the command.
+
+`sdi_publish_status(page)` (#245) is the creator's single read: review state
+(`awaiting_review`, `changes_requested`, `approved`, `rejected`), whether owner approval
+is required, each destination job's stage (`queued`, `transferring`,
+`provider_processing`, `releasing`, `published` with its confirmed link, `failed` with
+`can_retry`, `cancelling`, `removal_in_progress`, `removed`, `cancelled`,
+`needs_reconciliation`) and the staging copy (`retained` with expiry, `expired`,
+`deleted`). A trigger in `publishing-admin.sql` strips links, bearer values and
+credential parameters from every stored failure reason.
+
+Tests: `backend/tests/test_workers.py::PostPublicationCleanupTests`,
+`backend/sql/tests/130_publication_release_status.sql`. No provider call, upload or
+deletion on a real host has run. Native and admin screens still read
+`sdi_publish_action('list')` / `sdi_publishing_admin('list')`; wiring the status RPC
+into `ProfileView` is outstanding (see docs/PUBLISHING_WAVE4.md).

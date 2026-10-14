@@ -21,6 +21,8 @@ struct SpatterMotionRecipePanel: View {
     @StateObject private var session = SpatterStudioEditSession()
     @State private var draft = ""
     @State private var planPreview: String?
+    /// The context the visible plan preview was prepared against (#203).
+    @State private var previewSnapshot: SpatterContextSnapshot?
     @State private var isVisible = false
     @State private var isForeground = true
     @FocusState private var draftFocused: Bool
@@ -204,6 +206,45 @@ struct SpatterMotionRecipePanel: View {
             : isStickDraft ? "Start/end positions are the figure's feet baseline in canvas percentages. Height uses the shorter canvas side; every pose must fit. Edit the example's action, frame count, color, positions and size."
             : "Positions use canvas percentages. Radius uses the shorter canvas side; line width is in pixels. The full outline must fit inside the canvas."
     }
+    /// What Spatter can see right now, built from the live command context (#203).
+    private var contextSnapshot: SpatterContextSnapshot? {
+        let screen = vm.commandScreenContext
+        guard screen.route == .editor, let document = screen.document else { return nil }
+        return SpatterContextSnapshot(document: document, screen: .init(
+            toolRawValue: screen.selectedTool?.rawValue, panelKey: Self.registryKey(screen.activePanel),
+            selectedDrawingCount: screen.selectedElementIDs.count, selectedImageCount: screen.selectedImageCount,
+            selectedAudioClipID: screen.selectedAudioClipID, displayedFrameID: screen.displayedFrameID,
+            isPlaying: screen.isPlaying, isDirty: screen.isDirty, isSaving: screen.isSaving,
+            canUndo: screen.canUndo, canRedo: screen.canRedo))
+    }
+    /// Exhaustive on purpose: a new Studio panel does not compile until the
+    /// control registry (#204) says whether Spatter can reach it.
+    static func registryKey(_ panel: StudioPanelType) -> String {
+        switch panel {
+        case .none: return "none"
+        case .colorPicker: return "colorPicker"
+        case .gradientEndColor: return "gradientEndColor"
+        case .shapeFillColor: return "shapeFillColor"
+        case .toolSettings: return "toolSettings"
+        case .projectSettings: return "projectSettings"
+        case .layers: return "layers"
+        case .export: return "export"
+        case .framesViewer: return "framesViewer"
+        case .audioTimeline: return "audioTimeline"
+        case .soundLibrary: return "soundLibrary"
+        case .stickerEmoji: return "stickerEmoji"
+        case .addImage: return "addImage"
+        case .backgroundLibrary: return "backgroundLibrary"
+        case .menu: return "menu"
+        case .aiVoice: return "aiVoice"
+        case .spatterAI: return "spatterAI"
+        case .magicCut: return "magicCut"
+        case .rotoscope: return "rotoscope"
+        }
+    }
+    private var toolControl: SpatterStudioControlRegistry.Control? {
+        SpatterStudioControlRegistry.control(for: vm.selectedTool)
+    }
     private var scope: SpatterStudioEditSession.Scope {
         .init(isStudioVisible: isVisible && isForeground && vm.isEditing && vm.activePanel == .spatterAI,
               accountID: authVM.userId)
@@ -233,6 +274,22 @@ struct SpatterMotionRecipePanel: View {
                         .font(.specialElite(20, relativeTo: .title3))
                     Text(editDescription)
                         .font(.subheadline)
+                    if let snapshot = contextSnapshot {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("What Spatter sees").font(.caption.bold())
+                            Text(snapshot.summary).font(.caption).textSelection(.enabled)
+                                .accessibilityIdentifier("spatter.context.summary")
+                            if let toolControl {
+                                Text(toolControl.explanation).font(.caption).foregroundColor(.white.opacity(0.7))
+                                    .accessibilityIdentifier("spatter.context.tool")
+                            }
+                            let ready = snapshot.readyGrammars()
+                            Text(ready.isEmpty ? "No instruction can run in this state." : "Ready now: " + ready.joined(separator: ", "))
+                                .font(.caption2).foregroundColor(.white.opacity(0.6))
+                                .accessibilityIdentifier("spatter.context.ready")
+                        }
+                        .padding(10).background(Color(hex: "1A1A24")).cornerRadius(10)
+                    }
                     Text("Use a complete example. These local edits create supported motion, edit selected audio, flip a selected image, rename the project, change frame exposure, edit layers or erase selected drawings. Open-ended AI briefs remain unfinished. Export renders the resulting project. Nothing publishes automatically.")
                         .font(.caption).foregroundColor(.white.opacity(0.7))
 
@@ -488,6 +545,7 @@ struct SpatterMotionRecipePanel: View {
                     Button("Preview plan") {
                         draftFocused = false
                         planPreview = SpatterInstructionPreview.plan(draft, context: vm.commandScreenContext.document)
+                        previewSnapshot = contextSnapshot
                     }
                     .frame(minHeight: 44)
                     .disabled(session.isWorking || session.isClosed || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -495,10 +553,15 @@ struct SpatterMotionRecipePanel: View {
                     if let planPreview {
                         Text(planPreview).font(.caption).textSelection(.enabled)
                             .accessibilityIdentifier("spatter.plan.text")
+                        if let previewSnapshot, let current = contextSnapshot, previewSnapshot.isStale(comparedTo: current) {
+                            Text("The project, frame, layer, tool or selection changed after this preview. Preview again; Apply always uses the current editor.")
+                                .font(.caption).foregroundColor(.orange)
+                                .accessibilityIdentifier("spatter.plan.stale")
+                        }
                     }
                     Button("Apply local edit") {
                         draftFocused = false
-                        planPreview = nil
+                        planPreview = nil; previewSnapshot = nil
                         let submitted = draft
                         let account = authVM.userId
                         session.submit(submitted, in: vm, accountID: account, currentScope: { scope })

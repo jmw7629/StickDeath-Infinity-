@@ -18,8 +18,14 @@ an HTTPS edge/function runtime and injects three collaborators:
   remaining count or ``None`` when exhausted; ``release(user_id)`` refunds a
   reservation when the provider call did not happen.
 * ``provider``    – any object with ``complete(messages) -> (reply, units)``.
-  ``NullProvider`` is the default and answers 503 "not configured". No paid
-  provider is referenced here; the owner selects and configures one privately.
+  ``NullProvider`` is the default and answers 503 "not configured". In a
+  deployment it is a ``providers.ProviderRouter`` (model switch, per-attempt
+  timeout, bounded retries). No paid provider is referenced here; the owner
+  selects and configures one privately.
+* ``meter``       – optional ``metering.Meter`` (``SqlMeter`` over
+  ``public.sdi_spatter_usage_meter``). When given it replaces ``budget`` and
+  enforces plan allowances, rate, daily safety cap, global ceiling and the
+  emergency stop, settling each reservation exactly once.
 
 Nothing in this module starts a server, reads secrets or contacts a provider.
 """
@@ -29,6 +35,9 @@ import datetime as _dt
 import json
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Tuple
+
+from .metering import Decision, Meter
+from .providers import ProviderRouter, ProviderUnavailable  # noqa: F401  (ProviderRouter is the deployment provider)
 
 SCHEMA_VERSION = 1
 MAX_BODY_BYTES = 128 * 1024
@@ -41,10 +50,12 @@ ROLES = ("system", "user", "assistant")
 class HandlerError(Exception):
     """Carries an HTTP status and a short public reason; never provider detail."""
 
-    def __init__(self, status: int, reason: str):
+    def __init__(self, status: int, reason: str, **extra: Any):
         super().__init__(reason)
         self.status = status
         self.reason = reason
+        # Public, non-sensitive fields only (code, retryAfterSeconds, allowance, upgrade).
+        self.extra = extra
 
 
 class Provider(Protocol):
@@ -54,8 +65,6 @@ class Provider(Protocol):
         """Return (reply_text, usage_units). Raise ProviderUnavailable on failure."""
 
 
-class ProviderUnavailable(Exception):
-    pass
 
 
 class NullProvider:
@@ -146,7 +155,8 @@ def _user_id(claims: Mapping[str, Any]) -> str:
 
 def handle(headers: Mapping[str, str], raw_body: bytes, *,
            verify_jwt: Callable[[str], Mapping[str, Any]],
-           budget: Budget,
+           budget: Optional[Budget] = None,
+           meter: Optional[Meter] = None,
            provider: Provider = NullProvider(),
            now: Callable[[], _dt.datetime] = lambda: _dt.datetime.now(_dt.timezone.utc)) -> Response:
     """Process one POST. Errors are JSON with the same schemaVersion and a `error` field."""
@@ -165,7 +175,11 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *,
         messages = _parse_request(raw_body)
         # Provider readiness is checked before a unit is consumed: an unconfigured
         # deployment must not drain anyone's daily budget.
-        if isinstance(provider, NullProvider):
+        if isinstance(provider, NullProvider) or getattr(provider, "configured", True) is False:
+            raise HandlerError(503, "not configured")
+        if meter is not None:
+            return _metered(user_id, messages, meter, provider)
+        if budget is None:
             raise HandlerError(503, "not configured")
         reservation = budget.reserve(user_id)
         if reservation is None:
@@ -195,12 +209,94 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *,
             "budget": {"remaining": int(remaining), "resetsAt": _iso(resets_at)},
         })
     except HandlerError as error:
-        return Response(error.status, {"schemaVersion": SCHEMA_VERSION, "error": error.reason})
+        body = {"schemaVersion": SCHEMA_VERSION, "error": error.reason}
+        body.update(error.extra)
+        return Response(error.status, body)
+
+
+# Metered refusals: HTTP status, public reason. 429 keeps the existing client's
+# "try later / allowance used" message; 503 keeps its "unavailable" message.
+_REFUSALS = {
+    "unauthorized": (401, "unauthorized"),
+    "account_restricted": (403, "account restricted"),
+    "emergency_stop": (503, "paused by the operator"),
+    "global_limit": (503, "service limit reached for today"),
+    "rate_limited": (429, "too many requests"),
+    "daily_safety_limit": (429, "daily safety limit reached"),
+    "plan_allowance_exhausted": (429, "plan allowance used"),
+    "unavailable": (503, "metering unavailable"),
+}
+
+
+def _allowance(decision: Decision) -> dict:
+    """Plan allowance for the client. ``remaining`` is null for an unlimited
+    plan and ``resetsAt`` null for a one-time allowance; never a guess."""
+    return {
+        "plan": decision.plan,
+        "period": decision.period,
+        "remaining": decision.remaining,
+        "resetsAt": _iso(decision.resets_at) if decision.resets_at else None,
+    }
+
+
+def _metered(user_id: str, messages: list, meter: Meter, provider: Provider) -> Response:
+    try:
+        decision = meter.reserve(user_id)
+    except Exception:
+        raise HandlerError(503, "metering unavailable", code="unavailable") from None
+    if not decision.allowed or not decision.reservation:
+        status, reason = _REFUSALS.get(decision.code, _REFUSALS["unavailable"])
+        extra: dict = {"code": decision.code if decision.code in _REFUSALS else "unavailable"}
+        if decision.retry_after_seconds:
+            extra["retryAfterSeconds"] = decision.retry_after_seconds
+        if decision.code in ("plan_allowance_exhausted", "daily_safety_limit"):
+            extra["allowance"] = {"plan": decision.plan, "period": decision.period, "remaining": 0 if decision.plan else None,
+                                  "resetsAt": _iso(decision.resets_at) if decision.resets_at else None}
+        if decision.upgrade:
+            extra["upgrade"] = decision.upgrade
+        raise HandlerError(status, reason, **extra)
+
+    def release() -> None:
+        try:
+            meter.settle(decision.reservation, "release")
+        except Exception:
+            pass  # An unsettled reservation stays counted; the SQL sweep never refunds silently.
+
+    try:
+        reply, units = provider.complete(messages)
+    except HandlerError:
+        release()
+        raise
+    except ProviderUnavailable as error:
+        release()
+        raise HandlerError(502, "provider unavailable", code="provider_unavailable",
+                           retryable=bool(getattr(error, "transient", False))) from None
+    except Exception:
+        release()
+        raise HandlerError(502, "provider unavailable", code="provider_unavailable", retryable=False) from None
+    if not isinstance(reply, str) or not reply.strip():
+        release()
+        raise HandlerError(502, "empty provider reply", code="provider_unavailable", retryable=True)
+    if len(reply.encode("utf-8")) > MAX_REPLY_BYTES:
+        reply = reply.encode("utf-8")[:MAX_REPLY_BYTES].decode("utf-8", "ignore")
+    units = int(units) if isinstance(units, (int, float)) and not isinstance(units, bool) and units >= 0 else 0
+    try:
+        meter.settle(decision.reservation, "commit", units)
+    except Exception:
+        pass  # The reply was produced and the prompt stays counted.
+    # `budget` stays the legacy daily shape the current client renders as
+    # "Remaining today"; metered plans use `allowance` so no period is mislabelled.
+    return Response(200, {
+        "schemaVersion": SCHEMA_VERSION,
+        "reply": reply,
+        "usage": {"units": units},
+        "allowance": _allowance(decision),
+    })
 
 
 class InMemoryBudget:
-    """Reference implementation of the per-user daily budget semantics used by the
-    SQL table. Suitable for tests and single-process previews only."""
+    """Legacy per-user daily budget (pre-#209 contract). Deployments use `meter=`
+    (metering.SqlMeter) instead. Suitable for tests and single-process previews only."""
 
     def __init__(self, daily_limit: int, now: Callable[[], _dt.datetime]):
         if daily_limit < 0:

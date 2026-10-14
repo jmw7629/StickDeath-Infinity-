@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Rooms: invitation-based collaboration on an explicitly shared Studio
 /// project. A code permits an admission request only; the recipient consents
@@ -37,7 +38,9 @@ struct CollabRoomView: View {
                     if busy { ProgressView().tint(StudioCraftTheme.accent) }
                     if auth.isAuthenticated {
                         if let selected {
-                            RoomDetailView(room: selected, onBack: { self.selected = nil; Task { await load() } },
+                            RoomDetailView(room: selected, onBack: {
+                                RoomSessionCoordinator.shared.end(); self.selected = nil; Task { await load() }
+                            },
                                            onLeft: { note in self.selected = nil; message = note; Task { await load() } })
                         } else {
                             browser
@@ -57,8 +60,9 @@ struct CollabRoomView: View {
             .toolbar(.hidden, for: .navigationBar)
             .task(id: identity) {
                 epoch = UUID(); rooms = []; pending = []; selected = nil; message = nil; failure = nil; showingCreate = false
-                if phase == .active { await load() }
+                if phase == .active { await load(); restoreHandoff() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .sdiCommunityReturnToRoom)) { _ in restoreHandoff() }
             .refreshable { await load() }
             .sheet(isPresented: $showingCreate) {
                 RoomCreateSheet { outcome in
@@ -92,12 +96,12 @@ struct CollabRoomView: View {
                         Text(room.title).font(.specialElite(17, relativeTo: .headline))
                         Text(room.project_title.map { "Shared project: \($0)" } ?? "No project shared yet")
                             .communityCaption()
-                        Text(room.owner_id.uuidString.lowercased() == auth.userId?.lowercased() ? "You own this room" : "Member")
+                        Text("\(room.owner_id.uuidString.lowercased() == auth.userId?.lowercased() ? "You own this room" : "Member") · \(room.project_title == nil ? "nothing shared" : room.sharesEdit ? "members may edit" : "view only")\(RoomSessionCoordinator.shared.returnRoom == room.id ? " · open in Studio" : "")")
                             .communityCaption()
                     }
                 }.buttonStyle(.plain).accessibilityIdentifier("rooms.browser.room")
             }
-            if rooms.isEmpty && !busy { Text("No accepted rooms.").communityCaption().accessibilityIdentifier("rooms.browser.empty") }
+            if rooms.isEmpty && !busy { Text("No accepted rooms. Rooms appear here once you create one or an owner approves your request.").communityCaption().accessibilityIdentifier("rooms.browser.empty") }
             if !pending.isEmpty {
                 Text("Your pending requests").communitySubheading()
                 ForEach(pending) { request in
@@ -112,6 +116,12 @@ struct CollabRoomView: View {
                 .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
                 .accessibilityIdentifier("rooms.browser.refresh")
         }
+    }
+
+    /// Coming back from Studio lands on the room whose project is open there.
+    @MainActor private func restoreHandoff() {
+        guard selected == nil, let room = RoomSessionCoordinator.shared.returnRoom, let match = rooms.first(where: { $0.id == room }) else { return }
+        selected = match
     }
 
     @MainActor private func load() async {
@@ -293,6 +303,7 @@ private struct RoomDetailView: View {
             if owner { invitationCard }
             membersCard
             activityCard
+            RoomAssetsCard(room: room.id, canSend: summary?.can_edit == true && summary?.project_ref != nil, isOwner: owner)
             RoomQuotaPanel(head: summary?.command_revision ?? room.command_revision ?? 0)
             HStack(spacing: 10) {
                 if !owner {
@@ -310,7 +321,12 @@ private struct RoomDetailView: View {
             await refresh()
             await pollActivity()
         }
-        .onDisappear { RoomSessionCoordinator.shared.end(); epoch = UUID() }
+        .onDisappear {
+            // Opening the shared project in Studio keeps synchronisation alive;
+            // any other exit ends it. The device project is never touched.
+            if !RoomSessionCoordinator.shared.isHandedOff(room: room.id) { RoomSessionCoordinator.shared.end() }
+            epoch = UUID()
+        }
         .confirmationDialog(owner ? "Close this room for everyone?" : "Leave this room?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button(owner ? "Close room" : "Leave room", role: .destructive) { Task { await closeOrLeave() } }
             Button("Cancel", role: .cancel) {}
@@ -414,6 +430,17 @@ private struct RoomDetailView: View {
         CommunityCard {
             Text("Shared edit stream").communitySubheading()
             Text(syncStatus).communityCaption().accessibilityIdentifier("rooms.room.sync-status")
+            if let held = RoomSessionCoordinator.shared.heldConflict {
+                CommunityMessage(text: "Your edit\(held.target.map { " to \($0)" } ?? "") overlaps \(held.overlapping.count) edit\(held.overlapping.count == 1 ? "" : "s") by another creator. Nothing was overwritten. Decide after reviewing their change.", kind: .info)
+                    .accessibilityIdentifier("rooms.room.conflict")
+                HStack(spacing: 8) {
+                    Button("Keep mine on top") { RoomSessionCoordinator.shared.resolveHeldConflict(keepMine: true); Task { await pollActivity() } }
+                        .buttonStyle(CommunitySecondaryButtonStyle()).accessibilityIdentifier("rooms.room.conflict-keep")
+                    Button("Discard mine") { RoomSessionCoordinator.shared.resolveHeldConflict(keepMine: false); Task { await pollActivity() } }
+                        .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).accessibilityIdentifier("rooms.room.conflict-discard")
+                }
+            }
+            if let reason = RoomSessionCoordinator.shared.endReason { Text(reason).communityCaption() }
             if activity.isEmpty { Text("No shared edits recorded yet.").communityCaption() }
             ForEach(activity.suffix(20)) { record in
                 HStack(alignment: .top, spacing: 8) {
@@ -425,7 +452,7 @@ private struct RoomDetailView: View {
                     }
                 }
             }
-            Text("Edits are versioned Studio commands with an idempotent operation id and a base revision. A conflict is shown explicitly and never overwrites another creator's edit. Applying remote edits inside Studio is not connected in this build; the stream is shown as recorded by the server.")
+            Text("Edits are versioned Studio commands with an idempotent operation id, a per-room sequence number and a base revision. The server places an edit on top of concurrent edits only when they touched different frames, layers or sounds; overlapping edits are held for your decision and never overwrite another creator's work. You can undo only your own edits. Applying remote edits inside Studio is not connected in this build; the stream is shown as recorded by the server.")
                 .communityCaption()
             Button("Refresh edit stream") { Task { await pollActivity() } }
                 .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
@@ -464,7 +491,10 @@ private struct RoomDetailView: View {
             let response = try await CommunityServices.rooms.commands(RoomCommandRequest(action: "since", room: room.id, after: 0, page_size: 200))
             guard !Task.isCancelled, revision == epoch else { return }
             if let problem = response.error, !problem.isEmpty {
-                if problem.contains("unavailable") { RoomSessionCoordinator.shared.end(); onLeft("Room access ended.") }
+                if problem.contains("unavailable") {
+                RoomSessionCoordinator.shared.end(reason: "Room access ended. Your device copy of the project is unchanged.")
+                onLeft("Room access ended. Your device copy of the project is unchanged; nothing was deleted.")
+            }
                 else { syncStatus = problem }
                 return
             }
@@ -512,7 +542,8 @@ private struct RoomDetailView: View {
         }
         busy = true; defer { busy = false }
         if await studio.openProject(metadata) {
-            notice = "Opened \(metadata.title) in Studio. Edits are saved on this device; the shared stream shows server-recorded commands only."
+            RoomSessionCoordinator.shared.handOffToStudio(room: room.id, roomTitle: room.title, projectID: projectID)
+            notice = "Opened \(metadata.title) in Studio. Edits are saved on this device; the shared stream shows server-recorded commands only. Return to Rooms to come back to this room."
             NotificationCenter.default.post(name: .sdiCommunityOpenStudio, object: nil)
         } else {
             failure = studio.message ?? "Studio could not open the project."
@@ -520,8 +551,161 @@ private struct RoomDetailView: View {
     }
 }
 
-/// Server bounds from rooms-v2.sql shown honestly; binary asset transfer has
-/// no service in this build, so originals never leave the device.
+/// Files a creator explicitly chooses to send to this room (#233). Each is a
+/// temporary, hash-verified copy with a licence; the chosen original is only
+/// read, never moved or deleted. No camera, microphone, screen or background
+/// collection exists here.
+private struct RoomAssetsCard: View {
+    let room: UUID
+    let canSend: Bool
+    let isOwner: Bool
+    @State private var assets: [RoomAssetRecord] = []
+    @State private var loaded = false
+    @State private var problem: String?
+    @State private var notice: String?
+    @State private var busy = false
+    @State private var progress: String?
+    @State private var showingImporter = false
+    @State private var picked: URL?
+    @State private var license: RoomAssetLicense = .ownWork
+    @State private var attribution = ""
+    @State private var consent = false
+    @State private var sending: Task<Void, Never>?
+    @State private var downloads: [UUID: RoomAssetTransfer.Download] = [:]
+
+    var body: some View {
+        CommunityCard {
+            Text("Shared assets").communitySubheading()
+            if let problem { CommunityMessage(text: problem, kind: .error).accessibilityIdentifier("rooms.assets.error") }
+            if let notice { CommunityMessage(text: notice, kind: .success).accessibilityIdentifier("rooms.assets.notice") }
+            if let progress { Text(progress).communityCaption().accessibilityIdentifier("rooms.assets.progress") }
+            if loaded && assets.isEmpty { Text("No files have been shared in this room.").communityCaption() }
+            ForEach(assets) { asset in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(asset.name).font(.specialElite(15, relativeTo: .body))
+                    Text("\(ByteCountFormatter.string(fromByteCount: Int64(asset.byte_size), countStyle: .file)) · \(asset.licenseTitle)\(asset.attribution.isEmpty ? "" : " · \(asset.attribution)")")
+                        .communityCaption()
+                    Text("SHA-256 \(asset.sha256.prefix(12))… · \(asset.state == "available" ? "verified by the server" : "still sending (\(asset.received ?? 0)/\(asset.chunk_count))") · expires \(asset.expires_at.formatted(date: .abbreviated, time: .shortened))")
+                        .communityCaption()
+                    HStack(spacing: 8) {
+                        if asset.state == "available" && asset.mine != true {
+                            Button("Save to this device") { Task { await download(asset) } }
+                                .buttonStyle(CommunitySecondaryButtonStyle()).accessibilityIdentifier("rooms.assets.download")
+                        }
+                        if asset.mine == true || isOwner {
+                            Button(asset.mine == true ? "Withdraw" : "Remove copy") { Task { await withdraw(asset) } }
+                                .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).accessibilityIdentifier("rooms.assets.withdraw")
+                        }
+                    }.disabled(busy)
+                }.padding(.vertical, 4)
+            }
+            if canSend {
+                Button("Choose a file to send") { showingImporter = true }
+                    .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                    .accessibilityIdentifier("rooms.assets.choose")
+                if let picked {
+                    Text(picked.lastPathComponent).font(.specialElite(14, relativeTo: .body))
+                    Picker("Licence", selection: $license) {
+                        ForEach(RoomAssetLicense.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.pickerStyle(.menu).tint(StudioCraftTheme.accentText).accessibilityIdentifier("rooms.assets.license")
+                    TextField(license == .ccBy ? "Attribution (required)" : "Attribution (optional)", text: $attribution).communityField()
+                        .accessibilityIdentifier("rooms.assets.attribution")
+                    Toggle("I have the rights to share this file with this room's approved members.", isOn: $consent)
+                        .font(.specialElite(14, relativeTo: .body)).accessibilityIdentifier("rooms.assets.consent")
+                    HStack(spacing: 8) {
+                        Button(sending == nil ? "Send file" : "Sending…") { startSend(picked) }
+                            .buttonStyle(CommunityPrimaryButtonStyle()).disabled(!consent || busy || sending != nil)
+                            .accessibilityIdentifier("rooms.assets.send")
+                        if sending != nil {
+                            Button("Cancel") { sending?.cancel() }
+                                .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).accessibilityIdentifier("rooms.assets.cancel")
+                        }
+                    }
+                }
+            } else {
+                Text("Editors of a room with a shared project can send files here.").communityCaption()
+            }
+            Text("Only files you choose are sent, in verified 32 KB parts. Copies expire after \(Int(RoomAssetPolicy.retention / 3600)) hours and are deleted when the sender leaves or the room closes. Your original file is never changed or deleted.")
+                .communityCaption()
+            Button("Refresh assets") { Task { await refresh() } }
+                .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                .accessibilityIdentifier("rooms.assets.refresh")
+        }
+        .accessibilityIdentifier("rooms.assets")
+        .task(id: room) { await refresh() }
+        .onDisappear { sending?.cancel() }
+        .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.png, .jpeg, .audio], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls): picked = urls.first; consent = false; problem = nil; notice = nil
+            case .failure: problem = "The file could not be opened."
+            }
+        }
+    }
+
+    @MainActor private func refresh() async {
+        do { assets = try await CommunityServices.rooms.assets.list(room: room); loaded = true; problem = nil }
+        catch { loaded = true; assets = []; problem = describe(error) }
+    }
+    @MainActor private func startSend(_ url: URL) {
+        guard sending == nil, consent else { return }
+        let chosenLicense = license, chosenAttribution = attribution
+        sending = Task { @MainActor in
+            defer { sending = nil; progress = nil }
+            problem = nil; notice = nil
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard size > 0, size <= RoomAssetPolicy.maximumBytes else { problem = "Files up to 8 MB can be sent."; return }
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { problem = "The file could not be read."; return }
+            do {
+                let outcome = try await CommunityServices.rooms.assets.send(room: room, file: data, name: url.lastPathComponent,
+                    mime: RoomAssetPolicy.mime(forExtension: url.pathExtension), license: chosenLicense, attribution: chosenAttribution) { sent, total in
+                    progress = "Sent \(sent) of \(total) parts…"
+                }
+                switch outcome {
+                case .available: notice = "File sent and verified by the server. Members can save it for \(Int(RoomAssetPolicy.retention / 3600)) hours."
+                case .alreadyShared: notice = "This exact file is already shared in the room."
+                }
+                picked = nil; consent = false; attribution = ""
+            } catch RoomAssetTransfer.TransferError.cancelled {
+                notice = "Sending paused. Send the same file again within an hour to resume, or withdraw it."
+            } catch { problem = describe(error) }
+            await refresh()
+        }
+    }
+    @MainActor private func download(_ asset: RoomAssetRecord) async {
+        guard !busy else { return }
+        busy = true; defer { busy = false; progress = nil }
+        var state = downloads[asset.asset_id] ?? RoomAssetTransfer.Download(asset: asset)
+        progress = "Receiving \(asset.name)…"
+        do {
+            let data = try await CommunityServices.rooms.assets.receive(room: room, &state)
+            downloads[asset.asset_id] = nil
+            let base = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let saved = try RoomAssetInbox.save(data, asset: asset, room: room, base: base)
+            notice = "Saved \(saved.lastPathComponent) to this device (Room Transfers). SHA-256 verified."
+        } catch {
+            downloads[asset.asset_id] = state.chunks.isEmpty ? nil : state
+            problem = describe(error) + (state.chunks.isEmpty ? "" : " Try again to resume from part \(state.chunks.count + 1).")
+        }
+    }
+    @MainActor private func withdraw(_ asset: RoomAssetRecord) async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        do {
+            let verified = try await CommunityServices.rooms.assets.withdraw(room: room, asset: asset.asset_id)
+            notice = verified ? "The room's copy was deleted and the deletion verified. Device files are unchanged." : "The room's copy was withdrawn; deletion is still being verified."
+        } catch { problem = describe(error) }
+        await refresh()
+    }
+    private func describe(_ error: Error) -> String {
+        if let transfer = error as? RoomAssetTransfer.TransferError { return transfer.errorDescription ?? "Transfer failed." }
+        return CommunityGateway.normalize(error).errorDescription ?? "Transfer failed."
+    }
+}
+
+/// Server bounds from rooms-v2.sql shown honestly. Originals never leave the
+/// device except as a temporary, hash-verified copy of a file the creator chose.
 private struct RoomQuotaPanel: View {
     let head: Int
     var body: some View {
@@ -531,8 +715,8 @@ private struct RoomQuotaPanel: View {
                 .communityCaption()
             Text("Up to \(RoomQuotaPolicy.membersPerRoom) members per room and \(RoomQuotaPolicy.openRoomsPerOwner) open rooms per owner · \(RoomQuotaPolicy.dailyReports) reports per day")
                 .communityCaption()
-            CommunityMessage(text: "Asset transfer is not available: no bounded transfer service is configured. Images, audio and originals stay on each device.", kind: .info)
-                .accessibilityIdentifier("rooms.quotas.transfer-unavailable")
+            Text("Asset transfers: files you choose, up to \(RoomAssetPolicy.maximumBytes / 1_048_576) MB each, \(RoomAssetPolicy.roomBytes / 1_048_576) MB and \(RoomAssetPolicy.roomFiles) files per room, \(RoomAssetPolicy.dailyFiles) per day · copies expire after \(Int(RoomAssetPolicy.retention / 3600)) hours and are deleted when you leave or the room closes. Originals stay on each device.")
+                .communityCaption().accessibilityIdentifier("rooms.quotas.transfers")
         }.accessibilityIdentifier("rooms.quotas")
     }
 }

@@ -19,9 +19,11 @@ integration phase; nothing below is claimed as passed. Source of authority:
   never hard-codes a price string; it displays `Product.displayPrice` from the
   loaded StoreKit product or an honest "not configured" state.
 - Annual plans: **not configured.** No annual product id, price or entitlement
-  exists. Adding one requires the owner's explicit annual amount, entitlement
-  decision and matching App Store Connect products
-  (`StoreProductID` TODO in `StickDeathInfinity/Services/Stripe/StripeService.swift`).
+  exists. `BillingPlanCatalog` offers an annual plan only when the build sets
+  `SDI_BILLING_ANNUAL_OWNER_CONFIGURED = YES` **and** an annual product id
+  (`SDI_STOREKIT_PLAN_4_99_ANNUAL_PRODUCT_ID` / `SDI_STOREKIT_PLAN_9_99_ANNUAL_PRODUCT_ID`);
+  the server additionally refuses to approve an annual product without
+  `owner_configured_at`. Amounts stay in App Store Connect.
 - `AppConfig.SubscriptionTier.studio` still exists as an enum case in
   `StickDeathInfinity/App/AppConfig.swift` (not owned by this batch). It maps to
   no product and grants nothing.
@@ -39,6 +41,55 @@ the existing `$(VAR)` xcconfig pattern and falls back to the placeholders above:
 The keys are not yet present in `StickDeathInfinity/Info.plist` or the xcconfig
 (those files are outside this batch). Until they are added, the placeholders are
 used and `StoreProductID.usesPlaceholderIdentifiers` is `true`.
+
+## One plan configuration (#259, 2026-10-14)
+
+`StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift` (Foundation only) is
+the single source for plans, periods, purchase state and plan copy. Both views and
+`StoreProductID` read it; nothing else lists plans.
+
+| Plan | Product | Owner-stated entitlements (2026-10-07, #250/#259) | Enforced today |
+| --- | --- | --- | --- |
+| Free | none | Full Studio on device; no video upload/download; 5 Spatter prompts to try (one-time until the owner says otherwise) | Studio only |
+| Creator | USD 4.99 monthly | No watermark; upload/download; 15 Spatter prompts per month (server-counted, reset at renewal) | none (pending) |
+| Pro | USD 9.99 monthly | Everything in Creator; unlimited Spatter prompts | none (pending) |
+
+- Every paid entitlement carries `isLive = false` and is shown with a pending marker
+  and the note that it turns on when the server applies the plan from Apple's
+  verified purchase. No server enforcement is claimed.
+- Remaining prompts: `BillingCopy.prompts` shows a count only when the server
+  reports one; nothing reports one yet, so the screens say so. At zero on Creator it
+  shows the upgrade-to-Pro prompt.
+- Trial: shown only when the loaded `Product` has a free-trial introductory offer
+  and `isEligibleForIntroOffer` is true. The 3-day trial is App Store Connect
+  configuration; no trial is hard-coded.
+- Bring-your-own AI key (#209) is not listed: it is not built, so it is not an
+  entitlement yet.
+- Prices: `BillingCopy.price(Product.displayPrice, period:)`, or "Price shown when
+  configured". No amount, sale or "popular" claim exists in source.
+
+### StoreKit state machine
+
+`BillingState.reduce(_:_:)` takes StoreKit facts as events and yields one phase:
+`loadingCatalog`, `catalogUnavailable(notConfigured | storeUnreachable)`, `free`,
+`purchasing`, `pending` (Ask to Buy), `subscribed(snapshot)` or `lapsed(snapshot)`.
+Snapshots carry Apple's renewal state (`subscribed`, `inGracePeriod`,
+`inBillingRetry`, `expired`, `revoked`), `willAutoRenew` from verified renewal info
+(unknown when unverified), the period end and whether an introductory offer applies.
+Rules: a cancelled or failed purchase returns to the previous phase; an unverified
+transaction grants nothing; a refresh during a purchase does not end it; pending
+survives refreshes; the highest tier wins; grace keeps access, billing retry without
+grace and revocation do not. Server verification is a separate field that starts as
+`deferred` and is never reported as verified until the server answers.
+`StripeService` feeds the machine from `Product.purchase`, `Transaction.latest(for:)`
+and `transaction.subscriptionStatus` (iOS 17). Standalone suite:
+`Tests/BillingPlans/main.swift` (not run on Linux; deferred to macOS CI).
+
+Settings (`SubscriptionView`) shows the status title/detail (renews on / auto-renew
+off, access ends on / grace / billing retry / revoked / ended), Apple's price, the
+server-verification line, the plan's entitlements and prompt line, **Manage or
+Cancel Subscription** (Apple's `manageSubscriptionsSheet`, then a refresh), Restore
+Purchases, and a monthly/annual picker only when annual is configured.
 
 ## Implemented client-side (StoreKit 2)
 
@@ -102,10 +153,11 @@ the app flow (no call site constructs `SubscriptionView()` or
 - `StickDeathInfinity/Views/Onboarding/ChoosePlanView.swift`
   - Two monthly plan cards. Price comes from the loaded product, otherwise
     "Price shown when configured". The CTA is disabled while no product exists.
-  - Feature pills name only what the Studio does today (frame-by-frame Studio,
-    layers and audio timeline, MP4/GIF/PNG export, on-device projects, Spatter
-    assistant) plus "Extras pending owner configuration". No "Unlimited AI",
-    "Commercial license", project counts or AI quotas.
+  - Feature pills come from `BillingPlanCatalog` (owner-stated entitlements of
+    2026-10-07); everything the server does not enforce yet is marked `*` with the
+    pending note. Trial copy appears only from an eligible store offer. No
+    "Commercial license", project counts, coins or sale claims. (Updated #259,
+    2026-10-14; earlier this list was "Extras pending owner configuration".)
   - A failed purchase shows the error and stays on the screen; it no longer
     advances as if it succeeded. "Start Free →" continues without a purchase.
 
@@ -148,6 +200,22 @@ are cross-checked against the SQL signature by `backend/tests/test_billing.py`
 Not deployed, not run against a provider. Activation needs the owner gates below plus the
 edge-function runtime (verifier, secret store, executor binding) and sandbox exercises.
 
+## Provider statement reconciliation (#254, 2026-10-14)
+
+`backend/billing/reconciliation.py` compares a Stripe *Balance change from activity —
+itemized* CSV with `sdi_finance_report('export')` rows for the same period, by
+provider id (invoice id for charges, `re_` refunds, `po_` payouts). The report lists
+`missing_in_ledger`, `missing_in_statement`, `amount_mismatch`, `currency_mismatch`,
+`duplicate_statement_line`, `outside_period`, `unclassified_category`,
+`statement_row_rejected` and `tax_not_in_ledger`, per-currency totals (gross
+charges, refunds, provider fees, payouts, tax, adjustments) and fee import rows
+(`stripe-fee:<balance transaction>`) for the audited `sdi_finance_record('import')`
+path, since webhooks carry no Stripe fee. It reads only allowlisted columns, so
+customer e-mail, name and description never reach the report. Test-mode statements
+are labelled "not money", never compared with the live ledger and produce no import
+rows. Tests: `backend/tests/test_billing_reconciliation.py` with synthetic fixtures.
+Apple proceeds (App Store Connect financial reports) have no parser yet.
+
 ## Owner-gated (not done, not claimed)
 
 1. Create the two monthly auto-renewable subscriptions in App Store Connect at
@@ -156,8 +224,11 @@ edge-function runtime (verifier, secret store, executor binding) and sandbox exe
    configuration.
 2. Decide annual amounts and entitlements, if any. Nothing annual ships until
    then.
-3. Publish the feature-to-tier entitlement policy and quotas; then bind the native
-   client to `sdi_my_entitlement` and replace the throwing stub.
+3. Confirm the open entitlement questions (free prompts one-time or monthly; BYO
+   key scope; whether the 3-day trial applies to both plans), configure the trial
+   as an App Store introductory offer, then bind the native client to
+   `sdi_my_entitlement`, enforce the prompt allowance server-side and replace the
+   throwing stub.
 4. Verify the existing Stripe account before any reuse. Stripe has no
    client-side role in the current contract; any server-side use (web
    payments) must be verified separately and must not be a new paid service.

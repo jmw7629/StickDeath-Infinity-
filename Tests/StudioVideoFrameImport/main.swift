@@ -57,6 +57,42 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try clean()
         }
         try require(abs(green.requestedSeconds - 0.7) < 0.000001, "project playhead mapped incorrectly")
+        // Measured movie metadata (#199): the same values from extraction and from
+        // a metadata-only inspection, read from the owned copy, with cleanup.
+        let measured = red.metadata
+        print("Measured fixture metadata: \(measured.summary) nominal=\(measured.nominalFrameRate) minimumFrame=\(String(describing: measured.minimumFrameDurationSeconds))")
+        let movieBytes = try fm.attributesOfItem(atPath: movie.path)[.size] as? Int
+        try require(abs(measured.durationSeconds - 2) < 0.05 && measured.naturalWidth == 96 && measured.naturalHeight == 64
+            && measured.orientedWidth == 96 && measured.orientedHeight == 64 && measured.rotationDegrees == 0
+            && !measured.isMirrored && !measured.hasAudio && measured.byteCount == movieBytes,
+            "measured metadata disagrees with the generated movie: \(measured)")
+        try require(green.metadata == measured && blue.metadata == measured, "metadata changed between seeks")
+        let inspected = try await service.inspect(from: movie, scratchParent: scratch)
+        try require(inspected == measured, "metadata-only inspection disagrees with extraction")
+        try clean()
+        typealias Metadata = StudioVideoFrameImportService.Metadata
+        try require(Metadata.orientation(a: 1, b: 0, c: 0, d: 1) == (0, false) && Metadata.orientation(a: 0, b: 1, c: -1, d: 0) == (90, false)
+            && Metadata.orientation(a: -1, b: 0, c: 0, d: -1) == (180, false) && Metadata.orientation(a: 0, b: -1, c: 1, d: 0) == (270, false)
+            && Metadata.orientation(a: -1, b: 0, c: 0, d: 1) == (180, true) && Metadata.orientation(a: 1, b: 0.3, c: 0, d: 1).degrees == nil,
+            "preferred-transform orientation classification")
+        try require(!Metadata.isVariable(nominalFrameRate: 30, minimumFrameDuration: 1.0 / 30)
+            && !Metadata.isVariable(nominalFrameRate: 29.97, minimumFrameDuration: 1001.0 / 30_000)
+            && Metadata.isVariable(nominalFrameRate: 1.5, minimumFrameDuration: 0.4)
+            && !Metadata.isVariable(nominalFrameRate: 0, minimumFrameDuration: 0.4)
+            && !Metadata.isVariable(nominalFrameRate: 30, minimumFrameDuration: nil), "variable frame-rate classification")
+        // Source/project timing is one invertible mapping shared with soundtrack placement (#200, #201).
+        let timing = StudioVideoFrameImportService.Mapping(sourceStartSeconds: 0.4, sourceEndSeconds: 2, projectStartSeconds: 0.2, speed: 2)
+        try require(abs(try timing.projectTime(sourceSeconds: 1.4) - 0.7) < 1e-9
+            && abs(try timing.projectDuration(sourceDuration: 2) - 0.8) < 1e-9
+            && abs(try timing.projectDuration(sourceDuration: 1.5) - 0.55) < 1e-9, "inverse mapping or placement duration")
+        for project in stride(from: 0.2, to: 0.99, by: 0.037) {
+            let source = try timing.sourceTime(projectSeconds: project)
+            try require(abs(try timing.projectTime(sourceSeconds: source) - project) < 1e-9, "mapping is not invertible at \(project)")
+        }
+        for bad in [0.39, 2.0, .nan] {
+            do { _ = try timing.projectTime(sourceSeconds: bad); throw TestFailure(message: "outside source time mapped: \(bad)") }
+            catch is StudioVideoFrameImportService.Failure { }
+        }
         let mapped = try await service.extract(from: movie, projectFrameIndex: 21, fps: 30,
             mapping: .init(sourceStartSeconds: 0.4, sourceEndSeconds: 2, projectStartSeconds: 0.2, speed: 2),
             scratchParent: scratch)
@@ -84,6 +120,10 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         let upright = try await service.extract(from: rotated, projectFrameIndex: 21, fps: 30, scratchParent: scratch)
         try require(upright.image.width == 64 && upright.image.height == 96 && upright.image.originalOrientation == 1,
             "preferred track orientation was not baked into pixels")
+        try require(upright.metadata.rotationDegrees == 90 && !upright.metadata.isMirrored
+            && upright.metadata.naturalWidth == 96 && upright.metadata.naturalHeight == 64
+            && upright.metadata.orientedWidth == 64 && upright.metadata.orientedHeight == 96,
+            "rotated movie metadata: \(upright.metadata)")
         try clean()
         for (frame, fps) in [(-1, 30), (0, 0), (0, 121), (60, 30), (300, 30)] {
             do { _ = try await extract(frame, fps); throw TestFailure(message: "invalid/outside time accepted") }

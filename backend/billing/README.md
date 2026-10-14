@@ -87,6 +87,17 @@ webhook secret, SQL executor); the deployment wraps them in its edge-function ru
   'subscriptions')`. Sums are provider-reported entries in minor units; they are not
   an available balance and are labelled so.
 
+## Statement reconciliation (#254)
+
+`reconciliation.py` matches a Stripe itemized balance-change CSV against the
+`sdi_finance_report('export')` rows by provider id and names each discrepancy
+(missing on either side, amount or currency mismatch, duplicate, outside the period,
+unknown category, rejected row, tax lines). It produces fee rows for the audited
+import path because webhooks carry no Stripe fee, reads only allowlisted columns
+(no customer data), and treats test-mode statements as "not money" with no
+comparison or import. It writes nothing. Tests:
+`backend/tests/test_billing_reconciliation.py`.
+
 ## Verification status
 
 Implemented as candidates and tested offline on 2026-10-13: `python3 -m unittest

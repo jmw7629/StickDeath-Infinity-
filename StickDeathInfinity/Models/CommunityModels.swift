@@ -369,6 +369,14 @@ struct FeedRequest: Encodable, Equatable {
     var as_of: String? = nil
 }
 
+/// `sdi_feed_page` (feed-integrity.sql): keyset paging. Page 0 sends neither
+/// field; every later page sends the opaque cursor and the page-0 snapshot.
+struct FeedPageRequest: Encodable, Equatable {
+    let category: String
+    var page_cursor: String? = nil
+    var as_of: String? = nil
+}
+
 struct FeedPost: Codable, Identifiable, Equatable {
     let id: UUID
     let creator: UUID
@@ -381,6 +389,11 @@ struct FeedPost: Codable, Identifiable, Equatable {
     var likes: Int
     var liked: Bool
     var following: Bool
+    /// Server decision: creator permits export AND the viewer holds a current
+    /// paid plan. Absent (older listing) means no download is offered.
+    var can_download: Bool? = nil
+    /// Ranking key the server ordered by (Trending likes in the snapshot window).
+    var score: Int? = nil
     var safeURL: URL? { CommunityMediaURL.checked(url) }
 }
 
@@ -391,13 +404,17 @@ struct FeedListResponse: CommunityResponse {
     let has_more: Bool?
     /// Kept as the server's own text so it round-trips exactly.
     let as_of: String?
+    /// Opaque keyset cursor for the next page (`sdi_feed_page`); nil on the last page.
+    var next_cursor: String? = nil
+    /// True when this viewer has no current paid plan, so no file download is offered.
+    var download_requires_plan: Bool? = nil
 }
 
 enum FeedReportReason: String, CaseIterable { case rights, abuse, unsafe, spam
     var title: String { rawValue.capitalized }
 }
 
-/// Client-side page assembly over the server's offset ranking: identity
+/// Client-side page assembly over the server's keyset ranking: identity
 /// de-duplication, the 40-page cap and optimistic reactions with rollback.
 /// Nothing here changes a count the server did not report.
 struct FeedTimeline: Equatable {
@@ -409,22 +426,26 @@ struct FeedTimeline: Equatable {
     private(set) var inFlight: Set<UUID> = []
     /// Server snapshot instant from page 0, sent with every later page of this timeline.
     private(set) var asOf: String?
+    /// Opaque server cursor for the next page; required whenever more pages exist.
+    private(set) var nextCursor: String?
 
-    mutating func reset() { posts = []; nextPage = 0; hasMore = true; inFlight = []; asOf = nil }
+    mutating func reset() { posts = []; nextPage = 0; hasMore = true; inFlight = []; asOf = nil; nextCursor = nil }
 
     /// Merge a page; existing cards keep their position with refreshed values.
     /// The first page's snapshot is kept; a later page carrying a different
     /// snapshot belongs to another listing and is refused as stale.
-    mutating func merge(page: Int, posts incoming: [FeedPost], hasMore more: Bool, asOf snapshot: String? = nil) throws {
+    mutating func merge(page: Int, posts incoming: [FeedPost], hasMore more: Bool, asOf snapshot: String? = nil, cursor: String? = nil) throws {
         guard page == nextPage else { throw CommunityError.stale }
         if page == 0 { asOf = snapshot }
         else if let snapshot, let asOf, snapshot != asOf { throw CommunityError.stale }
         guard incoming.count <= Self.pageSize else { throw CommunityError.invalidResponse("The feed page exceeded the server bound.") }
+        if let cursor, cursor.isEmpty || cursor.count > 120 { throw CommunityError.invalidResponse("The feed returned an unusable page cursor.") }
         for post in incoming {
             guard post.likes >= 0 else { throw CommunityError.invalidResponse("The feed reported a negative count.") }
             if let index = posts.firstIndex(where: { $0.id == post.id }) { posts[index] = post } else { posts.append(post) }
         }
         nextPage = page + 1
+        nextCursor = cursor
         hasMore = more && nextPage < Self.maximumPages
     }
     var canLoadMore: Bool { hasMore && nextPage < Self.maximumPages }
@@ -460,8 +481,46 @@ struct FeedTimeline: Equatable {
 enum FeedExportPolicy {
     /// Maximum bytes the client will download for a creator-permitted export.
     static let maximumDownloadBytes: Int64 = 200 * 1024 * 1024
-    static func canExport(_ post: FeedPost) -> Bool { post.allow_export && post.safeURL != nil }
+    enum State: Equatable { case allowed, needsPaidPlan, notPermitted }
+    /// The creator's permission is checked first; the plan gate is the server's
+    /// `can_download` decision (the Free plan cannot download videos, #219).
+    static func state(_ post: FeedPost) -> State {
+        guard post.allow_export, post.safeURL != nil else { return .notPermitted }
+        return post.can_download == true ? .allowed : .needsPaidPlan
+    }
+    static func canExport(_ post: FeedPost) -> Bool { state(post) == .allowed }
     static func acceptsLength(_ expected: Int64) -> Bool { expected < 0 || expected <= maximumDownloadBytes }
+}
+
+/// Feed and portfolio playback (#219): an explicit tap starts playback with
+/// sound; nothing autoplays. Cellular/expensive networks are capped so a long
+/// video cannot exhaust a mobile plan, and the forward buffer stays short.
+enum FeedPlaybackPolicy {
+    static let expensiveNetworkPeakBitRate: Double = 2_500_000
+    static let expensiveNetworkMaximumHeight: Double = 720
+    static let forwardBufferSeconds: Double = 12
+    static let slowStartSeconds: Double = 15
+}
+
+/// What the player overlay shows, derived only from the player's own state.
+enum FeedPlaybackState: Equatable {
+    case loading, slow, playing, paused, buffering, ended, failed(String)
+    static func resolve(itemReady: Bool, itemFailed: Bool, waiting: Bool, playing: Bool, ended: Bool, elapsed: Double, failureText: String?) -> FeedPlaybackState {
+        if itemFailed { return .failed(failureText ?? "This video could not be played. Check your connection and try again.") }
+        if !itemReady { return elapsed >= FeedPlaybackPolicy.slowStartSeconds ? .slow : .loading }
+        if ended { return .ended }
+        if waiting { return .buffering }
+        return playing ? .playing : .paused
+    }
+    var message: String? {
+        switch self {
+        case .loading: return "Loading video…"
+        case .slow: return "Still loading. The connection may be slow."
+        case .buffering: return "Buffering…"
+        case .failed(let text): return text
+        case .playing, .paused, .ended: return nil
+        }
+    }
 }
 
 // MARK: - Rooms (collaboration-watch.sql, room-invitations.sql, rooms-v2.sql)
@@ -1027,6 +1086,22 @@ struct AchievementGroup: Identifiable, Equatable {
                                     earned: members.filter(\.isEarned).sorted { ($0.earned_at ?? .distantPast) > ($1.earned_at ?? .distantPast) },
                                     locked: members.filter { !$0.isEarned }.sorted { $0.threshold == $1.threshold ? $0.badge_key < $1.badge_key : $0.threshold < $1.threshold })
         }
+    }
+}
+
+/// `sdi_creator_stats` (feed-integrity.sql): totals counted from eligible feed
+/// rows. `following` is present only for the account itself.
+struct CreatorStatsRequest: Encodable, Equatable { var subject: UUID? = nil }
+struct CreatorStatsResponse: CommunityResponse {
+    let error: String?
+    let subject: UUID?
+    let published_videos: Int?
+    let likes_received: Int?
+    let followers: Int?
+    let following: Int?
+    var isComplete: Bool {
+        guard error == nil, let published_videos, let likes_received, let followers else { return false }
+        return published_videos >= 0 && likes_received >= 0 && followers >= 0 && (following ?? 0) >= 0
     }
 }
 
