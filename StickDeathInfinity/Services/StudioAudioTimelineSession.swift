@@ -32,6 +32,9 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
     @Published private(set) var previewGain = 1.0
     /// Non-nil while playing a 120-second window of a longer timeline (#180).
     @Published private(set) var window: StudioAudioPreviewWindow.Range?
+    /// Measured audio-clock drift for the current or last playback (#180).
+    @Published private(set) var driftReport = StudioAudioDriftMonitor.Report()
+    private var drift = StudioAudioDriftMonitor()
     private let mixer = StudioAudioMixService()
     private let scratchParent: URL
     private var work: Task<Void, Never>?
@@ -60,6 +63,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
     @discardableResult
     func play(document: StudioDocument, tracks: [AudioTrack], duration: Double,
               from start: Double, auditionVolume: Float = 1, loop: Bool = false,
+              frameClock: StudioAudioTransport.FrameClock? = nil,
               stillCurrent: @escaping () -> Bool,
               onTime: @escaping (Double, Bool) -> Void) -> Bool {
         guard !isPreparing, work == nil else { return false }
@@ -93,6 +97,9 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
         self.stillCurrent = stillCurrent; self.onTime = onTime
         self.duration = duration; currentTime = start; progress = 0; notice = nil
         self.window = windowRange
+        let fps = frameClock?.fps ?? 24
+        drift = StudioAudioDriftMonitor(bound: StudioAudioDriftMonitor.bound(fps: fps), frameClock: frameClock)
+        driftReport = drift.report
         isPreparing = true
         // Retain the owner until this bounded task executes its deferred release,
         // even if the panel closes in the same actor turn before work starts.
@@ -171,6 +178,16 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
             return
         }
         awaitingCompletionSince = nil
+        // The animation follows the player clock. Measure that clock against the
+        // monotonic host clock; a player that claims to play but stops advancing
+        // stops honestly instead of freezing the animation behind silent output.
+        if drift.observe(host: now, player: player.currentTime) == .stalled {
+            driftReport = drift.report
+            stop()
+            notice = "Audio output stopped advancing, so playback stopped. Check the output device and play again."
+            return
+        }
+        driftReport = drift.report
         currentTime = timelineTime(player.currentTime)
         onTime?(currentTime, true)
     }
@@ -259,6 +276,170 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
             case .stale: return "The project changed while audio was preparing. Play the current version again."
             case .playback: return "Mixed audio playback could not start on this device."
             }
+        }
+    }
+}
+
+/// Audible scrubbing for the audio workspace ruler (#180). Each grain is a real
+/// offline mix of the project's clips over a short window starting at the
+/// scrub position, played once by an actual player. Requests during
+/// preparation coalesce to the newest position; positions without clips stay
+/// silent rather than playing invented sound. No network or microphone.
+@MainActor
+final class StudioAudioScrubAudition: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    @Published private(set) var isPreparing = false
+    @Published private(set) var lastGrain: StudioAudioPreviewWindow.Range?
+    @Published private(set) var notice: String?
+    var actualPlayerIsPlaying: Bool { player?.isPlaying == true }
+
+    private struct Source {
+        let document: StudioDocument
+        let tracks: [AudioTrack]
+        let timelineDuration: Double
+        let stillCurrent: () -> Bool
+    }
+    private let mixer = StudioAudioMixService()
+    private let scratchParent: URL
+    private var planner = StudioAudioScrubPlanner()
+    private var source: Source?
+    private var work: Task<Void, Never>?
+    private var generation = UUID()
+    private var player: AVAudioPlayer?
+    private var output: StudioAudioMixService.Output?
+    /// Outputs or failed-mix directories whose cleanup must be retried; never guessed paths.
+    private var heldOutputs: [StudioAudioMixService.Output] = []
+    private var heldRecoveries: [StudioAudioMixService.Recovery] = []
+    private var whenIdle: [() -> Void] = []
+    private let ownerID = UUID()
+    private let auditionVolume: Float
+
+    init(scratchParent: URL = FileManager.default.temporaryDirectory, auditionVolume: Float = 1) {
+        self.scratchParent = scratchParent
+        self.auditionVolume = auditionVolume.isFinite ? min(1, max(0, auditionVolume)) : 1
+        super.init()
+    }
+
+    /// Request a grain at `time`. Returns false when nothing will sound because
+    /// the request is stale, outside the timeline or the project has no audio.
+    @discardableResult
+    func scrub(document: StudioDocument, tracks: [AudioTrack], timelineDuration: Double, at time: Double,
+               stillCurrent: @escaping () -> Bool) -> Bool {
+        guard stillCurrent(), !document.audioClips.isEmpty, timelineDuration.isFinite, timelineDuration > 0 else { return false }
+        source = Source(document: document, tracks: tracks, timelineDuration: timelineDuration, stillCurrent: stillCurrent)
+        switch planner.request(time: time, timelineDuration: timelineDuration) {
+        case .start(let range): return begin(range)
+        case .queued: return true
+        case .ignored: return false
+        }
+    }
+
+    private func begin(_ range: StudioAudioPreviewWindow.Range) -> Bool {
+        guard let source, source.stillCurrent(),
+              let shifted = StudioAudioTimelineSession.windowed(document: source.document, tracks: source.tracks, range: range) else {
+            // A silent position: no clip intersects the grain. Nothing plays.
+            settle()
+            return false
+        }
+        releasePlayer()
+        let token = UUID(); generation = token
+        isPreparing = true; notice = nil
+        work = Task { [self] in
+            defer { self.work = nil; self.settle() }
+            do {
+                let length = ceil(range.length * StudioAudioMixService.sampleRate) / StudioAudioMixService.sampleRate
+                let result = try await self.mixer.mix(document: shifted.document, retainedAudioTracks: shifted.tracks,
+                    durationSeconds: length, outputParent: self.scratchParent)
+                guard self.generation == token, !Task.isCancelled, source.stillCurrent() else {
+                    self.discard(result); return
+                }
+                self.output = result
+                try StudioAudioSessionController.shared.begin(owner: self.ownerID) { [weak self] event in
+                    guard let self, self.player != nil else { return }
+                    self.releasePlayer()
+                    self.notice = StudioAudioSessionController.message(for: event)
+                }
+                let next = try AVAudioPlayer(contentsOf: result.checkedURL())
+                next.delegate = self; next.numberOfLoops = 0
+                // Same anti-clipping rule as the full preview; clip volumes are unchanged.
+                next.volume = self.auditionVolume * Float(1 / max(1, Double(result.receipt.peakAbsoluteSample)))
+                guard next.prepareToPlay() else { throw StudioAudioMixService.MixError.codecFailure }
+                self.player = next
+                guard next.play(), next.isPlaying else { throw StudioAudioMixService.MixError.codecFailure }
+                self.lastGrain = range
+            } catch is CancellationError {
+                self.releasePlayer()
+            } catch StudioAudioMixService.MixError.busy {
+                // Another offline mix (timeline preview or export) owns the mixer.
+                // Scrubbing stays silent instead of competing with it.
+                self.releasePlayer()
+            } catch {
+                if let failure = error as? StudioAudioMixService.Failure { self.heldRecoveries.append(failure.recovery) }
+                self.releasePlayer()
+                self.notice = "Scrub audio could not play: \(error.localizedDescription)"
+            }
+        }
+        return true
+    }
+
+    /// Called when preparation ends: start the newest queued position, or run
+    /// the callbacks waiting for the mixer to become free.
+    /// Invariant: the planner has a grain in flight exactly while `work` exists.
+    private func settle() {
+        guard work == nil else { return }
+        isPreparing = false
+        // A waiting caller (for example timeline Play) takes priority over queued scrubs.
+        if !whenIdle.isEmpty { planner.clearPending() }
+        if let source, case .start(let next) = planner.finished(timelineDuration: source.timelineDuration) {
+            if begin(next) { return }
+        } else if source == nil {
+            _ = planner.finished(timelineDuration: 0)
+        }
+        guard work == nil else { return }
+        let callbacks = whenIdle; whenIdle = []
+        for callback in callbacks { callback() }
+    }
+
+    /// Stop sounding and preparing. `then` runs once no scrub mix holds the
+    /// shared mixer, so a following timeline play is not refused as busy.
+    func stop(then: (() -> Void)? = nil) {
+        planner.clearPending(); source = nil
+        generation = UUID(); work?.cancel()
+        releasePlayer()
+        if let then {
+            if work == nil { then() } else { whenIdle.append(then) }
+        }
+    }
+    func close() { stop() }
+
+    private func discard(_ result: StudioAudioMixService.Output) {
+        do { try result.cleanup() } catch { heldOutputs.append(result) }
+    }
+    private func releasePlayer() {
+        player?.stop(); player?.delegate = nil; player = nil
+        StudioAudioSessionController.shared.end(owner: ownerID)
+        if let output {
+            self.output = nil
+            discard(output)
+        }
+        heldOutputs = heldOutputs.filter { held in (try? held.cleanup()) == nil }
+        heldRecoveries = heldRecoveries.filter { held in (try? held.cleanup()) == nil }
+        if !heldOutputs.isEmpty || !heldRecoveries.isEmpty {
+            notice = "Scrub audio stopped. A temporary output needs safe recovery and will be retried."
+        }
+    }
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        let id = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in
+            guard let self, self.player.map(ObjectIdentifier.init) == id else { return }
+            self.releasePlayer()
+            if !flag { self.notice = "Scrub audio ended with a playback error." }
+        }
+    }
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let id = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in
+            guard let self, self.player.map(ObjectIdentifier.init) == id else { return }
+            self.releasePlayer(); self.notice = "The audio device could not decode this scrub grain."
         }
     }
 }
