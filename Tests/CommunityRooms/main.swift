@@ -386,6 +386,12 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
             try require(coordinator.handoff == nil && coordinator.session == nil && coordinator.endReason?.contains("unchanged") == true, "ending clears the handoff with a truthful reason")
         }
 
+        await test("file hashing matches FIPS 180-4 known answers on every platform") {
+            try require(RoomAssetPolicy.sha256Hex(Data()) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "empty input digest")
+            try require(RoomAssetPolicy.sha256Hex(Data("abc".utf8)) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "abc digest")
+            try require(RoomAssetPolicy.sha256Hex(Data("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".utf8)) == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", "two-block digest")
+        }
+
         print("COMMUNITY_ROOMS_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed) passed \(failed) failed")
         if failed > 0 { exit(1) }
     }
