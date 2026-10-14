@@ -184,6 +184,13 @@ rooms.warRoom,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomVie
 rooms.watchTogether,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.watchTogether' (identifier-derived; review source),no,#296,deferred
 settings.delete-account,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Delete Account',n-a,unmapped,deferred
 settings.delete-account.status,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign in from Profile to manage your account. Loc',n-a,unmapped,deferred
+settings.diagnostics.delete,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,button 'Delete queued',n-a,#291,deferred
+settings.diagnostics.payload,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,text -> binds showPreview,n-a,#291,deferred
+settings.diagnostics.preview,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,button 'View what will be sent',n-a,#291,deferred
+settings.diagnostics.queued,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,text,n-a,#291,deferred
+settings.diagnostics.send,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,button,n-a,#291,deferred
+settings.diagnostics.status,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,text,n-a,#291,deferred
+settings.diagnostics.toggle,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,"text 'Daily counts of launches, crashes, hangs and ter' -> binds 0",n-a,#291,deferred
 settings.sign-out,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign Out' -> authVM.signOut,n-a,unmapped,deferred
 spatter.artwork.order-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Send selected artwork backward',no,#203,deferred
 spatter.audio.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,example-command chips 'spatter.audio.examples' (identifier-derived; review source),no,#203,testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen
