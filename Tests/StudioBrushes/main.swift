@@ -134,7 +134,9 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             // Airbrush Build-up (#142): measured dwell time adds real paint.
             let held = [StrokePoint(x:128,y:128,pressure:1,timestamp:0), StrokePoint(x:128,y:128,pressure:1,timestamp:0.5),
                         StrokePoint(x:128,y:128,pressure:1,timestamp:1)]
-            var spray = StudioBrushSettings(family: .airbrush, size: 30, smoothing: 0, pressureEnabled: false)
+            // Minimum Flow keeps the centre below 8-bit saturation so 16 and 61 dabs stay distinguishable
+            // (at the default Flow each dab adds about 19 % alpha and both counts round to 255).
+            var spray = StudioBrushSettings(family: .airbrush, size: 30, smoothing: 0, pressureEnabled: false, texture: 0)
             let dry = try geometry(spray, points: held)
             spray.buildup = 1
             let wet = try geometry(spray, points: held)

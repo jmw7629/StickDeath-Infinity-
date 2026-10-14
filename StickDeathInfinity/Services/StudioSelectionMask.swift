@@ -255,7 +255,7 @@ enum StudioSelectionElementHitTest {
                         let dx = Double(px) + 0.5 - cx, dy = Double(py) + 0.5 - cy
                         guard dx * dx + dy * dy <= reach * reach else { continue }
                         probes += 1
-                        guard probes <= maximumElementProbes else { throw StudioSelectionMask.Failure.workLimit }
+                        guard probes <= StudioSelectionMask.maximumElementProbes else { throw StudioSelectionMask.Failure.workLimit }
                         let index = py * width + px
                         if coverage[index] >= threshold && visited.insert(index).inserted { covered += 1 }
                     }
