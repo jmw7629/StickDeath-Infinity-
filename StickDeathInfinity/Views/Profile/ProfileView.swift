@@ -39,9 +39,13 @@ struct ProfileView: View {
         return name.isEmpty ? (authVM.isAuthenticated ? "Your profile" : "Guest") : name
     }
     private var reportedPlan: String? {
-        guard let tier = profile?.subscriptionTier?.lowercased(),
-              ["free", "pro", "creator", "studio"].contains(tier) else { return nil }
-        return tier.capitalized
+        // Server values are constrained by users-profiles.sql: free, monthly_4_99, monthly_9_99.
+        switch profile?.subscriptionTier?.lowercased() {
+        case "free": return "Free"
+        case "monthly_4_99": return "Creator"
+        case "monthly_9_99": return "Pro"
+        default: return nil
+        }
     }
     private var avatarURL: URL? {
         guard let raw = profile?.avatarURL, let url = URL(string: raw),
