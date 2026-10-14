@@ -146,10 +146,10 @@ jobs:
     # still requires every production and simulator gate to succeed.
     needs: [source-security, spatter-production-tests]
     runs-on: macos-15
-    # Production took 47m09s on run 37668843963 before image-region dependencies.
-    # Forty-five VM recipes now compile the region service and the new admin
-    # suite adds coverage. Keep bounded headroom and every sequential gate.
-    timeout-minutes: 65
+    # Run 38427492826 exhausted 65 minutes while actively compiling Sharpen,
+    # after Smudge and Blur passed. Allow the remaining effect and image-pack
+    # checks to finish; preserve sequential execution and every mandatory gate.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

@@ -387,6 +387,7 @@ import Supabase
 
     func testAppleUsernameFallsBackForPrivateRelayAndDisplayNameIsBounded() async throws {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
         let relay = try decoder.decode(User.self, from: Data("""
         {"id":"\(AuthFixtureTransport.first)","aud":"authenticated","role":"authenticated","email":"abc123@privaterelay.appleid.com","app_metadata":{},"user_metadata":{},"identities":[],"is_anonymous":false,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}
         """.utf8))
@@ -575,14 +576,16 @@ import Supabase
         let (service, model, transport, _, _) = try await profileFixture()
         defer { transport.invalidateAndCancel() }
         AuthFixtureTransport.resetLifecycle()
-        XCTAssertNil(try await service.accountDeletionStatus(), "No request yet must read as nil, not as a state")
+        let initialDeletionStatus = try await service.accountDeletionStatus()
+        XCTAssertNil(initialDeletionStatus, "No request yet must read as nil, not as a state")
         await model.requestAccountDeletion()
         XCTAssertNil(model.error)
         XCTAssertEqual(model.accountDeletion?.state, .pending)
         XCTAssertEqual(model.accountDeletion?.revision, 1)
         XCTAssertEqual(model.accountDeletion?.scheduledFor, ISO8601DateFormatter().date(from: "2026-10-20T01:00:00Z"))
         XCTAssertEqual(model.notice, "Account deletion is scheduled for 2026-10-20 01:00 UTC. Cancel before then to keep the account. Projects on this device are untouched; subscriptions must be cancelled through the App Store or billing portal.")
-        XCTAssertEqual(try await service.accountDeletionStatus()?.state, .pending)
+        let pendingDeletionStatus = try await service.accountDeletionStatus()
+        XCTAssertEqual(pendingDeletionStatus?.state, .pending)
         await model.cancelAccountDeletion()
         XCTAssertNil(model.error)
         XCTAssertEqual(model.accountDeletion?.state, .cancelled)
@@ -742,6 +745,15 @@ private final class AuthFixtureTransport: URLProtocol {
             if mode == "revoked" {
                 respond(400, ["code": "refresh_token_not_found", "msg": "Fixture refresh token revoked"]); return
             }
+        }
+        if url.path.hasSuffix("/token"),
+           URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "grant_type" })?.value == "pkce" {
+            // No authorization codes/verifier pairs are issued by this fixture.
+            // The SDK submits an exchange even when its verifier is absent;
+            // emulate the server's rejection instead of minting a test session.
+            respond(400, ["code": "bad_code_verifier", "msg": "Fixture PKCE grant was not issued"])
+            return
         }
         if url.path.hasSuffix("/token") {
             let body: Data

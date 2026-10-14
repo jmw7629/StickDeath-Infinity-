@@ -36,16 +36,28 @@ struct LayerPanel: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Close layers")
                 .accessibilityAddTraits(.isButton)
-                .accessibilityIdentifier("studio.layers.close")
+                .accessibilityIdentifier("studio.layers.backdrop.close")
             
             // Panel
             VStack(spacing: 0) {
                 // Drag handle
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.white.opacity(0.25))
-                    .frame(width: 40, height: 4)
-                    .padding(.top, 10)
-                    .padding(.bottom, 8)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.white.opacity(0.25))
+                        .frame(width: 40, height: 4)
+                    HStack {
+                        Spacer()
+                        Button { vm.activePanel = .none } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.7))
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Close layers")
+                        .accessibilityIdentifier("studio.layers.close")
+                    }
+                }.frame(height: 44).padding(.horizontal, 8)
                 
                 ScrollView {
                     VStack(spacing: 0) {

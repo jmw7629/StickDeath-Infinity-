@@ -3,24 +3,43 @@ import AVFoundation
 import Darwin
 
 private struct Failure: Error { let message: String }
-/// Two independent AAC decodes of the same movie range are not bit-identical on
-/// every macOS runner: the decoder's priming and rounding can move samples by a
-/// least-significant bit or two. Equivalence means the same 44-byte WAV header and
-/// frame count, every 16-bit sample within 4 LSB and a mean difference under 1 LSB.
-/// Handoff checks (the same bytes carried through attachment and save) stay exact.
-private func pcmEquivalent(_ left: Data, _ right: Data) -> Bool {
-    guard left.count == right.count, left.count > 44, (left.count - 44) % 2 == 0,
-          left.prefix(44) == right.prefix(44) else { return false }
-    var maximum = 0, total = 0
-    left.withUnsafeBytes { a in right.withUnsafeBytes { b in
-        let x = a.bindMemory(to: Int16.self), y = b.bindMemory(to: Int16.self)
-        for index in 22..<x.count {
-            let delta = abs(Int(Int16(littleEndian: x[index])) - Int(Int16(littleEndian: y[index])))
-            maximum = max(maximum, delta); total += delta
+// Report the actual difference before the strict comparison fails. A second
+// AVFoundation decode is a different boundary from attachment/persistence;
+// equal lengths alone cannot distinguish header drift, quantization or damage.
+private func describePCMComparison(_ actual: Data, _ expected: Data) {
+    guard actual != expected else { return }
+    guard actual.count == expected.count, actual.count >= 44,
+          (actual.count - 44).isMultiple(of: 2) else {
+        print("MOVIE_AUDIO PCM comparison incompatible lengths=\(actual.count)/\(expected.count)")
+        return
+    }
+    var changed = 0, maximumDelta = 0, squaredDelta = 0.0
+    var firstChangedSample: Int?
+    for offset in stride(from: 44, to: actual.count, by: 2) {
+        let lhs = Int(Int16(bitPattern: UInt16(actual[offset]) | UInt16(actual[offset + 1]) << 8))
+        let rhs = Int(Int16(bitPattern: UInt16(expected[offset]) | UInt16(expected[offset + 1]) << 8))
+        let delta = abs(lhs - rhs)
+        if delta != 0 {
+            changed += 1
+            if firstChangedSample == nil { firstChangedSample = (offset - 44) / 2 }
         }
-    } }
-    let samples = (left.count - 44) / 2
-    return maximum <= 4 && total < samples
+        maximumDelta = max(maximumDelta, delta)
+        squaredDelta += Double(delta) * Double(delta)
+    }
+    let samples = (actual.count - 44) / 2
+    let rms = samples == 0 ? 0 : sqrt(squaredDelta / Double(samples))
+    print("MOVIE_AUDIO PCM headerMatches=\(actual.prefix(44) == expected.prefix(44)) changedSamples=\(changed)/\(samples) firstChangedSample=\(firstChangedSample ?? -1) maximumDeltaLSB=\(maximumDelta) rmsDeltaLSB=\(rms)")
+}
+// A sustained generated tone must still contain audio at its selected tail.
+// Equal lengths alone would accept a preallocated zero-filled missing suffix.
+private func tailPeak(_ wav: Data, frames: Int) -> Double {
+    guard wav.count >= 44 + frames * 4 else { return 0 }
+    var peak = 0
+    for offset in stride(from: wav.count - frames * 4, to: wav.count, by: 2) {
+        let sample = Int(Int16(bitPattern: UInt16(wav[offset]) | UInt16(wav[offset + 1]) << 8))
+        peak = max(peak, abs(sample))
+    }
+    return Double(peak) / 32768
 }
 private func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
     if try !condition() { throw Failure(message: message) }
@@ -105,12 +124,29 @@ private actor PreparedAudioReceipt {
         print("MOVIE_AUDIO fast result duration=\(fast.audio.duration) channels=\(fast.audio.channelCount)")
         try require(abs(fast.audio.duration - 0.5) < 0.002 && fast.projectStartSeconds == 3, "trim/speed/placement mapping failed")
         try require(fast.audio.waveformPeaks.max()! > 0.4, "trim selected wrong source samples")
+        try require(tailPeak(fast.audio.originalData, frames: 40) > 0.4, "Fast soundtrack lost its final tone samples")
         try clean()
         print("MOVIE_AUDIO stage: slow trim")
         let slow = try await service.extract(from: movie,
             mapping: .init(sourceStartSeconds: 0, sourceEndSeconds: 1, speed: 0.5), scratchParent: scratch)
         print("MOVIE_AUDIO slow result duration=\(slow.audio.duration) channels=\(slow.audio.channelCount)")
         try require(abs(slow.audio.duration - 2) < 0.002 && slow.audio.waveformPeaks.max()! < 0.3, "slow trim ignored")
+        try require(tailPeak(slow.audio.originalData, frames: 100) > 0.1, "Slow soundtrack lost its final tone samples")
+        try clean()
+        print("MOVIE_AUDIO stage: boundary and fractional speeds")
+        for speed in [0.25, 4.0, 1.3] {
+            let result = try await service.extract(from: movie,
+                mapping: .init(sourceStartSeconds: 1, sourceEndSeconds: 2, speed: speed), scratchParent: scratch)
+            let frames = Int((44_100 / speed).rounded())
+            try require(result.audio.originalData.count == 44 + frames * 4 && tailPeak(result.audio.originalData, frames: 120) > 0.3,
+                "Boundary/fractional speed lost duration or final tone: \(speed)")
+            try clean()
+        }
+        let fractional = try await service.extract(from: movie,
+            mapping: .init(sourceStartSeconds: 0.12345, sourceEndSeconds: 0.62345, speed: 1.3), scratchParent: scratch)
+        try require(fractional.audio.originalData.count == 44 + Int((0.5 * 44_100 / 1.3).rounded()) * 4,
+            "Fractional trim changed the selected duration")
+        try require(tailPeak(fractional.audio.originalData, frames: 120) > 0.1, "Fractional trim lost its tone tail")
         try clean()
         print("MOVIE_AUDIO stage: no audio")
         do { _ = try await service.extract(from: silent, scratchParent: scratch); throw Failure(message: "no-audio returned success") }
@@ -146,8 +182,8 @@ private actor PreparedAudioReceipt {
             "Cancellation callback did not follow the first actual bounded PCM chunk")
         try clean()
         try require(try Data(contentsOf: movie) == original, "original movie changed")
-        // One real one-second audio track occupies only the middle of a
-        // two-second movie. Leading/trailing gaps must retain their timing.
+        // Real source edits leave leading, internal and trailing timeline gaps.
+        // None may collapse, become fabricated sound or hide missing media.
         let gapMovie = root.appendingPathComponent("audio-gaps.mov")
         let gapComposition = AVMutableComposition()
         let gapVideo = gapComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
@@ -155,6 +191,10 @@ private actor PreparedAudioReceipt {
         let gapAudio = gapComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
         try gapAudio.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 1, preferredTimescale: 600)),
             of: sound, at: CMTime(seconds: 0.5, preferredTimescale: 600))
+        let internalGap = CMTimeRange(start: CMTime(seconds: 0.75, preferredTimescale: 600),
+            duration: CMTime(seconds: 0.25, preferredTimescale: 600))
+        gapAudio.removeTimeRange(internalGap)
+        gapAudio.insertEmptyTimeRange(internalGap)
         let gapExport = AVAssetExportSession(asset: gapComposition, presetName: AVAssetExportPresetPassthrough)!
         gapExport.outputURL = gapMovie; gapExport.outputFileType = .mov
         await gapExport.export()
@@ -166,7 +206,47 @@ private actor PreparedAudioReceipt {
             && gap.audio.waveformPeaks.suffix(50).allSatisfy { $0 == 0 }
             && gap.audio.waveformPeaks[80..<176].max()! > 0.1,
             "Movie audio gaps were collapsed or replaced with a silent soundtrack")
+        let silence = (44 + Int(0.8 * 44_100) * 4)..<(44 + Int(0.95 * 44_100) * 4)
+        try require(gap.audio.originalData[silence].allSatisfy { $0 == 0 }, "Internal source edit-list gap was collapsed or filled with audio")
         try clean()
+        print("MOVIE_AUDIO stage: native source sample rates")
+        for sampleRate in [8_000.0, 48_000.0, 96_000.0] {
+            print("MOVIE_AUDIO source-rate fixture begin=\(sampleRate)")
+            let rateAudio = root.appendingPathComponent("source-\(Int(sampleRate)).wav")
+            try autoreleasepool {
+                let file = try AVAudioFile(forWriting: rateAudio, settings: [AVFormatIDKey: kAudioFormatLinearPCM,
+                    AVSampleRateKey: sampleRate, AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
+                    AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false])
+                let frames = Int(sampleRate * 2)
+                let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(frames))!
+                buffer.frameLength = AVAudioFrameCount(frames)
+                for i in 0..<frames { buffer.floatChannelData![0][i] = 0.6 * sin(Float(Double(i) * 2 * .pi * 440 / sampleRate)) }
+                try file.write(from: buffer)
+            }
+            print("MOVIE_AUDIO source-rate WAV ready=\(sampleRate)")
+            let rateComposition = AVMutableComposition()
+            let rateVideo = rateComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            let interval = CMTimeRange(start: .zero, duration: CMTime(seconds: 2, preferredTimescale: 600))
+            try rateVideo.insertTimeRange(interval, of: video, at: .zero)
+            let rateAsset = AVURLAsset(url: rateAudio)
+            let rateSound = try await rateAsset.loadTracks(withMediaType: .audio)[0]
+            print("MOVIE_AUDIO source-rate tracks ready=\(sampleRate)")
+            let rateTrack = rateComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            try rateTrack.insertTimeRange(interval, of: rateSound, at: .zero)
+            let rateMovie = root.appendingPathComponent("source-\(Int(sampleRate)).mov")
+            let rateExport = AVAssetExportSession(asset: rateComposition, presetName: AVAssetExportPresetPassthrough)!
+            rateExport.outputURL = rateMovie; rateExport.outputFileType = .mov
+            await rateExport.export()
+            withExtendedLifetime(rateAsset) {}
+            print("MOVIE_AUDIO source-rate export status=\(rateExport.status.rawValue) rate=\(sampleRate)")
+            try require(rateExport.status == .completed, "Source-rate fixture export failed")
+            let result = try await service.extract(from: rateMovie,
+                mapping: .init(sourceStartSeconds: 1, sourceEndSeconds: 2, speed: 1.3), scratchParent: scratch)
+            try require(result.audio.originalData.count == 44 + Int((44_100 / 1.3).rounded()) * 4
+                && tailPeak(result.audio.originalData, frames: 120) > 0.3,
+                "Native source-rate conversion lost timing or tail: \(sampleRate)")
+            try clean()
+        }
         print("MOVIE_AUDIO stage: prepared import")
         let docs = root.appendingPathComponent("documents")
         let storage = DeviceStorageManager(documentsDirectory: docs, cachesDirectory: docs)
@@ -197,9 +277,10 @@ private actor PreparedAudioReceipt {
             "Movie import was not one canonical edit")
         try require((session.measurements[assetID]?.peaks.max() ?? 0) > 0.4, "Prepared import lost measured waveform")
         guard let preparedBytes = await preparedReceipt.snapshot() else { throw Failure(message: "Missing prepared-audio receipt") }
-        print("MOVIE_AUDIO attachment matches handoff=\(bytes == preparedBytes) separate decode identical=\(bytes == fast.audio.originalData) equivalent=\(pcmEquivalent(bytes, fast.audio.originalData)) byteCounts=\(bytes.count)/\(preparedBytes.count)/\(fast.audio.originalData.count)")
+        print("MOVIE_AUDIO attachment matches handoff=\(bytes == preparedBytes) separate decode identical=\(bytes == fast.audio.originalData) byteCounts=\(bytes.count)/\(preparedBytes.count)/\(fast.audio.originalData.count)")
         try require(bytes == preparedBytes, "Attachment changed the actual prepared movie PCM")
-        try require(pcmEquivalent(bytes, fast.audio.originalData), "Prepared import selected different movie PCM than the direct extraction")
+        describePCMComparison(bytes, fast.audio.originalData)
+        try require((bytes == fast.audio.originalData), "Prepared import selected different movie PCM than the direct extraction")
         try requireAsync(await vm.save(), "Movie project save failed")
         let saved = try storage.loadAnimation(id: projectID)!
         try require(saved.audioTracks.count == 1 && saved.audioTracks[0].audioData == bytes,
@@ -219,6 +300,6 @@ private actor PreparedAudioReceipt {
             "Cold reopen changed movie clip timing or managed audio bytes")
         await reopened.backToProjects(); try clean()
         print("PASS prepared movie import: selected-frame placement, single edit, measured waveform, managed bytes, undo/redo, actual save/cold reopen")
-        print("PASS 11 production movie-audio groups: actual PCM/waveform, canonical asset, trim/speed/placement, no-audio, bounds, unsafe source, cancellation, cleanup/original preservation")
+        print("PASS 13 production movie-audio groups: native source rates/internal gaps, boundary/fractional speed and trim, actual PCM/waveform, canonical asset, trim/speed/placement, no-audio, bounds, unsafe source, cancellation, cleanup/original preservation")
     }
 }

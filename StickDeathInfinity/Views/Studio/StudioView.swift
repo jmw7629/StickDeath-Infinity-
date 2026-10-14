@@ -826,7 +826,7 @@ struct AIVoiceMakerSheet: View {
                 HStack {
                     Text("Voice Maker").font(.specialElite(18))
                     Spacer()
-                    Button("Done") { invalidate(); dismiss() }
+                    Button("Done") { invalidate(); dismiss() }.font(.specialElite(17))
                 }
                 .foregroundColor(Color(hex: "A78BFA"))
                 ScrollView {
@@ -852,12 +852,12 @@ struct AIVoiceMakerSheet: View {
                             }.tint(Color(hex: "A78BFA"))
                         }
                         HStack {
-                            Text("Speed")
+                            Text("Speed").font(.specialElite(12, relativeTo: .caption))
                             Slider(value: $speed, in: 0.5...2).tint(Color(hex: "A78BFA"))
                             Text(String(format: "%.1fx", speed))
                         }.font(.specialElite(12, relativeTo: .caption))
                         HStack {
-                            Text("Pitch")
+                            Text("Pitch").font(.specialElite(12, relativeTo: .caption))
                             Slider(value: $pitch, in: 0.5...2).tint(Color(hex: "A78BFA"))
                             Text(String(format: "%.1fx", pitch))
                         }.font(.specialElite(12, relativeTo: .caption))
@@ -869,12 +869,13 @@ struct AIVoiceMakerSheet: View {
                         if voice.isBusy {
                             HStack {
                                 ProgressView().tint(.white)
-                                Text("Generating voice…")
+                                Text("Generating voice…").font(.specialElite(17))
                                 Spacer()
-                                Button("Cancel") { invalidate() }
+                                Button("Cancel") { invalidate() }.font(.specialElite(17))
                             }
                         } else {
                             Button(voice.prepared == nil ? "Generate voice" : "Regenerate voice", action: generate)
+                                .font(.specialElite(17))
                                 .disabled(selectedVoice.isEmpty || scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                     || scriptText.count > 1_500 || !vm.isEditing || vm.isSaving)
                                 .accessibilityIdentifier("studio.voice.generate")

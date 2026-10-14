@@ -122,10 +122,13 @@ actor StudioVideoAudioImportService {
             guard tracks.count == 1 else { throw Failure.unsupportedMovie }
             let formats = try await tracks[0].load(.formatDescriptions)
             guard !formats.isEmpty, formats.count <= 16 else { throw Failure.unsupportedMovie }
+            guard let firstFormat = formats.first,
+                  let sourceBasic = CMAudioFormatDescriptionGetStreamBasicDescription(firstFormat)?.pointee else { throw Failure.unsupportedMovie }
+            let sourceRate = sourceBasic.mSampleRate
             for format in formats {
                 guard let basic = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
                       (1...2).contains(basic.mChannelsPerFrame), basic.mSampleRate.isFinite,
-                      (8_000...96_000).contains(basic.mSampleRate) else { throw Failure.unsupportedMovie }
+                      (8_000...96_000).contains(basic.mSampleRate), basic.mSampleRate == sourceRate else { throw Failure.unsupportedMovie }
             }
             let end = mapping.sourceEndSeconds ?? duration.seconds
             guard end <= duration.seconds, end > mapping.sourceStartSeconds else { throw Failure.invalidTrim }
@@ -138,69 +141,163 @@ actor StudioVideoAudioImportService {
             let trackRange = try await tracks[0].load(.timeRange)
             let overlap = CMTimeRangeGetIntersection(sourceRange, otherRange: trackRange)
             guard overlap.duration.isNumeric, overlap.duration > .zero else { throw Failure.noAudio }
+            // Only source-backed timeline intervals require decoded coverage.
+            // Empty edit-list segments are genuine silence, not decoder output.
+            let segments = try await tracks[0].load(.segments)
+            guard segments.count <= 4096 else { throw Failure.unsupportedMovie }
+            let sourceFrames = Int((sourceRange.duration.seconds * sourceRate).rounded())
+            let requiredRanges: [Range<Int>] = segments.filter { !$0.isEmpty }.compactMap { segment in
+                let region = CMTimeRangeGetIntersection(sourceRange, otherRange: segment.timeMapping.target)
+                guard region.duration.isNumeric, region.duration > .zero else { return nil }
+                let first = max(0, Int(((region.start.seconds - mapping.sourceStartSeconds) * sourceRate).rounded()))
+                let last = min(sourceFrames, Int(((CMTimeRangeGetEnd(region).seconds - mapping.sourceStartSeconds) * sourceRate).rounded()))
+                return first < last ? first..<last : nil
+            }
+            guard !requiredRanges.isEmpty else { throw Failure.noAudio }
+            func requiresAudio(_ gap: Range<Int>) -> Bool {
+                requiredRanges.contains { $0.overlaps(gap) }
+            }
             let composition = AVMutableComposition()
             guard let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { throw Self.diagnosticDecodeFailure(line: #line) }
             // Empty portions are the movie's actual timeline gaps. Audio starts
             // at its original offset inside the selected interval, not at zero.
-            let targetDuration = CMTime(seconds: outputDuration, preferredTimescale: 600_000)
             try track.insertTimeRange(overlap, of: tracks[0], at: CMTimeSubtract(overlap.start, sourceRange.start))
             if composition.duration < sourceRange.duration {
                 composition.insertEmptyTimeRange(CMTimeRange(start: composition.duration,
                     duration: CMTimeSubtract(sourceRange.duration, composition.duration)))
             }
-            composition.scaleTimeRange(CMTimeRange(start: .zero, duration: sourceRange.duration), toDuration: targetDuration)
+            // Read native-rate PCM first. AVAssetReader's rate conversion and
+            // time-stretch paths can finish without delivering their final samples.
+            // A separate streaming converter receives an explicit endOfStream to
+            // flush those samples; its output is interpreted at 44.1 kHz to apply
+            // the requested varispeed and pitch change.
+            let decodeRate = Double(rate) / mapping.speed
             let reader = try AVAssetReader(asset: composition)
-            let output = AVAssetReaderAudioMixOutput(audioTracks: [track], audioSettings: [
-                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: 2,
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: sourceRate, AVNumberOfChannelsKey: 2,
                 AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false,
                 AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false])
-            output.audioTimePitchAlgorithm = .varispeed
-            reader.timeRange = CMTimeRange(start: .zero, duration: targetDuration)
+            reader.timeRange = CMTimeRange(start: .zero, duration: sourceRange.duration)
             guard reader.canAdd(output) else { throw Self.diagnosticDecodeFailure(line: #line) }
             reader.add(output)
             return try await withTaskCancellationHandler {
                 guard reader.startReading() else { throw Self.diagnosticDecodeFailure(line: #line) }
                 defer { if reader.status == .reading { reader.cancelReading() } }
+                guard let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sourceRate, channels: 2, interleaved: true),
+                      let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: decodeRate, channels: 2, interleaved: true),
+                      let converter = AVAudioConverter(from: inputFormat, to: outputFormat),
+                      let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 8192) else {
+                    throw Self.diagnosticDecodeFailure(line: #line)
+                }
                 var pcm = Data(count: outputFrames * bytesPerFrame)
-                var endFrame = 0, actualFrames = 0
-                while let sample = output.copyNextSampleBuffer() {
+                var sourceCursor = 0, decodedEnd = 0, written = 0
+                var pending: (block: CMBlockBuffer, start: Int, frames: Int)?
+                var readerDone = false
+                var callbackError: Error?
+                // Reader chunks and converter buffers are bounded independently
+                // of source duration. Only the final <=16MB PCM is retained.
+                func loadChunk() throws {
                     try checkpoint()
+                    guard !readerDone, pending == nil else { return }
+                    guard let sample = output.copyNextSampleBuffer() else {
+                        guard reader.status == .completed else { throw Self.diagnosticDecodeFailure(line: #line) }
+                        readerDone = true
+                        return
+                    }
                     let frames = CMSampleBufferGetNumSamples(sample)
                     let time = CMSampleBufferGetPresentationTimeStamp(sample)
-                    guard frames > 0, frames <= 65_536, time.isNumeric, time.seconds >= 0,
+                    guard frames > 0, frames <= 65_536, time.isNumeric, time.seconds.isFinite,
+                          time.seconds >= 0, time.seconds <= sourceRange.duration.seconds,
+                          let format = CMSampleBufferGetFormatDescription(sample),
+                          let basic = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
+                          basic.mFormatID == kAudioFormatLinearPCM, abs(basic.mSampleRate - sourceRate) < 0.000001,
+                          basic.mChannelsPerFrame == 2, basic.mBitsPerChannel == 16, basic.mBytesPerFrame == bytesPerFrame,
+                          basic.mFormatFlags & kAudioFormatFlagIsSignedInteger != 0,
+                          basic.mFormatFlags & (kAudioFormatFlagIsFloat | kAudioFormatFlagIsBigEndian | kAudioFormatFlagIsNonInterleaved) == 0,
                           let block = CMSampleBufferGetDataBuffer(sample),
                           CMBlockBufferGetDataLength(block) == frames * bytesPerFrame else { throw Self.diagnosticDecodeFailure(line: #line) }
-                    let startFrame = Int((time.seconds * Double(rate)).rounded())
-#if SDI_MOVIE_AUDIO_DIAGNOSTICS
-                    print("MOVIE_AUDIO buffer frames=\(frames) pts=\(time.value)/\(time.timescale) start=\(startFrame) end=\(endFrame) limit=\(outputFrames)")
-#endif
-                    guard startFrame >= endFrame, startFrame < outputFrames else { throw Self.diagnosticDecodeFailure(line: #line) }
-                    // AVFoundation can return a final PCM buffer extending past
-                    // the requested range (observed two samples after varispeed).
-                    // Copy its in-range prefix, never extend the chosen clip or
-                    // allocate for padding. A subsequent out-of-range buffer is
-                    // still rejected, as are overlapping timestamps above.
-                    let count = min(frames, outputFrames - startFrame)
-#if SDI_MOVIE_AUDIO_DIAGNOSTICS
-                    if count < frames { print("MOVIE_AUDIO trimmedTailFrames=\(frames - count)") }
-#endif
-                    guard pcm.withUnsafeMutableBytes({ bytes in
-                        CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count * bytesPerFrame,
-                            destination: bytes.baseAddress!.advanced(by: startFrame * bytesPerFrame))
-                    }) == noErr else { throw Self.diagnosticDecodeFailure(line: #line) }
-                    actualFrames += count; endFrame = startFrame + count
-                    // Only report frames actually supplied by AVFoundation.
-                    // Genuine timeline gaps can leave completed below total;
-                    // final owned-file validation does not reset this progress.
-                    try await progress(.init(phase: .decoding, completed: Int64(actualFrames), total: Int64(outputFrames)))
+                    let start = Int((time.seconds * sourceRate).rounded())
+                    guard start >= decodedEnd, start < sourceFrames else { throw Self.diagnosticDecodeFailure(line: #line) }
+                    decodedEnd = start + frames
+                    pending = (block, start, frames)
+                }
+                var stalled = 0
+                while true {
                     try checkpoint()
+                    let previousCursor = sourceCursor
+                    converted.frameLength = 0
+                    var conversionError: NSError?
+                    let status = converter.convert(to: converted, error: &conversionError) { requested, inputStatus in
+                        do {
+                            try checkpoint()
+                            if sourceCursor == sourceFrames {
+                                // The final reader buffer can include a rounding
+                                // sample beyond the chosen range; never save it.
+                                pending = nil
+                                try loadChunk()
+                                guard readerDone else { throw Self.diagnosticDecodeFailure(line: #line) }
+                                inputStatus.pointee = .endOfStream
+                                return nil
+                            }
+                            let count = min(Int(requested), 8192, sourceFrames - sourceCursor)
+                            guard count > 0, let buffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(count)) else {
+                                throw Self.diagnosticDecodeFailure(line: #line)
+                            }
+                            buffer.frameLength = AVAudioFrameCount(count)
+                            let destination = buffer.mutableAudioBufferList.pointee.mBuffers.mData!
+                            var filled = 0
+                            while filled < count {
+                                try loadChunk()
+                                if let chunk = pending, chunk.start <= sourceCursor {
+                                    let offset = sourceCursor - chunk.start
+                                    let available = min(count - filled, chunk.frames - offset)
+                                    guard available > 0, CMBlockBufferCopyDataBytes(chunk.block, atOffset: offset * bytesPerFrame,
+                                        dataLength: available * bytesPerFrame, destination: destination.advanced(by: filled * bytesPerFrame)) == noErr else {
+                                        throw Self.diagnosticDecodeFailure(line: #line)
+                                    }
+                                    filled += available; sourceCursor += available
+                                    if offset + available == chunk.frames { pending = nil }
+                                } else {
+                                    let gapEnd = min(sourceCursor + count - filled, pending?.start ?? sourceFrames)
+                                    guard gapEnd > sourceCursor, !requiresAudio(sourceCursor..<gapEnd) else {
+                                        throw Self.diagnosticDecodeFailure(line: #line)
+                                    }
+                                    let silent = gapEnd - sourceCursor
+                                    memset(destination.advanced(by: filled * bytesPerFrame), 0, silent * bytesPerFrame)
+                                    filled += silent; sourceCursor = gapEnd
+                                }
+                            }
+                            inputStatus.pointee = .haveData
+                            return buffer
+                        } catch {
+                            callbackError = error
+                            inputStatus.pointee = .endOfStream
+                            return nil
+                        }
+                    }
+                    if let callbackError { throw callbackError }
+                    guard status != .error, conversionError == nil else { throw Self.diagnosticDecodeFailure(line: #line) }
+                    let count = min(Int(converted.frameLength), outputFrames - written)
+                    if count > 0 {
+                        let source = converted.audioBufferList.pointee.mBuffers.mData!
+                        pcm.withUnsafeMutableBytes { bytes in
+                            memcpy(bytes.baseAddress!.advanced(by: written * bytesPerFrame), source, count * bytesPerFrame)
+                        }
+                        written += count
+                        try await progress(.init(phase: .decoding, completed: Int64(written), total: Int64(outputFrames)))
+                    }
+                    try checkpoint()
+                    if status == .endOfStream { break }
+                    stalled = previousCursor == sourceCursor && converted.frameLength == 0 ? stalled + 1 : 0
+                    guard stalled < 8 else { throw Self.diagnosticDecodeFailure(line: #line) }
                     await Task.yield()
                 }
-                try checkpoint()
 #if SDI_MOVIE_AUDIO_DIAGNOSTICS
-                print("MOVIE_AUDIO terminal status=\(reader.status.rawValue) frames=\(actualFrames) end=\(endFrame) expected=\(outputFrames) errorCode=\((reader.error as NSError?)?.code ?? 0)")
+                print("MOVIE_AUDIO terminal reader=\(reader.status.rawValue) source=\(sourceCursor)/\(sourceFrames) output=\(written)/\(outputFrames)")
 #endif
-                guard reader.status == .completed, actualFrames > 0 else { throw Self.diagnosticDecodeFailure(line: #line) }
+                guard readerDone, reader.status == .completed, sourceCursor == sourceFrames, written == outputFrames else {
+                    throw Self.diagnosticDecodeFailure(line: #line)
+                }
                 var wav = Data("RIFF".utf8)
                 func u32(_ value: UInt32) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
                 func u16(_ value: UInt16) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }

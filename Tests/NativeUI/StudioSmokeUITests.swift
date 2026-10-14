@@ -1990,7 +1990,7 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["onboarding.dot.4"].tap()
         XCTAssertEqual(app.staticTexts["onboarding.position"].label, "5 of 5")
         app.buttons["onboarding.next"].tap()
-        try waitForButton("Skip Tutorial", in: app).tap()
+        try dismissTutorialIfPresented(in: app)
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 5),
                       "Open Studio routed to a different tab")
         let name = try createProjectIfLibraryIsShown(app)
@@ -2004,7 +2004,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(guide.label, "Review Studio Guide", "Guide completion did not survive relaunch")
         try tapWelcomeAction("welcome.guide", in: reopened)
         reopened.buttons["onboarding.skip"].tap()
-        try waitForButton("Skip Tutorial", in: reopened).tap()
+        try dismissTutorialIfPresented(in: reopened)
         try waitForButton("Studio", in: reopened).tap()
         XCTAssertTrue(reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch.waitForExistence(timeout: 8), "Guide navigation lost the local project")
         capture(reopened, name: "guide-completed-local-project-preserved")
@@ -3583,12 +3583,10 @@ final class StudioSmokeUITests: XCTestCase {
             }, evaluatedWith: picker).waitUntilFulfilled(timeout: 8)
             if !pickerReady { captureHierarchy(app, name: "native-text-colorwell-not-settled") }
             XCTAssertTrue(pickerReady, "Native Text color swatch did not become stable and actionable")
-            // Observed ColorWell includes its label; only the right circular
-            // swatch opens UIKit's picker. Derive its center from actual bounds.
-            let well = picker.frame
-            XCTAssertGreaterThan(well.width, well.height)
-            picker.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2)).tap()
+            // The color well exposes only its swatch, separately from the
+            // visible row label. Activate the actual control, not an inferred
+            // trailing point within a combined label-and-swatch rectangle.
+            picker.tap()
             // iOS exposes this native picker track as Other, with a separate
             // percentage TextField; the Studio opacity Slider is underneath.
             let systemPicker = app.otherElements["UIColorPickerView"].firstMatch
@@ -4247,7 +4245,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     @available(iOS 17.0, *)
     private func auditAccessibility(_ app: XCUIApplication, screen: String) throws {
-        let recordedTypes: XCUIAccessibilityAuditType = [.contrast, .dynamicType, .textClipped, .elementDetection, .trait, .parentChild]
+        let recordedTypes: XCUIAccessibilityAuditType = [.contrast, .dynamicType, .textClipped, .elementDetection, .trait]
         var recorded: [String] = []
         try app.performAccessibilityAudit(for: .all) { issue in
             guard recordedTypes.contains(issue.auditType) else { return false }
@@ -4627,6 +4625,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(reopenedAudio.waitForExistence(timeout: 5)); reopenedAudio.tap()
         XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
+        try disableDefaultAudioLoop(reopened)
         reopened.buttons["studio.audio.timelinePlay"].tap()
         XCTAssertTrue(reopened.staticTexts["00:09.22"].waitForExistence(timeout: 15), "Saved auditioned sound failed real playback after cold reopen")
         capture(reopened, name: "audio-tag-selected-sound-cold-reopen")
@@ -5103,7 +5102,8 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["studio.audio.close"].tap();app.buttons["studio.redo"].tap()
         openAudio(app);clipCount("2 clips", in: app)
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled);play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled)
+        try disableDefaultAudioLoop(app); play.tap()
         XCTAssertTrue(app.staticTexts["00:00.25"].waitForExistence(timeout: 12), "Actual mixed player did not reach the unchanged clip end")
         app.buttons["studio.audio.close"].tap()
         let save = app.buttons["studio.save"];XCTAssertTrue(save.isHittable);save.tap()
@@ -5140,7 +5140,8 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "audio-bundled-library-two-clips")
         app.buttons["studio.audio.library.close"].tap()
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled); play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled)
+        try disableDefaultAudioLoop(app); play.tap()
         // This is the real AVAudioPlayer completion time for the integrity-pinned
         // 3.063492-second file, not a sleep followed by a fabricated success label.
         XCTAssertTrue(app.staticTexts["00:03.06"].waitForExistence(timeout: 12), "Mixed playback never reached the actual source end")
@@ -8325,32 +8326,32 @@ final class StudioSmokeUITests: XCTestCase {
         let base = label.dropLast(ext.count + 1)
         return (1...40).contains(base.count) && base.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
     }
+    @MainActor
     private func exportControl(_ identifier: String, app: XCUIApplication, scrollUp: Bool = true,
                                waitForExistence: Bool = true) throws -> XCUIElement {
         let element = app.descendants(matching: .any)[identifier].firstMatch
-        if waitForExistence {
+        if waitForExistence && !identifier.hasPrefix("studio.export.format.") {
             XCTAssertTrue(element.waitUntilPresent(timeout: 8), "Missing export control: \(identifier)")
         }
-        // iOS prunes scrolled-offscreen format buttons from AX after sharing.
-        // Locate the unique actual ancestor of the requested export control.
-        let panels = app.scrollViews.containing(.any, identifier: identifier)
+        // Format cards are lazy: scrolling after an export error can remove
+        // them from AX entirely. Find the actual panel without requiring its
+        // offscreen child, then reveal that child with bounded real gestures.
+        let panels = app.scrollViews.matching(identifier: "studio.export.scroll")
         let panelCount = panels.count
-        if panelCount != 1 {
-            captureHierarchy(app, name: "export-control-ancestor-failed-" + identifier)
-        }
-        XCTAssertEqual(panelCount, 1, "The requested export control has no unique ScrollView ancestor")
+        if panelCount != 1 { captureHierarchy(app, name: "export-control-ancestor-failed-" + identifier) }
+        XCTAssertEqual(panelCount, 1, "The actual export ScrollView must be unique")
         let panel = panels.firstMatch
         // Each AX query can take a second on CI. Return as soon as the actual
         // element is fully visible; never re-evaluate a satisfied loop filter.
         for attempt in 0...8 {
             let panelFrame = panel.frame
-            let elementFrame = element.frame
-            if !elementFrame.isEmpty && panelFrame.insetBy(dx: 0, dy: 2).contains(elementFrame) {
+            let elementFrame = element.exists ? element.frame : CGRect.null
+            if !elementFrame.isNull && !elementFrame.isEmpty && panelFrame.insetBy(dx: 0, dy: 2).contains(elementFrame) {
                 XCTAssertTrue(element.isHittable, "Export control is obstructed: \(identifier)")
                 return element
             }
             guard attempt < 8 else { break }
-            let upward = elementFrame.isEmpty ? scrollUp : elementFrame.maxY > panelFrame.maxY - 2
+            let upward = (elementFrame.isNull || elementFrame.isEmpty) ? scrollUp : elementFrame.maxY > panelFrame.maxY - 2
             // The centre can land on the background segmented control, which
             // consumes this drag. Use the panel's 16pt content padding instead.
             let start = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: upward ? 0.7 : 0.3))
@@ -8358,7 +8359,7 @@ final class StudioSmokeUITests: XCTestCase {
             start.press(forDuration: 0.1, thenDragTo: end)
         }
         captureHierarchy(app, name: "export-control-unreachable-" + identifier)
-        let bounds = XCTAttachment(string: "Panel: \(panel.frame); control: \(element.frame); hittable: \(element.isHittable)")
+        let bounds = XCTAttachment(string: "Panel: \(panel.frame); control: \(element.exists ? element.frame : CGRect.null); hittable: \(element.exists && element.isHittable)")
         bounds.name = "export-control-bounds-" + identifier; bounds.lifetime = .keepAlways; add(bounds)
         XCTFail("Export control is not fully reachable after eight scrolls: \(identifier)")
         throw NSError(domain: "NativeExportSmoke", code: 1)
@@ -8496,7 +8497,7 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchAtWelcome(extraLaunchArguments: [String] = []) throws -> XCUIApplication {
+    private func launchRestoredApp(extraLaunchArguments: [String] = []) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
         XCTAssertEqual(env["SDI_SMOKE_OFFLINE_PREFLIGHT"], "1", "Run the built-app configuration preflight before launching")
         let source = try XCTUnwrap(env["SDI_SMOKE_SOURCE_COMMIT"])
@@ -8508,8 +8509,43 @@ final class StudioSmokeUITests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"] + extraLaunchArguments
         app.launch()
         capture(app, name: "launch-\(source.prefix(12))")
-        XCTAssertTrue(app.buttons["welcome.guest"].waitForExistence(timeout: 20))
+        let ready = NSPredicate { _, _ in
+            app.buttons["welcome.guest"].exists || self.button("Studio", in: app).exists
+        }
+        XCTAssertTrue(expectation(for: ready, evaluatedWith: nil).waitUntilFulfilled(timeout: 20),
+                      "Neither first-run Welcome nor the restored guest shell appeared")
         return app
+    }
+
+    @MainActor
+    private func launchAtWelcome(extraLaunchArguments: [String] = []) throws -> XCUIApplication {
+        let app = try launchRestoredApp(extraLaunchArguments: extraLaunchArguments)
+        if !app.buttons["welcome.guest"].exists {
+            try dismissTutorialIfPresented(in: app)
+            try waitForButton("Profile", in: app).tap()
+            let guide = app.buttons["profile.welcome.open"]
+            for _ in 0..<4 {
+                if guide.exists && guide.isHittable { break }
+                app.swipeUp()
+            }
+            XCTAssertTrue(guide.exists && guide.isHittable, "Returning users must be able to reopen Welcome and the guide")
+            guide.tap()
+        }
+        XCTAssertTrue(app.buttons["welcome.guest"].waitForExistence(timeout: 10))
+        return app
+    }
+
+    @MainActor
+    private func dismissTutorialIfPresented(in app: XCUIApplication) throws {
+        let skip = button("Skip Tutorial", in: app)
+        let studio = button("Studio", in: app)
+        let ready = NSPredicate { _, _ in
+            skip.exists || (studio.exists && studio.isHittable)
+        }
+        XCTAssertTrue(expectation(for: ready, evaluatedWith: nil).waitUntilFulfilled(timeout: 10),
+                      "The tutorial or interactive app shell must appear")
+        if skip.exists { try waitForButton("Skip Tutorial", in: app).tap() }
+        try waitForButton("Studio", in: app)
     }
 
     @MainActor
@@ -8524,9 +8560,11 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     private func launchGuestStudio(extraLaunchArguments: [String] = []) throws -> XCUIApplication {
-        let app = try launchAtWelcome(extraLaunchArguments: extraLaunchArguments)
-        try tapWelcomeAction("welcome.guest", in: app)
-        try waitForButton("Skip Tutorial", in: app).tap()
+        let app = try launchRestoredApp(extraLaunchArguments: extraLaunchArguments)
+        if app.buttons["welcome.guest"].exists {
+            try tapWelcomeAction("welcome.guest", in: app)
+        }
+        try dismissTutorialIfPresented(in: app)
         try waitForButton("Studio", in: app).tap()
         return app
     }

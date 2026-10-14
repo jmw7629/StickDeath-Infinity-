@@ -1821,9 +1821,9 @@ private final class NetworkTrap: URLProtocol {
             }
             doc.frames = [
                 AnimationFrame(id: "f1", elements: [line("a", 10, 40), line("limb1", 0, 10, layerID: stick)]),
-                AnimationFrame(id: "f2", elements: [line("b", 10, 40), line("limb2", 0, 20, layerID: stick)]),   // frozen vs f1 (same geometry, no hold)
+                AnimationFrame(id: "f2", elements: [line("b", 10, 40), line("limb2", 0, 10, layerID: stick)]),   // frozen vs f1 (same geometry, no hold)
                 AnimationFrame(id: "f3", elements: []),                                                          // blank
-                AnimationFrame(id: "f4", elements: [line("c", 10, 500)]),                                        // out of canvas
+                AnimationFrame(id: "f4", elements: [line("c", 10, 500), line("limb3", 0, 20, layerID: stick)]), // out of canvas, with separate limb variance
                 AnimationFrame(id: "f5", elements: [line("d", 10, 40)], holdTicks: 4),
                 AnimationFrame(id: "f6", elements: [line("e", 10, 40)])                                           // deliberate hold before it
             ]
@@ -2134,7 +2134,11 @@ private final class NetworkTrap: URLProtocol {
             try require(session.status == .applied && vm.visibleOnionGhosts.isEmpty
                 && vm.document.onionSettings == noOp.onionSettings
                 && (try erasurePixels(vm.document, includeOnion: true)) == plain, "Hide lost remembered settings or guide pixels")
-            vm.undo(); vm.redo(); vm.undo(); await vm.flush()
+            vm.undo(); vm.redo()
+            try require(!vm.showOnionSkin && vm.document.onionSettings == noOp.onionSettings
+                && (try erasurePixels(vm.document)) == artwork,
+                "Artwork Undo/Redo changed hidden onion preferences or artwork pixels")
+            vm.showOnionSkin = true; await vm.flush()
             let saved = await vm.save(); try require(saved, "Onion settings save failed")
             let cold = StudioViewModel(storage: store), record = try store.loadAnimation(id: vm.document.id)!
             try require(await cold.openProject(record.metadata), "Onion cold open failed")
@@ -2177,20 +2181,16 @@ private final class NetworkTrap: URLProtocol {
             } }
         }
 
-        try await test("grid session matches manual controls preserves artwork pixels and onion guides with one Undo and cold persistence") {
+        try await test("grid session matches manual controls preserves artwork pixels and onion guides with artwork Undo and cold persistence") {
             let (vm, store) = try await fixture("grid-guides")
             try require(vm.commitElement(styledStroke(vm)), "Grid artwork fixture failed")
-            vm.showOnionSkin = true; vm.onionOpacity = 0.35; await vm.flush()
+            vm.showOnionSkin = true; vm.onionOpacity = 0.35; vm.gridSpacing = 40; await vm.flush()
             let before = vm.document, pixels = try erasurePixels(vm.document)
             vm.gridSpacing = 32; vm.gridOpacity = 0.25; vm.gridTint = .red
             let manual = vm.document
-            // Editor guides live outside document history: changing them must not add Undo steps.
-            var baseline = before; baseline.gridSettings = .init()
-            try require(vm.document.gridSettings == manual.gridSettings && vm.frames == before.frames
-                && content(manual) != content(baseline), "Manual grid settings did not apply")
-            let defaults = StudioGridSettings()
-            vm.gridSpacing = defaults.spacing; vm.gridOpacity = defaults.opacity; vm.gridTint = defaults.tint
-            await vm.flush(); try require(content(vm.document) == content(baseline), "Manual guide reset fixture drift")
+            try require(vm.canUndo && !vm.canRedo, "Grid preferences changed artwork history")
+            vm.gridSpacing = 40; vm.gridOpacity = 0.1; vm.gridTint = .blue
+            await vm.flush(); try require(content(vm.document) == content(before), "Manual grid fixture drift")
             let session = SpatterStudioEditSession()
             _ = session.submit(SpatterGridInstruction.settingsExample, in: vm, accountID: nil, currentScope: { guest })
             await session.waitForCompletion()
@@ -2198,7 +2198,9 @@ private final class NetworkTrap: URLProtocol {
                 && !vm.gridEnabled && vm.document.onionSettings == before.onionSettings
                 && vm.showOnionSkin && vm.frames == before.frames && vm.layers == before.layers
                 && (try erasurePixels(vm.document)) == pixels, "Grid configure changed unrelated guides/artwork or diverged from manual")
-            vm.undo(); try require(vm.document.gridSettings == manual.gridSettings, "Undo must not revert grid settings")
+            vm.undo()
+            try require(vm.frames[0].elements.isEmpty && vm.document.gridSettings == manual.gridSettings
+                && vm.showOnionSkin && vm.canRedo, "Undo must remove artwork while retaining grid/onion preferences")
             vm.redo(); await vm.flush()
             vm.gridEnabled = true; let manualShown = vm.document
             vm.gridEnabled = false; await vm.flush()
@@ -2216,9 +2218,9 @@ private final class NetworkTrap: URLProtocol {
             await session.waitForCompletion()
             try require(session.status == .applied && !vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings
                 && vm.showOnionSkin && vm.document.onionSettings == noOp.onionSettings, "Hide grid lost remembered or onion settings")
-            vm.undo(); vm.redo(); await vm.flush()
-            try require(!vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings && (try erasurePixels(vm.document)) == pixels,
-                "Artwork Undo/Redo disturbed guide settings")
+            vm.undo(); vm.redo()
+            try require(!vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings
+                && (try erasurePixels(vm.document)) == pixels, "Artwork history lost hidden grid preferences or pixels")
             vm.gridEnabled = true; await vm.flush()
             let saved = await vm.save(); try require(saved, "Grid settings save failed")
             let cold = StudioViewModel(storage: store), record = try store.loadAnimation(id: vm.document.id)!
@@ -2324,7 +2326,19 @@ private final class NetworkTrap: URLProtocol {
                 && vm.frames.dropFirst().reduce(0) { $0 + $1.durationTicks } == 72 && edit.summary.contains("storyboard is attached"), "Brief receipt or document wrong: \(edit.summary)")
             try require(vm.frames.dropFirst().allSatisfy { $0.elements.count == 10 && $0.elements.allSatisfy { $0.color == "#FF0000" && $0.layerID == edit.createdLayers[0].id } }, "Generated poses are not editable primitives on the actor layer")
             let report = SpatterQualityReport.analyze(vm.document, requestedTicks: 1 + 72, generatedLayerIDs: [edit.createdLayers[0].id])
-            try require(report.verdict().passes, "Quality verdict failed on the brief: \(report.findings)")
+            // The brief appends its frames without overwriting the existing
+            // blank project frame. The whole-project release gate must reject
+            // that blank; assess the generated sequence separately.
+            try require(!report.verdict().passes && report.actualTicks == 73 && report.findings.count == 1
+                && report.findings[0].kind == .blankFrame && report.findings[0].frameIndex == 0,
+                "Whole-project quality lost its preserved blank-frame warning: \(report.findings)")
+            var generatedSequence = vm.document
+            let generatedIDs = Set(edit.createdFrames.map(\.id))
+            generatedSequence.frames = vm.frames.filter { generatedIDs.contains($0.id) }
+            let generatedReport = SpatterQualityReport.analyze(generatedSequence, requestedTicks: story.totalTicks,
+                generatedLayerIDs: [edit.createdLayers[0].id])
+            try require(generatedSequence.frames.count == story.frameCount && generatedReport.verdict().passes,
+                "Generated sequence quality failed: \(generatedReport.findings)")
             try require(session.canUndoAppliedEdit(in: vm, currentScope: guest) && session.canRevertAppliedEdit(in: vm, currentScope: guest), "Undo and revert offers missing at the receipt revision")
             // An unrelated later edit withdraws the receipt-revision Undo offer but keeps the typed revert.
             vm.setFrameHold(original, ticks: 3); await vm.flush()
