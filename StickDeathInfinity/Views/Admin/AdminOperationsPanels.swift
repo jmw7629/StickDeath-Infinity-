@@ -28,7 +28,7 @@ struct AdminOperationsStatusContent: View {
                 milestone("Daily backup", status.backup, id: "backup")
                 milestone("Restore drill", status.restore_drill, id: "restore-drill")
                 milestone("Retention sweep", status.retention_sweep, id: "retention-sweep")
-                Text("Current release: \(status.release.map { "\($0.label.isEmpty ? "unlabelled" : $0.label) since \($0.at.formatted())" } ?? "never reported")")
+                Text("Current release: \(Self.releaseText(status.release))")
                     .font(.caption).accessibilityIdentifier("admin.operations.release")
                 if let rollback = status.rollback {
                     Text("Last rollback: \(rollback.label.isEmpty ? "unlabelled" : rollback.label) · \(rollback.outcome ?? "unknown") · \(rollback.at.formatted())").font(.caption)
@@ -43,8 +43,7 @@ struct AdminOperationsStatusContent: View {
                 Text("Recent reports").font(.specialElite(16))
                 if status.recent?.isEmpty ?? true { Text("No operations reported yet.").font(.caption) }
                 ForEach(Array((status.recent ?? []).enumerated()), id: \.offset) { _, report in
-                    Text("\(report.kind.replacingOccurrences(of: "_", with: " ")) · \(report.outcome)\(report.label.isEmpty ? "" : " · \(report.label)") · \(report.created_at.formatted())\(report.metrics.isEmpty ? "" : " · " + report.metrics.keys.sorted().map { "\($0.replacingOccurrences(of: "_", with: " ")) \(report.metrics[$0] ?? 0)" }.joined(separator: ", "))")
-                        .font(.caption)
+                    Text(Self.reportText(report)).font(.caption)
                 }
                 if let note = status.note { Text(note).font(.caption2).foregroundStyle(.secondary) }
                 if let measured = status.measured_at { Text("Measured \(measured.formatted())").font(.caption2).foregroundStyle(.secondary) }
@@ -82,6 +81,21 @@ struct AdminOperationsStatusContent: View {
                 }
             }.accessibilityElement(children: .combine).accessibilityIdentifier("admin.operations.\(id)")
         }
+    }
+    private static func releaseText(_ release: AdminOperationsRelease?) -> String {
+        guard let release else { return "never reported" }
+        return "\(release.label.isEmpty ? "unlabelled" : release.label) since \(release.at.formatted())"
+    }
+    private static func reportText(_ report: AdminOperationsReport) -> String {
+        var parts = [report.kind.replacingOccurrences(of: "_", with: " "), report.outcome]
+        if !report.label.isEmpty { parts.append(report.label) }
+        parts.append(report.created_at.formatted())
+        let metrics: [String] = report.metrics.keys.sorted().map { key in
+            let name = key.replacingOccurrences(of: "_", with: " ")
+            return "\(name) \(report.metrics[key] ?? 0)"
+        }
+        if !metrics.isEmpty { parts.append(metrics.joined(separator: ", ")) }
+        return parts.joined(separator: " · ")
     }
     private func clear() { requestID = UUID(); busy = false; status = nil; configuration = nil; error = nil; configurationError = nil }
     private func load() async {
@@ -139,7 +153,7 @@ struct AdminAgentInboxContent: View {
             ForEach(console) { agent in
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(agent.title) · \(agent.paused ? "paused" : "enabled")").font(.specialElite(14))
-                    Text("Pending proposals: \(agent.pending_proposals.map(String.init) ?? "inbox not installed") · per-run cost cap: \(agent.per_run_cost_cap_minor.map { "\($0) minor units" } ?? "monthly cap only") · last start: \(agent.last_started?.formatted() ?? "never")").font(.caption)
+                    Text(Self.agentText(agent)).font(.caption)
                     if let failure = agent.last_error { Text("Last error: \(failure)").font(.caption).foregroundStyle(StudioCraftTheme.warning).lineLimit(3) }
                 }.accessibilityElement(children: .combine)
             }
@@ -183,7 +197,7 @@ struct AdminAgentInboxContent: View {
                 Text("Runs · page \(runs.page + 1)").font(.specialElite(15))
                 if runs.items.isEmpty { Text("No matching runs.").font(.caption) }
                 ForEach(runs.items) { run in
-                    Text("\(run.agent_key) · \(run.state) · \(run.started_at.formatted()) · \(run.items) items · cost \(run.cost_minor)\(run.source_ref.map { $0.isEmpty ? "" : " · \($0)" } ?? "")\(run.error.map { $0.isEmpty ? "" : " · \($0)" } ?? "")").font(.caption)
+                    Text(Self.runText(run)).font(.caption)
                 }
             }
             if let audit {
@@ -218,6 +232,18 @@ struct AdminAgentInboxContent: View {
         .onDisappear { clear() }
     }
 
+    private static func runText(_ run: AdminAgentRun) -> String {
+        var parts = [run.agent_key, run.state, run.started_at.formatted(), "\(run.items) items", "cost \(run.cost_minor)"]
+        if let reference = run.source_ref, !reference.isEmpty { parts.append(reference) }
+        if let failure = run.error, !failure.isEmpty { parts.append(failure) }
+        return parts.joined(separator: " · ")
+    }
+    private static func agentText(_ agent: AdminAgentConsoleEntry) -> String {
+        let pending = agent.pending_proposals.map(String.init) ?? "inbox not installed"
+        let cap = agent.per_run_cost_cap_minor.map { "\($0) minor units" } ?? "monthly cap only"
+        let started = agent.last_started?.formatted() ?? "never"
+        return "Pending proposals: \(pending) · per-run cost cap: \(cap) · last start: \(started)"
+    }
     private func clear() {
         requestID = UUID(); busy = false; console = []; proposals = []; pending = 0; decision = nil; reason = ""
         agentFilter = ""; stateFilter = ""; query = ""; runs = nil; audit = nil; error = nil; notice = nil
