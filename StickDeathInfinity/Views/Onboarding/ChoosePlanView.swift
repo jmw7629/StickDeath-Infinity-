@@ -23,25 +23,24 @@ struct ChoosePlanView: View {
     @State private var loading = false
     @State private var errorMessage: String?
 
-    /// What every build of the Studio does today, regardless of plan.
-    private static let studioFeatures = [
-        "Frame-by-frame Studio",
-        "Layers and audio timeline",
-        "MP4, GIF and PNG export",
-        "Projects stay on device",
-        "Spatter Studio assistant",
-    ]
-
-    private let plans: [PlanInfo] = [
-        PlanInfo(tier: .creator, name: "Creator",
-                 features: Self.studioFeatures + ["Monthly, cancel anytime", "Extras pending owner configuration"],
-                 color: Color(hex: "#DC2626"), popular: false),
-        // No plan is marked "POPULAR": there is no verified purchase data behind
-        // such a claim, so the badge stays off until the owner has real numbers.
-        PlanInfo(tier: .pro, name: "Pro",
-                 features: Self.studioFeatures + ["Monthly, cancel anytime", "Extras pending owner configuration"],
-                 color: Color(hex: "#DC2626"), popular: false),
-    ]
+    /// The monthly paid plans from the one billing configuration
+    /// (`BillingPlanCatalog`). Entitlement text comes from there; features the
+    /// server does not enforce yet carry a pending marker. No plan is marked
+    /// "POPULAR": there is no verified purchase data behind such a claim.
+    private var plans: [PlanInfo] {
+        stripe.catalog.plans(for: .monthly).compactMap { plan -> PlanInfo? in
+            let tier: AppConfig.SubscriptionTier
+            switch plan.tier {
+            case .creator: tier = .creator
+            case .pro: tier = .pro
+            case .free: return nil
+            }
+            return PlanInfo(tier: tier, name: plan.name,
+                            features: plan.entitlements.map { $0.isLive ? $0.text : $0.text + " *" }
+                                + [BillingCopy.prompts(plan.promptAllowance, remaining: nil)],
+                            color: Color(hex: "#DC2626"), popular: false)
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -75,12 +74,19 @@ struct ChoosePlanView: View {
                             PlanCardRow(
                                 plan: plan,
                                 product: stripe.product(for: plan.tier),
+                                trial: stripe.product(for: plan.tier).flatMap { stripe.trialCopy(for: $0) },
                                 isSelected: selectedTier == plan.tier,
                                 onSelect: { selectedTier = plan.tier }
                             )
                         }
 
                         availabilityNotice
+
+                        Text("* " + BillingCopy.pendingEntitlementNote + " Subscriptions renew monthly until cancelled in Apple subscription settings.")
+                            .font(.specialElite(10))
+                            .foregroundColor(.sdTextSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 4)
                     }
                     .padding(.horizontal, 16)
                 }
@@ -167,7 +173,7 @@ struct ChoosePlanView: View {
 
     private func ctaTitle(plan: PlanInfo, product: Product?) -> String {
         guard let product else { return "\(plan.name) is not available yet" }
-        return "Start \(plan.name) — \(product.displayPrice)/mo"
+        return "Start \(plan.name) — " + BillingCopy.price(product.displayPrice, period: .monthly)
     }
 
     private func handleSelect(_ tier: AppConfig.SubscriptionTier) {
@@ -204,6 +210,8 @@ private struct PlanCardRow: View {
     let plan: PlanInfo
     /// The loaded StoreKit product, if App Store Connect has one for this plan.
     let product: Product?
+    /// Trial copy, only when the App Store reports an eligible free-trial offer.
+    let trial: String?
     let isSelected: Bool
     let onSelect: () -> Void
 
@@ -219,21 +227,16 @@ private struct PlanCardRow: View {
 
                     Spacer()
 
-                    if let product {
-                        HStack(alignment: .firstTextBaseline, spacing: 0) {
-                            Text(product.displayPrice)
-                                .font(.specialElite(18))
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
-                            Text("/mo")
-                                .font(.specialElite(12))
-                                .foregroundColor(.sdTextSecondary)
-                        }
-                    } else {
-                        Text("Price shown when configured")
-                            .font(.specialElite(11))
-                            .foregroundColor(.sdTextSecondary)
-                    }
+                    Text(BillingCopy.price(product?.displayPrice, period: .monthly))
+                        .font(.specialElite(product == nil ? 11 : 16))
+                        .fontWeight(product == nil ? .regular : .bold)
+                        .foregroundColor(product == nil ? Color.sdTextSecondary : Color.white)
+                }
+
+                if let trial {
+                    Text(trial)
+                        .font(.specialElite(11))
+                        .foregroundColor(.green)
                 }
 
                 // Feature tags (wrapped)

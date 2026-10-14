@@ -176,6 +176,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		C228BE99AF0E06643DBC4EAA /* WarRoomClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E9568FC6E5AB1A9E7E44059 /* WarRoomClient.swift */; };
 		9AE12A21DE3C70A990A621FD /* CommunityChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA88ECF7ECD59A7B32AC204C /* CommunityChrome.swift */; };
 		EB101BFC249B15DF959F78F4 /* StudioFilesSavePresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDC71D132ED80FA9A6723AB0 /* StudioFilesSavePresenter.swift */; };
+		3C6F4E28BC29F667C4FD4EFE /* BillingPlanCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF83562AAB826F0BA1537DF /* BillingPlanCatalog.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -361,6 +362,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		9E9568FC6E5AB1A9E7E44059 /* WarRoomClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/WarRoom/WarRoomClient.swift"; sourceTree = SOURCE_ROOT; };
 		CA88ECF7ECD59A7B32AC204C /* CommunityChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Collab/CommunityChrome.swift"; sourceTree = SOURCE_ROOT; };
 		DDC71D132ED80FA9A6723AB0 /* StudioFilesSavePresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioFilesSavePresenter.swift"; sourceTree = SOURCE_ROOT; };
+		8FF83562AAB826F0BA1537DF /* BillingPlanCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -665,6 +667,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		89185C7D851EC4F5081D1BAB /* Stripe */ = {
 			isa = PBXGroup;
 			children = (
+				8FF83562AAB826F0BA1537DF /* BillingPlanCatalog.swift */,
 				A228ED27DD23FABD551B9863 /* StripeService.swift */,
 			);
 			path = Stripe;
@@ -964,6 +967,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3C6F4E28BC29F667C4FD4EFE /* BillingPlanCatalog.swift in Sources */,
 				EB101BFC249B15DF959F78F4 /* StudioFilesSavePresenter.swift in Sources */,
 				9AE12A21DE3C70A990A621FD /* CommunityChrome.swift in Sources */,
 				C228BE99AF0E06643DBC4EAA /* WarRoomClient.swift in Sources */,
