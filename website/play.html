@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="A free browser flipbook: draw up to twelve frames with onion skin, play them back, and download a looping GIF or a PNG spritesheet. Nothing is uploaded.">
+<meta name="theme-color" content="#0e0e10"><title>Play — a browser flipbook from StickDeath Infinity</title>
+<meta name="sdi:canonical-base" content="https://stickdeathinfinity.com/">
+<link rel="canonical" href="https://stickdeathinfinity.com/play.html">
+<meta property="og:type" content="website"><meta property="og:site_name" content="StickDeath Infinity"><meta property="og:title" content="Play — a browser flipbook from StickDeath Infinity"><meta property="og:description" content="Draw a few frames, flip them, download a GIF. A taste of frame-by-frame animation in your browser."><meta property="og:url" content="https://stickdeathinfinity.com/play.html"><meta property="og:image" content="https://stickdeathinfinity.com/assets/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="styles.css">
+<script src="site.js" defer></script><script src="play.js" defer></script>
+<noscript><style>.header nav{display:flex!important}.menu{display:none!important}</style></noscript>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="header"><a class="brand" href="index.html" aria-label="StickDeath Infinity home"><img src="assets/mark.svg" width="36" height="36" alt=""><span>STICKDEATH<span class="brand-sub">INFINITY</span></span></a>
+<button class="menu" aria-controls="navigation" aria-expanded="false">Menu</button>
+<nav id="navigation" aria-label="Main navigation"><a href="studio.html">Studio</a><a href="community.html">Community</a><a href="screens.html">Screens</a><a href="play.html" aria-current="page">Play</a><a href="store.html">Store</a><a href="index.html#pricing">Pricing</a><a href="index.html#help">Help</a><a class="cta" href="index.html#availability">Get the app</a></nav></header>
+<main id="main" tabindex="-1" class="wrap">
+<section class="page-hero"><p class="eyebrow">Play</p><h1>Twelve frames<br>of <em>fun.</em></h1><p class="lead">A tiny flipbook that runs in your browser. Draw a pose, add a frame, draw the next one with the previous frame ghosted underneath, then play it back and download a looping GIF. It is a toy, not the Studio, and nothing you draw leaves this page.</p></section>
+<div class="play">
+<div><div class="play-canvas"><canvas id="play-canvas" tabindex="0" role="img" aria-label="Drawing paper. Draw with a pointer, or use the arrow keys to move a cursor and Enter to stamp a dot."></canvas><canvas id="play-onion" class="onion" aria-hidden="true"></canvas></div>
+<p id="play-frame-label" class="quiet" aria-live="polite">Frame 1 of 1</p>
+<div class="frames-bar" id="frames-bar" role="group" aria-label="Frames"></div>
+<p id="play-status" role="status" aria-live="polite"></p></div>
+<div class="play-panel">
+<div class="row" role="group" aria-label="Tool"><button type="button" data-tool="pen" aria-pressed="true">Pen</button><button type="button" data-tool="eraser" aria-pressed="false">Eraser</button><button type="button" id="play-undo">Undo</button><button type="button" id="play-clear">Clear frame</button></div>
+<div class="swatches" role="group" aria-label="Colour swatches"><button type="button" data-swatch="#101011" aria-pressed="true" aria-label="Ink black" style="background:#101011"></button><button type="button" data-swatch="#ff454c" aria-pressed="false" aria-label="StickDeath red" style="background:#ff454c"></button><button type="button" data-swatch="#2f6fde" aria-pressed="false" aria-label="Blue" style="background:#2f6fde"></button><button type="button" data-swatch="#2e9e5b" aria-pressed="false" aria-label="Green" style="background:#2e9e5b"></button><button type="button" data-swatch="#f2b705" aria-pressed="false" aria-label="Yellow" style="background:#f2b705"></button><button type="button" data-swatch="#8a4fff" aria-pressed="false" aria-label="Purple" style="background:#8a4fff"></button></div>
+<label>Custom colour<input id="play-color" type="color" value="#101011"></label>
+<label>Brush size <span id="play-size-value">6 px</span><input id="play-size" type="range" min="2" max="24" value="6" step="1"></label>
+<button type="button" id="play-onion-toggle" class="toggle" aria-pressed="true">Onion skin: show the previous frame</button>
+<div class="row" role="group" aria-label="Frames"><button type="button" id="play-prev" aria-label="Previous frame">◀</button><button type="button" id="play-next" aria-label="Next frame">▶</button><button type="button" id="play-add">Add frame</button><button type="button" id="play-duplicate">Duplicate</button><button type="button" id="play-delete">Delete</button></div>
+<label>Speed <span id="play-fps-value">8 fps</span><input id="play-fps" type="range" min="2" max="24" value="8" step="1"></label>
+<button type="button" id="play-toggle" class="button" aria-pressed="false">Play</button>
+<div class="row" role="group" aria-label="Download"><button type="button" id="play-gif">Download GIF</button><button type="button" id="play-png">Download PNG spritesheet</button></div>
+<p class="quiet">Keyboard: comma and period step frames. Downloads are created in your browser; nothing is sent anywhere.</p>
+</div></div>
+<section data-reveal class="section"><div class="grid-2"><article class="card red"><span class="index">Why a toy?</span><h2>The idea in thirty seconds.</h2><p>Frame-by-frame animation is just drawings shown in order. The ghost of the previous frame, called onion skin, is how animators keep each new pose close to the last one. Studio does this for real, with layers, timing in ticks, tweens, sound and movie export. This page lets you feel the loop before you install anything.</p><a class="text-link" href="studio.html">What the real Studio adds →</a></article><article class="card"><span class="index">Privacy</span><h2>Your drawings stay here.</h2><p>Frames live in your browser's memory while the page is open. There is no storage, no account and no upload. Closing the tab clears everything; the only copies are the files you choose to download.</p><a class="text-link" href="index.html#privacy">Website data choices →</a></article></div></section>
+</main>
+<footer class="wrap"><a class="brand" href="index.html">STICKDEATH INFINITY</a><p>Companion website · browser flipbook toy</p><div><a href="studio.html">Studio</a><a href="screens.html">Screens</a><a href="index.html#help">Help</a><a href="policies/privacy-v1.html">Privacy (draft)</a><a href="brand.html">Brand kit</a><a href="policies/attribution.html">Attribution</a></div></footer>
+</body></html>

@@ -108,3 +108,48 @@ checks passed; perf at 390×844 Slow-4G CPU×4: 7 requests, 240,269 bytes, LCP 7
 - Policy content requires legal review; it was written from source behavior and the owner's scope documents, not reviewed by counsel.
 - Help content is read from source at the current guide revision; no topic has device evidence, so none carries `verified-on-device`.
 - The admin shell's signed-in paths (GoTrue password/TOTP/provider flows, RPC panels) are exercised only by code review and the unconfigured-state checks; they need a configured test project.
+
+## 6. 2026-10-14 rebuild for stickdeathinfinity.com
+
+Owner request: "branch off and rebuild the website, use screenshots from the artifacts, build everything
+into it." Branch `claude/website-rebuild-kurekj` from `178cc9d` (main). Scope: `website/**`,
+`scripts/website/**`, this file, `docs/WEBSITE_HOSTING.md`.
+
+| Change | Detail |
+| --- | --- |
+| Canonical base | `scripts/website/site_constants.mjs` now `https://stickdeathinfinity.com/` (the owner named the address). Hosting, DNS and the first deployment are still owner actions. |
+| New pages | `studio.html`, `community.html`, `play.html` (+ `play.js`), rebuilt `index.html` and `screens.html`; all indexable with canonical and `og:url`; `sitemap.xml`/`robots.txt` regenerated. |
+| Captures | 27 new WebP frames extracted (ffmpeg) from the CI screen recordings of run 38516791084 (source `39f29cb`) plus one from `30e90cf`; four retained from `960241f`. 32 files, 646,998 bytes. Superseded `launch`, `library`, `new-project`, `lasso`, `export` captures from `960241f` were replaced by the newer ones. |
+| Design | New `styles.css` (21.8 KB): tokens, CSS-only flipbook hero (six SVG poses stepped at 12 fps, onion ghost, reduced-motion shows a single pose), tool marquee, phone frames, numbers strip, tool catalogue, plan cards, play panel. Compact navigation breakpoint moved to 700 px (seven links + CTA). |
+| Flipbook toy | `play.js`: canvas frames in memory, pen/eraser with pointer pressure, swatches + custom colour, onion skin toggle, per-frame undo (24 steps), add/duplicate/delete/step, playback 2–24 fps (refuses under reduced motion and says so), PNG spritesheet via `toBlob`, GIF89a via an in-page LZW encoder with a 216-colour palette and infinite loop; keyboard cursor drawing; no storage, no network. |
+| Harness | `a11y_perf.mjs`: pages list extended; `.webp` MIME; budgets raised to ≤12 requests / ≤420,000 bytes because the home page carries lazy captures and the unmodified 166 KB font (fontTools is not installed here, so no subset was produced); new `play.html` journey (stroke changes the canvas, duplicate + add → frame 3 of 3, Play/Stop, GIF and PNG download events, no page errors). |
+| Share card | `assets/og-card.html` tagline "Draw it. Time it. Make it move." → `og-card.png` re-rendered (82,696 bytes). |
+
+### Measured (2026-10-14T09:36:52Z, Playwright 1.56.1 Chromium, Node v22.22.0)
+
+```
+check_help: OK — 20 articles, guide revision 2026-10-13.1, 202 distinct UI labels verified against 153 Swift and 56 Kotlin files, 39 source paths exist; help-data.js in sync
+build_site: OK — base https://stickdeathinfinity.com/; written: none; unchanged: 15
+a11y_perf: 483/483 checks passed (12 pages × 3 viewports × 12 audits, index behaviour, play journey, 404, reduced motion, no-JS, admin shell, file://)
+perf (index.html, 390×844, Slow-4G, CPU×4): 7 requests, 265,367 bytes, LCP 1000 ms, CLS 0.0004, DOMContentLoaded 1,054 ms, load 1,962 ms
+```
+
+Transfer breakdown on the home page: font 166,356 · `help/help-data.js` 36,270 · `index.html` 27,031 ·
+`styles.css` 22,232 · `site.js` 11,365 · `help.js` 1,651 · `assets/mark.svg` 462. Captures are
+`loading="lazy"` below the fold and were not requested during the measurement.
+
+Not verified: real iPhone Safari/VoiceOver, WebKit and Firefox (Chromium only here); the GIF writer was
+exercised by the download event and by decoding its output size, not by an external GIF validator;
+hosting-level checks depend on the absent deployment.
+
+### 6b. Wave 2 (2026-10-14): store, login, clips, splash, reveal
+
+Added `store.html` (+ `store.js`, `store-config.js`, eight rendered merch mock-ups via `scripts/website/render_merch.mjs`), a real sign-in on `account.html` (+ `account.js`, configured `account-config.js` with the public backend origin and publishable key), seven H.264 clips cut from the CI recordings (`website/clips/`, 1.4 MB), a decorative splash on the home page, scroll reveal on every long page, a hero speed slider and frame scrubbing, export tabs on the Studio tour, and `scripts/owner/mac_stickdeath_cleanup.sh` (owner-run, archive-not-delete).
+
+Harness additions: `store.html` in the page matrix, `.mp4` served, pages scrolled once before auditing (reveal sections become visible), account no-JS text, account configured-state checks (form shown, profile hidden, only own files requested, local validation before any request), store unconfigured checks (eight products, no prices, cart hidden, only own files), splash checks (aria-hidden, no focusable controls, removed within 3 s), slider retiming check, and the flipbook journey now scrolls the canvas into view and compares pixel sums (the CI run on 8c093e1 failed that check because the canvas was off-screen at 390×844).
+
+Measured 2026-10-14 (Playwright 1.56.1 Chromium, Node v22.22.0): `check_help --check` OK (20 articles, guide revision 2026-10-13.1); `build_site --check` OK (16 unchanged); `render_merch --check` OK (8 products); `a11y_perf` **527/527**; perf on the home page at 390×844 Slow-4G CPU×4: 10 requests, 315,779 bytes, LCP 1,316 ms, CLS 0.0017, load 2,259 ms (budgets ≤12 / ≤420,000 / ≤2,500 ms / ≤0.05).
+
+Owner gates: Shopify store values for `store-config.js`; Apple/Google/GitHub/Microsoft provider enablement for `account-config.js`; the backend bundle paste for profile/lifecycle services; hosting and DNS for the domain. Not verified here: a configured Shopify store end to end (no store exists yet), real provider redirects, Safari/VoiceOver.
+
+Live backend probe (2026-10-14, from the review container with the publishable key only): `GET /auth/v1/settings` → 200, external providers enabled: email only, sign-up enabled, email confirmation required; `POST /auth/v1/token?grant_type=password` with an unknown account → 400. This matches what `account.js` expects (unknown or unconfirmed accounts show the "not recognised, or not confirmed" message; provider buttons stay hidden until the owner enables providers and lists them in `account-config.js`).

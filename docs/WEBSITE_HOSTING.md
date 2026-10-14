@@ -1,15 +1,17 @@
 # Website hosting, domain, deployment and rollback (#269)
 
-Status 2026-10-13: no hosting project, DNS record or deployment configuration exists in this
-repository, and the production domain is **not verified** (owner gate). This document fixes the
-procedure so the first deployment is reversible; it does not claim any deployment happened.
+Status 2026-10-14: the owner named the production address, `https://stickdeathinfinity.com/`, and the
+pages now declare it as their canonical origin (`scripts/website/site_constants.mjs`). No hosting
+project, DNS record or deployment configuration exists in this repository yet, and no deployment has
+happened. The Vercel account connected to the workspace holds no project or domain for it (checked
+2026-10-14). This document fixes the procedure so the first deployment is reversible.
 
 ## What exists and is preserved
 
 | Item | State | Rule |
 | --- | --- | --- |
 | Website source | `website/` (static, buildless, zero third-party requests) | the only source of truth; generated files (`help-data.js`, `robots.txt`, `sitemap.xml`, `policies/attribution.html`, `og-card.png`) are rebuilt by `scripts/website/*.mjs` |
-| Canonical base | `scripts/website/site_constants.mjs` (`https://stickdeath-infinity.invalid/`) | `.invalid` cannot resolve, so a stray deployment can never pass for the live address; change it only after the domain is verified, then run `node scripts/website/build_site.mjs` |
+| Canonical base | `scripts/website/site_constants.mjs` (`https://stickdeathinfinity.com/`) | set on 2026-10-14 from the owner's instruction; `node scripts/website/build_site.mjs` rewrites every self-URL, `robots.txt` and `sitemap.xml` from it |
 | Owner-only review deployment (V59) | external host, source `e0ac4fe`, outside this repository | leave untouched; it is reference evidence, not the product site, and its link stays off public pages |
 | Design reference (`sd-infinity-preview`) | moved to the owner's Mac SSD | owner keeps a private manifest (path, SHA-256, capture date) per `docs/OPERATING_RUNBOOK.md`; historical messaging, pricing and sample metrics in it are reference only |
 
@@ -28,6 +30,16 @@ output only, no serverless functions and no paid plan change. Either way:
   `Referrer-Policy: strict-origin-when-cross-origin`, `X-Content-Type-Options: nosniff`.
 - The admin shell (`website/admin.html`) and account page stay `noindex` and are gated by
   `admin-config.js` / `account-config.js`, both `null` in the repository.
+
+## Deploy workflow (added 2026-10-14)
+
+`.github/workflows/website-deploy.yml` verifies the help centre and discovery files, writes the
+`CNAME` file for `stickdeathinfinity.com` and deploys `website/` to GitHub Pages. It is
+`workflow_dispatch` only until the owner: (1) enables Pages with Source = GitHub Actions in the
+repository settings, (2) adds the custom domain there, (3) creates the DNS records at the registrar
+(`A` records for the apex to GitHub Pages' addresses and a `CNAME` for `www`, per GitHub's current
+docs), and (4) uncomments the `push` trigger so merges to `main` redeploy. The two Pages actions are
+referenced by version tag until the owner reviews and pins them by SHA like the other workflows.
 
 ## Procedure
 

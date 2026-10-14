@@ -1,0 +1,42 @@
+{
+  "cap": {
+    "source": "18482e5a14c961494ce2ad5173e926a24eceebabc52145a6fdd8901e55b3c53b",
+    "bytes": 12616,
+    "sha256": "0bd6135283aca2fdc14b2b6cb5f144ce0d0bcee63910174a0aa3d317a3010b3a"
+  },
+  "classic-tee": {
+    "source": "8c4c1e02c517cec40cd827468bb2ddf6384f976712962ceb553241d4e439029e",
+    "bytes": 14132,
+    "sha256": "eab63f035e6039be68fbf63f68f3dc81f23901873c9044df87dc5326beee64ae"
+  },
+  "enamel-pin": {
+    "source": "c72033144dc8e4b560a22964563c9d790394ea5ba33bab5e17a5068b4ece7566",
+    "bytes": 19890,
+    "sha256": "4df1d63e5b7b27b32632ee9856f91840481c456d533d7f794fa178e391e12592"
+  },
+  "hoodie": {
+    "source": "5b5a64124cc55e899a9c6a3de0faa63d429273dd4b84747fc3e0098d8f0232bb",
+    "bytes": 13390,
+    "sha256": "1c0187339d1db22a8e1937b8ca183889d03a97b1ac6c739b387b210431df31cc"
+  },
+  "mug": {
+    "source": "62314ce14e904bd049516f0cf44cfd50f6800ba977028825d274e19ea83414f1",
+    "bytes": 11882,
+    "sha256": "d1059dd9d2bbd150885a17fb34055c7a96b7f60bc7f8e2ad6af5d4c10d0e8a80"
+  },
+  "poster": {
+    "source": "0bbea2885e1f1e061c35b1bd5191ee61a2887f30770abd928673b79543b8d1b0",
+    "bytes": 24192,
+    "sha256": "b0cb3f88d3a772f2237e78b2a5b0427702dbba28cc906f5daf2771ab873bc21a"
+  },
+  "sticker-pack": {
+    "source": "4a754d483bba019e259f6cc59632d0be7a476947ee97983cbce564c1e755e0bf",
+    "bytes": 26394,
+    "sha256": "f593c59fffaf37fb88995fff8419bae046a536881987ce5a9d69c3faa2572a43"
+  },
+  "tote": {
+    "source": "5788f2eb7f84153563063b2d06582a3ac84b40767e2207a31453b510ccf86b7a",
+    "bytes": 13800,
+    "sha256": "564298c4bab34bc635a9f25f3ac6b2c0fe161143851cf6ec8c0d824271701943"
+  }
+}

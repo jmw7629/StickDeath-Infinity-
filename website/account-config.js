@@ -1,13 +1,13 @@
-'use strict';
-// OWNER-GATED configuration for account.html (issue #271).
-// Leave null until the canonical identity and billing portal are verified.
-// When set, account.js validates the object and only then shows a link.
-// Never put prices, keys, tokens or secrets here; this file is public.
-//
-// Shape when connected:
-// window.SDI_ACCOUNT_CONFIG = {
-//   portalURL: 'https://<verified-portal-host>/',   // https only
-//   provider: 'Short provider name shown to the user', // optional, <= 80 characters
-//   termsVersion: 'policy version id'                   // optional, <= 100 characters
-// };
-window.SDI_ACCOUNT_CONFIG = null;
+// Account page configuration (account.html). The values below are the backend's public
+// origin and publishable key: they identify the project and grant nothing by themselves.
+// Authorization is entirely server-side (row-level security and the sdi_* functions).
+//   providers: identity providers that are enabled in the backend's Auth settings.
+//              Leave [] until the owner configures Apple / Google / GitHub / Microsoft;
+//              the page shows a provider button only for the names listed here.
+//   portalURL: optional https link to a billing portal once one exists (none today).
+window.SDI_ACCOUNT_CONFIG = {
+  backendURL: 'https://gwcqlbjdvxebkxizfxsx.supabase.co',
+  publishableKey: 'sb_publishable_ESTaBouCYQb8AzPKGfS_5w_GNWI-otv',
+  providers: [],
+  portalURL: null
+};
