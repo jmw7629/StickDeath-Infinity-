@@ -1,8 +1,8 @@
 {
- "note": "Sounds copied unmodified from the app catalogue (StickDeathInfinity/Resources/StudioSounds); all CC0-1.0; credits travel with the files and are shown in the Jukebox.",
+ "note": "Sounds copied unmodified (byte-identical, catalogue SHA-256 recorded) from the app catalogue (StickDeathInfinity/Resources/StudioSounds); AAC files keep their MP4 container under a .mp4 name so every static host serves them; all CC0-1.0; credits travel with the files and are shown in the Jukebox.",
  "sounds": [
   {
-   "file": "sounds/loop-ambient-01.m4a",
+   "file": "sounds/loop-ambient-01.mp4",
    "title": "Loop Ambient 01",
    "category": "Space",
    "author": "rubberduck",
@@ -48,7 +48,7 @@
    ]
   },
   {
-   "file": "sounds/space-engine-002.m4a",
+   "file": "sounds/space-engine-002.mp4",
    "title": "Space Engine 002",
    "category": "Sci-fi",
    "author": "Kenney",
@@ -186,7 +186,7 @@
    ]
   },
   {
-   "file": "sounds/space-trash3.m4a",
+   "file": "sounds/space-trash3.mp4",
    "title": "Space Trash3",
    "category": "Digital",
    "author": "Kenney",
@@ -232,7 +232,7 @@
    ]
   },
   {
-   "file": "sounds/sfx100v2-loop-highway.m4a",
+   "file": "sounds/sfx100v2-loop-highway.mp4",
    "title": "Sfx100V2 Loop Highway",
    "category": "Foley",
    "author": "rubberduck",
@@ -278,7 +278,7 @@
    ]
   },
   {
-   "file": "sounds/loop-bubbles-02.m4a",
+   "file": "sounds/loop-bubbles-02.mp4",
    "title": "Loop Bubbles 02",
    "category": "Water & Slime",
    "author": "rubberduck",
@@ -324,7 +324,7 @@
    ]
   },
   {
-   "file": "sounds/card-shuffle.m4a",
+   "file": "sounds/card-shuffle.mp4",
    "title": "Card Shuffle",
    "category": "Cards & Casino",
    "author": "Kenney",
