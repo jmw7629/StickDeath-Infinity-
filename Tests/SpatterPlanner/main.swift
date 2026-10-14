@@ -13,7 +13,8 @@ import Foundation
 //   Models/StudioCraftLayers.swift, Models/StudioSmudge.swift, Models/StudioBlur.swift,
 //   Models/StudioSharpen.swift, Models/StudioDodgeBurn.swift, the four *Descriptor.swift files,
 //   App/AppConfig.swift, App/SpatterBackendClient.swift, Models/SpatterMotionRecipe.swift,
-//   Services/Spatter/SpatterKnowledgeBase.swift, Tests/SpatterPlanner/main.swift
+//   Services/Spatter/SpatterKnowledgeBase.swift, Services/Spatter/SpatterStudioControlRegistry.swift,
+//   Tests/SpatterPlanner/main.swift
 
 private struct Failure: Error, CustomStringConvertible { let message: String; var description: String { message } }
 private func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
@@ -377,6 +378,136 @@ private enum Golden {
                 let overflow = Array(repeating: "Add 96 blank frames.", count: 2).joined(separator: "\n")
                 do { _ = try SpatterInstructionBatch.parse(overflow).prepare(in: context); throw Failure(message: "Oversized batch accepted") }
                 catch SpatterInstructionBatch.Failure.tooManyCommands { }
+            }
+            try test("batch commit failures cancellation and intervening edits roll back the whole batch") {
+                // Two layers so a single "Delete active layer." is valid when prepared.
+                var editor = try StudioDocumentEditor(document: try document(frames: 2))
+                let seed = editor.document
+                _ = try execute(.init(requestID: UUID(), projectID: seed.id, expectedRevision: seed.revision,
+                                      action: .apply([.addLayer(.init(name: "Ink", result: "ink"))])), on: &editor)
+                let before = editor.document, beforeClipboard = editor.clipboardVersion
+                try require(before.layers.count == 2 && editor.canUndo, "Fixture layer was not added")
+                // Every line prepares against the captured document; the third deletes the
+                // layer the second already deleted, so the combined request fails while committing.
+                let conflicting = try SpatterInstructionBatch.parse("Add 2 blank frames.\nDelete active layer.\nDelete active layer.")
+                let request = try conflicting.prepare(in: StudioCommandContext(document: before), requestID: UUID())
+                var failure: Error?
+                do { _ = try execute(request, on: &editor) } catch { failure = error }
+                guard let failure else { throw Failure(message: "Conflicting batch committed") }
+                try require(editor.document == before && editor.clipboardVersion == beforeClipboard && editor.canUndo && !editor.canRedo,
+                            "Failed batch left partial edits or history")
+                let notice = SpatterInstructionBatch.rollbackNotice(failure)
+                try require(notice.contains("rolled back") && notice.contains("nothing changed") && notice.count < 400, "Rollback notice wrong: \(notice)")
+                editor.undo()
+                try require(content(editor.document) == content(seed), "Failed batch disturbed the prior Undo step")
+                _ = try execute(.init(requestID: UUID(), projectID: seed.id, expectedRevision: editor.document.revision,
+                                      action: .apply([.addLayer(.init(name: "Ink", result: "ink"))])), on: &editor)
+                // Cancellation at every executor checkpoint of a valid batch leaves no trace.
+                let valid = try SpatterInstructionBatch.parse("Add 2 blank frames.\nAdd layer named \"Paint\".\nRename project to \"Cancelled\".")
+                let current = editor.document
+                let validRequest = try valid.prepare(in: StudioCommandContext(document: current), requestID: UUID())
+                var probe = editor, checkpoints = 0
+                _ = try StudioCommandExecutor.execute(validRequest, editor: &probe, checkCancellation: { checkpoints += 1 })
+                try require(checkpoints >= 4 && probe.document.name == "Cancelled", "Batch has too few cancellation checkpoints: \(checkpoints)")
+                for boundary in 1...checkpoints {
+                    var calls = 0, refused = false
+                    do {
+                        _ = try StudioCommandExecutor.execute(validRequest, editor: &editor, checkCancellation: {
+                            calls += 1; if calls == boundary { throw CancellationError() }
+                        })
+                    } catch { refused = true }
+                    try require(refused, "Batch ignored cancellation at checkpoint \(boundary)")
+                    try require(editor.document == current && editor.clipboardVersion == beforeClipboard, "Cancelled batch at checkpoint \(boundary) changed the editor")
+                }
+                // Cancellation while preparing a later line also prepares nothing.
+                var prepared = 0
+                try rejects("cancel while preparing line 3") {
+                    _ = try valid.prepare(in: StudioCommandContext(document: current), checkCancellation: { prepared += 1; if prepared == 3 { throw CancellationError() } })
+                }
+                // An intervening user edit after preparation makes the batch stale; the user's edit survives.
+                _ = try execute(.init(requestID: UUID(), projectID: current.id, expectedRevision: current.revision,
+                                      action: .apply([.renameProject(.init(name: "User edit"))])), on: &editor)
+                let userEdited = editor.document
+                do { _ = try execute(validRequest, on: &editor); throw Failure(message: "Stale batch committed over a user edit") }
+                catch StudioCommandError.staleRevision { }
+                try require(editor.document == userEdited && editor.document.name == "User edit", "Stale batch overwrote the intervening edit")
+                editor.undo()
+                try require(content(editor.document) == content(current), "User edit is not its own Undo step after the refused batch")
+            }
+            try test("control registry covers every drawing tool panel and catalog grammar with truthful routes") {
+                let problems = SpatterStudioControlRegistry.validate()
+                try require(problems.isEmpty, "Registry drift: \(problems)")
+                for tool in DrawingTool.allCases {
+                    guard let control = SpatterStudioControlRegistry.control(for: tool) else { throw Failure(message: "Tool \(tool.rawValue) unmapped") }
+                    try require(!control.explanation.isEmpty, "Tool \(tool.rawValue) has no explanation")
+                }
+                for control in SpatterStudioControlRegistry.controls {
+                    for name in control.grammars {
+                        try require(SpatterInstructionRouter.Kind(rawValue: name) != nil, "\(control.id) names \(name), which the router cannot dispatch")
+                    }
+                }
+                try require(SpatterStudioControlRegistry.control(for: .brush)?.grammars == ["brushStroke"]
+                    && SpatterStudioControlRegistry.control(for: .pencil)?.grammars.isEmpty == true
+                    && SpatterStudioControlRegistry.control(for: .hand)?.grammars.isEmpty == true, "Tool routes overclaim or underclaim")
+                for key in ["export", "addImage"] {
+                    guard let control = SpatterStudioControlRegistry.control(forPanel: key), case .blocked = control.route else { throw Failure(message: "\(key) must be blocked") }
+                    try require(control.explanation.contains("will not"), "Blocked explanation unclear for \(key)")
+                }
+                try require(Set(SpatterStudioControlRegistry.panelKeys).count == SpatterStudioControlRegistry.panelKeys.count, "Panel keys repeat")
+                // The validator catches drift in both directions.
+                try require(SpatterStudioControlRegistry.validate(catalogNames: SpatterInstructionCatalog.names + ["ghostGrammar"])
+                    .contains("grammar ghostGrammar is reachable from no control"), "Unreachable grammar not reported")
+                try require(SpatterStudioControlRegistry.validate(catalogNames: SpatterInstructionCatalog.names.filter { $0 != "tween" })
+                    .contains { $0.contains("unknown grammar tween") }, "Unknown grammar not reported")
+            }
+            try test("context snapshot reports exact bounded screen document and selection facts and detects stale context") {
+                var editor = try StudioDocumentEditor(document: try document(frames: 3))
+                let seed = editor.document
+                let longName = String(repeating: "N", count: 100)
+                _ = try execute(.init(requestID: UUID(), projectID: seed.id, expectedRevision: seed.revision, action: .apply([
+                    .setFrameHold(.init(frame: .id(seed.frames[0].id), ticks: 4)),
+                    .addLayer(.init(name: longName, result: "ink")),
+                    .selectFrame(.id(seed.frames[1].id))])), on: &editor)
+                let doc = editor.document
+                let screen = SpatterContextSnapshot.Screen(toolRawValue: "move", panelKey: "spatterAI", selectedDrawingCount: 2,
+                    selectedImageCount: 0, selectedAudioClipID: "ghost", displayedFrameID: seed.frames[1].id,
+                    isPlaying: false, isDirty: true, isSaving: false, canUndo: true, canRedo: false)
+                let snapshot = SpatterContextSnapshot(document: StudioCommandContext(document: doc), screen: screen)
+                let layerIndex = doc.layers.firstIndex { $0.id == doc.activeLayerID }.map { $0 + 1 }
+                try require(snapshot.frameCount == 3 && snapshot.activeFrameNumber == 2 && snapshot.displayedFrameNumber == 2
+                    && snapshot.totalTicks == 6 && snapshot.durationSeconds == 0.25 && snapshot.fps == 24
+                    && snapshot.layerCount == 2 && snapshot.activeLayerNumber == layerIndex && snapshot.activeLayerName.count == 80
+                    && snapshot.activeLayerVisible && snapshot.activeLayerLockMode == "free"
+                    && snapshot.activeFrameElementCount == 1 && snapshot.documentElementCount == 3 && snapshot.framesWithImages == 0
+                    && snapshot.audioClipCount == 0 && !snapshot.selectedAudioClipKnown && snapshot.tool == "move" && snapshot.panel == "spatterAI"
+                    && snapshot.selectedDrawingCount == 2 && snapshot.revision == doc.revision, "Snapshot facts wrong: \(snapshot)")
+                try require(snapshot.summary.contains("Frame 2 of 3") && snapshot.summary.contains("2 drawings selected")
+                    && snapshot.summary.contains("Move tool") && snapshot.summary.contains("revision \(doc.revision)")
+                    && !snapshot.summary.contains(longName), "Snapshot summary wrong: \(snapshot.summary)")
+                try require(snapshot.readiness(of: "selectionTranslate") == .ready && snapshot.readiness(of: "frameAction") == .ready
+                    && snapshot.readiness(of: "brushStroke") == .ready && snapshot.readiness(of: "imageCrop") != .ready
+                    && snapshot.readiness(of: "audioClip") != .ready && snapshot.readiness(of: "textUpdate") != .ready, "Readiness wrong")
+                try require(snapshot.readyGrammars().allSatisfy { SpatterInstructionCatalog.names.contains($0) } && snapshot.readyGrammars().contains("batch"), "Ready grammars wrong")
+                // Hostile or oversized screen facts are bounded, never trusted.
+                var hostile = screen
+                hostile.toolRawValue = "laser"; hostile.panelKey = "shell"; hostile.selectedDrawingCount = 99_999; hostile.selectedImageCount = 5
+                let bounded = SpatterContextSnapshot(document: StudioCommandContext(document: doc), screen: hostile)
+                try require(bounded.tool == nil && bounded.panel == "unknown" && bounded.selectedDrawingCount == SpatterContextSnapshot.maximumSelection
+                    && bounded.selectedImageCount == 1, "Snapshot trusted unbounded screen facts")
+                let data = try JSONEncoder().encode(snapshot)
+                try require(data.count <= 4096 && (try JSONDecoder().decode(SpatterContextSnapshot.self, from: data)) == snapshot, "Snapshot is not a bounded round trip")
+                // Stale detection: same state is current; any edit, selection or playback change is stale.
+                try require(!snapshot.isStale(comparedTo: SpatterContextSnapshot(document: StudioCommandContext(document: doc), screen: screen)), "Identical context reported stale")
+                var reselected = screen; reselected.selectedDrawingCount = 3
+                var playing = screen; playing.isPlaying = true
+                let playingSnapshot = SpatterContextSnapshot(document: StudioCommandContext(document: doc), screen: playing)
+                try require(snapshot.isStale(comparedTo: SpatterContextSnapshot(document: StudioCommandContext(document: doc), screen: reselected))
+                    && snapshot.isStale(comparedTo: playingSnapshot) && playingSnapshot.readiness(of: "frameAction") == .needs("Stop playback first."), "Selection or playback change not detected")
+                _ = try execute(.init(requestID: UUID(), projectID: doc.id, expectedRevision: doc.revision,
+                                      action: .apply([.renameProject(.init(name: "Later"))])), on: &editor)
+                try require(snapshot.isStale(comparedTo: SpatterContextSnapshot(document: StudioCommandContext(document: editor.document), screen: screen)), "Later revision not detected")
+                let other = try document()
+                try require(snapshot.isStale(comparedTo: SpatterContextSnapshot(document: StudioCommandContext(document: other), screen: screen)), "Switched project not detected")
             }
             try test("router owns every catalog example exactly once and quoted or imported text never changes the route") {
                 let names: [String: SpatterInstructionRouter.Kind] = [

@@ -191,6 +191,9 @@ spatter.audio.target,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipeP
 spatter.audio.track-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Unsolo track',no,#203,deferred
 spatter.batch.example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use a batch example (one line per instruction)',no,#203,deferred
 spatter.brief.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"button 'Walks, then explodes (seeded)'",no,#203,deferred
+spatter.context.ready,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text 'Ready now' grammar readiness from SpatterContextSnapshot,no,#203 #204,deferred
+spatter.context.summary,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text 'What Spatter sees' bounded context snapshot,no,#203,deferred
+spatter.context.tool,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text control-registry explanation for the selected tool,no,#204,deferred
 spatter.frame.action-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Duplicate active frame 12 times.',no,#203,deferred
 spatter.frame.duplicate-range-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use duplicate frame range example',no,#203,deferred
 spatter.frame.exposure-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use frame exposure example',no,#203,deferred
@@ -256,6 +259,7 @@ spatter.navigation.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotion
 spatter.onion.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Configure onion skin',no,#203,deferred
 spatter.picture.apply,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Open Add Picture…',no,#203,testLicensedImageLibraryUndoAndColdReopen
 spatter.plan.preview,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Preview plan' -> binds draftFocused,no,#203,deferred
+spatter.plan.stale,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text stale-preview warning (SpatterContextSnapshot.isStale),no,#203 #205,deferred
 spatter.plan.text,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text,no,#203,deferred
 spatter.project.rename-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use project rename example',no,#203,deferred
 spatter.registry.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Project size and frame rate',no,#203,deferred
