@@ -179,6 +179,8 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		F1974A37832F2433A98005B1 /* SpatterStudioControlRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22443092EEAD8DEC27825D7F /* SpatterStudioControlRegistry.swift */; };
 		421366D2B85B1F6CCB2F8D59 /* StudioQuickShareDestinations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 678148737E00790CCCBC27E6 /* StudioQuickShareDestinations.swift */; };
 		3C6F4E28BC29F667C4FD4EFE /* BillingPlanCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF83562AAB826F0BA1537DF /* BillingPlanCatalog.swift */; };
+		F9F7A2F67CE4BC8C4B26E3D2 /* StudioGradientFill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FF8974972A03216F4C7544A /* StudioGradientFill.swift */; };
+		FF8ADF2C438A85029DFB72F6 /* StudioSelectionMask.swift in Sources */ = {isa = PBXBuildFile; fileRef = 073BADE86CF10AA441768DD6 /* StudioSelectionMask.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -367,6 +369,8 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		22443092EEAD8DEC27825D7F /* SpatterStudioControlRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift"; sourceTree = SOURCE_ROOT; };
 		678148737E00790CCCBC27E6 /* StudioQuickShareDestinations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioQuickShareDestinations.swift"; sourceTree = SOURCE_ROOT; };
 		8FF83562AAB826F0BA1537DF /* BillingPlanCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift"; sourceTree = SOURCE_ROOT; };
+		5FF8974972A03216F4C7544A /* StudioGradientFill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioGradientFill.swift"; sourceTree = SOURCE_ROOT; };
+		073BADE86CF10AA441768DD6 /* StudioSelectionMask.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioSelectionMask.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -509,6 +513,8 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		444FE51936F2829A8267B473 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				073BADE86CF10AA441768DD6 /* StudioSelectionMask.swift */,
+				5FF8974972A03216F4C7544A /* StudioGradientFill.swift */,
 				8BA7B604059AD2BA8702562D /* WarRoom */,
 				6BEA54F2E964057DEA20141A /* StudioSoundCredits.swift */,
 				0FF2417C58A3CE8D66F7870B /* StudioAudioWaveformCache.swift */,
@@ -973,6 +979,8 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FF8ADF2C438A85029DFB72F6 /* StudioSelectionMask.swift in Sources */,
+				F9F7A2F67CE4BC8C4B26E3D2 /* StudioGradientFill.swift in Sources */,
 				3C6F4E28BC29F667C4FD4EFE /* BillingPlanCatalog.swift in Sources */,
 				421366D2B85B1F6CCB2F8D59 /* StudioQuickShareDestinations.swift in Sources */,
 				F1974A37832F2433A98005B1 /* SpatterStudioControlRegistry.swift in Sources */,

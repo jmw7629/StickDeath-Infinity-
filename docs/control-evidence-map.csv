@@ -755,3 +755,5 @@ welcome.create-account,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeVi
 welcome.guest,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,button,n-a,#134 #136 #137,helper:launchAtWelcome helper:launchGuestStudio
 welcome.guide,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,button,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 welcome.sign-in,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,label 'Sign In',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
+studio.brush.additive-glow,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,toggle 'Additive glow' -> vm.brushSettings.additiveGlow,no,#142,deferred
+studio.brush.buildup-help,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text 'Build-up help' -> static,no,#142,deferred

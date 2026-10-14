@@ -810,6 +810,17 @@ jobs:
             Tests/StudioFillRegion/main.swift \
             -o "$RUNNER_TEMP/sdi-fill-region-tests"
           "$RUNNER_TEMP/sdi-fill-region-tests"
+      - name: Verify gradient fill, selection masks, wand regions and element hit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
+            Tests/StudioPixelTools/main.swift \
+            -o "$RUNNER_TEMP/sdi-pixel-tools-tests"
+          "$RUNNER_TEMP/sdi-pixel-tools-tests"
       - name: Verify deterministic native brush geometry and actual pixels
         shell: bash
         run: |
@@ -1734,6 +1745,15 @@ jobs:
             Tests/StudioQuickShare/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-quick-share"
           timeout 60s "$RUNNER_TEMP/sdi-studio-quick-share"
+      - name: Verify billing plan catalogue, StoreKit state machine and plan copy
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
+            Tests/BillingPlans/main.swift \
+            -o "$RUNNER_TEMP/sdi-billing-plans-tests"
+          "$RUNNER_TEMP/sdi-billing-plans-tests"
       - name: Verify cancellable Studio edits and factual persistence state
         shell: bash
         run: |
