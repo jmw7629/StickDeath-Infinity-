@@ -21,6 +21,24 @@ create table sdi_private.deletion_requests (
  purge_after timestamptz, blocked_reason text not null default '' check(length(blocked_reason)<=500),
  completed_at timestamptz, revision bigint not null default 1
 );
+-- Pseudonymous consent proof kept after an account is purged (#262). The period
+-- is owner configuration (candidate default 1095 days, pending the owner's legal
+-- review); consent_retention_sweep deletes rows once retain_until passes.
+create table sdi_private.retention_settings (
+ singleton boolean primary key default true check(singleton),
+ consent_proof_days integer not null default 1095 check(consent_proof_days between 0 and 3650),
+ updated_at timestamptz not null default clock_timestamp()
+);
+insert into sdi_private.retention_settings(singleton) values(true);
+create table sdi_private.consent_retention (
+ id uuid primary key default gen_random_uuid(), subject_digest text not null check(subject_digest ~ '^[a-f0-9]{64}$'),
+ policy text not null, version text not null, source text not null, accepted_at timestamptz not null, withdrawn_at timestamptz not null,
+ retained_at timestamptz not null default clock_timestamp(), retain_until timestamptz not null
+);
+alter table sdi_private.retention_settings enable row level security;
+alter table sdi_private.consent_retention enable row level security;
+revoke all on sdi_private.retention_settings,sdi_private.consent_retention from public,anon,authenticated;
+create index consent_retention_due on sdi_private.consent_retention(retain_until);
 alter table sdi_private.member_notices enable row level security;
 alter table sdi_private.account_export_log enable row level security;
 alter table sdi_private.deletion_requests enable row level security;
@@ -67,7 +85,7 @@ grant execute on function public.sdi_member_notices(text,uuid) to authenticated;
 -- Export of the member's own server records. Internal reasons, reporter identities
 -- and other members' data are excluded. Three exports per day.
 create function sdi_private.account_export() returns jsonb language plpgsql security definer set search_path='' as $$
-declare me uuid:=auth.uid(); support jsonb:='[]'::jsonb;
+declare me uuid:=auth.uid(); support jsonb:='[]'::jsonb; consents jsonb:='[]'::jsonb; prefs jsonb; devices jsonb:='[]'::jsonb;
 begin
  if me is null or not exists(select 1 from auth.users where id=me and not is_anonymous)
  or not exists(select 1 from auth.sessions where user_id=me and id::text=auth.jwt()->>'session_id') then
@@ -77,6 +95,17 @@ begin
  insert into sdi_private.account_export_log(user_id) values(me);
  if to_regclass('sdi_private.support_requests') is not null then
   execute 'select coalesce(jsonb_agg(row_to_json(s)),''[]''::jsonb) from (select receipt,category,platform,subject,body,status,created_at from sdi_private.support_requests where user_id=$1 order by created_at) s' into support using me;
+ end if;
+ -- Installed later (consent-versions.sql, notifications.sql); read when present.
+ -- Device push tokens are never exported, only which devices are registered.
+ if to_regclass('sdi_private.consent_records') is not null then
+  execute 'select coalesce(jsonb_agg(row_to_json(c)),''[]''::jsonb) from (select policy,version,source,accepted_at,withdrawn_at from sdi_private.consent_records where user_id=$1 order by accepted_at) c' into consents using me;
+ end if;
+ if to_regclass('sdi_private.notification_preferences') is not null then
+  execute 'select row_to_json(p)::jsonb from (select push_product,push_marketing,email_product,email_marketing,daily_cap from sdi_private.notification_preferences where user_id=$1) p' into prefs using me;
+ end if;
+ if to_regclass('sdi_private.device_tokens') is not null then
+  execute 'select coalesce(jsonb_agg(row_to_json(d)),''[]''::jsonb) from (select platform,environment,created_at,last_seen_at,revoked_at from sdi_private.device_tokens where user_id=$1 order by created_at) d' into devices using me;
  end if;
  return jsonb_build_object(
   'generated_at',clock_timestamp(),
@@ -104,6 +133,9 @@ begin
   'badges',(select coalesce(jsonb_agg(row_to_json(b)),'[]'::jsonb) from (select badge_key,title,earned_at,revoked from sdi_private.earned_badges where user_id=me) b),
   'record_preferences',(select row_to_json(p) from (select show_records,show_badges from sdi_private.record_preferences where user_id=me) p),
   'support_requests',support,
+  'consents',consents,
+  'notification_preferences',prefs,
+  'push_devices',devices,
   'notices',(select coalesce(jsonb_agg(row_to_json(n)),'[]'::jsonb) from (select kind,message,created_at,read_at from sdi_private.member_notices where user_id=me order by created_at) n),
   'deletion_request',(select row_to_json(d) from (select state,requested_at,scheduled_for,completed_at from sdi_private.deletion_requests where user_id=me) d));
 end $$;
@@ -178,6 +210,16 @@ begin
   if to_regclass('sdi_private.support_requests') is not null then
    execute 'update sdi_private.support_requests set status=''deleted'',subject=''[deleted by member]'',body=''[deleted by member]'',app_version='''',admin_note='''',retention_until=clock_timestamp()+interval ''30 days'' where user_id=$1' using u;
   end if;
+  -- Consent and delivery stop at phase one, not at the purge (#262).
+  if to_regclass('sdi_private.consent_records') is not null then
+   execute 'update sdi_private.consent_records set withdrawn_at=clock_timestamp() where user_id=$1 and withdrawn_at is null' using u;
+  end if;
+  if to_regclass('sdi_private.device_tokens') is not null then
+   execute 'update sdi_private.device_tokens set revoked_at=clock_timestamp() where user_id=$1 and revoked_at is null' using u;
+  end if;
+  if to_regclass('sdi_private.notification_preferences') is not null then
+   execute 'update sdi_private.notification_preferences set push_product=false,push_marketing=false,email_product=false,email_marketing=false,updated_at=clock_timestamp() where user_id=$1' using u;
+  end if;
   update sdi_private.deletion_requests set state='processing',purge_after=clock_timestamp()+interval '30 days',revision=deletion_requests.revision+1 where id=d.id;
   return jsonb_build_object('action','prepared','request',d.id,'purge_after',clock_timestamp()+interval '30 days');
  end if;
@@ -196,6 +238,17 @@ begin
  end if;
  -- Expire remaining private artifacts; the intake host deletes files after retire.
  update sdi_private.render_artifacts a set expires_at=least(a.expires_at,clock_timestamp()) from sdi_private.render_reviews r where r.id=a.review_id and r.creator=u;
+ -- Audit tables are append-only (security-audit-integrity.sql); only this purge,
+ -- inside this transaction, may remove the departing member's audit rows.
+ perform pg_catalog.set_config('sdi.audit_purge','on',true);
+ -- Consent proof outlives the account as a pseudonymous record (#262): no identity
+ -- columns, only a digest of the former account id, kept until retain_until.
+ if to_regclass('sdi_private.consent_records') is not null then
+  execute 'insert into sdi_private.consent_retention(subject_digest,policy,version,source,accepted_at,withdrawn_at,retain_until)
+   select encode(extensions.digest(c.user_id::text,''sha256''),''hex''),c.policy,c.version,c.source,c.accepted_at,coalesce(c.withdrawn_at,clock_timestamp()),
+    clock_timestamp()+make_interval(days=>(select s.consent_proof_days from sdi_private.retention_settings s))
+   from sdi_private.consent_records c where c.user_id=$1' using u;
+ end if;
  -- Dependency-ordered purge. Public renditions are anonymised, not deleted, because
  -- completed matchups and evidence reference them; their hosted copies are gone.
  delete from sdi_private.feed_curation_audit where post in(select id from sdi_private.feed_posts where creator=u);
@@ -213,6 +266,7 @@ begin
  delete from sdi_private.room_moderation_audit where room_id in(select id from public.sdi_rooms where owner_id=u);
  delete from sdi_private.room_reports where room_id in(select id from public.sdi_rooms where owner_id=u);
  delete from auth.users where id=u;
+ perform pg_catalog.set_config('sdi.audit_purge','',true);
  update sdi_private.deletion_requests set state='completed',completed_at=clock_timestamp(),revision=deletion_requests.revision+1 where id=d.id;
  return jsonb_build_object('action','purged','request',d.id);
 end $$;
@@ -221,4 +275,17 @@ grant execute on function sdi_private.account_deletion_run() to service_role;
 create function public.sdi_account_deletion_run() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.account_deletion_run()$$;
 revoke all on function public.sdi_account_deletion_run() from public,anon,authenticated;
 grant execute on function public.sdi_account_deletion_run() to service_role;
+
+-- Service sweep: removes consent proof whose retention period has ended.
+create function sdi_private.consent_retention_sweep() returns integer language plpgsql security definer set search_path='' as $$
+declare n integer;
+begin
+ delete from sdi_private.consent_retention where retain_until<=clock_timestamp();
+ get diagnostics n=row_count; return n;
+end $$;
+revoke all on function sdi_private.consent_retention_sweep() from public,anon,authenticated;
+grant execute on function sdi_private.consent_retention_sweep() to service_role;
+create function public.sdi_consent_retention_sweep() returns integer language sql security invoker set search_path='' as $$select sdi_private.consent_retention_sweep()$$;
+revoke all on function public.sdi_consent_retention_sweep() from public,anon,authenticated;
+grant execute on function public.sdi_consent_retention_sweep() to service_role;
 commit;
