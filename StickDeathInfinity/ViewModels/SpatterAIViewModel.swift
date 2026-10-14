@@ -513,7 +513,9 @@ final class SpatterAIViewModel: ObservableObject {
     static func localGuidance(for query: String, context: SpatterContext) -> String {
         let project = context.studio.map { "Project snapshot: \($0.name), \($0.frameCount) frames at \($0.fps) FPS.\n\n" }
             ?? (context.currentScreen == "library" ? "Project library: no project is open, so no document context is shared.\n\n" : "")
-        if let guide = authorityGuide(for: query) ?? persistenceGuide(for: query) ?? studioTroubleshooting(for: query, context: context) ?? currentGuide(for: query, context: context) ?? drawingGuide(for: query) ?? canvasGuide(for: query, context: context) { return "💀 Current Studio guide (\(currentGuideVersion))\n\n" + project + guide + "\n\nGuidance only; no project changes were made." }
+        if let guide = authorityGuide(for: query) ?? persistenceGuide(for: query) ?? studioTroubleshooting(for: query, context: context) ?? currentGuide(for: query, context: context) ?? drawingGuide(for: query) ?? canvasGuide(for: query, context: context) { return "💀 Current Studio guide (\(currentGuideVersion))\n\n" + project + guide + "\n\n"
+            + SpatterGroundedHelp.sourcesFooter([SpatterHelpSource(kind: .currentGuide, id: "studio-guide", title: "Current Studio guide")], guideVersion: currentGuideVersion)
+            + "\n\nGuidance only; no project changes were made." }
         let stopWords: Set<String> = ["a", "an", "the", "i", "my", "me", "to", "how", "do", "does", "can", "you", "please", "is", "and", "of", "for", "with", "in", "it", "what"]
         // Bound synchronous local ranking even for an adversarial maximum-size prompt.
         let tokens = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }
@@ -546,14 +548,18 @@ final class SpatterAIViewModel: ObservableObject {
         if (!allWords.isDisjoint(with: creativeTopics) || hasReviewedPhrase), allWords.isDisjoint(with: functionalRequests),
            let creative = ranked.first(where: { creativeIDs.contains($0.0.id) })?.0 {
             let details = creative.knowledge.prefix(3).map { String($0.prefix(800)) }.joined(separator: "\n")
-            return "💀 Creative reference · \(creative.title)\n\n\(project)\(details)\n\nThese are creative suggestions to apply yourself, not evidence of an automatic tool or a completed edit. Guidance only; no project changes were made."
+            return "💀 Creative reference · \(creative.title)\n\n\(project)\(details)\n\nThese are creative suggestions to apply yourself, not evidence of an automatic tool or a completed edit.\n\n"
+                + SpatterGroundedHelp.sourcesFooter([SpatterHelpSource(kind: .creativeReference, id: creative.id, title: creative.title)], guideVersion: currentGuideVersion)
+                + "\nGuidance only; no project changes were made."
         }
         guard let module = ranked.first?.0 else {
-            return "💀 \(project)I couldn't find a matching entry in the 120 bundled guidance modules. Try a concrete topic such as layers, timing, onion skin or export. No animation was generated."
+            return SpatterGroundedHelp.unknownAnswer(projectLine: project, guideVersion: currentGuideVersion)
         }
         // Historical modules preserve personality and creative reference material,
         // but cannot establish that a requested function ships in this build.
-        return "💀 \(project)Historical reference: \(String(module.title.prefix(160))).\n\nI do not have verified current instructions for this request. The older brain packs include plans, not proof that a feature is available. Tell me the visible control and what happens when you use it; if it is missing or fails, keep your project and report the displayed error through the support route available to you. I cannot inspect your account or claim a support ticket was sent.\n\nGuidance revision \(currentGuideVersion). Guidance only; no project changes were made."
+        return "💀 \(project)Historical reference: \(String(module.title.prefix(160))).\n\nI do not have verified current instructions for this request. The older brain packs include plans, not proof that a feature is available. Tell me the visible control and what happens when you use it; if it is missing or fails, keep your project and report the displayed error through the support route available to you. I cannot inspect your account or claim a support ticket was sent.\n\n"
+            + SpatterGroundedHelp.sourcesFooter([SpatterHelpSource(kind: .historicalReference, id: module.id, title: String(module.title.prefix(120)))], guideVersion: currentGuideVersion)
+            + "\nGuidance only; no project changes were made."
     }
 }
 
