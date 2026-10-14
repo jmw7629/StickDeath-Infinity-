@@ -1821,9 +1821,9 @@ private final class NetworkTrap: URLProtocol {
             }
             doc.frames = [
                 AnimationFrame(id: "f1", elements: [line("a", 10, 40), line("limb1", 0, 10, layerID: stick)]),
-                AnimationFrame(id: "f2", elements: [line("b", 10, 40), line("limb2", 0, 20, layerID: stick)]),   // frozen vs f1 (same geometry, no hold)
+                AnimationFrame(id: "f2", elements: [line("b", 10, 40), line("limb2", 0, 10, layerID: stick)]),   // frozen vs f1 (same geometry, no hold)
                 AnimationFrame(id: "f3", elements: []),                                                          // blank
-                AnimationFrame(id: "f4", elements: [line("c", 10, 500)]),                                        // out of canvas
+                AnimationFrame(id: "f4", elements: [line("c", 10, 500), line("limb3", 0, 20, layerID: stick)]),  // out of canvas; limb twice as long
                 AnimationFrame(id: "f5", elements: [line("d", 10, 40)], holdTicks: 4),
                 AnimationFrame(id: "f6", elements: [line("e", 10, 40)])                                           // deliberate hold before it
             ]
@@ -2134,7 +2134,10 @@ private final class NetworkTrap: URLProtocol {
             try require(session.status == .applied && vm.visibleOnionGhosts.isEmpty
                 && vm.document.onionSettings == noOp.onionSettings
                 && (try erasurePixels(vm.document, includeOnion: true)) == plain, "Hide lost remembered settings or guide pixels")
-            vm.undo(); vm.redo(); vm.undo(); await vm.flush()
+            vm.undo(); vm.redo(); await vm.flush()
+            try require(!vm.showOnionSkin && vm.document.onionSettings == noOp.onionSettings && vm.frames == before.frames,
+                "Artwork Undo/Redo disturbed onion guides")
+            vm.showOnionSkin = true; await vm.flush()
             let saved = await vm.save(); try require(saved, "Onion settings save failed")
             let cold = StudioViewModel(storage: store), record = try store.loadAnimation(id: vm.document.id)!
             try require(await cold.openProject(record.metadata), "Onion cold open failed")
@@ -2315,6 +2318,9 @@ private final class NetworkTrap: URLProtocol {
         }
         try await test("multi-clause brief builds held frames on new layers with a storyboard and a typed revert that survives unrelated edits") {
             let (vm, store) = try await fixture("multi-clause-brief")
+            // The brief appends to a real project: the existing frame carries artwork,
+            // so the quality verdict measures the generated frames, not an empty start.
+            try require(vm.commitElement(styledStroke(vm)), "Brief artwork fixture failed"); await vm.flush()
             let before = vm.document, original = vm.currentFrame.id
             let session = SpatterStudioEditSession()
             _ = session.submit(SpatterMultiClauseBrief.example, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()

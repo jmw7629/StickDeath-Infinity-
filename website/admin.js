@@ -76,6 +76,7 @@
     session = null; pendingFactor = null;
     if (expiryTimer) { clearTimeout(expiryTimer); expiryTimer = null; }
     show('admin-console', false); show('admin-signin', true); show('admin-mfa-form', false); show('admin-password-form', true);
+    show('admin-enrol-form', false); show('admin-newpassword-form', false);
     $('admin-panels').replaceChildren();
     setStatus('Signed out.', message || 'No session is held. Sign in to continue.');
     if (token) call('/auth/v1/logout', { token }).catch(() => {});
@@ -178,13 +179,73 @@
     // Administrators need aal2: list verified TOTP factors and challenge the first one.
     const factors = await call('/auth/v1/factors', { method: 'GET', token: session.access_token });
     const totp = factors.ok && factors.data && Array.isArray(factors.data.totp) ? factors.data.totp.find((f) => f.status === 'verified') : null;
-    if (!totp) { setStatus('MFA is not enrolled on this account.', 'Administrator access requires a verified authenticator; enrol it in the native app first. Signed out.'); signOut(); return; }
+    if (!totp) { await beginEnrolment(); return; }
     const challenge = await call(`/auth/v1/factors/${encodeURIComponent(totp.id)}/challenge`, { token: session.access_token });
     if (!challenge.ok || !challenge.data || typeof challenge.data.id !== 'string') { setStatus('MFA challenge failed.', 'The backend did not start a challenge. Signed out.'); signOut(); return; }
     pendingFactor = { factorId: totp.id, challengeId: challenge.data.id };
     show('admin-password-form', false); show('admin-mfa-form', true);
     setStatus('Enter your authenticator code.', 'A second factor is required for every administrator session.');
     $('admin-code').focus();
+  }
+
+  // --- authenticator enrolment (first administrator sign-in) --------------------------
+  // GoTrue enrols a TOTP factor for the signed-in account and returns the otpauth
+  // secret and a QR image; the factor becomes verified only when a code from the
+  // authenticator passes a challenge. Owner provisioning requires that verified factor.
+  async function beginEnrolment() {
+    const result = await call('/auth/v1/factors', { token: session.access_token, body: { factor_type: 'totp', friendly_name: 'SDI command center' } });
+    const totp = result.ok && result.data && result.data.totp;
+    if (!totp || typeof result.data.id !== 'string' || typeof totp.secret !== 'string') {
+      setStatus('Authenticator enrolment could not start.', `The backend answered ${result.status}${result.data && result.data.msg ? `: ${result.data.msg}` : ''}. Signed out.`);
+      signOut(); return;
+    }
+    pendingFactor = { factorId: result.data.id, challengeId: null };
+    const qr = $('admin-enrol-qr');
+    if (typeof totp.qr_code === 'string' && totp.qr_code.startsWith('data:image/svg+xml')) { qr.src = totp.qr_code; qr.hidden = false; } else { qr.hidden = true; }
+    $('admin-enrol-secret').value = totp.secret;
+    show('admin-password-form', false); show('admin-mfa-form', false); show('admin-enrol-form', true);
+    setStatus('Enrol an authenticator to continue.', 'This account has no verified second factor; administrator sessions require one. Scan the code or enter the secret, then verify a code.');
+    $('admin-enrol-code').focus();
+  }
+
+  async function finishEnrolment(event) {
+    event.preventDefault();
+    const code = $('admin-enrol-code').value.trim(); $('admin-enrol-code').value = '';
+    if (!pendingFactor || !/^[0-9]{6}$/.test(code)) { setStatus('Enter the six-digit code.', 'Nothing was sent.'); return; }
+    try {
+      const challenge = await call(`/auth/v1/factors/${encodeURIComponent(pendingFactor.factorId)}/challenge`, { token: session.access_token });
+      if (!challenge.ok || !challenge.data || typeof challenge.data.id !== 'string') { setStatus('Enrolment challenge failed.', 'The backend did not start a challenge. Try again or cancel.'); return; }
+      const result = await call(`/auth/v1/factors/${encodeURIComponent(pendingFactor.factorId)}/verify`, { token: session.access_token, body: { challenge_id: challenge.data.id, code } });
+      if (!result.ok || !adoptSession(result.data)) { setStatus('Code refused.', 'The factor is not verified yet. Check the authenticator clock and try again, or cancel to sign out.'); return; }
+      pendingFactor = null; show('admin-enrol-form', false); $('admin-enrol-secret').value = ''; $('admin-enrol-qr').removeAttribute('src');
+      await enterConsole();
+    } catch (_) { setStatus('Backend unreachable.', 'The enrolment did not complete.'); }
+  }
+
+  // --- password reset by email -------------------------------------------------------
+  async function requestRecovery() {
+    const email = $('admin-email').value.trim();
+    const out = $('admin-recover-result');
+    if (!email) { out.textContent = 'Enter the account email first; nothing was sent.'; return; }
+    try {
+      const result = await call('/auth/v1/recover', { body: { email }, query: { redirect_to: `${location.origin}${location.pathname}` } });
+      out.textContent = result.ok
+        ? 'If that account exists, a reset link was emailed. Open it on this page to set a new password; this page must be an allowed redirect URL in the backend auth settings.'
+        : `The backend answered ${result.status}; no link was sent.`;
+    } catch (_) { out.textContent = 'The request did not complete.'; }
+  }
+
+  async function saveNewPassword(event) {
+    event.preventDefault();
+    const password = $('admin-newpassword').value; $('admin-newpassword').value = '';
+    if (!session || password.length < 6 || password.length > 128) { setStatus('Choose a password of 6 to 128 characters.', 'Nothing was sent.'); return; }
+    try {
+      const result = await call('/auth/v1/user', { method: 'PUT', token: session.access_token, body: { password } });
+      if (!result.ok) { setStatus('Password not saved.', `The backend answered ${result.status}${result.data && result.data.msg ? `: ${result.data.msg}` : ''}.`); return; }
+      show('admin-newpassword-form', false);
+      setStatus('Password saved.', 'Continuing with the second factor.');
+      await stepUp();
+    } catch (_) { setStatus('Backend unreachable.', 'The password change did not complete.'); }
   }
 
   async function verifyCode(event) {
@@ -218,6 +279,13 @@
     if (!accessToken || !Number.isFinite(expiresIn)) return false;
     const user = await call('/auth/v1/user', { method: 'GET', token: accessToken });
     if (!adoptSession({ access_token: accessToken, refresh_token: params.get('refresh_token'), expires_in: expiresIn, user: user.ok ? user.data : {} })) return false;
+    if (params.get('type') === 'recovery') {
+      // A password reset link lands here with a session; set the password before the second factor.
+      show('admin-signin', true); show('admin-password-form', false); show('admin-newpassword-form', true);
+      setStatus('Set a new password.', 'The reset link signed you in for this step only.');
+      $('admin-newpassword').focus();
+      return true;
+    }
     await stepUp();
     return true;
   }
@@ -266,6 +334,11 @@
   $('admin-password-form').addEventListener('submit', passwordSignIn);
   $('admin-mfa-form').addEventListener('submit', verifyCode);
   $('admin-mfa-cancel').addEventListener('click', () => signOut('Sign-in cancelled before the second factor.'));
+  $('admin-enrol-form').addEventListener('submit', finishEnrolment);
+  $('admin-enrol-cancel').addEventListener('click', () => signOut('Enrolment cancelled; no factor was verified.'));
+  $('admin-newpassword-form').addEventListener('submit', saveNewPassword);
+  $('admin-newpassword-cancel').addEventListener('click', () => signOut('Password change cancelled.'));
+  $('admin-recover').addEventListener('click', requestRecovery);
   $('admin-signout').addEventListener('click', () => signOut('Signed out.'));
   $('admin-refresh').addEventListener('click', () => enterConsole());
   $('admin-stop-form').addEventListener('submit', emergencyStop);

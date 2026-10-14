@@ -1764,6 +1764,7 @@ jobs:
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             Tests/SpatterStudioEditSession/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
+          "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
       - name: Verify Spatter brief evaluation suite against production Studio commands
         shell: bash
         run: |
@@ -1805,7 +1806,7 @@ jobs:
             StickDeathInfinity/ViewModels/SpatterAIViewModel.swift \
             Tests/SpatterEval/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-eval-tests"
-          "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
+          "$RUNNER_TEMP/sdi-spatter-eval-tests"
       - name: Verify real artwork color sampling and gesture context
         shell: bash
         run: |

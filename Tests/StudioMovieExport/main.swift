@@ -274,11 +274,10 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try await tryAudioRejection(snapshot(doc, audio: [legacy]), folder: folder)
             try require(contents(folder).isEmpty, "Audio rejection wrote output")
         }
-        await test("transparent odd dimensions and unsupported visible content never silently flatten or resize") {
+        await test("transparent and unsupported visible content never silently flatten; odd canvases pad by the recorded rule") {
             let folder = try parent(root, "unsupported"); let doc = try document()
             try await rejected { _ = try await Service().export(snapshot: snapshot(doc), outputParent: folder, background: .transparent) }
-            let odd = try document(width: 65)
-            try await rejected { _ = try await Service().export(snapshot: snapshot(odd), outputParent: folder, background: .white) }
+            // Odd canvases are padded, not refused, since #182; the dedicated odd-canvas test below measures the padding.
             var invalid = doc; invalid.frames[0].elements[0].tool = .smudge
             try await rejected { _ = try await Service().export(snapshot: snapshot(invalid), outputParent: folder, background: .white) }
             invalid = doc; invalid.layers[0].blendMode = "unknown"

@@ -380,9 +380,12 @@ repository root. Service sweeps are run by an operator or host timer through
 38. spatter-draft-jobs.sql
 39. agent-proposals.sql
 40. worker-configuration.sql
+41. users-profiles.sql
 <!-- /apply-order -->
 
 `agent-proposals.sql` (#284): the approval inbox. A running agent with the `propose` permission files a proposal (`sdi_agent_propose`, idempotent for an identical pending one, fifty pending per agent) instead of acting above its caps; administrators read the inbox and only the owner approves or rejects with a reason (`sdi_agent_proposal_admin`, audited); the worker receives approved proposals (`sdi_agent_proposals_due`, nothing under emergency stop or pause) and records the outcome (`sdi_agent_proposal_finish`); pending proposals expire after fourteen days. Tested by `tests/110_agent_proposals.sql`.
+
+`users-profiles.sql`: the `public.users` profile row the native app reads and writes (own row only; the member inserts it after sign-up and may edit username, bio, avatar, onboarding, skill level and interests; `role` and `subscription_tier` are server-owned and not client-writable; administrator authority stays in `sdi_private.admin_roles`).
 
 `worker-configuration.sql` (#248): masked provider-configuration health. A service worker reports which of its named settings are present as booleans only (`sdi_worker_configuration`; any other value type is refused so no secret can be stored), and administrators read presence, the missing names and staleness through `sdi_admin_configuration`. `backend.ops.sweeps` reports its own settings after every run. Tested by `tests/120_worker_configuration.sql`.
 
