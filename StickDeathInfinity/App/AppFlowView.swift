@@ -17,6 +17,22 @@ extension EnvironmentValues {
     }
 }
 
+/// Reopen the welcome/guide screens without forgetting a returning guest or
+/// signing an account out. The app shell retains its editable document.
+struct RequestWelcomeAction {
+    let handler: @MainActor () -> Void
+    @MainActor func callAsFunction() { handler() }
+}
+private struct RequestWelcomeKey: EnvironmentKey {
+    static let defaultValue = RequestWelcomeAction(handler: {})
+}
+extension EnvironmentValues {
+    var requestWelcome: RequestWelcomeAction {
+        get { self[RequestWelcomeKey.self] }
+        set { self[RequestWelcomeKey.self] = newValue }
+    }
+}
+
 /// Local Studio access is independent of an account. Session restoration owns
 /// account readiness; a short cancellable presentation keeps cold-start branding visible.
 /// Viewing the guide never records server-side consent.
@@ -89,6 +105,7 @@ struct AppFlowView: View {
             case .app:
                 MainTabView(initialTab: .studio)
                     .environment(\.requestSignIn, RequestSignInAction(handler: requestSignIn))
+                    .environment(\.requestWelcome, RequestWelcomeAction(handler: requestWelcome))
             }
         }
         .overlay(alignment: .top) { noticeBanner }
@@ -120,6 +137,14 @@ struct AppFlowView: View {
     }
 
     private func rememberGuest() { guestChosen = true }
+
+    private func requestWelcome() {
+        Task {
+            await StudioViewModel.shared.flush()
+            loginReturnsToApp = false
+            navigate(to: .welcome)
+        }
+    }
 
     private func requestSignIn() {
         loginReturnsToApp = true

@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
     @Environment(\.requestSignIn) private var requestSignIn
+    @Environment(\.requestWelcome) private var requestWelcome
     let onOpenProjects: () -> Void
     @State private var destination: Destination?
     @State private var localProjectCount: Int?
@@ -106,6 +107,10 @@ struct ProfileView: View {
                     row("Records & badges", icon: "trophy", destination: .records)
                     row("Analytics", icon: "chart.bar", destination: .analytics)
                     row("Settings", icon: "gearshape", destination: .account)
+                    Button(action: { requestWelcome() }) {
+                        rowLabel("Welcome & Studio Guide", icon: "book")
+                    }.buttonStyle(.plain)
+                        .accessibilityIdentifier("profile.welcome.open")
                     if authVM.isAuthenticated {
                         row("Admin access", icon: "lock.shield", destination: .admin)
                     }

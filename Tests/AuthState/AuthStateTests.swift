@@ -387,6 +387,7 @@ import Supabase
 
     func testAppleUsernameFallsBackForPrivateRelayAndDisplayNameIsBounded() async throws {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
         let relay = try decoder.decode(User.self, from: Data("""
         {"id":"\(AuthFixtureTransport.first)","aud":"authenticated","role":"authenticated","email":"abc123@privaterelay.appleid.com","app_metadata":{},"user_metadata":{},"identities":[],"is_anonymous":false,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}
         """.utf8))
@@ -744,6 +745,15 @@ private final class AuthFixtureTransport: URLProtocol {
             if mode == "revoked" {
                 respond(400, ["code": "refresh_token_not_found", "msg": "Fixture refresh token revoked"]); return
             }
+        }
+        if url.path.hasSuffix("/token"),
+           URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "grant_type" })?.value == "pkce" {
+            // No authorization codes/verifier pairs are issued by this fixture.
+            // The SDK submits an exchange even when its verifier is absent;
+            // emulate the server's rejection instead of minting a test session.
+            respond(400, ["code": "bad_code_verifier", "msg": "Fixture PKCE grant was not issued"])
+            return
         }
         if url.path.hasSuffix("/token") {
             let body: Data

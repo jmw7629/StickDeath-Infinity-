@@ -140,6 +140,7 @@ profile.reviews.publish-feed,StickDeathInfinity/Views/Profile/ProfileView.swift,
 profile.sign-in,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Sign in or create an account' -> binds 0,n-a,#134 #136 #137,deferred
 profile.statistics,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,text,n-a,#224,deferred
 profile.subscription-status,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,"text 'Pricing, renewal and purchase information are no'",n-a,#258,deferred
+profile.welcome.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Welcome & Studio Guide',n-a,#136 #294,helper:launchAtWelcome
 rooms.browser.create,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Create room',no,#228 #234,deferred
 rooms.browser.empty,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'No accepted rooms.',no,#228 #234,deferred
 rooms.browser.refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Refresh rooms' -> load,no,#228 #234,deferred
@@ -741,6 +742,6 @@ watchTogether.sign-in,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,Wa
 welcome.account-unavailable,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,text 'Sign-in is unavailable. Your local Studio is rea',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 welcome.content,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,scroll container 'welcome.content' (identifier-derived; review source),n-a,#134 #136 #137,helper:tapWelcomeAction
 welcome.create-account,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,text 'Create Account',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
-welcome.guest,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,button,n-a,#134 #136 #137,helper:launchAtWelcome helper:launchGuestStudio
+welcome.guest,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,button,n-a,#134 #136 #137,helper:launchAtWelcome helper:launchGuestStudio helper:launchRestoredApp
 welcome.guide,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,button,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 welcome.sign-in,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,label 'Sign In',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion

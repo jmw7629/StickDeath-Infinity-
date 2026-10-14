@@ -1990,7 +1990,7 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["onboarding.dot.4"].tap()
         XCTAssertEqual(app.staticTexts["onboarding.position"].label, "5 of 5")
         app.buttons["onboarding.next"].tap()
-        try waitForButton("Skip Tutorial", in: app).tap()
+        try dismissTutorialIfPresented(in: app)
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 5),
                       "Open Studio routed to a different tab")
         let name = try createProjectIfLibraryIsShown(app)
@@ -2004,7 +2004,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(guide.label, "Review Studio Guide", "Guide completion did not survive relaunch")
         try tapWelcomeAction("welcome.guide", in: reopened)
         reopened.buttons["onboarding.skip"].tap()
-        try waitForButton("Skip Tutorial", in: reopened).tap()
+        try dismissTutorialIfPresented(in: reopened)
         try waitForButton("Studio", in: reopened).tap()
         XCTAssertTrue(reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch.waitForExistence(timeout: 8), "Guide navigation lost the local project")
         capture(reopened, name: "guide-completed-local-project-preserved")
@@ -8497,7 +8497,7 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchAtWelcome(extraLaunchArguments: [String] = []) throws -> XCUIApplication {
+    private func launchRestoredApp(extraLaunchArguments: [String] = []) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
         XCTAssertEqual(env["SDI_SMOKE_OFFLINE_PREFLIGHT"], "1", "Run the built-app configuration preflight before launching")
         let source = try XCTUnwrap(env["SDI_SMOKE_SOURCE_COMMIT"])
@@ -8509,8 +8509,43 @@ final class StudioSmokeUITests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"] + extraLaunchArguments
         app.launch()
         capture(app, name: "launch-\(source.prefix(12))")
-        XCTAssertTrue(app.buttons["welcome.guest"].waitForExistence(timeout: 20))
+        let ready = NSPredicate { _, _ in
+            app.buttons["welcome.guest"].exists || self.button("Studio", in: app).exists
+        }
+        XCTAssertTrue(expectation(for: ready, evaluatedWith: nil).waitUntilFulfilled(timeout: 20),
+                      "Neither first-run Welcome nor the restored guest shell appeared")
         return app
+    }
+
+    @MainActor
+    private func launchAtWelcome(extraLaunchArguments: [String] = []) throws -> XCUIApplication {
+        let app = try launchRestoredApp(extraLaunchArguments: extraLaunchArguments)
+        if !app.buttons["welcome.guest"].exists {
+            try dismissTutorialIfPresented(in: app)
+            try waitForButton("Profile", in: app).tap()
+            let guide = app.buttons["profile.welcome.open"]
+            for _ in 0..<4 {
+                if guide.exists && guide.isHittable { break }
+                app.swipeUp()
+            }
+            XCTAssertTrue(guide.exists && guide.isHittable, "Returning users must be able to reopen Welcome and the guide")
+            guide.tap()
+        }
+        XCTAssertTrue(app.buttons["welcome.guest"].waitForExistence(timeout: 10))
+        return app
+    }
+
+    @MainActor
+    private func dismissTutorialIfPresented(in app: XCUIApplication) throws {
+        let skip = button("Skip Tutorial", in: app)
+        let studio = button("Studio", in: app)
+        let ready = NSPredicate { _, _ in
+            skip.exists || (studio.exists && studio.isHittable)
+        }
+        XCTAssertTrue(expectation(for: ready, evaluatedWith: nil).waitUntilFulfilled(timeout: 10),
+                      "The tutorial or interactive app shell must appear")
+        if skip.exists { try waitForButton("Skip Tutorial", in: app).tap() }
+        try waitForButton("Studio", in: app)
     }
 
     @MainActor
@@ -8525,9 +8560,11 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     private func launchGuestStudio(extraLaunchArguments: [String] = []) throws -> XCUIApplication {
-        let app = try launchAtWelcome(extraLaunchArguments: extraLaunchArguments)
-        try tapWelcomeAction("welcome.guest", in: app)
-        try waitForButton("Skip Tutorial", in: app).tap()
+        let app = try launchRestoredApp(extraLaunchArguments: extraLaunchArguments)
+        if app.buttons["welcome.guest"].exists {
+            try tapWelcomeAction("welcome.guest", in: app)
+        }
+        try dismissTutorialIfPresented(in: app)
         try waitForButton("Studio", in: app).tap()
         return app
     }
