@@ -37,9 +37,11 @@ private let postA = "11111111-1111-4111-8111-111111111111"
 private let postB = "22222222-2222-4222-8222-222222222222"
 private let creatorA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 private let creatorB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-private func postJSON(_ id: String, creator: String, likes: Int, liked: Bool = false, following: Bool = false, export: Bool = false, url: String = "https://cdn.example/v.mp4") -> String {
-    #"{"id":"\#(id)","creator":"\#(creator)","creator_name":"Creator","caption":"","published_at":"2026-10-12T20:33:11.123456+00:00","allow_export":\#(export),"title":"Clip","url":"\#(url)","likes":\#(likes),"liked":\#(liked),"following":\#(following)}"#
+private func postJSON(_ id: String, creator: String, likes: Int, liked: Bool = false, following: Bool = false, export: Bool = false, download: Bool? = nil, url: String = "https://cdn.example/v.mp4") -> String {
+    let downloadField = download.map { #","can_download":\#($0)"# } ?? ""
+    return #"{"id":"\#(id)","creator":"\#(creator)","creator_name":"Creator","caption":"","published_at":"2026-10-12T20:33:11.123456+00:00","allow_export":\#(export),"title":"Clip","url":"\#(url)","likes":\#(likes),"liked":\#(liked),"following":\#(following)\#(downloadField)}"#
 }
+private let cursorA = "0|2026-10-12T20:33:11.123456Z|11111111-1111-4111-8111-111111111111"
 
 @main @MainActor struct CommunityFeedTests {
     static func main() async {
@@ -112,22 +114,27 @@ private func postJSON(_ id: String, creator: String, likes: Int, liked: Bool = f
         await test("feed client lists real pages, caches only page 0 for the offline label and never serves later pages from cache") {
             let transport = FakeTransport()
             let client = FeedClient(gateway: CommunityGateway(transport: transport), cache: .init(name: "feed", directory: root.appendingPathComponent("feed")))
-            transport.replies = [.success(#"{"posts":[\#(postJSON(postA, creator: creatorA, likes: 2))],"has_more":true,"as_of":"2026-10-13T01:00:00.123456+00:00"}"#)]
-            let page = try await client.page(.trending, page: 0, account: "acct", asOf: "ignored-on-page-0")
-            try require(page.posts.count == 1 && page.hasMore && page.source == .server, "server page")
-            try require(page.asOf == "2026-10-13T01:00:00.123456+00:00", "snapshot returned verbatim")
+            transport.replies = [.success(#"{"posts":[\#(postJSON(postA, creator: creatorA, likes: 2))],"has_more":true,"next_cursor":"\#(cursorA)","as_of":"2026-10-13T01:00:00.123456+00:00","download_requires_plan":true}"#)]
+            let page = try await client.page(.trending, page: 0, account: "acct", asOf: "ignored-on-page-0", cursor: "ignored-on-page-0")
+            try require(page.posts.count == 1 && page.hasMore && page.source == .server && page.downloadRequiresPlan, "server page")
+            try require(page.asOf == "2026-10-13T01:00:00.123456+00:00" && page.cursor == cursorA, "snapshot and cursor returned verbatim")
             let call = transport.calls[0]
-            try require(call.name == "sdi_feed_action" && call.params["action"] as? String == "list" && call.params["category"] as? String == "trending" && call.params["page"] as? Int == 0, "list parameters")
-            try require(call.params["as_of"] == nil, "page 0 never sends a snapshot")
-            transport.replies = [.success(#"{"posts":[],"has_more":false,"as_of":"2026-10-13T01:00:00.123456+00:00"}"#)]
-            _ = try await client.page(.trending, page: 1, account: "acct", asOf: page.asOf)
-            try require(transport.calls.last?.params["as_of"] as? String == "2026-10-13T01:00:00.123456+00:00" && transport.calls.last?.params["page"] as? Int == 1, "later pages carry the page-0 snapshot")
+            try require(call.name == "sdi_feed_page" && call.params["category"] as? String == "trending" && call.params["action"] == nil, "keyset list parameters")
+            try require(call.params["as_of"] == nil && call.params["page_cursor"] == nil, "page 0 never sends a snapshot or cursor")
+            transport.replies = [.success(#"{"posts":[],"has_more":false,"next_cursor":null,"as_of":"2026-10-13T01:00:00.123456+00:00"}"#)]
+            _ = try await client.page(.trending, page: 1, account: "acct", asOf: page.asOf, cursor: page.cursor)
+            try require(transport.calls.last?.params["as_of"] as? String == "2026-10-13T01:00:00.123456+00:00" && transport.calls.last?.params["page_cursor"] as? String == cursorA, "later pages carry the cursor and page-0 snapshot")
+            let sent = transport.calls.count
+            do { _ = try await client.page(.trending, page: 1, account: "acct", asOf: page.asOf, cursor: nil); throw Failure(description: "later page without cursor sent") } catch CommunityError.stale {}
+            try require(transport.calls.count == sent, "no request without a cursor")
+            transport.replies = [.success(#"{"posts":[],"has_more":true,"as_of":"2026-10-13T01:00:00.123456+00:00"}"#)]
+            do { _ = try await client.page(.recent, page: 0, account: "acct"); throw Failure(description: "has_more without cursor accepted") } catch CommunityError.invalidResponse {}
             transport.replies = [.failure(CommunityError.transport("offline"))]
             let cached = try await client.page(.trending, page: 0, account: "acct")
             if case .cache = cached.source {} else { throw Failure(description: "offline page 0 did not come from the protected cache") }
             try require(!cached.hasMore, "cached page never claims more pages")
             transport.replies = [.failure(CommunityError.transport("offline"))]
-            do { _ = try await client.page(.trending, page: 1, account: "acct"); throw Failure(description: "page 1 served from cache") } catch CommunityError.transport {}
+            do { _ = try await client.page(.trending, page: 1, account: "acct", asOf: page.asOf, cursor: cursorA); throw Failure(description: "page 1 served from cache") } catch CommunityError.transport {}
             transport.replies = [.failure(CommunityError.transport("offline"))]
             do { _ = try await client.page(.recent, page: 0, account: "other"); throw Failure(description: "another account read the cache") } catch CommunityError.transport {}
             transport.replies = [.success(#"{"posts":[],"has_more":false}"#)]
@@ -156,11 +163,17 @@ private func postJSON(_ id: String, creator: String, likes: Int, liked: Bool = f
         await test("export is offered only with creator permission and refuses oversized downloads") {
             let decoder = CommunityCoding.decoder()
             let denied = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0).utf8))
-            let allowed = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true).utf8))
-            let insecure = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, url: "http://cdn.example/v.mp4").utf8))
+            let allowed = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: true).utf8))
+            let freePlan = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: false).utf8))
+            let legacy = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true).utf8))
+            let insecure = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: true, url: "http://cdn.example/v.mp4").utf8))
             try require(!FeedExportPolicy.canExport(denied) && FeedExportPolicy.canExport(allowed) && !FeedExportPolicy.canExport(insecure), "export policy")
+            try require(FeedExportPolicy.state(freePlan) == .needsPaidPlan && FeedExportPolicy.state(legacy) == .needsPaidPlan, "free plan or missing server decision never downloads")
+            try require(FeedExportPolicy.state(denied) == .notPermitted && FeedExportPolicy.state(insecure) == .notPermitted, "creator permission checked first")
             let client = FeedClient(gateway: CommunityGateway(transport: FakeTransport()))
             do { _ = try await client.exportFile(for: denied) { _ in throw Failure(description: "download attempted") }; throw Failure(description: "export without permission") } catch CommunityError.server {}
+            do { _ = try await client.exportFile(for: freePlan) { _ in throw Failure(description: "download attempted") }; throw Failure(description: "export without a paid plan") }
+            catch CommunityError.server(let message, _) { try require(message.contains("paid plan"), "plan message") }
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let big = root.appendingPathComponent("big.mp4"); try Data([1]).write(to: big)
             do { _ = try await client.exportFile(for: allowed) { _ in (big, FeedExportPolicy.maximumDownloadBytes + 1) }; throw Failure(description: "oversized export accepted") } catch CommunityError.invalidResponse {}
@@ -194,6 +207,54 @@ private func postJSON(_ id: String, creator: String, likes: Int, liked: Bool = f
             let portfolio = try await profile.portfolio(account: UUID(uuidString: creatorA)!)
             try require(portfolio.count == 1 && portfolio[0].title == "B", "portfolio keeps only HTTPS approved renditions")
             try require((transport.calls.last?.params["filters"] as? [String])?.first == "owner_id=\(creatorA)", "portfolio filtered to the owner")
+        }
+
+        await test("timeline keeps the keyset cursor, refuses unusable cursors and clears it on reset") {
+            var timeline = FeedTimeline()
+            let decoder = CommunityCoding.decoder()
+            let a = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0).utf8))
+            try timeline.merge(page: 0, posts: [a], hasMore: true, asOf: "s", cursor: cursorA)
+            try require(timeline.nextCursor == cursorA && timeline.canLoadMore, "cursor stored")
+            do { try timeline.merge(page: 1, posts: [], hasMore: true, asOf: "s", cursor: ""); throw Failure(description: "empty cursor accepted") } catch CommunityError.invalidResponse {}
+            do { try timeline.merge(page: 1, posts: [], hasMore: true, asOf: "s", cursor: String(repeating: "x", count: 121)); throw Failure(description: "oversized cursor accepted") } catch CommunityError.invalidResponse {}
+            try timeline.merge(page: 1, posts: [a], hasMore: false, asOf: "s", cursor: nil)
+            try require(timeline.posts.count == 1 && timeline.nextCursor == nil && !timeline.canLoadMore, "repeat row de-duplicated; last page ends paging")
+            timeline.reset()
+            try require(timeline.nextCursor == nil && timeline.asOf == nil, "reset clears cursor")
+        }
+
+        await test("creator totals come only from a complete server reply") {
+            let transport = FakeTransport()
+            let profile = ProfileClient(gateway: CommunityGateway(transport: transport))
+            transport.replies = [.success(#"{"subject":"\#(creatorA)","published_videos":3,"likes_received":7,"followers":2,"following":4}"#)]
+            let own = try await profile.stats()
+            try require(own.published_videos == 3 && own.likes_received == 7 && own.followers == 2 && own.following == 4, "own totals")
+            try require(transport.calls.last?.name == "sdi_creator_stats" && transport.calls.last?.params["subject"] == nil, "own totals send no subject")
+            transport.replies = [.success(#"{"subject":"\#(creatorB)","published_videos":1,"likes_received":0,"followers":0,"following":null}"#)]
+            let other = try await profile.stats(of: UUID(uuidString: creatorB)!)
+            try require(other.following == nil && (transport.calls.last?.params["subject"] as? String)?.lowercased() == creatorB, "other creator: following hidden")
+            transport.replies = [.success(#"{"subject":"\#(creatorA)","published_videos":1,"likes_received":0,"followers":0,"following":null}"#)]
+            do { _ = try await profile.stats(of: UUID(uuidString: creatorB)!); throw Failure(description: "totals for another account accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"subject":"\#(creatorA)","published_videos":null,"likes_received":0,"followers":0,"following":0}"#)]
+            do { _ = try await profile.stats(); throw Failure(description: "incomplete totals accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"subject":"\#(creatorA)","published_videos":1,"likes_received":-1,"followers":0,"following":0}"#)]
+            do { _ = try await profile.stats(); throw Failure(description: "negative totals accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"error":"Profile unavailable."}"#)]
+            do { _ = try await profile.stats(of: UUID(uuidString: creatorB)!); throw Failure(description: "blocked profile shown") } catch CommunityError.server {}
+        }
+
+        await test("playback state is derived from the player and never claims playing before it is ready") {
+            typealias S = FeedPlaybackState
+            try require(S.resolve(itemReady: false, itemFailed: false, waiting: true, playing: false, ended: false, elapsed: 1, failureText: nil) == .loading, "loading")
+            try require(S.resolve(itemReady: false, itemFailed: false, waiting: true, playing: false, ended: false, elapsed: FeedPlaybackPolicy.slowStartSeconds, failureText: nil) == .slow, "slow start")
+            try require(S.resolve(itemReady: true, itemFailed: false, waiting: true, playing: false, ended: false, elapsed: 1, failureText: nil) == .buffering, "buffering")
+            try require(S.resolve(itemReady: true, itemFailed: false, waiting: false, playing: true, ended: false, elapsed: 1, failureText: nil) == .playing, "playing")
+            try require(S.resolve(itemReady: true, itemFailed: false, waiting: false, playing: false, ended: true, elapsed: 1, failureText: nil) == .ended, "ended")
+            if case .failed(let text) = S.resolve(itemReady: true, itemFailed: true, waiting: false, playing: true, ended: false, elapsed: 1, failureText: nil) {
+                try require(text.contains("could not be played"), "failure wins over playing")
+            } else { throw Failure(description: "failure not reported") }
+            try require(S.playing.message == nil && S.loading.message != nil, "overlay only while not playing")
+            try require(FeedPlaybackPolicy.expensiveNetworkPeakBitRate > 0 && FeedPlaybackPolicy.forwardBufferSeconds <= 30, "bandwidth bounds set")
         }
 
         print("COMMUNITY_FEED_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed) passed \(failed) failed")
