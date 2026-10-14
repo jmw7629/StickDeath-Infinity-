@@ -141,3 +141,13 @@ Transfer breakdown on the home page: font 166,356 · `help/help-data.js` 36,270 
 Not verified: real iPhone Safari/VoiceOver, WebKit and Firefox (Chromium only here); the GIF writer was
 exercised by the download event and by decoding its output size, not by an external GIF validator;
 hosting-level checks depend on the absent deployment.
+
+### 6b. Wave 2 (2026-10-14): store, login, clips, splash, reveal
+
+Added `store.html` (+ `store.js`, `store-config.js`, eight rendered merch mock-ups via `scripts/website/render_merch.mjs`), a real sign-in on `account.html` (+ `account.js`, configured `account-config.js` with the public backend origin and publishable key), seven H.264 clips cut from the CI recordings (`website/clips/`, 1.4 MB), a decorative splash on the home page, scroll reveal on every long page, a hero speed slider and frame scrubbing, export tabs on the Studio tour, and `scripts/owner/mac_stickdeath_cleanup.sh` (owner-run, archive-not-delete).
+
+Harness additions: `store.html` in the page matrix, `.mp4` served, pages scrolled once before auditing (reveal sections become visible), account no-JS text, account configured-state checks (form shown, profile hidden, only own files requested, local validation before any request), store unconfigured checks (eight products, no prices, cart hidden, only own files), splash checks (aria-hidden, no focusable controls, removed within 3 s), slider retiming check, and the flipbook journey now scrolls the canvas into view and compares pixel sums (the CI run on 8c093e1 failed that check because the canvas was off-screen at 390×844).
+
+Measured 2026-10-14 (Playwright 1.56.1 Chromium, Node v22.22.0): `check_help --check` OK (20 articles, guide revision 2026-10-13.1); `build_site --check` OK (16 unchanged); `render_merch --check` OK (8 products); `a11y_perf` **527/527**; perf on the home page at 390×844 Slow-4G CPU×4: 10 requests, 315,779 bytes, LCP 1,316 ms, CLS 0.0017, load 2,259 ms (budgets ≤12 / ≤420,000 / ≤2,500 ms / ≤0.05).
+
+Owner gates: Shopify store values for `store-config.js`; Apple/Google/GitHub/Microsoft provider enablement for `account-config.js`; the backend bundle paste for profile/lifecycle services; hosting and DNS for the domain. Not verified here: a configured Shopify store end to end (no store exists yet), real provider redirects, Safari/VoiceOver.

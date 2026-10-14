@@ -45,13 +45,13 @@ const site = path.join(repo, 'website');
 const jsonIndex = process.argv.indexOf('--json');
 const jsonOut = jsonIndex > -1 ? process.argv[jsonIndex + 1] : null;
 
-const PAGES = ['index.html', 'studio.html', 'community.html', 'screens.html', 'play.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
+const PAGES = ['index.html', 'studio.html', 'community.html', 'screens.html', 'play.html', 'store.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
 const VIEWPORTS = [{ name: '320x640', width: 320, height: 640 }, { name: '390x844', width: 390, height: 844 }, { name: '1440x900', width: 1440, height: 900 }];
 // 2026-10-14 rebuild: the home page shows real captures (lazy WebP) and the unmodified
 // Special Elite TTF stays at 166 KB, so the transfer and request budgets moved from
 // 250 KB / 8 to 420 KB / 12. LCP and CLS budgets are unchanged.
 const BUDGET = { bytes: 420_000, requests: 12, lcpMs: 2500, cls: 0.05 };
-const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.mp4': 'video/mp4', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
 
 const results = [];
 const measurements = {};
@@ -150,6 +150,9 @@ async function auditPage(page, base, file, viewport) {
   page.on('console', onConsole); page.on('pageerror', onError); page.on('request', onRequest);
   await page.goto(base + file, { waitUntil: 'load' });
   await page.evaluate(() => document.fonts.ready);
+  // Reveal every data-reveal section (scroll through once) so the audit covers the whole page.
+  await page.evaluate(async () => { for (let y = 0; y <= document.body.scrollHeight; y += 400) { window.scrollTo(0, y); await new Promise((r) => setTimeout(r, 15)); } window.scrollTo(0, 0); });
+  await page.waitForTimeout(900);
   if (file === 'index.html') await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
   const audit = await page.evaluate(auditScript);
   record('no console errors / page errors', errors.length === 0, errors.join(' | ').slice(0, 300), scope);
@@ -293,17 +296,49 @@ async function main() {
       await indexBehaviour(context, base, viewport, articles);
       await context.close();
     }
+    // account.html with configuration: the sign-in form shows, the profile stays hidden, only own files load.
+    const accountContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const accountPage = await accountContext.newPage();
+    const accountRequests = []; accountPage.on('request', (r) => accountRequests.push(r.url()));
+    await accountPage.goto(base + 'account.html', { waitUntil: 'load' }); await accountPage.waitForTimeout(400);
+    const accountState = await accountPage.evaluate(() => ({ signin: !document.querySelector('#account-signin').hidden, profile: document.querySelector('#account-profile').hidden, title: document.querySelector('#account-status-title').textContent }));
+    record('account page shows the sign-in form and hides the profile before a session', accountState.signin && accountState.profile && accountState.title.includes('Signed out'), JSON.stringify(accountState), 'account.html@390x844');
+    record('account page requests only its own files on load', accountRequests.every((u) => u.startsWith(base)), `${accountRequests.length} requests`, 'account.html@390x844');
+    await accountPage.fill('#account-email', 'nobody@example.invalid'); await accountPage.fill('#account-password', 'short');
+    await accountPage.click('#account-form button[type=submit]');
+    const formStatus = await accountPage.locator('#account-form-status').textContent();
+    record('account sign-in validates locally before any request', formStatus.includes('at least 8 characters') && accountRequests.every((u) => u.startsWith(base)), formStatus, 'account.html@390x844');
+    await accountContext.close();
+    // store.html unconfigured: planned products without prices, no checkout, no external request.
+    const storeContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const storePage = await storeContext.newPage();
+    const storeRequests = []; storePage.on('request', (r) => storeRequests.push(r.url()));
+    await storePage.goto(base + 'store.html', { waitUntil: 'load' }); await storePage.waitForTimeout(400);
+    const storeState = await storePage.evaluate(() => ({ status: document.querySelector('#store-status').textContent, prices: [...document.querySelectorAll('.price')].map((p) => p.textContent), cartHidden: document.querySelector('#cart').hidden, products: document.querySelectorAll('.product').length }));
+    record('store shows the planned line-up without prices or cart when unconfigured', storeState.products === 8 && storeState.cartHidden && storeState.prices.every((p) => p === 'Price on opening') && storeState.status.includes('not open yet'), JSON.stringify(storeState).slice(0, 200), 'store.html@390x844');
+    record('store requests only its own files when unconfigured', storeRequests.every((u) => u.startsWith(base)), `${storeRequests.length} requests`, 'store.html@390x844');
+    await storeContext.close();
+    // index.html: splash is decorative and gone within three seconds; hero speed slider changes the animation.
+    const splashContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const splashPage = await splashContext.newPage();
+    await splashPage.goto(base + 'index.html', { waitUntil: 'load' });
+    const splashEarly = await splashPage.evaluate(() => { const s = document.querySelector('#splash'); return s ? { present: true, ariaHidden: s.getAttribute('aria-hidden'), focusable: s.querySelectorAll('a,button,input,[tabindex]').length } : { present: false }; });
+    await splashPage.waitForTimeout(3000);
+    const splashLate = await splashPage.evaluate(() => Boolean(document.querySelector('#splash')));
+    record('home splash is decorative (aria-hidden, no focusable controls) and removed within 3 s', splashEarly.present && splashEarly.ariaHidden === 'true' && splashEarly.focusable === 0 && !splashLate, JSON.stringify({ splashEarly, splashLate }), 'index.html@390x844');
+    await splashPage.locator('#hero-fps').fill('24');
+    const fpsState = await splashPage.evaluate(() => ({ out: document.querySelector('#hero-fps-value').textContent, dur: document.querySelector('.flipbook .pose').style.animationDuration }));
+    record('hero speed slider retimes the flipbook', fpsState.out === '24 fps' && fpsState.dur === '0.25s', JSON.stringify(fpsState), 'index.html@390x844');
+    await splashContext.close();
     // play.html: the browser flipbook draws, adds frames, plays and downloads.
     const playContext = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
     const playPage = await playContext.newPage();
     const playErrors = []; playPage.on('pageerror', (e) => playErrors.push(String(e))); playPage.on('console', (m) => { if (m.type() === 'error') playErrors.push(m.text()); });
     await playPage.goto(base + 'play.html', { waitUntil: 'load' });
-    const paper = playPage.locator('#play-canvas'); const box = await paper.boundingBox();
-    const before = await playPage.evaluate(() => document.querySelector('#play-canvas').toDataURL().length);
+    const paper = playPage.locator('#play-canvas'); await paper.scrollIntoViewIfNeeded(); const box = await paper.boundingBox();
+    const inkSum = () => playPage.evaluate(() => { const c = document.querySelector('#play-canvas'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let s = 0; for (let i = 0; i < d.length; i += 4) s += d[i]; return s; });
+    const before = await inkSum();
     await playPage.mouse.move(box.x + box.width * 0.3, box.y + box.height * 0.3); await playPage.mouse.down();
     await playPage.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.6, { steps: 12 }); await playPage.mouse.up();
-    const after = await playPage.evaluate(() => document.querySelector('#play-canvas').toDataURL().length);
-    record('play: pointer stroke changes the canvas', after !== before, `${before} → ${after} data-URL chars`, 'play.html@390x844');
+    const after = await inkSum();
+    record('play: pointer stroke changes the canvas', after !== before, `red-channel sum ${before} → ${after}`, 'play.html@390x844');
     await playPage.click('#play-duplicate'); await playPage.click('#play-add');
     const label = await playPage.locator('#play-frame-label').textContent();
     record('play: duplicate + add frame → frame 3 of 3', label.trim() === 'Frame 3 of 3', label.trim(), 'play.html@390x844');
@@ -335,9 +370,11 @@ async function main() {
     // Playwright's isVisible() reports false for content rendered inside <noscript>, so measure in-page: the paragraph must have a box and non-hidden styles.
     const rendered = ({ text }) => { const el = [...document.querySelectorAll('noscript p, main p, main h2')].find((p) => p.textContent.includes(text)); if (!el) return false; const cs = getComputedStyle(el); return el.getClientRects().length > 0 && cs.display !== 'none' && cs.visibility !== 'hidden'; };
     const noscriptVisible = await nojsPage.evaluate(rendered, { text: 'Enable JavaScript for searchable help' });
-    const accountStatic = await (async () => { await nojsPage.goto(base + 'account.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Accounts and billing are not connected' }); })();
+    const accountStatic = await (async () => { await nojsPage.goto(base + 'account.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Sign-in requires JavaScript' }); })();
     record('noscript guidance visible with JavaScript disabled', noscriptVisible, '', 'index.html@390x844 no-js');
-    record('account page states "not connected" without JavaScript', accountStatic, '', 'account.html@390x844 no-js');
+    record('account page states that sign-in requires JavaScript when it is off', accountStatic, '', 'account.html@390x844 no-js');
+    const storeStatic = await (async () => { await nojsPage.goto(base + 'store.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Live prices and the cart need JavaScript' }); })();
+    record('store page states that prices need JavaScript when it is off', storeStatic, '', 'store.html@390x844 no-js');
     const adminStatic = await (async () => { await nojsPage.goto(base + 'admin.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The command center is not configured' }); })();
     record('admin shell states "not configured" without JavaScript', adminStatic, '', 'admin.html@390x844 no-js');
     await nojs.close();

@@ -3,41 +3,49 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
-<meta name="description" content="Account and billing status for the StickDeath Infinity website. No account portal or checkout is connected in this source.">
-<meta name="theme-color" content="#0e0e10"><title>Account & billing — StickDeath Infinity</title>
+<meta name="description" content="Sign in to your StickDeath Infinity account, create one, or reset your password. Projects stay on your device; the account carries identity, votes, consents and plan status.">
+<meta name="theme-color" content="#0e0e10"><title>Account — StickDeath Infinity</title>
 <meta name="sdi:canonical-base" content="https://stickdeathinfinity.com/">
 <link rel="icon" href="assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="styles.css">
-<script src="account-config.js" defer></script><script src="account.js" defer></script>
+<script src="site.js" defer></script><script src="account-config.js" defer></script><script src="account.js" defer></script>
 <noscript><style>.header nav{display:flex!important}.menu{display:none!important}</style></noscript>
-<script src="site.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="header"><a class="brand" href="index.html" aria-label="StickDeath Infinity home"><img src="assets/mark.svg" width="36" height="36" alt=""><span>STICKDEATH<span class="brand-sub">INFINITY</span></span></a>
 <button class="menu" aria-controls="navigation" aria-expanded="false">Menu</button>
-<nav id="navigation" aria-label="Main navigation"><a href="studio.html">Studio</a><a href="community.html">Community</a><a href="screens.html">Screens</a><a href="play.html">Play</a><a href="index.html#pricing">Pricing</a><a href="index.html#help">Help</a><a href="account.html" aria-current="page">Account</a><a class="cta" href="index.html#availability">Get the app</a></nav></header>
+<nav id="navigation" aria-label="Main navigation"><a href="studio.html">Studio</a><a href="community.html">Community</a><a href="screens.html">Screens</a><a href="play.html">Play</a><a href="store.html">Store</a><a href="index.html#help">Help</a><a href="account.html" aria-current="page">Account</a><a class="cta" href="index.html#availability">Get the app</a></nav></header>
 <main id="main" tabindex="-1" class="wrap policy">
-<p class="eyebrow">ACCOUNT & BILLING</p>
-<h1>Your account,<br>when it is <em>connected.</em></h1>
-<p>This page is a configuration-gated shell. It shows a connected account or billing portal only after the owner verifies the identity and billing services and sets <code>account-config.js</code>. Until then it reports the honest default below.</p>
+<p class="eyebrow">Account</p>
+<h1>Your account,<br>your <em>rules.</em></h1>
+<p>One account for Rooms, War Room, the feed, challenges and publishing. The Studio itself never needs it. Editable projects stay on your devices; the account carries only identity, access, votes, consents, billing status and job metadata.</p>
 <div class="status-card" id="account-status" aria-live="polite">
-<h2 id="account-status-title">Accounts and billing are not connected to this website.</h2>
-<p id="account-status-detail">There is no sign-in, checkout, invoice, cancellation or customer portal here. No prices are listed because no plan has been configured. No payment is collected.</p>
-<p id="account-status-note" class="quiet">Nothing on this page reads cookies or local storage, and no request leaves this origin.</p>
+<h2 id="account-status-title">Sign-in requires JavaScript.</h2>
+<p id="account-status-detail">Accounts and billing are reached through the configured backend from this page; with JavaScript off nothing is sent and no prices are shown.</p>
+<p id="account-status-note" class="quiet">This page stores nothing in your browser. Requests go only to the configured backend when you submit a form.</p>
 </div>
-<h2>What this page will do once configured</h2>
+<section id="account-signin" hidden><h2>Sign in or create an account</h2>
+<form id="account-form" class="account-form" autocomplete="on" novalidate>
+<label for="account-email">Email</label><input id="account-email" type="email" autocomplete="email" maxlength="254" required>
+<label for="account-password">Password <span class="quiet">(at least 8 characters)</span></label><input id="account-password" type="password" autocomplete="current-password" minlength="8" maxlength="256" required>
+<div class="row"><button class="button" type="submit">Sign in</button><button id="account-create" type="button">Create account</button><button id="account-recover" type="button">Email me a reset link</button></div>
+<p id="account-form-status" role="status" aria-live="polite" class="quiet"></p></form>
+<div id="account-providers" class="row providers"></div>
+<p class="quiet">Creating an account sends a confirmation email. Passwords are never stored by this page; the backend hashes them. Accounts for people under the age allowed by the draft terms are not permitted.</p></section>
+<section id="account-newpassword" hidden><h2>New password</h2><form id="account-newpassword-form" class="account-form" novalidate><label for="account-newpassword">New password</label><input id="account-newpassword" type="password" autocomplete="new-password" minlength="8" maxlength="256" required><div class="row"><button class="button" type="submit">Save new password</button></div><p id="account-newpassword-status" role="status" aria-live="polite" class="quiet"></p></form></section>
+<section id="account-profile" hidden><h2>Profile</h2>
+<dl class="meta-list"><dt>Email</dt><dd id="profile-email"></dd><dt>Status</dt><dd id="profile-confirmed"></dd><dt>Handle</dt><dd id="profile-handle"></dd><dt>Plan</dt><dd id="profile-plan"></dd><dt>Since</dt><dd id="profile-created"></dd></dl>
+<div class="row"><button id="profile-signout" class="button" type="button">Sign out</button><a class="button ghost" href="admin.html">Command center</a><button id="profile-delete" type="button">Request account deletion</button></div>
+<p id="profile-delete-status" role="status" aria-live="polite" class="quiet"></p>
+<p class="quiet">Deletion completes after a seven-day cooling-off period and can be cancelled from the app in that time. Plans are shown exactly as the server records them; paid plans (Creator USD 4.99, Pro USD 9.99 monthly) are planned and not on sale yet.</p></section>
+<h2>What this account is for</h2>
 <ul>
-<li>Link to the canonical, server-authorized account portal with session expiry and safe return links; it will never embed credentials or secrets in this page.</li>
-<li>Show the configured monthly and annual plans exactly as configured in the verified billing account, with entitlements stated only where they exist. This page never hard-codes a price.</li>
-<li>Explain cancellation, invoices and payment-failure handling as implemented by the portal, and show the version of the terms you accepted.</li>
+<li>Rooms: invitation-only collaboration on a project you choose to share.</li>
+<li>War Room: one vote per matchup, and your own optional badges and record.</li>
+<li>Feed and challenges: likes, follows and sharing as deliberate actions.</li>
+<li>Publishing: permissions recorded per exact render; nothing uploads without them.</li>
 </ul>
-<h2>What you can do today</h2>
-<ul>
-<li>In the native app, Profile shows <em>Plan unavailable</em> for signed-in accounts and <em>On-device guest</em> otherwise. No renewal date or price is displayed because none is configured.</li>
-<li>Keep your projects and backups on your device. Projects are never uploaded by account actions.</li>
-<li>Account deletion is requested in the app (Profile or Settings) and completed by the service after a seven-day cooling-off period during which you can cancel; see the draft <a href="policies/privacy-v1.html">privacy notice</a> for the scope.</li>
-</ul>
-<p class="quiet">Owner gate: the verified billing account, native purchasing and provider configuration remain open items (issue #271). Status read from source on October 12, 2026.</p>
+<p class="quiet">Owner gate: the account profile and lifecycle services come online when the owner installs the backend bundle; until then the page reports exactly what the server answers.</p>
 </main>
-<footer class="wrap"><a class="brand" href="index.html">STICKDEATH INFINITY</a><p>Companion website source</p><div><a href="index.html#pricing">Pricing status</a><a href="policies/terms-v1.html">Terms (draft)</a><a href="policies/privacy-v1.html">Privacy (draft)</a><a href="policies/attribution.html">Attribution</a></div></footer>
+<footer class="wrap"><a class="brand" href="index.html">STICKDEATH INFINITY</a><p>Account · memory-only session · nothing stored in the browser</p><div><a href="index.html#pricing">Pricing</a><a href="policies/terms-v1.html">Terms (draft)</a><a href="policies/privacy-v1.html">Privacy (draft)</a><a href="policies/attribution.html">Attribution</a></div></footer>
 </body></html>

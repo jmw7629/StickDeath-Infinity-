@@ -30,6 +30,20 @@ Checks: `node scripts/website/check_help.mjs --check`, `node scripts/website/bui
 audits the four new pages and runs a flipbook journey on `play.html` (stroke, duplicate, add, play,
 GIF and PNG downloads). Measured results are in `docs/WEBSITE_INVENTORY.md` §6.
 
+## Wave 2 (2026-10-14, same day): store, login, clips, splash, reveal, interaction
+
+| Area | Files | Notes |
+| --- | --- | --- |
+| Store | `store.html`, `store.js`, `store-config.js` (`null`), `assets/merch/*.webp` + `templates/`, `scripts/website/render_merch.mjs` | Eight original vector mock-ups (tee, hoodie, dad cap, sticker pack, poster, mug, tote, enamel pin) rendered from HTML/SVG templates with the repository font. Unconfigured: planned line-up, "Price on opening", no cart, no external request. Configured with the owner's Shopify Storefront values (public token, `*.myshopify.com` domain): products and prices load from the Storefront API, a Shopify cart is kept server-side, Checkout opens Shopify's hosted checkout. No price is typed into the page. |
+| Login | `account.html`, `account.js`, `account-config.js` (backend origin + publishable key; `providers: []`) | Email/password sign-in, create account (confirmation email), reset link, provider buttons only for providers listed in the config, memory-only session with expiry, profile (email, confirmation, handle and plan from `public.users` when installed, honest server error otherwise), sign out, deletion request through `sdi_account_lifecycle`. Recovery and provider redirects are read from the URL fragment and cleared. |
+| Clips | `clips/*.mp4` + `*.webp` posters | Seven 16–40 s clips cut with ffmpeg from the CI screen recordings (run 38516791084, source `39f29cb`): create project, draw and layers, sound library, lasso and Spatter, export PNG, rotoscope, brush and colour. 480 px, H.264, 15 fps, no audio; `preload="none"` with posters; 1.4 MB total. Three on the home page, four in the Studio tour (one behind the export tabs). |
+| Splash | `index.html` `#splash`, `site.js` | Decorative overlay (mark, STICKDEATH ∞, Animation Studio, Ready) that fades out in 1.9 s, `aria-hidden`, no focusable controls, removed from the DOM afterwards, skipped under reduced motion and once per browser session (`sessionStorage`, guarded). |
+| Scroll reveal | `[data-reveal]` + `site.js` + `.reveal` | Sections fade and rise as they enter the viewport (IntersectionObserver). Without JavaScript or with reduced motion everything is simply visible. The harness scrolls each page once before auditing so coverage is unchanged. |
+| Interaction | hero speed slider (2–24 fps) retimes the flipbook; dragging across the frames scrubs them; export captures on the Studio tour sit behind keyboard-navigable tabs; frame counter ticks | |
+| Mac clean-up | `scripts/owner/mac_stickdeath_cleanup.sh` | Owner-run zsh script: lists DerivedData, archives, `.xcresult` bundles, duplicate clones, downloaded artifacts and scratch folders with sizes; `--archive` moves them to `~/StickDeath-Archive-YYYYMMDD` (never deletes; never touches the kept clone, ReferenceCorpus or the design reference). Written here, not runnable in this Linux container. |
+
+Measured 2026-10-14: `a11y_perf` **527/527** (13 pages × 3 viewports, index behaviour, account, store, splash, slider and flipbook journeys); home page at 390×844 Slow-4G CPU×4: 10 requests, 315,779 bytes, LCP 1,316 ms, CLS 0.0017 (three clip posters now load with the page). `render_merch.mjs --check` OK.
+
 ---
 
 ## History before the rebuild

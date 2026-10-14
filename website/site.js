@@ -180,3 +180,40 @@ Before sending anywhere: remove passwords, payment data and private project cont
   });
   window.addEventListener('pagehide', () => { releaseDownloads(); discardPreview(); supportForm.reset(); });
 })();
+
+// ---- Wave 2 (2026-10-14): splash, scroll reveal, hero scrub and speed, tabs -----------------
+(() => {
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Splash on the home page: decorative, non-focusable, removed after its animation. Shown once
+  // per browser session (sessionStorage is a per-viewer convenience; every read is guarded).
+  const splash = document.querySelector('#splash');
+  if (splash) {
+    let seen = false; try { seen = sessionStorage.getItem('sdi-splash') === '1'; } catch (_) { seen = false; }
+    if (reduced || seen) splash.remove();
+    else { try { sessionStorage.setItem('sdi-splash', '1'); } catch (_) { /* ignore */ } splash.addEventListener('animationend', (e) => { if (e.target === splash) splash.remove(); }); setTimeout(() => splash.remove(), 2600); }
+  }
+  // Scroll reveal: without JavaScript everything is visible; with it, sections fade in as they
+  // enter the viewport. Reduced motion skips the effect entirely.
+  const targets = [...document.querySelectorAll('[data-reveal]')];
+  if (targets.length && !reduced && 'IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => entries.forEach((entry) => { if (entry.isIntersecting) { entry.target.classList.add('in'); io.unobserve(entry.target); } }), { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
+    targets.forEach((el) => { const r = el.getBoundingClientRect(); if (r.top < innerHeight) { el.classList.add('reveal', 'in'); } else { el.classList.add('reveal'); io.observe(el); } });
+  }
+  // Hero flipbook: a speed slider sets the frame rate; dragging across the stage scrubs frames.
+  const stage = document.querySelector('.flipbook .stage'); const fps = document.querySelector('#hero-fps'); const fpsOut = document.querySelector('#hero-fps-value');
+  if (stage && fps) {
+    const poses = [...stage.querySelectorAll('.pose')]; const counter = stage.querySelector('.counter b');
+    const apply = () => { const v = Number(fps.value); const d = (poses.length / v).toFixed(3) + 's'; poses.forEach((p, i) => { p.style.animationDuration = d; p.style.animationDelay = (i / v).toFixed(3) + 's'; }); fpsOut.textContent = `${v} fps`; };
+    fps.addEventListener('input', apply); apply();
+    let resume = null;
+    const scrub = (event) => { const r = stage.getBoundingClientRect(); const i = Math.max(0, Math.min(poses.length - 1, Math.floor((event.clientX - r.left) / r.width * poses.length))); stage.classList.add('manual'); poses.forEach((p, k) => p.classList.toggle('show', k === i)); if (counter) counter.textContent = String(i + 1).padStart(2, '0'); if (resume) clearTimeout(resume); resume = setTimeout(() => { stage.classList.remove('manual'); poses.forEach((p) => p.classList.remove('show')); }, 1800); };
+    stage.addEventListener('pointerdown', (e) => { scrub(e); stage.setPointerCapture(e.pointerId); });
+    stage.addEventListener('pointermove', (e) => { if (e.buttons) scrub(e); });
+  }
+  // Tabs: buttons with role=tab control panels by aria-controls.
+  document.querySelectorAll('[role=tablist]').forEach((list) => {
+    const tabs = [...list.querySelectorAll('[role=tab]')];
+    const select = (tab) => { tabs.forEach((t) => { const on = t === tab; t.setAttribute('aria-selected', String(on)); t.tabIndex = on ? 0 : -1; const panel = document.getElementById(t.getAttribute('aria-controls')); if (panel) panel.hidden = !on; }); };
+    tabs.forEach((tab, i) => { tab.addEventListener('click', () => select(tab)); tab.addEventListener('keydown', (e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length]; select(next); next.focus(); } }); });
+  });
+})();
