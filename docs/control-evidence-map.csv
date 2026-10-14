@@ -184,6 +184,9 @@ rooms.warRoom,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomVie
 rooms.watchTogether,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.watchTogether' (identifier-derived; review source),no,#296,deferred
 settings.delete-account,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Delete Account',n-a,unmapped,deferred
 settings.delete-account.status,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign in from Profile to manage your account. Loc',n-a,unmapped,deferred
+settings.export-data,StickDeathInfinity/Views/Settings/SettingsView.swift,AccountDataExportRow,progress,n-a,#262,deferred
+settings.export-data.message,StickDeathInfinity/Views/Settings/SettingsView.swift,AccountDataExportRow,text 'Includes the records the service keeps for your ',n-a,#262,deferred
+settings.export-data.share,StickDeathInfinity/Views/Settings/SettingsView.swift,AccountDataExportRow,label 'Save or share the export',n-a,#262,deferred
 settings.sign-out,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign Out' -> authVM.signOut,n-a,unmapped,deferred
 spatter.artwork.order-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Send selected artwork backward',no,#203,deferred
 spatter.audio.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,example-command chips 'spatter.audio.examples' (identifier-derived; review source),no,#203,testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen
