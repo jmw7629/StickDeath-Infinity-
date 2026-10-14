@@ -58,10 +58,14 @@ final class StudioPortableImportLedger {
     }
 
     private func unlockedEntries() -> [Entry] {
-        guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+        // A fresh URL each read: Foundation caches resource values on a URL instance, so a
+        // size read before the last write would make the ledger look damaged (and empty).
+        var probe = URL(fileURLWithPath: fileURL.path)
+        probe.removeAllCachedResourceValues()
+        guard let values = try? probe.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
               values.isRegularFile == true, values.isSymbolicLink != true,
               let size = values.fileSize, size > 0, size <= Self.maximumFileBytes,
-              let data = try? Data(contentsOf: fileURL), data.count == size,
+              let data = try? Data(contentsOf: probe), data.count == size,
               let file = try? JSONDecoder().decode(File.self, from: data), file.version == 1 else { return [] }
         return file.entries.filter { Self.isDigest($0.bundleSHA256) }
     }
