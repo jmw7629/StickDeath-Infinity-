@@ -235,6 +235,9 @@ struct ProfileSettingsView: View {
             Section("Studio") {
                 Text("Change grid, onion skin and project settings in the Studio menu. Those controls apply to the actual project.")
             }
+            Section("Diagnostics") {
+                DiagnosticsSettingsView()
+            }
             if authVM.isAuthenticated {
                 Section {
                     Button("Sign Out", role: .destructive) { Task { await authVM.signOut() } }

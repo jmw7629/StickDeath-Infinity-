@@ -186,6 +186,12 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		5C9C37FEB262AAE6B3F90449 /* StudioPortableImportLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CFEB11C18C4E59E2B3BA564 /* StudioPortableImportLedger.swift */; };
 		A14A5412F9A99235615EE9AD /* StudioStorageBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20ED8EEAF16806E481A437B2 /* StudioStorageBudget.swift */; };
 		3AAFE749931ADA8B422BD9AF /* StudioStorageCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C29D0D136F56FEFD250258D /* StudioStorageCleanup.swift */; };
+		593DCD1B57CFA3750B645697 /* DiagnosticsBackendSubmitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3781A0ACEF5D491A218C0DE2 /* DiagnosticsBackendSubmitter.swift */; };
+		A57F75DCF8931987736F8EC8 /* DiagnosticsMetricKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7498EECFF4FFDE2FDE0FDE7D /* DiagnosticsMetricKit.swift */; };
+		CEEAC31F6D4F5F59DE87DBFE /* DiagnosticsQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E370FB74C8BF98EF647DE8D /* DiagnosticsQueue.swift */; };
+		B4C60E159C7A1AE7A515D02F /* DiagnosticsReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9679CC1BB2644DD380030106 /* DiagnosticsReport.swift */; };
+		8F26D1CCF7B7418F1FC72D84 /* DiagnosticsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D62C6C7F6FBCAAC4DE8CD859 /* DiagnosticsSettingsView.swift */; };
+		C48B8196428E2331F33D1F77 /* DiagnosticsUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72947A97EFF1E5B9716763A5 /* DiagnosticsUploader.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -381,6 +387,12 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		4CFEB11C18C4E59E2B3BA564 /* StudioPortableImportLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Project/StudioPortableImportLedger.swift"; sourceTree = SOURCE_ROOT; };
 		20ED8EEAF16806E481A437B2 /* StudioStorageBudget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Storage/StudioStorageBudget.swift"; sourceTree = SOURCE_ROOT; };
 		2C29D0D136F56FEFD250258D /* StudioStorageCleanup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Storage/StudioStorageCleanup.swift"; sourceTree = SOURCE_ROOT; };
+		3781A0ACEF5D491A218C0DE2 /* DiagnosticsBackendSubmitter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Diagnostics/DiagnosticsBackendSubmitter.swift"; sourceTree = SOURCE_ROOT; };
+		7498EECFF4FFDE2FDE0FDE7D /* DiagnosticsMetricKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Diagnostics/DiagnosticsMetricKit.swift"; sourceTree = SOURCE_ROOT; };
+		7E370FB74C8BF98EF647DE8D /* DiagnosticsQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Diagnostics/DiagnosticsQueue.swift"; sourceTree = SOURCE_ROOT; };
+		9679CC1BB2644DD380030106 /* DiagnosticsReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Diagnostics/DiagnosticsReport.swift"; sourceTree = SOURCE_ROOT; };
+		D62C6C7F6FBCAAC4DE8CD859 /* DiagnosticsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift"; sourceTree = SOURCE_ROOT; };
+		72947A97EFF1E5B9716763A5 /* DiagnosticsUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Diagnostics/DiagnosticsUploader.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -523,6 +535,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		444FE51936F2829A8267B473 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				F03A889DE68197E328E36C3C /* Diagnostics */,
 				073BADE86CF10AA441768DD6 /* StudioSelectionMask.swift */,
 				5FF8974972A03216F4C7544A /* StudioGradientFill.swift */,
 				8BA7B604059AD2BA8702562D /* WarRoom */,
@@ -887,6 +900,19 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			path = Admin;
 			sourceTree = "<group>";
 		};
+		F03A889DE68197E328E36C3C /* Diagnostics */ = {
+			isa = PBXGroup;
+			children = (
+				72947A97EFF1E5B9716763A5 /* DiagnosticsUploader.swift */,
+				D62C6C7F6FBCAAC4DE8CD859 /* DiagnosticsSettingsView.swift */,
+				9679CC1BB2644DD380030106 /* DiagnosticsReport.swift */,
+				7E370FB74C8BF98EF647DE8D /* DiagnosticsQueue.swift */,
+				7498EECFF4FFDE2FDE0FDE7D /* DiagnosticsMetricKit.swift */,
+				3781A0ACEF5D491A218C0DE2 /* DiagnosticsBackendSubmitter.swift */,
+			);
+			path = Diagnostics;
+			sourceTree = "<group>";
+		};
 		/* End PBXGroup section */
 
 		/* Begin PBXNativeTarget section */
@@ -1002,6 +1028,12 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C48B8196428E2331F33D1F77 /* DiagnosticsUploader.swift in Sources */,
+				8F26D1CCF7B7418F1FC72D84 /* DiagnosticsSettingsView.swift in Sources */,
+				B4C60E159C7A1AE7A515D02F /* DiagnosticsReport.swift in Sources */,
+				CEEAC31F6D4F5F59DE87DBFE /* DiagnosticsQueue.swift in Sources */,
+				A57F75DCF8931987736F8EC8 /* DiagnosticsMetricKit.swift in Sources */,
+				593DCD1B57CFA3750B645697 /* DiagnosticsBackendSubmitter.swift in Sources */,
 				3AAFE749931ADA8B422BD9AF /* StudioStorageCleanup.swift in Sources */,
 				A14A5412F9A99235615EE9AD /* StudioStorageBudget.swift in Sources */,
 				5C9C37FEB262AAE6B3F90449 /* StudioPortableImportLedger.swift in Sources */,

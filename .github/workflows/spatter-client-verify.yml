@@ -1761,6 +1761,18 @@ jobs:
             Tests/BillingPlans/main.swift \
             -o "$RUNNER_TEMP/sdi-billing-plans-tests"
           "$RUNNER_TEMP/sdi-billing-plans-tests"
+      - name: Verify opt-in diagnostics contract, queue and uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/Diagnostics/DiagnosticsReport.swift \
+            StickDeathInfinity/Services/Diagnostics/DiagnosticsQueue.swift \
+            StickDeathInfinity/Services/Diagnostics/DiagnosticsUploader.swift \
+            StickDeathInfinity/Services/Diagnostics/DiagnosticsMetricKit.swift \
+            Tests/Diagnostics/main.swift \
+            -o "$RUNNER_TEMP/sdi-diagnostics-tests"
+          "$RUNNER_TEMP/sdi-diagnostics-tests"
       - name: Verify cancellable Studio edits and factual persistence state
         shell: bash
         run: |
