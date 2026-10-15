@@ -144,8 +144,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
     if (!account.configured || !account.spatterConfigured) { Text(SpatterException.NotConfigured().message!!); return }
     if (account.state !is AccountState.SignedIn) { Text(SpatterException.NotAuthenticated().message!!); return }
     var question by remember { mutableStateOf("") }
+    val usage = (account.spatterUsage as? Load.Loaded)?.value
+    Text(com.stickdeath.studio.billing.PlanCopy.usage(usage), style = MaterialTheme.typography.bodySmall)
+    if (account.spatterUsage is Load.Failed) TextButton({ account.refreshSpatterUsage() }) { Text("Check my Spatter plan again") }
+    val gate = account.spatterGate
+    if (gate is com.stickdeath.studio.billing.SpatterGate.Send && gate.payAsYouGo) Text("Pay as you go: the server spends 1 Spatter credit per prompt.", style = MaterialTheme.typography.bodySmall)
     OutlinedTextField(question, { question = it.take(4000) }, label = { Text("Ask Spatter for guidance") }, maxLines = 4, modifier = Modifier.fillMaxWidth())
     Button({ account.askSpatter(question) }, enabled = question.isNotBlank() && account.spatterReply !is Load.Loading) { Text("Ask") }
+    Text("Suggested prompts", style = MaterialTheme.typography.bodySmall)
+    SUGGESTED_PROMPTS.forEach { prompt -> TextButton({ question = prompt; account.askSpatter(prompt) }, enabled = account.spatterReply !is Load.Loading) { Text(prompt) } }
     when (val reply = account.spatterReply) {
         is Load.Loaded -> {
             Text(reply.value.reply)
@@ -156,3 +163,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         Load.Idle -> Unit
     }
 }
+
+/** Suggested prompts stay visible on every plan; on Free without credits they answer with the upgrade note. */
+private val SUGGESTED_PROMPTS = listOf(
+    "How do I time a punch so it lands hard?",
+    "Give me a 12-frame walk cycle plan for a stick figure.",
+    "How should I use onion skin to smooth a jump?",
+)

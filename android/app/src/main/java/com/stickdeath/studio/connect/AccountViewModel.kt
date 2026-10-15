@@ -8,6 +8,10 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.stickdeath.studio.BuildConfig
+import com.stickdeath.studio.billing.PlanCopy
+import com.stickdeath.studio.billing.PlanRuntime
+import com.stickdeath.studio.billing.SpatterGate
+import com.stickdeath.studio.billing.SpatterUsage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -39,6 +43,7 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     private val feedClient = FeedClient(gateway)
     private val profileClient = ProfileClient(gateway)
     private val roomsClient = RoomsClient(gateway)
+    private val usageClient = SpatterUsageClient(gateway)
     private val spatter = SpatterClient(manager.config?.spatterEndpoint, manager.asSessionSource(), UrlConnectionTransport())
 
     var state by mutableStateOf(manager.state); private set
@@ -49,6 +54,8 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     var records by mutableStateOf<Load<ProfileRecords>>(Load.Idle); private set
     var invitation by mutableStateOf<Load<InvitationPreview>>(Load.Idle); private set
     var spatterReply by mutableStateOf<Load<SpatterReply>>(Load.Idle); private set
+    /** Server-reported plan, allowance and credits; the device never counts prompts itself. */
+    var spatterUsage by mutableStateOf<Load<SpatterUsage>>(Load.Idle); private set
 
     val configured get() = manager.isConfigured
     val providers get() = manager.providers()
@@ -65,7 +72,8 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
             working = false
             state = manager.state
             notice = when (failure) { null -> ""; is CancellationException -> ""; else -> failure.message ?: "That did not complete." }
-            if (state !is AccountState.SignedIn) { feed = Load.Idle; records = Load.Idle; invitation = Load.Idle; spatterReply = Load.Idle }
+            if (state !is AccountState.SignedIn) { feed = Load.Idle; records = Load.Idle; invitation = Load.Idle; spatterReply = Load.Idle; spatterUsage = Load.Idle; PlanRuntime.reportServerPlan(null) }
+            else if (spatterUsage is Load.Idle) refreshSpatterUsage()
         }
     }
     /** Runs a member request; a reply for an earlier account is dropped as stale. */
@@ -135,10 +143,38 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
             } }, { it.message ?: "The request could not be sent." })
         }
     }
-    fun askSpatter(question: String) = fetch({ spatterReply = it }) {
-        spatter.complete(listOf(
-            SpatterMessage(SpatterMessage.Role.System, SPATTER_SYSTEM),
-            SpatterMessage(SpatterMessage.Role.User, question.trim().take(4000))))
+    /** Reads `sdi_spatter_my_usage` and feeds the server plan to the Studio limits. */
+    fun refreshSpatterUsage() {
+        if (state !is AccountState.SignedIn || spatterUsage is Load.Loading) return
+        fetch<SpatterUsage>({ result ->
+            spatterUsage = result
+            if (result is Load.Loaded) PlanRuntime.reportServerPlan(result.value.plan)
+        }) { usageClient.myUsage() }
+    }
+    /** What a Spatter send does now (Free without credits gets the upgrade note on the device). */
+    val spatterGate: SpatterGate get() = SpatterGate.decide(PlanRuntime.limits, (spatterUsage as? Load.Loaded)?.value, spatterUsage is Load.Loading)
+
+    fun askSpatter(question: String) {
+        when (spatterGate) {
+            SpatterGate.UpgradeNote -> { spatterReply = Load.Failed(PlanCopy.SPATTER_UPGRADE_NOTE); return }
+            SpatterGate.AllowanceUsed -> { spatterReply = Load.Failed(PlanCopy.SPATTER_ALLOWANCE_USED); return }
+            SpatterGate.Checking -> { spatterReply = Load.Failed(PlanCopy.SPATTER_CHECKING); refreshSpatterUsage(); return }
+            is SpatterGate.Send -> Unit
+        }
+        val generation = manager.generation
+        spatterReply = Load.Loading
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                spatter.complete(listOf(
+                    SpatterMessage(SpatterMessage.Role.System, SPATTER_SYSTEM),
+                    SpatterMessage(SpatterMessage.Role.User, question.trim().take(4000))))
+            } }
+            if (generation != manager.generation) { spatterReply = Load.Failed(CommunityException.Stale().message!!); return@launch }
+            spatterReply = result.fold({ Load.Loaded(it) }, { Load.Failed(it.message ?: "That did not complete.") })
+            state = manager.state
+            // The server counted (or refused) the prompt; show its new allowance and credit balance.
+            if (state is AccountState.SignedIn) { spatterUsage = Load.Idle; refreshSpatterUsage() }
+        }
     }
 
     private companion object {

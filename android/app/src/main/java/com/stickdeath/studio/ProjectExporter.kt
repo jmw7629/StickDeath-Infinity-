@@ -9,6 +9,8 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import com.stickdeath.studio.billing.ExportRendition
+import com.stickdeath.studio.billing.StudioPlanLimits
 
 /** `SDI` is the iOS portable envelope (supported subset only); `MANIFEST` saves the manifest of the
  * last MP4/GIF render, since single-file pickers cannot deliver a sidecar. */
@@ -16,7 +18,16 @@ enum class ExportKind { PNG, SEQUENCE, SPRITESHEET, PROJECT, MP4, GIF, CREDITS, 
 /** [manifest] holds the iOS-layout manifest text for MP4/GIF renders; the caller offers it separately. */
 data class ExportArtifact(val file: File, val kind: ExportKind, val name: String, val share: Boolean = false, val manifest: String? = null)
 /** Render choices beyond the kind. [transparent] applies to PNG, sequence and spritesheet only. */
-data class ExportOptions(val transparent: Boolean = false, val manifestText: String? = null, val manifestName: String? = null)
+data class ExportOptions(val transparent: Boolean = false, val manifestText: String? = null, val manifestName: String? = null,
+    /** Plan cap on the MP4/GIF long edge (Free: 1280); null keeps the canvas size. */
+    val maxExportLongEdge: Int? = null,
+    /** Burn the SDI watermark into MP4/GIF frames (Free plan). */
+    val watermark: Boolean = false) {
+    /** The MP4/GIF output size for [document] under these options. */
+    fun rendition(document: Document, evenDimensions: Boolean): ExportRendition =
+        StudioPlanLimits.Unrestricted.copy(maxExportLongEdge = maxExportLongEdge, exportWatermark = watermark)
+            .exportRendition(document.width, document.height, evenDimensions)
+}
 
 /** Encodes one bitmap at a time into a bounded, privately owned staging file. */
 object ProjectExporter {
@@ -36,13 +47,15 @@ object ProjectExporter {
         val d = document.validated()
         val base = ExportManifests.filenameBase(d)
         if (kind == ExportKind.MP4) {
-            val movie = MovieExporter.prepare(context,d,progress)
+            val rendition = options.rendition(d, evenDimensions = true)
+            val movie = MovieExporter.prepare(context,d,progress,rendition)
             // The manifest describes the file that was actually written, including its byte count.
-            return movie.copy(manifest = ExportManifests.movie(d, movie.file.length(), movie.name, d.audioClips.isNotEmpty()))
+            return movie.copy(manifest = ExportManifests.movie(d, movie.file.length(), movie.name, d.audioClips.isNotEmpty(), rendition))
         }
         if (kind == ExportKind.GIF) {
-            val gif = GifExporter.prepare(context,d,progress)
-            return gif.copy(manifest = ExportManifests.gif(d, gif.file.length()))
+            val rendition = options.rendition(d, evenDimensions = false)
+            val gif = GifExporter.prepare(context,d,progress,rendition)
+            return gif.copy(manifest = ExportManifests.gif(d, gif.file.length(), rendition))
         }
         require(kind in setOf(ExportKind.PROJECT, ExportKind.CREDITS, ExportKind.SDI, ExportKind.MANIFEST) || d.width.toLong() * d.height <= 4_194_304) { "PNG export currently supports canvases up to 4 megapixels. No resized export was created." }
         if (kind == ExportKind.MANIFEST) require(!options.manifestText.isNullOrEmpty() && !options.manifestName.isNullOrEmpty()) { "Render an MP4 or GIF first; its manifest is then available to save." }

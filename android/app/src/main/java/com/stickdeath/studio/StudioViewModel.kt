@@ -16,6 +16,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.stickdeath.studio.billing.PlanRuntime
+import com.stickdeath.studio.billing.StudioPlanLimits
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
     private val store = ProjectStore(application)
@@ -29,9 +31,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val audioPreviewMutex = Mutex()
     private val audioImportMutex = Mutex()
     private var audioGeneration = 0L
-    fun beginAudioImport(): Boolean {
+    /** Plan limits in force (unrestricted until Play sells real plans; see [StudioPlanLimits.enforcing]). */
+    val planLimits: StudioPlanLimits get() = PlanRuntime.limits
+    /** Shows the upgrade note when [allowed] is false; returns [allowed]. */
+    fun requirePlan(allowed: Boolean): Boolean { if (!allowed) message = StudioPlanLimits.UPGRADE_NOTE; return allowed }
+    /** [fromLibrary] is the bundled sound library; otherwise the member's own file. */
+    fun beginAudioImport(fromLibrary: Boolean = false): Boolean {
         val captured = document ?: return false
         if (closing || importingAudio) return false
+        if (!requirePlan(if (fromLibrary) planLimits.soundLibrary else planLimits.audioImport)) return false
         stopAudioPreview()
         audioCapture = captured; importingAudio = true; audioImportStage = "Choose an audio file or bundled sound."
         return true
@@ -54,7 +62,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
     fun addBundledSound(captured: Document, sound: BundledSound) {
-        if (document != captured || !beginAudioImport()) return
+        if (document != captured || !beginAudioImport(fromLibrary = true)) return
         audioCapture = null
         loadAudioIntoProject(captured, sound.title, AssetCredit(sound.id, sound.title, sound.author, sound.sourceURL, sound.sha256)) { BundledSounds.source(getApplication<Application>(), sound) }
     }
@@ -279,6 +287,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun chooseBrush(family: BrushFamily) {
         if (tool != Tool.Pencil || family == brushFamily) return
+        if (!requirePlan(planLimits.allowsBrush(family.name))) return
         persistToolSettings()
         brushFamily = family
         restoreBrushSettings()
@@ -885,6 +894,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun prepareExport(kind: ExportKind, share: Boolean = false, options: ExportOptions = ExportOptions(transparent = exportTransparent)) {
         val snapshot = document ?: return
         if (exporting || exportArtifact != null || closing) return
+        if (kind == ExportKind.SEQUENCE && !requirePlan(planLimits.pngSequenceExport)) return
+        // Free: MP4/GIF scaled to fit 720p (1280 px long edge) with the SDI watermark burned in.
+        val limits = planLimits
+        val planned = options.copy(maxExportLongEdge = limits.maxExportLongEdge, watermark = limits.exportWatermark)
         exporting = true; message = "Preparing export of revision ${snapshot.revision}…"
         mutableExportProgress.value = ExportProgress("Preparing export")
         exportJob = viewModelScope.launch {
@@ -892,7 +905,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             var delivered = false
             try {
                 withContext(Dispatchers.IO) {
-                    owned = ProjectExporter.prepare(getApplication(), snapshot, kind, options) { completed, total ->
+                    owned = ProjectExporter.prepare(getApplication(), snapshot, kind, planned) { completed, total ->
                         if (total > 0) {
                             mutableExportProgress.value = if (completed >= total) ExportProgress("Finalizing export")
                             else ExportProgress("Rendering export", (completed.toLong() * 100 / total).toInt().coerceIn(0, 99))
@@ -1000,6 +1013,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun updateProject(captured: Document, name: String, width: Int, height: Int, fps: Int, fitArtwork: Boolean, backgroundColor: Int = captured.backgroundColor): Boolean = change { d ->
         require(d == captured) { "Project changed. Reopen settings before applying." }
         require(width in 16..4096 && height in 16..4096 && fps in 1..60)
+        require(planLimits.allowsCanvasChange(d.width, d.height, width, height)) { "Custom canvas sizes are part of Creator and Pro. Choose a preset, or upgrade in Account, Plans." }
         val resizing = width != d.width || height != d.height
         val frames = if (resizing && fitArtwork) {
             require(d.frames.all { f -> f.strokes.none { s -> d.layers.any { it.id == s.layerID && it.locked } } }) {
@@ -1029,6 +1043,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun create(name: String, width: Int, height: Int, fps: Int, backgroundColor: Int = -1) {
         if (busy || document != null) return
+        if (!planLimits.allowsCanvasSize(width, height)) { report("Custom canvas sizes are part of Creator and Pro. Choose a preset, or upgrade in Account, Plans."); return }
         val created = try { Document.create(name, width, height, fps, backgroundColor) }
         catch (e: Exception) { report(e.message ?: "Invalid project settings."); return }
         busy = true
@@ -1168,6 +1183,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         if (!strokeTool.isDrawing) return
         if (now.id != captured.id || now.revision != captured.revision || closing) return
         if (!now.layer.isEditable || points.isEmpty() || opacity == 0f) return
+        // A remembered extra brush stays selectable after a plan ends but does not paint on Free.
+        if (strokeTool == Tool.Pencil && !requirePlan(planLimits.allowsBrush(brush.name))) return
         // iOS lock rules: erasers need a free layer; alpha lock accepts only brush paint that keeps
         // coverage; position lock accepts new marks but no transforms.
         val mode = now.layer.lockMode
@@ -1186,6 +1203,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             is SpatterCommand.SelectLayer -> captured.layers.getOrNull(command.number - 1)?.let { selectLayer(it.id) } ?: false.also { report("That layer does not exist in the captured project. Nothing changed.") }
             is SpatterCommand.AddLayer -> change { d ->
                 require(d.layers.size < 32) { "Layer limit reached." }
+                require(planLimits.allowsNewLayer(d.layers.size)) { StudioPlanLimits.UPGRADE_NOTE }
                 val layer = Layer(name = command.name)
                 d.copy(layers = listOf(layer) + d.layers, activeLayerID = layer.id)
             }
@@ -1227,6 +1245,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun updateGrid(settings: GridSettings) = change { d -> settings.validate(); d.copy(grid = settings) }
     fun updateOnion(settings: OnionSettings) = change { d ->
         settings.validate()
+        // Saved counts above the plan stay (and are clamped when drawn); they cannot be raised.
+        require(planLimits.allowsOnion(settings.previous, settings.next) ||
+            (settings.previous <= d.onion.previous && settings.next <= d.onion.next)) { StudioPlanLimits.UPGRADE_NOTE }
         d.copy(onion = settings)
     }
     fun seekAudioFrame(captured: Document, seconds: Double): Boolean = change { current ->
@@ -1303,6 +1324,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun selectLayer(id: String) = change { d -> require(d.layers.any { it.id == id }); d.copy(activeLayerID = id) }
     fun addLayer() = change { d ->
         require(d.layers.size < 32) { "Layer limit reached." }
+        require(planLimits.allowsNewLayer(d.layers.size)) { StudioPlanLimits.UPGRADE_NOTE }
         val layer = Layer(name = "Layer ${d.layers.size + 1}")
         d.copy(layers = listOf(layer) + d.layers, activeLayerID = layer.id)
     }
@@ -1329,6 +1351,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun duplicateLayer(id: String) = change { d ->
         require(d.layers.size < 32) { "Layer limit reached." }
+        require(planLimits.allowsNewLayer(d.layers.size)) { StudioPlanLimits.UPGRADE_NOTE }
         val index = d.layers.indexOfFirst { it.id == id }
         require(index >= 0) { "The selected layer changed." }
         val source = d.layers[index]

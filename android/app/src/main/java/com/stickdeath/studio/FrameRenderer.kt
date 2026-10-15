@@ -164,10 +164,13 @@ object FrameRenderer {
     }
     /** Ghosts are an editor overlay only; exports call draw directly. Each ghost
      * has its own composite layer so an eraser cannot cut into another frame. */
-    fun drawOnion(canvas: Canvas, document: Document, frame: Frame, pending: Stroke? = null) {
+    /** [maxPrevious]/[maxNext] are the plan's onion-skin caps (Free: 1 back, 0 forward); the saved
+     * settings are shown clamped and never rewritten. */
+    fun drawOnion(canvas: Canvas, document: Document, frame: Frame, pending: Stroke? = null,
+                  maxPrevious: Int? = null, maxNext: Int? = null) {
         canvas.drawColor(document.backgroundColor)
         val index = document.frames.indexOfFirst { it.id == frame.id }
-        val settings = document.onion
+        val settings = document.onion.let { it.copy(previous = minOf(it.previous, maxPrevious ?: it.previous), next = minOf(it.next, maxNext ?: it.next)) }
         fun ghost(neighbor: Frame, tint: Int, distance: Int) {
             val paint = Paint().apply {
                 alpha = (settings.opacity * 255 / distance).toInt().coerceIn(0, 255)

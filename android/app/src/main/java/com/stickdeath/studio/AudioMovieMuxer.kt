@@ -23,7 +23,8 @@ object AudioMovieMuxer {
     private const val MAX_PADDING_FRAMES = AAC_FRAME * 4
     private const val PADDING_US = (MAX_PADDING_FRAMES * 1_000_000 + AudioMixer.RATE - 1) / AudioMixer.RATE
     private data class GaplessInfo(val delay: Int?, val padding: Int?)
-    suspend fun add(context: Context, video: File, document: Document): File {
+    /** [width]/[height] are the rendered video size (smaller than the canvas on the Free plan). */
+    suspend fun add(context: Context, video: File, document: Document, width: Int = document.width, height: Int = document.height): File {
         val scope = currentCoroutineContext()
         val began = SystemClock.elapsedRealtime()
         val check = {
@@ -38,7 +39,7 @@ object AudioMovieMuxer {
             check()
             val destination = File.createTempFile("studio-av-", ".partial", context.cacheDir); output = destination
             remux(video, audio, destination, document, gapless, check)
-            inspect(destination, document, check)
+            inspect(destination, document, width, height, check)
             check(); complete = true
             return destination
         } finally { audio.delete(); if (!complete) output?.delete() }
@@ -178,7 +179,7 @@ object AudioMovieMuxer {
             require(output.length() in 1..MAX_FILE)
         } finally { ve.release(); ae.release(); runCatching { muxer?.release() } }
     }
-    private fun inspect(file: File, document: Document, check: () -> Unit) {
+    private fun inspect(file: File, document: Document, width: Int, height: Int, check: () -> Unit) {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(file.absolutePath)
@@ -189,7 +190,7 @@ object AudioMovieMuxer {
             val vf = extractor.getTrackFormat(video); val af = extractor.getTrackFormat(audio)
             val total = document.frames.sumOf { it.hold }
             val duration = total.toLong() * 1_000_000 / document.fps
-            require(vf.getInteger(MediaFormat.KEY_WIDTH) == document.width && vf.getInteger(MediaFormat.KEY_HEIGHT) == document.height)
+            require(vf.getInteger(MediaFormat.KEY_WIDTH) == width && vf.getInteger(MediaFormat.KEY_HEIGHT) == height)
             require(kotlin.math.abs(vf.getLong(MediaFormat.KEY_DURATION) - duration) <= 1000) { "Muxing changed video duration." }
             require(af.getInteger(MediaFormat.KEY_SAMPLE_RATE) == AudioMixer.RATE && af.getInteger(MediaFormat.KEY_CHANNEL_COUNT) == 2)
             require(af.getLong(MediaFormat.KEY_DURATION) in (duration - 2000)..(duration + PADDING_US)) { "MP4 audio duration exceeds the supported AAC padding." }
