@@ -1746,12 +1746,13 @@ jobs:
           "$RUNNER_TEMP/sdi-spatter-planner-tests"
       - name: Verify six quick-share destinations and format choices
         shell: bash
+        timeout-minutes: 2
         run: |
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Views/Studio/Panels/StudioQuickShareDestinations.swift \
             Tests/StudioQuickShare/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-quick-share"
-          timeout 60s "$RUNNER_TEMP/sdi-studio-quick-share"
+          "$RUNNER_TEMP/sdi-studio-quick-share"
       - name: Verify billing plan catalogue, StoreKit state machine and plan copy
         shell: bash
         run: |
