@@ -23,9 +23,15 @@ revoke all on function sdi_private.account_active() from public;
 grant execute on function sdi_private.account_active() to authenticated;
 create function sdi_private.users_action(action text,subject uuid default null,query text default '',page integer default 0,reason text default '')
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare result jsonb; before_state text;
+declare result jsonb; before_state text; denial jsonb;
 begin
  if not sdi_private.admin_can('users') or not sdi_private.account_active() then return jsonb_build_object('error','Administrator MFA authorization required.'); end if;
+ -- Account-state changes need a recent second factor and are rate limited; every
+ -- refusal is recorded (admin_gate in admin-hardening.sql, resolved at run time).
+ if action in('suspend','ban','restore','signout','note') then
+  denial:=sdi_private.admin_gate('users_action.'||action,'users',action<>'note',30);
+  if denial is not null then return denial; end if;
+ end if;
  if action='history' then
   if subject is null or page is null or page<0 or page>199 then return jsonb_build_object('error','Select an account and valid history page.'); end if;
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into result from (
@@ -48,7 +54,13 @@ begin
      from (select distinct i.provider from auth.identities i where i.user_id=u.id) method) as sign_in_methods,
     case when sdi_private.admin_can('moderation') then
      (select count(*) from sdi_private.feed_reports r join sdi_private.feed_posts p on p.id=r.post where p.creator=u.id)
-     else null end as feed_report_count
+     else null end as feed_report_count,
+    -- Plan is billing data: shown only with the finance capability (billing.sql
+    -- installs later; entitlements come only from signed provider events).
+    case when sdi_private.admin_can('finance') then
+     coalesce((select e.tier from sdi_private.entitlements e where e.user_id=u.id
+      order by case e.tier when 'pro' then 0 else 1 end,e.paid_through desc limit 1),'free')
+     else null end as plan
    from auth.users u left join sdi_private.account_controls c on c.user_id=u.id
    where query='' or position(lower(query) in lower(coalesce(u.raw_user_meta_data->>'username','')))>0 or u.id::text=query
    order by u.created_at desc,u.id limit 50 offset page*50

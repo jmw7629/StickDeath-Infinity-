@@ -381,7 +381,20 @@ repository root. Service sweeps are run by an operator or host timer through
 39. agent-proposals.sql
 40. worker-configuration.sql
 41. users-profiles.sql
+42. diagnostics.sql
+43. rate-limits.sql
+44. security-credentials.sql
+45. security-retire-communications.sql
+46. security-audit-integrity.sql
 <!-- /apply-order -->
+
+`rate-limits.sql` (#263): daily per-account quotas the per-minute budgets do not cover: render intake registrations and bytes, publication jobs (a duplicate request uses no quota) and room invitation codes, enforced by BEFORE INSERT triggers on every insert path and configurable in `sdi_private.resource_quotas`; members read their own usage with `sdi_quota_status`. Defaults are candidate values, not measured capacity. Tested by `tests/130_security_lifecycle.sql`.
+
+`security-credentials.sql` (#238): credential slots for provider keys and the owner's OAuth grant. Values live only in the project's secret store (Supabase Vault); the schema keeps state, revision, a 12-hex fingerprint and an append-only audit. Store/rotate/load/compare-and-set/revoke are service-only; administrators read presence and rotation due through `sdi_credential_status`. Without Vault every call says so and stores nothing. Tested by `tests/130_security_lifecycle.sql`.
+
+`security-retire-communications.sql` (#260): closes any legacy messaging/calling objects a live project still holds (client privileges revoked, removed from realtime, rows kept) and exposes `sdi_legacy_communication_exposure` for the release gate. On a fresh project it closes nothing.
+
+`security-audit-integrity.sql` (#256): every `sdi_private.*_audit` table becomes append-only (no update except FK set-null, no delete or truncate outside the account purge); `sdi_audit_integrity_report` lists guarded tables for the restore drill. Install last.
 
 `agent-proposals.sql` (#284): the approval inbox. A running agent with the `propose` permission files a proposal (`sdi_agent_propose`, idempotent for an identical pending one, fifty pending per agent) instead of acting above its caps; administrators read the inbox and only the owner approves or rejects with a reason (`sdi_agent_proposal_admin`, audited); the worker receives approved proposals (`sdi_agent_proposals_due`, nothing under emergency stop or pause) and records the outcome (`sdi_agent_proposal_finish`); pending proposals expire after fourteen days. Tested by `tests/110_agent_proposals.sql`.
 
@@ -389,4 +402,4 @@ repository root. Service sweeps are run by an operator or host timer through
 
 `worker-configuration.sql` (#248): masked provider-configuration health. A service worker reports which of its named settings are present as booleans only (`sdi_worker_configuration`; any other value type is refused so no secret can be stored), and administrators read presence, the missing names and staleness through `sdi_admin_configuration`. `backend.ops.sweeps` reports its own settings after every run. Tested by `tests/120_worker_configuration.sql`.
 
-`spatter-draft-jobs.sql` (#212/#214): one job per UTC day behind the `spatter_daily_video` agent gate, at most three attempts, 15-minute leases, missed days recorded; adds `render_reviews.storyboard` and `source_project_digest` and extends `invalidate_render_approval`. Unapplied; no capacity or schedule is created.
+`spatter-draft-jobs.sql` (#212/#214): one job per UTC day behind the `spatter_daily_video` agent gate, at most three attempts, 15-minute leases, missed days recorded; adds `render_reviews.storyboard` and `source_project_digest` and extends `invalidate_render_approval`. Unapplied; no capacity or schedule is created. Its #209 metering block applies the owner's 2026-10-14 plan rules: Free = 5 suggested prompts per UTC calendar month (`month:` bucket; free text refused with `suggested_prompt_required` via `p_suggested_prompt` and the `spatter_suggested_prompt_ids()` allowlist), Creator = 15 per billing period, Pro unlimited, trialing subscriptions metered as their own tier.

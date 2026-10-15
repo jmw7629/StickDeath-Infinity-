@@ -32,6 +32,8 @@ admin.challenges.schedule,StickDeathInfinity/Views/Admin/AdminDashboardView.swif
 admin.challenges.select,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text 'Scheduled challenges',n-a,#210 #285,deferred
 admin.challenges.starts,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,date picker 'Opens' -> binds startsAt,n-a,#210 #285,deferred
 admin.challenges.title,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text field 'Title (1–100)' -> binds title,n-a,#210 #285,deferred
+admin.configuration.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,"text 'Each service worker reports which named settings' -> binds 0.replacingOccurrences, binds 0",n-a,#248 #210,deferred
+admin.configuration.worker,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,text 'No worker has reported its configuration.',n-a,#248 #210,deferred
 admin.finance.configure-annual,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,button 'Record owner configuration for this annual produ',n-a,#210 #285,deferred
 admin.finance.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,text,n-a,#210 #285,deferred
 admin.finance.product-id,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,text field 'Provider product id' -> binds productID,n-a,#210 #285,deferred
@@ -42,6 +44,18 @@ admin.finance.section,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,Ad
 admin.health.emergency-stop,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminHealthContent,text 'AGENT EMERGENCY STOP IS ACTIVE',n-a,#210 #285,deferred
 admin.health.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminHealthContent,text,n-a,#210 #285,deferred
 admin.health.refresh,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminHealthContent,button 'Refresh health' -> load,n-a,#210 #285,deferred
+admin.inbox.agent,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,"text 'Agent' -> binds agentFilter, binds 0.title, binds 0.key",n-a,#284 #210,deferred
+admin.inbox.approve,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,button 'Approve',n-a,#284 #210,deferred
+admin.inbox.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,text,n-a,#284 #210,deferred
+admin.inbox.query,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,"text field 'Search references, errors or audit reasons' -> binds query",n-a,#284 #210,deferred
+admin.inbox.reason,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,"text field 'Required reason for a decision' -> binds 0, binds reason",n-a,#284 #210,deferred
+admin.inbox.refresh,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,button 'Refresh',n-a,#284 #210,deferred
+admin.inbox.reject,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,button 'Reject',n-a,#284 #210,deferred
+admin.inbox.search,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,button 'Search history',n-a,#284 #210,deferred
+admin.inbox.state,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminAgentInboxContent,"text 'Run state' -> binds stateFilter, binds 0.capitalized, binds 0",n-a,#284 #210,deferred
+admin.operations.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,text,n-a,#257 #210,deferred
+admin.operations.refresh,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,button 'Refresh' -> load,n-a,#257 #210,deferred
+admin.operations.release,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,"text -> binds 0.label.isEmpty, binds 0.label, binds 0.at.formatted",n-a,#257 #210,deferred
 admin.overview.status,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDashboardContent,text 'Recent activity is not connected.',n-a,#210 #285,deferred
 admin.review.history,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text 'Spatter video — owner approval required',n-a,#210 #285,deferred
 admin.review.renew-preview,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,button 'Renew private preview' -> load,n-a,#210 #285,deferred
@@ -93,6 +107,7 @@ challenges.list.error,StickDeathInfinity/Views/Challenges/ChallengesView.swift,C
 challenges.list.refresh,StickDeathInfinity/Views/Challenges/ChallengesView.swift,ChallengesView,"button 'Refresh challenges' -> load, binds 0.phase",n-a,unmapped,deferred
 feed.card,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text 'Export not permitted by the creator; sharing lin',n-a,unmapped,deferred
 feed.card.export,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,label,n-a,unmapped,deferred
+feed.card.export-plan,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text 'The creator permits saving this video; saving fi',n-a,#219,deferred
 feed.card.like,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,label,n-a,unmapped,deferred
 feed.card.menu,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,image 'Report video',n-a,unmapped,deferred
 feed.card.play,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text,n-a,unmapped,deferred
@@ -103,6 +118,8 @@ feed.home.load-more,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedVie
 feed.home.notice,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,container 'feed.home.notice' (identifier-derived; review source),n-a,unmapped,deferred
 feed.home.offline,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,container 'feed.home.offline' (identifier-derived; review source),n-a,unmapped,deferred
 feed.home.refresh,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,button 'Refresh feed' -> load,n-a,unmapped,deferred
+feed.player.retry,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityVideoPlayer,button 'Retry' -> model.load,n-a,#219,deferred
+feed.player.status,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityVideoPlayer,button 'Close' -> dismiss,n-a,#219,deferred
 onboarding.back,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,label,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.next,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,next-page button 'onboarding.next' (identifier-derived; review source),n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.position,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
@@ -115,6 +132,7 @@ profile.delete-account.notice,StickDeathInfinity/Views/Profile/ProfileView.swift
 profile.delete-account.status,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,text 'Sign Out' -> authVM.signOut,n-a,#135 #262,deferred
 profile.edit.avatar-notice,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text,n-a,#224,deferred
 profile.edit.avatar-picker,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,label -> binds avatarItem,n-a,#224,deferred
+profile.edit.avatar-remove,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,label 'Remove avatar',n-a,#224,deferred
 profile.edit.bio,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text editor 'Bio' -> binds bio,n-a,#224,deferred
 profile.edit.notice,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text,n-a,#224,deferred
 profile.edit.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,button 'Edit username and bio' -> authVM.captureProfileEdit,n-a,#224,deferred
@@ -139,9 +157,23 @@ profile.reviews.allow-export,StickDeathInfinity/Views/Profile/ProfileView.swift,
 profile.reviews.publish-feed,StickDeathInfinity/Views/Profile/ProfileView.swift,CreatorReviewsView,button 'Publish approved video to the SDI feed',n-a,#224,deferred
 profile.sign-in,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Sign in or create an account' -> binds 0,n-a,#134 #136 #137,deferred
 profile.statistics,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,text,n-a,#224,deferred
+profile.statistics.problem,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,text 'Projects counts saved animations on this device.',n-a,#224,deferred
 profile.subscription-status,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,"text 'Pricing, renewal and purchase information are no'",n-a,#258,deferred
+rooms.assets,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,container 'rooms.assets' (identifier-derived; review source),no,#233 #234,deferred
+rooms.assets.attribution,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,text field -> binds attribution,no,#233 #234,deferred
+rooms.assets.cancel,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button 'Cancel' -> cancel,no,#233 #234,deferred
+rooms.assets.choose,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button 'Choose a file to send',no,#233 #234,deferred
+rooms.assets.consent,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,toggle 'I have the rights to share this file with this r' -> binds consent,no,#233 #234,deferred
+rooms.assets.download,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button 'Save to this device',no,#233 #234,deferred
+rooms.assets.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,text 'Shared assets',no,#233 #234,deferred
+rooms.assets.license,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,"text 'Licence' -> binds license, binds 0.title, binds 0",no,#233 #234,deferred
+rooms.assets.notice,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,container 'rooms.assets.notice' (identifier-derived; review source),no,#233 #234,deferred
+rooms.assets.progress,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,text,no,#233 #234,deferred
+rooms.assets.refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button 'Refresh assets' -> refresh,no,#233 #234,deferred
+rooms.assets.send,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button,no,#233 #234,deferred
+rooms.assets.withdraw,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomAssetsCard,button,no,#233 #234,deferred
 rooms.browser.create,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Create room',no,#228 #234,deferred
-rooms.browser.empty,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'No accepted rooms.',no,#228 #234,deferred
+rooms.browser.empty,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'No accepted rooms. Rooms appear here once you cr',no,#228 #234,deferred
 rooms.browser.refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Refresh rooms' -> load,no,#228 #234,deferred
 rooms.browser.room,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,"text 'Your rooms' -> load, binds 0",no,#228 #234,deferred
 rooms.calendar,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,progress -> load,no,#297,deferred
@@ -162,12 +194,15 @@ rooms.member.role,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetai
 rooms.not-configured,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'Collaborate by agreement. Invitation codes never',no,#228 #234,deferred
 rooms.notice,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,container 'rooms.notice' (identifier-derived; review source),no,#228 #234,deferred
 rooms.quotas,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomQuotaPanel,container 'rooms.quotas' (identifier-derived; review source),no,#228 #234,deferred
-rooms.quotas.transfer-unavailable,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomQuotaPanel,text 'Quotas and transfers',no,#228 #234,deferred
+rooms.quotas.transfers,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomQuotaPanel,text 'Quotas and transfers',no,#233 #234,deferred
 rooms.report.detail,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,"text field 'What happened? (optional, up to 2000 characters)' -> binds draft.detail",no,#228 #234,deferred
 rooms.report.reason,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,"text 'Reason' -> binds draft.reason, binds 0.title, binds 0",no,#228 #234,deferred
 rooms.report.submit,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,button -> submit,no,#228 #234,deferred
 rooms.requests.item,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'Your pending requests',no,#228 #234,deferred
 rooms.room.back,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Back to rooms' -> auth.userId.flatMap,no,#228 #234,deferred
+rooms.room.conflict,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,-> binds 0,no,#232 #234,deferred
+rooms.room.conflict-discard,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Discard mine',no,#232 #234,deferred
+rooms.room.conflict-keep,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Keep mine on top',no,#232 #234,deferred
 rooms.room.copy-code,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,label 'Copy',no,#228 #234,deferred
 rooms.room.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text,no,#228 #234,deferred
 rooms.room.invite,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Create 24-hour invite',no,#228 #234,deferred
@@ -184,6 +219,16 @@ rooms.warRoom,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomVie
 rooms.watchTogether,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.watchTogether' (identifier-derived; review source),no,#296,deferred
 settings.delete-account,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Delete Account',n-a,unmapped,deferred
 settings.delete-account.status,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign in from Profile to manage your account. Loc',n-a,unmapped,deferred
+settings.diagnostics.delete,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,button 'Delete queued',n-a,#291,deferred
+settings.diagnostics.payload,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,text -> binds showPreview,n-a,#291,deferred
+settings.diagnostics.preview,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,button 'View what will be sent',n-a,#291,deferred
+settings.diagnostics.queued,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,text,n-a,#291,deferred
+settings.diagnostics.send,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,button,n-a,#291,deferred
+settings.diagnostics.status,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,text,n-a,#291,deferred
+settings.diagnostics.toggle,StickDeathInfinity/Services/Diagnostics/DiagnosticsSettingsView.swift,DiagnosticsSettingsView,"text 'Daily counts of launches, crashes, hangs and ter' -> binds 0",n-a,#291,deferred
+settings.export-data,StickDeathInfinity/Views/Settings/SettingsView.swift,AccountDataExportRow,progress,n-a,#262,deferred
+settings.export-data.message,StickDeathInfinity/Views/Settings/SettingsView.swift,AccountDataExportRow,text 'Includes the records the service keeps for your ',n-a,#262,deferred
+settings.export-data.share,StickDeathInfinity/Views/Settings/SettingsView.swift,AccountDataExportRow,label 'Save or share the export',n-a,#262,deferred
 settings.sign-out,StickDeathInfinity/Views/Settings/SettingsView.swift,SettingsView,text 'Sign Out' -> authVM.signOut,n-a,unmapped,deferred
 spatter.artwork.order-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Send selected artwork backward',no,#203,deferred
 spatter.audio.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,example-command chips 'spatter.audio.examples' (identifier-derived; review source),no,#203,testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen
@@ -191,6 +236,9 @@ spatter.audio.target,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipeP
 spatter.audio.track-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Unsolo track',no,#203,deferred
 spatter.batch.example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use a batch example (one line per instruction)',no,#203,deferred
 spatter.brief.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"button 'Walks, then explodes (seeded)'",no,#203,deferred
+spatter.context.ready,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text 'Ready now' grammar readiness from SpatterContextSnapshot,no,#203 #204,deferred
+spatter.context.summary,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text 'What Spatter sees' bounded context snapshot,no,#203,deferred
+spatter.context.tool,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text control-registry explanation for the selected tool,no,#204,deferred
 spatter.frame.action-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Duplicate active frame 12 times.',no,#203,deferred
 spatter.frame.duplicate-range-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use duplicate frame range example',no,#203,deferred
 spatter.frame.exposure-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use frame exposure example',no,#203,deferred
@@ -220,13 +268,13 @@ spatter.memory.inspect,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterP
 spatter.memory.notice,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterPersonalMemorySheet,text,no,#203,deferred
 spatter.memory.reset,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterPersonalMemorySheet,button 'Reset saved preferences',no,#203,deferred
 spatter.memory.save,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterPersonalMemorySheet,"button 'Save preferences' -> vm.savePersonalPreferences, binds draft.guidance, binds 0.rawValue.capitalized",no,#203,deferred
-spatter.messages.budget,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Sends your message and earlier cloud messages fr',n-a,#203 #207,deferred
-spatter.messages.cancel,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,button 'Cancel request' -> cancel,n-a,#203 #207,deferred
-spatter.messages.cloud,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,toggle 'Cloud advice' -> binds spatterVM.useCloud,n-a,#203 #207,deferred
-spatter.messages.input,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text field 'Ask Spatter for advice...' -> binds input,n-a,#203 #207,deferred
-spatter.messages.notice,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text,n-a,#203 #207,deferred
-spatter.messages.send,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,image -> submit,n-a,#203 #207,deferred
-spatter.messages.status,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Spatter 💀',n-a,#203 #207,deferred
+spatter.messages.budget,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Sends your message and earlier cloud messages fr',no,#203 #207,deferred
+spatter.messages.cancel,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,button 'Cancel request' -> cancel,no,#203 #207,deferred
+spatter.messages.cloud,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,toggle 'Cloud advice' -> binds spatterVM.useCloud,no,#203 #207,deferred
+spatter.messages.input,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,"text field -> binds 0, binds input",no,#203 #207,deferred
+spatter.messages.notice,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text,no,#203 #207,deferred
+spatter.messages.send,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,image -> submit,no,#203 #207,deferred
+spatter.messages.status,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Spatter 💀',no,#203 #207,deferred
 spatter.motion.apply,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Apply local edit' -> session.submit,no,#203,testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.motion.back,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"button 'Back to advice' -> session.saveState, session.close, vm.document.id",no,#203,testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.motion.brief-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use a two-action brief',no,#203,deferred
@@ -254,9 +302,22 @@ spatter.motion.undo,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePa
 spatter.motion.undo-unavailable,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text -> vm.document.id,no,#203,deferred
 spatter.navigation.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Select layer 1',no,#203,deferred
 spatter.onion.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Configure onion skin',no,#203,deferred
+spatter.own-key.key,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,secure field 'API key' -> binds key (Keychain only on save),no,#209 #259,deferred
+spatter.own-key.message,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,text -> save/remove/load outcome message,no,#209 #259,deferred
+spatter.own-key.model,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,text field 'Model name' -> binds model,no,#209 #259,deferred
+spatter.own-key.provider,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,"picker 'Provider' -> binds provider (OpenAI, Anthropic)",no,#209 #259,deferred
+spatter.own-key.remove,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,button 'Remove key' -> confirmRemove -> store.remove,no,#209 #259,deferred
+spatter.own-key.save,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,button 'Save key on this device' / 'Replace saved key' -> save,no,#209 #259,deferred
+spatter.own-key.saved,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,text -> saved provider and model (never the key),no,#209 #259,deferred
 spatter.picture.apply,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Open Add Picture…',no,#203,testLicensedImageLibraryUndoAndColdReopen
+spatter.plan.free-text-locked,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,text -> vm.freeTextLockReason,no,#209 #259,deferred
+spatter.plan.lockout,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,text -> vm.allowanceLockout (server-reported),no,#209 #259,deferred
+spatter.plan.own-key,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,button 'Own AI key…' -> SpatterOwnKeySettingsView,no,#209 #259,deferred
 spatter.plan.preview,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Preview plan' -> binds draftFocused,no,#203,deferred
+spatter.plan.retry,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,button 'Check plan again' -> vm.refreshUsage,no,#209 #259,deferred
+spatter.plan.stale,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text stale-preview warning (SpatterContextSnapshot.isStale),no,#203 #205,deferred
 spatter.plan.text,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text,no,#203,deferred
+spatter.plan.upgrade,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,button 'See Creator and Pro plans' -> SubscriptionView,no,#209 #259,deferred
 spatter.project.rename-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use project rename example',no,#203,deferred
 spatter.registry.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Project size and frame rate',no,#203,deferred
 spatter.selection.duplicate-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use duplicate selected drawings example',no,#207,deferred
@@ -269,7 +330,7 @@ spatter.studio.close,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAIS
 spatter.studio.cloud,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,toggle 'Cloud advice' -> binds spatterVM.useCloud,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
 spatter.studio.cloud.budget,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text,no,#203 #207,deferred
 spatter.studio.cloud.share-names,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,toggle 'Include project and layer names' -> binds spatterVM.shareProjectNames,no,#203 #207,deferred
-spatter.studio.input,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text field 'Ask Spatter for advice...' -> binds prompt,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
+spatter.studio.input,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,"text field -> binds 0, binds prompt",no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
 spatter.studio.local-motion,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,button 'Local Studio edits…',no,#203 #207,testLicensedImageLibraryUndoAndColdReopen testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.studio.memory,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,button 'Local memory preferences…',no,#203 #207,deferred
 spatter.studio.notice,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
@@ -286,6 +347,7 @@ startup.sign-in-required,StickDeathInfinity/Views/Splash/SplashScreenView.swift,
 studio.add-frame,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioTimeline,image -> vm.addFrame,yes,#161,testBottomCopyPasteUsesExplicitLinkedImageWithoutDrawingsOrFrameCopies testBundledAudioMP4AndNativeShareCancellation testFramesViewerStableSelectionAfterReorderAndColdReopen testGIFExportFramesAndNativeShareCancellation testNonActiveFrameCopyPasteUndoAndColdReopen testRotoscopePhotosActualPlayheadUndoAndColdReopen testSpritesheetSizeErrorThenPNGExportRecovery testTweenEasingEditableFramesUndoAndColdReopen helper:verifyFrameContext
 studio.add-layer,StickDeathInfinity/Views/Studio/Panels/LayerPanel.swift,LayerPanel,text '+' -> vm.addLayer,yes,#158,testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen testLayerDeleteConfirmationUndoAndColdReopen testNativeLayerDragReordersPixelsUndoRedoAndColdReopen
 studio.audio.analyze-waveform,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,"button 'Load measured waveform' -> vm.audioTrack, vm.stopPlayback, vm.document.id",no,#192,deferred
+studio.audio.audible-scrub,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,toggle 'Audible scrubbing' -> binds audibleScrub,no,#180,deferred
 studio.audio.browse-all,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,button 'Browse all sounds',no,#180,deferred
 studio.audio.cancel,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,button 'Cancel audio import or analysis' -> cancel,no,#180,testAudioFilesPickerCancellationPreservesBlankProject
 studio.audio.catalogue.count,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,text,no,#180,testExpandedAACLibrarySoundPlaybackAndOfflineReopen testSoundLibraryTagsCountsPreviewStopAndColdReopen
@@ -439,6 +501,9 @@ studio.export.movie.spatter-receipt,StickDeathInfinity/Views/Studio/Panels/Studi
 studio.export.movie.submit-review,StickDeathInfinity/Views/Studio/Panels/StudioMovieExportControls.swift,StudioMovieExportControls,"label 'Submit this MP4 for review' -> session.beginSharing, vm.document.name.prefix",no,#182 #183 #184 #185,deferred
 studio.export.open,StickDeathInfinity/Views/Studio/StudioHeaderBar.swift,StudioHeaderBar,image 'Export' -> vm.activePanel,no,#182 #183 #184 #185,helper:assertStudioChromeReachable helper:closeExportPanel helper:openExportPanel
 studio.export.preview,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,image 'Exported PNG preview',no,#182 #183 #184 #185,testMP4ExportReceiptAndNativeShareCancellation testPNGExportPreviewAndNativeShareCancellation testSpritesheetSizeErrorThenPNGExportRecovery helper:waitForPNGPreview
+studio.export.quick-share.customize,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,text 'Customize shortcuts',no,#242,deferred
+studio.export.quick-share.note,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,text,no,#242,deferred
+studio.export.quick-share.reset,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,"button 'Restore default shortcuts' -> binds 0, binds 0.label",no,#242,deferred
 studio.export.receipt,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,"text -> binds 0.label, binds 0",no,#182 #183 #184 #185,deferred
 studio.export.save-files,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,image 'Save to Files',no,#182 #183 #184 #185,deferred
 studio.export.scale,StickDeathInfinity/Views/Studio/Panels/ExportPanel.swift,ExportPanel,"text 'Export scale' -> binds scale, binds 0.label, binds 0",no,#182 #183 #184 #185,deferred
@@ -550,8 +615,11 @@ studio.layers.open,StickDeathInfinity/Views/Studio/StudioView.swift,StudioBottom
 studio.library,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,text 'StickDeath Studio',no,#195,testAccessibilityAuditLibraryAndStudioAtAccessibilityTextSize testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen testGuestProfileProjectsAndSettingsNavigation testRealCanvasStrokeUndoRedo testWelcomeGuideNavigationAndLocalCompletion helper:createProjectIfLibraryIsShown
 studio.library.count,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,text,no,#195,testProjectLibraryLastRowWithExpandedCreation
 studio.library.import-backup,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,text 'Import project backup',no,#286,testPortableProjectFilesBackupImportCancelAndColdReopen
-studio.library.import.drop-missing-audio,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Import without missing sounds' -> vm.importPortableProject,yes,#195,deferred
+studio.library.import.conflict.cancel,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Cancel',no,#170 #195,deferred
+studio.library.import.conflict.copy,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Import as a separate copy' -> binds 0,no,#170 #195,deferred
+studio.library.import.drop-missing-audio,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Import without missing sounds',no,#195,deferred
 studio.library.import.drop-missing-audio.dismiss,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Dismiss',no,#195,deferred
+studio.library.import.verification,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,text,no,#170 #195,deferred
 studio.library.menu.duplicate,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,label 'Duplicate Project' -> vm.duplicateProject,no,#195,deferred
 studio.library.menu.remove,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,label 'Move to Recently Deleted',no,#195,deferred
 studio.library.menu.rename,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,label 'Rename…',no,#195,deferred
@@ -629,6 +697,16 @@ studio.storage.cancel-review,StickDeathInfinity/Views/Studio/StudioProjectLibrar
 studio.storage.clear-cache,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button 'Clear working cache',no,#171 #167,deferred
 studio.storage.confirm-remove-revisions,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,"button 'Remove reviewed old versions' -> cancel, dismiss, binds 0",no,#171 #167,testObsoleteRevisionCleanupCancelConfirmAndColdReopen
 studio.storage.error,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text,no,#171 #167,deferred
+studio.storage.free,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,container 'studio.storage.free' (identifier-derived; review source),no,#171 #167,deferred
+studio.storage.free.critical,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'Very little space is left. Saves may fail; when ',no,#171 #167,deferred
+studio.storage.free.low,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'Space is getting low. Imports check for room fir',no,#171 #167,deferred
+studio.storage.free.unknown,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'This device did not report free space. Saves sti' -> vm.obsoleteRevisionCleanupRequest,no,#171 #167,deferred
+studio.storage.leftovers.confirm,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button -> binds 0,no,#171 #167,deferred
+studio.storage.leftovers.exports,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,container 'studio.storage.leftovers.exports' (identifier-derived; review source),no,#171 #167,deferred
+studio.storage.leftovers.remove-exports,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button 'Remove leftover export copies',no,#171 #167,deferred
+studio.storage.leftovers.remove-scratch,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button 'Remove abandoned working files',no,#171 #167,deferred
+studio.storage.leftovers.result,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text,no,#171 #167,deferred
+studio.storage.leftovers.scratch,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'Files left in the apps temporary folder by an im',no,#171 #167,deferred
 studio.storage.list,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,list container 'studio.storage.list' (identifier-derived; review source),no,#171 #167,testObsoleteRevisionCleanupCancelConfirmAndColdReopen
 studio.storage.notice,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text,no,#171 #167,deferred
 studio.storage.project-picker,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,project picker 'studio.storage.project-picker' (identifier-derived; review source),no,#171 #167,testObsoleteRevisionCleanupCancelConfirmAndColdReopen
@@ -640,6 +718,8 @@ studio.storage.revision-result,StickDeathInfinity/Views/Studio/StudioProjectLibr
 studio.storage.revision-scanning,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,progress,no,#171 #167,deferred
 studio.storage.scanning,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,"progress 'Measures Documents and disk caches, including ev'",no,#171 #167,deferred
 studio.storage.total,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,storage total text 'studio.storage.total' (identifier-derived; review source),no,#171 #167,deferred
+studio.storage.waveforms,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,text 'The temporary folder could not be measured. Noth',no,#171 #167,deferred
+studio.storage.waveforms.clear,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioStorageSheet,button 'Clear waveform previews',no,#171 #167,deferred
 studio.text.alignment,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,"text 'Alignment' -> binds vm.textStyle.size, binds vm.textStyle.alignment, binds 0.rawValue.capitalized",no,#148,deferred
 studio.text.apply,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Apply' -> vm.applyTextEditing,yes,#148,testEditableTextColdReopenAndEditableSource helper:createEditableTextFixture helper:verifyEditableText
 studio.text.bold,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,toggle 'Bold' -> binds vm.textStyle.bold,no,#148,deferred
@@ -743,3 +823,5 @@ welcome.create-account,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeVi
 welcome.guest,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,button,n-a,#134 #136 #137,helper:launchAtWelcome helper:launchGuestStudio
 welcome.guide,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,button,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 welcome.sign-in,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,label 'Sign In',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
+studio.brush.additive-glow,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,toggle 'Additive glow' -> vm.brushSettings.additiveGlow,no,#142,deferred
+studio.brush.buildup-help,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text 'Build-up help' -> static,no,#142,deferred

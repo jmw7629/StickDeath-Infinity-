@@ -3,6 +3,19 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+// Public connection values (never secrets): `-Psdi.supabaseUrl=… -Psdi.supabasePublishableKey=…` or the
+// matching SDI_* environment variables. Unset values build an honestly unconnected app with no INTERNET
+// permission; the connected manifest (INTERNET only) is merged only when both identity values are set.
+fun sdiValue(property: String, environment: String): String {
+    val value = (providers.gradleProperty(property).orNull ?: System.getenv(environment) ?: "").trim()
+    require(value.none { it == '"' || it == '\\' || it == '$' || it.isISOControl() }) { "$property contains unsupported characters" }
+    return value
+}
+val sdiSupabaseUrl = sdiValue("sdi.supabaseUrl", "SDI_SUPABASE_URL")
+val sdiPublishableKey = sdiValue("sdi.supabasePublishableKey", "SDI_SUPABASE_PUBLISHABLE_KEY")
+val sdiSpatterUrl = sdiValue("sdi.spatterBackendUrl", "SDI_SPATTER_BACKEND_URL")
+val sdiOAuthProviders = sdiValue("sdi.oauthProviders", "SDI_OAUTH_PROVIDERS")
+val sdiConnected = sdiSupabaseUrl.isNotEmpty() && sdiPublishableKey.isNotEmpty()
 val generatedStudioAssets = layout.buildDirectory.dir("generated/studioAssets")
 val stageStudioImages by tasks.registering(Sync::class) {
     from("../../StickDeathInfinity/Resources/StudioImages")
@@ -18,6 +31,15 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "SDI_SUPABASE_URL", "\"$sdiSupabaseUrl\"")
+        buildConfigField("String", "SDI_SUPABASE_PUBLISHABLE_KEY", "\"$sdiPublishableKey\"")
+        buildConfigField("String", "SDI_SPATTER_BACKEND_URL", "\"$sdiSpatterUrl\"")
+        buildConfigField("String", "SDI_OAUTH_PROVIDERS", "\"$sdiOAuthProviders\"")
+        buildConfigField("boolean", "SDI_NETWORK_DECLARED", sdiConnected.toString())
+    }
+    if (sdiConnected) {
+        sourceSets.getByName("debug").manifest.srcFile("src/connected/AndroidManifest.xml")
+        sourceSets.getByName("release").manifest.srcFile("src/connected/AndroidManifest.xml")
     }
     // Reuse the licensed native catalogue; no duplicate asset checkout.
     sourceSets.getByName("main").assets.srcDir("../../StickDeathInfinity/Resources/StudioSounds")
@@ -25,7 +47,7 @@ android {
     // Shared iOS/Android `.sdi` golden fixtures (Tests/SDIFixtures) feed the instrumented import tests.
     sourceSets.getByName("androidTest").assets.srcDir("../../Tests/SDIFixtures/assets")
     androidResources { noCompress += listOf("wav", "m4a") }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

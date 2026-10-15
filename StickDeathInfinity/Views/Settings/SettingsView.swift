@@ -42,6 +42,12 @@ struct SettingsView: View {
                                     value: authVM.user?.subscriptionTier ?? "Free")
                     }
 
+                    if authVM.isAuthenticated {
+                        SettingsSection(title: "YOUR DATA") {
+                            AccountDataExportRow()
+                        }
+                    }
+
                     SettingsSection(title: "ABOUT") {
                         SettingsRow(icon: "info.circle.fill", title: "Version", value: appVersion)
                         SettingsRow(icon: "internaldrive.fill", title: "Projects",
@@ -123,6 +129,76 @@ struct SettingsView: View {
             Text("Server records are deleted after a seven-day cooling-off period; cancel from Profile until then. Projects on this device are not affected. Subscriptions must be cancelled through the App Store or billing portal.")
         }
         .task(id: authVM.userId) { await authVM.refreshAccountDeletion() }
+    }
+}
+
+// MARK: - Account data export (#262)
+
+/// Requests the member's server records from `sdi_account_lifecycle('export')` and
+/// offers the exact JSON for saving or sharing. The file lives only while this row
+/// is on screen (complete file protection) and is removed afterwards. Server
+/// refusals, including the three-per-day limit, are shown as the server words them.
+struct AccountDataExportRow: View {
+    @ObservedObject private var auth = AuthService.shared
+    @State private var exporting = false
+    @State private var exportFile: URL?
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                Task { await export() }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "square.and.arrow.down.on.square").frame(width: 24)
+                    Text(exporting ? "Preparing export…" : "Export my account data")
+                    Spacer()
+                    if exporting { ProgressView() }
+                }
+                .font(.specialElite(15, relativeTo: .body))
+                .foregroundColor(.sdTextPrimary)
+                .frame(minHeight: 44)
+            }
+            .disabled(exporting || !auth.isAuthenticated)
+            .accessibilityIdentifier("settings.export-data")
+            if let exportFile {
+                ShareLink(item: exportFile) {
+                    Label("Save or share the export", systemImage: "square.and.arrow.up").frame(minHeight: 44)
+                }
+                .accessibilityIdentifier("settings.export-data.share")
+            }
+            Text("Includes the records the service keeps for your account: profile, consents, posts, votes, rooms, publishing jobs, subscriptions and support requests. Projects and originals stay on this device and are not part of it. Three exports per day.")
+                .font(.specialElite(11, relativeTo: .caption))
+                .foregroundColor(.sdTextSecondary)
+            if let message {
+                Text(message).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.sdTextSecondary)
+                    .accessibilityIdentifier("settings.export-data.message")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .onDisappear { discard() }
+        .onChange(of: auth.userId) { _, _ in discard(); message = nil }
+    }
+
+    private func export() async {
+        guard !exporting else { return }
+        exporting = true; message = nil; discard()
+        defer { exporting = false }
+        let account = auth.userId
+        do {
+            let data = try await auth.exportAccountData()
+            guard auth.userId == account else { return }   // account changed while waiting
+            exportFile = try AuthService.writeAccountExport(data)
+            message = "Export ready. It is removed from this device when you leave Settings."
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func discard() {
+        if let exportFile { try? FileManager.default.removeItem(at: exportFile.deletingLastPathComponent()) }
+        exportFile = nil
     }
 }
 

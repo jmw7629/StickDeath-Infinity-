@@ -648,12 +648,21 @@ final class SpatterStudioEditSession: ObservableObject {
                 let previousMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }
-                let receipt = try studio.applyStudioCommands(preparedRequest, checkCancellation: {
-                    try check()
-                    // The cancellation clock may reenter the editor. Preserve the
-                    // exact selected image instance/token even at the final commit.
-                    try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
-                })
+                let receipt: StudioCommandReceipt
+                do {
+                    receipt = try studio.applyStudioCommands(preparedRequest, checkCancellation: {
+                        try check()
+                        // The cancellation clock may reenter the editor. Preserve the
+                        // exact selected image instance/token even at the final commit.
+                        try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                    })
+                } catch where isBatch && !(error is CancellationError) && !(error is SessionError)
+                    && (error as? StudioCommandError).map({ $0 != .staleRevision && $0 != .wrongProject }) != false {
+                    // A batch whose lines all prepared can still fail while committing,
+                    // e.g. two lines deleting the same captured layer. The staged
+                    // transaction leaves the editor untouched; say so per batch (#205).
+                    throw SessionError.unavailable(SpatterInstructionBatch.rollbackNotice(error))
+                }
                 let newIDs = Set(receipt.createdFrameIDs)
                 let addedTicks = studio.frames.filter { newIDs.contains($0.id) }.reduce(0) { $0 + $1.durationTicks }
                 let oldAudioIDs = Set(document.editableAudioClips.map(\.id))

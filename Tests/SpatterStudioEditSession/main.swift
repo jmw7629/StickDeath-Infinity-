@@ -2372,6 +2372,56 @@ private final class NetworkTrap: URLProtocol {
             _ = mixed.submit("Add 2 blank frames.\nMove selected drawings by (10%, -5%).", in: vm, accountID: nil, currentScope: { guest }); await mixed.waitForCompletion()
             try require(mixed.status == .rejected && content(vm.document) == content(before), "Selection line inside a batch was accepted")
         }
+        try await test("batch commit failure cancellation intervening edits and timeouts roll back every line") {
+            let (vm, _) = try await fixture("batch-rollback")
+            vm.addLayer(); await vm.flush(); vm.activePanel = .spatterAI
+            let before = vm.document
+            try require(before.layers.count == 2, "Fixture layer missing")
+            // Lines 2 and 3 both prepare against the captured active layer; line 3 fails while committing.
+            let conflicting = SpatterStudioEditSession()
+            _ = conflicting.submit("Add 2 blank frames.\nDelete active layer.\nDelete active layer.", in: vm, accountID: nil, currentScope: { guest })
+            await conflicting.waitForCompletion()
+            try require(conflicting.status == .rejected && conflicting.appliedEdit == nil && vm.document == before
+                && conflicting.notice?.contains("rolled back") == true, "Commit-time batch failure was not atomic: \(conflicting.notice ?? "")")
+            let batch = "Add 2 blank frames.\nAdd layer named \"Paint\".\nRename project to \"Timed\"."
+            // Cancel after every line prepared, before the commit.
+            let gate = Gate(), cancelled = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+            try require(cancelled.submit(batch, in: vm, accountID: nil, currentScope: { guest }), "Batch submit failed")
+            try await reachSecond(gate)
+            try require(cancelled.cancel(), "Prepared batch did not cancel")
+            try gate.release(2); await cancelled.waitForCompletion()
+            try require(cancelled.status == .cancelled && vm.document == before, "Cancelled batch changed the document")
+            // A user edit between preparation and commit makes the whole batch stale; the user's edit stays.
+            let staleGate = Gate(), stale = SpatterStudioEditSession(checkpoint: { try await staleGate.pause() })
+            try require(stale.submit(batch, in: vm, accountID: nil, currentScope: { guest }), "Batch submit failed")
+            try await reachSecond(staleGate)
+            vm.addFrame(); let userEdited = vm.document
+            try staleGate.release(2); await stale.waitForCompletion()
+            try require(stale.status == .stale && stale.appliedEdit == nil && vm.document == userEdited && vm.document.name == before.name,
+                        "Stale batch overwrote an intervening user edit")
+            vm.undo(); await vm.flush()
+            try require(content(vm.document) == content(before), "User edit was not its own Undo step")
+            // A deadline that expires at any preparation or commit checkpoint applies nothing.
+            let base = ContinuousClock.now
+            var timedOut = 0, applied: SpatterStudioEditSession?
+            for limit in 2...80 {
+                var calls = 0
+                let session = SpatterStudioEditSession(budget: .seconds(5), now: {
+                    calls += 1
+                    return calls >= limit ? base.advanced(by: .seconds(60)) : base
+                })
+                _ = session.submit(batch, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                if session.status == .timedOut {
+                    timedOut += 1
+                    try require(content(vm.document) == content(before) && session.appliedEdit == nil, "Timed-out batch at check \(limit) changed the document")
+                    continue
+                }
+                applied = session; break
+            }
+            guard let applied, applied.status == .applied else { throw Failure(message: "Batch never applied after \(timedOut) timeouts") }
+            try require(timedOut >= 4 && vm.document.name == "Timed" && vm.layers.count == 3, "Deadline checkpoints did not cover preparation and commit (\(timedOut))")
+            vm.undo(); try require(content(vm.document) == content(before), "Applied batch is not one Undo step")
+        }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")
         }

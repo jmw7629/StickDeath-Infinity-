@@ -481,12 +481,22 @@ struct StudioBrushDescriptor: Codable, Equatable {
     var grain: Double = 0.3
     var gradientEndColor: StudioBrushColor?
     var tiltEnabled: Bool? = nil
+    /// Version 3: Airbrush Build-up, Watercolor Bleed and Neon Additive glow.
+    /// Older apps reject version 3 instead of silently dropping the effect.
+    var buildup: Double? = nil
+    var bleed: Double? = nil
+    var additiveGlow: Bool? = nil
 
     func settings(width: Double, opacity: Double) throws -> StudioBrushSettings {
-        guard (1...2).contains(version), tiltEnabled != true || (version == 2 && family == .calligraphy) else { throw StudioBrushError.invalidSettings("This brush document version is unavailable.") }
+        let usesVersion3 = (buildup ?? 0) != 0 || (bleed ?? 0) != 0 || additiveGlow == true
+        guard (1...3).contains(version), tiltEnabled != true || (version >= 2 && family == .calligraphy),
+              !usesVersion3 || version == 3,
+              (buildup ?? 0) == 0 || family == .airbrush, (bleed ?? 0) == 0 || family == .watercolor,
+              additiveGlow != true || family == .neon else { throw StudioBrushError.invalidSettings("This brush document version is unavailable.") }
         let result = StudioBrushSettings(family: family, size: width, opacity: opacity,
             smoothing: smoothing, pressureEnabled: pressureEnabled, tipAngleDegrees: tipAngleDegrees,
-            texture: texture, grain: grain, gradientEndColor: gradientEndColor, tiltEnabled: tiltEnabled ?? false)
+            texture: texture, grain: grain, gradientEndColor: gradientEndColor, tiltEnabled: tiltEnabled ?? false,
+            buildup: buildup ?? 0, bleed: bleed ?? 0, additiveGlow: additiveGlow ?? false)
         try result.validate()
         // DrawnElement's current color is opaque RGB; picker alpha is captured
         // once into its canonical opacity. Unequal endpoint alpha is unsupported.

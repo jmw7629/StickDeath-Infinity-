@@ -22,52 +22,47 @@ import StoreKit
 
 // MARK: - Product IDs
 //
-// PLACEHOLDERS. The owner must create two monthly auto-renewable
-// subscriptions in App Store Connect and either keep these identifiers or
-// override them from the build configuration (Info.plist keys
-// `SDI_STOREKIT_PLAN_4_99_PRODUCT_ID` and `SDI_STOREKIT_PLAN_9_99_PRODUCT_ID`,
-// following the existing `$(VAR)` xcconfig pattern). Until App Store Connect
-// has matching products, `Product.products(for:)` returns nothing and the UI
-// shows an honest "not configured" state.
+// The identifiers come from `BillingPlanCatalog` (one configuration for
+// plans, periods and copy). PLACEHOLDERS remain until the owner creates the
+// two monthly auto-renewable subscriptions in App Store Connect and sets the
+// Info.plist keys `SDI_STOREKIT_PLAN_4_99_PRODUCT_ID` and
+// `SDI_STOREKIT_PLAN_9_99_PRODUCT_ID` (existing `$(VAR)` xcconfig pattern).
+// Annual ids are offered only when `SDI_BILLING_ANNUAL_OWNER_CONFIGURED` is
+// `YES` and the annual keys are set; neither exists today. Until App Store
+// Connect has matching products, `Product.products(for:)` returns nothing and
+// the UI shows an honest "not configured" state.
 enum StoreProductID {
-    /// Info.plist key for the USD 4.99/month plan identifier.
-    static let plan499InfoKey = "SDI_STOREKIT_PLAN_4_99_PRODUCT_ID"
-    /// Info.plist key for the USD 9.99/month plan identifier.
-    static let plan999InfoKey = "SDI_STOREKIT_PLAN_9_99_PRODUCT_ID"
+    static let catalog = BillingPlanCatalog.load(info: Bundle.main.infoDictionary ?? [:])
 
-    /// Placeholder identifier for the USD 4.99/month plan (owner must confirm in App Store Connect).
-    static let placeholderCreatorMonthly = "com.stickdeath.infinity.creator.monthly"
-    /// Placeholder identifier for the USD 9.99/month plan (owner must confirm in App Store Connect).
-    static let placeholderProMonthly = "com.stickdeath.infinity.pro.monthly"
+    /// Info.plist key for the USD 4.99/month plan identifier.
+    static let plan499InfoKey = BillingPlanCatalog.creatorMonthlyKey
+    /// Info.plist key for the USD 9.99/month plan identifier.
+    static let plan999InfoKey = BillingPlanCatalog.proMonthlyKey
 
     /// USD 4.99/month plan — maps to `AppConfig.SubscriptionTier.creator`.
     static var creatorMonthly: String {
-        configured(plan499InfoKey) ?? placeholderCreatorMonthly
+        monthlyID(for: .creator) ?? BillingPlanCatalog.placeholderCreatorMonthly
     }
 
     /// USD 9.99/month plan — maps to `AppConfig.SubscriptionTier.pro`.
     static var proMonthly: String {
-        configured(plan999InfoKey) ?? placeholderProMonthly
+        monthlyID(for: .pro) ?? BillingPlanCatalog.placeholderProMonthly
     }
 
-    // TODO(owner): Annual plans. No annual product identifiers or prices are
-    // configured. Adding one requires the owner's explicit annual amount and
-    // entitlement decision plus matching App Store Connect products. Do not
-    // add an identifier here without that configuration.
-
-    /// The complete approved catalogue: two monthly plans, nothing else.
-    static var allSubscriptions: [String] { [creatorMonthly, proMonthly] }
+    /// The approved catalogue: two monthly plans, plus annual plans only when
+    /// the owner configured them explicitly.
+    static var allSubscriptions: [String] { catalog.productIDs }
 
     /// Whether the identifiers in use are the unverified placeholders.
-    static var usesPlaceholderIdentifiers: Bool {
-        configured(plan499InfoKey) == nil || configured(plan999InfoKey) == nil
-    }
+    static var usesPlaceholderIdentifiers: Bool { catalog.usesPlaceholderIdentifiers }
 
     static func tier(for productId: String) -> AppConfig.SubscriptionTier {
-        if productId == creatorMonthly { return .creator }
-        if productId == proMonthly { return .pro }
+        switch catalog.tier(forProductID: productId) {
+        case .creator: return .creator
+        case .pro: return .pro
         // `.studio` has no approved product; unknown ids grant nothing.
-        return .free
+        case .free: return .free
+        }
     }
 
     static func productId(for tier: AppConfig.SubscriptionTier) -> String? {
@@ -78,12 +73,8 @@ enum StoreProductID {
         }
     }
 
-    private static func configured(_ key: String) -> String? {
-        guard let raw = Bundle.main.infoDictionary?[key] as? String else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Unexpanded `$(VAR)` build settings are not configuration.
-        guard !trimmed.isEmpty, !trimmed.contains("$("), !trimmed.contains("${") else { return nil }
-        return trimmed
+    private static func monthlyID(for tier: BillingPlanTier) -> String? {
+        catalog.plans.first { $0.tier == tier && $0.period == .monthly }?.productID
     }
 }
 
@@ -107,6 +98,14 @@ final class StripeService: ObservableObject {
     /// Set when a purchase or restore succeeded with Apple but the server
     /// reconciliation could not run. Shown to the user; never hidden.
     @Published var reconciliationNotice: String?
+    /// The purchase/subscription state machine the plan screens render
+    /// (`BillingPlanCatalog.swift`). Fed only from StoreKit results.
+    @Published private(set) var billing = BillingState()
+    /// Whether the App Store reports this account as eligible for a product's
+    /// introductory offer. Absent means unknown; no trial is shown then.
+    @Published private(set) var introOfferEligibility: [String: Bool] = [:]
+
+    let catalog = StoreProductID.catalog
 
     private var transactionListener: Task<Void, Error>?
 
@@ -133,11 +132,49 @@ final class StripeService: ObservableObject {
             let products = try await Product.products(for: StoreProductID.allSubscriptions)
             availableProducts = products.sorted { $0.price < $1.price }
             productLoadState = products.isEmpty ? .notConfigured : .loaded
+            send(.catalogLoaded(productCount: products.count))
+            var eligibility: [String: Bool] = [:]
+            for product in products {
+                if let subscription = product.subscription {
+                    eligibility[product.id] = await subscription.isEligibleForIntroOffer
+                }
+            }
+            introOfferEligibility = eligibility
         } catch {
             availableProducts = []
             productLoadState = .failed(error.localizedDescription)
             lastError = "Could not load subscription plans from the App Store."
+            send(.catalogFailed(error.localizedDescription))
         }
+    }
+
+    /// Apply one StoreKit fact to the plan state machine.
+    func send(_ event: BillingEvent) {
+        billing = BillingState.reduce(billing, event)
+    }
+
+    /// Introductory free-trial length in days as configured in App Store
+    /// Connect, or nil when the product has no free-trial offer.
+    func introductoryTrialDays(for product: Product) -> Int? {
+        guard let offer = product.subscription?.introductoryOffer, offer.paymentMode == .freeTrial else { return nil }
+        let value = offer.period.value
+        switch offer.period.unit {
+        case .day: return value
+        case .week: return value * 7
+        case .month, .year: return nil
+        @unknown default: return nil
+        }
+    }
+
+    /// Plan copy for a loaded product's trial, only when Apple reports eligibility.
+    func trialCopy(for product: Product) -> String? {
+        BillingCopy.trial(for: catalog.plan(forProductID: product.id), days: introductoryTrialDays(for: product),
+                          eligible: introOfferEligibility[product.id] == true)
+    }
+
+    /// The catalogue plan a loaded product belongs to.
+    func plan(for product: Product) -> BillingPlanDefinition? {
+        catalog.plan(forProductID: product.id)
     }
 
     /// The loaded product for a tier, if App Store Connect has it.
@@ -185,16 +222,30 @@ final class StripeService: ObservableObject {
         isProcessing = true
         lastError = nil
         defer { isProcessing = false }
+        send(.purchaseStarted(product.id))
 
-        let result = try await product.purchase(options: [.appAccountToken(appAccountToken)])
+        let result: Product.PurchaseResult
+        do {
+            result = try await product.purchase(options: [.appAccountToken(appAccountToken)])
+        } catch {
+            send(.purchaseFailed(error.localizedDescription))
+            throw error
+        }
 
         switch result {
         case .success(let verification):
-            let transaction = try checkVerified(verification)
+            let transaction: Transaction
+            do {
+                transaction = try checkVerified(verification)
+            } catch {
+                send(.purchaseUnverified(error.localizedDescription))
+                throw error
+            }
 
             // Local entitlement view from Apple's signed transaction.
             currentTier = StoreProductID.tier(for: transaction.productID)
             subscriptionStatus = .active(ActiveEntitlement(transaction))
+            send(.purchaseVerified(await snapshot(for: transaction)))
 
             // Server reconciliation is the authority for entitlements.
             await attemptReconciliation()
@@ -202,14 +253,17 @@ final class StripeService: ObservableObject {
             await transaction.finish()
 
         case .userCancelled:
+            send(.purchaseCancelled)
             throw PaymentError.cancelled
 
         case .pending:
             // Transaction needs approval (Ask to Buy, etc.)
             subscriptionStatus = .pending
+            send(.purchasePending(product.id))
             throw PaymentError.pending
 
         @unknown default:
+            send(.purchaseFailed(PaymentError.unknown.localizedDescription))
             throw PaymentError.unknown
         }
     }
@@ -242,8 +296,51 @@ final class StripeService: ObservableObject {
             subscriptionStatus = .active(highest.entitlement)
         } else {
             currentTier = .free
-            subscriptionStatus = .none
+            if subscriptionStatus != .pending { subscriptionStatus = .none }
         }
+
+        // The state machine also sees the latest transaction per product, so an
+        // expired, revoked or billing-retry plan is reported instead of hidden.
+        var snapshots: [BillingEntitlementSnapshot] = []
+        for productID in StoreProductID.allSubscriptions {
+            guard let latest = await Transaction.latest(for: productID),
+                  let transaction = try? checkVerified(latest) else { continue }
+            snapshots.append(await snapshot(for: transaction))
+        }
+        send(.entitlementsRefreshed(snapshots, now: Date()))
+    }
+
+    /// Build the state-machine view of one verified transaction from Apple's
+    /// subscription status and signed renewal info. Unverified renewal info
+    /// leaves `willAutoRenew` unknown rather than guessed.
+    private func snapshot(for transaction: Transaction) async -> BillingEntitlementSnapshot {
+        var state: BillingRenewalState = .subscribed
+        var willAutoRenew: Bool?
+        if let status = await transaction.subscriptionStatus {
+            switch status.state {
+            case .subscribed: state = .subscribed
+            case .inGracePeriod: state = .inGracePeriod
+            case .inBillingRetryPeriod: state = .inBillingRetry
+            case .expired: state = .expired
+            case .revoked: state = .revoked
+            default: break
+            }
+            if case .verified(let renewal) = status.renewalInfo {
+                willAutoRenew = renewal.willAutoRenew
+            }
+        }
+        if transaction.revocationDate != nil { state = .revoked }
+        let plan = catalog.plan(forProductID: transaction.productID)
+        return BillingEntitlementSnapshot(
+            productID: transaction.productID,
+            tier: plan?.tier ?? .free,
+            period: plan?.period ?? .monthly,
+            transactionID: String(transaction.id),
+            purchaseDate: transaction.purchaseDate,
+            expirationDate: transaction.expirationDate,
+            willAutoRenew: willAutoRenew,
+            renewalState: state,
+            isIntroductoryOffer: transaction.offerType == .introductory)
     }
 
     /// Restore purchases (user-initiated).
@@ -256,6 +353,7 @@ final class StripeService: ObservableObject {
             try await AppStore.sync()
         } catch {
             lastError = "Restore could not reach the App Store: \(error.localizedDescription)"
+            send(.restoreFailed(error.localizedDescription))
         }
         await refreshEntitlements()
         if case .active = subscriptionStatus {
@@ -282,8 +380,13 @@ final class StripeService: ObservableObject {
         do {
             try await reconcileEntitlementsWithServer()
             reconciliationNotice = nil
+            send(.serverVerification(.verified))
+        } catch PaymentError.entitlementReconciliationNotConfigured {
+            reconciliationNotice = PaymentError.entitlementReconciliationNotConfigured.localizedDescription
+            send(.serverVerification(.notConfigured))
         } catch {
             reconciliationNotice = error.localizedDescription
+            send(.serverVerification(.failed(error.localizedDescription)))
         }
     }
 

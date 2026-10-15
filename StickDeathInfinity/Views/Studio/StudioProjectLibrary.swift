@@ -16,8 +16,12 @@ struct StudioProjectLibrary: View {
     @State private var transferTask: Task<Void, Never>?
     @State private var transferID: UUID?
     @State private var transferNotice: String?
+    /// Restore check and conflict note for the last import, shown under the transfer notice.
+    @State private var importCheckNotice: String?
     /// Backup whose import failed only because referenced sound bytes are missing; offers a retry that drops those clips.
-    @State private var missingAudioImportURL: URL?
+    @State private var missingAudioImport: StudioPendingPortableImport?
+    /// Backup that matches an earlier import or a project still on this device; waits for the creator's choice.
+    @State private var conflictImport: StudioPendingPortableImport?
     @State private var removal: AnimationMetadata?
     @State private var renaming: AnimationMetadata?
     @State private var renameText = ""
@@ -129,6 +133,10 @@ struct StudioProjectLibrary: View {
                     }.accessibilityIdentifier("studio.library.import-backup")
                     Spacer()
                     if let transferNotice { Text(transferNotice).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.gray) }
+                    if let importCheckNotice {
+                        Text(importCheckNotice).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.gray)
+                            .accessibilityIdentifier("studio.library.import.verification")
+                    }
                 }
                 HStack {
                 Button { vm.loadRecoverableProjects(); showingRecovery = true } label: {
@@ -143,6 +151,7 @@ struct StudioProjectLibrary: View {
                     if vm.savedProjects.isEmpty {
                         VStack(spacing: 14) {
                             Image(systemName: "pencil.and.scribble").font(.system(size: 48)).foregroundColor(.red)
+                                .accessibilityHidden(true) // decorative; the text below carries the meaning
                             Text("Your next animation starts here.").font(.specialElite(18)).foregroundColor(.white)
                             Text("Create, draw and save offline. Your projects stay on this device.")
                                 .font(.custom("SpecialElite-Regular", size: 16, relativeTo: .callout)).foregroundColor(.gray).multilineTextAlignment(.center)
@@ -214,22 +223,20 @@ struct StudioProjectLibrary: View {
                     Button("Cancel") { transferTask?.cancel() }
                         .accessibilityIdentifier("studio.library.transfer.cancel")
                 }.padding().background(Color(hex: "17171F")).foregroundColor(.white).cornerRadius(12)
-            } else if let url = missingAudioImportURL {
+            } else if let pending = missingAudioImport {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("This backup references sounds it does not contain.")
                         .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                     Button("Import without missing sounds") {
-                        missingAudioImportURL = nil
+                        missingAudioImport = nil
                         startTransfer { check in
-                            let metadata = try await vm.importPortableProject(from: url, droppingMissingAudio: true, checkCancellation: check)
-                            let dropped = vm.lastImportWarnings
-                            transferNotice = "Imported \(metadata.title) as a new project." + (dropped.isEmpty ? "" : " " + dropped.joined(separator: " "))
+                            try await performPortableImport(pending, droppingMissingAudio: true, check: check)
                         }
                     }
                     .font(.custom("SpecialElite-Regular", size: 13, relativeTo: .body)).foregroundColor(.red)
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("studio.library.import.drop-missing-audio")
-                    Button("Dismiss") { missingAudioImportURL = nil }
+                    Button("Dismiss") { missingAudioImport = nil }
                         .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.gray)
                         .frame(minHeight: 44)
                         .accessibilityIdentifier("studio.library.import.drop-missing-audio.dismiss")
@@ -242,15 +249,13 @@ struct StudioProjectLibrary: View {
             switch result {
             case .success(let urls):
                 guard let url = urls.first else { return }
-                missingAudioImportURL = nil
+                missingAudioImport = nil; conflictImport = nil
                 startTransfer { check in
-                    do {
-                        let metadata = try await vm.importPortableProject(from: url, checkCancellation: check)
-                        transferNotice = "Imported \(metadata.title) as a new project."
-                    } catch {
-                        if error.localizedDescription.contains("missing referenced managed audio") { missingAudioImportURL = url }
-                        throw error
-                    }
+                    let pending = try await preparePortableImport(url, check: check)
+                    // Re-importing the same file asks first. A backup of a project still
+                    // here is only noted: every import is a separate copy, nothing is replaced.
+                    if case .alreadyImported = pending.conflict { conflictImport = pending; return }
+                    try await performPortableImport(pending, droppingMissingAudio: false, check: check)
                 }
             case .failure(let error):
                 transferNotice = isPickerCancellation(error) ? "Import cancelled. Projects unchanged." : error.localizedDescription
@@ -303,6 +308,17 @@ struct StudioProjectLibrary: View {
         } message: { project in
             Text("Use 1–120 characters. Renaming \"\(project.title)\" changes its title only; frames, images and sound stay intact.")
         }
+        .confirmationDialog("Import this backup as another project?", isPresented: Binding(
+            get: { conflictImport != nil }, set: { if !$0 { conflictImport = nil } }), titleVisibility: .visible) {
+            if let pending = conflictImport {
+                Button("Import as a separate copy") {
+                    conflictImport = nil
+                    startTransfer { check in try await performPortableImport(pending, droppingMissingAudio: false, check: check) }
+                }.accessibilityIdentifier("studio.library.import.conflict.copy")
+            }
+            Button("Cancel", role: .cancel) { conflictImport = nil; transferNotice = "Import cancelled. Projects unchanged." }
+                .accessibilityIdentifier("studio.library.import.conflict.cancel")
+        } message: { Text(conflictImport?.conflict.message ?? "") }
         .sheet(isPresented: $showingStorage) { StudioStorageSheet(vm: vm) }
         .sheet(isPresented: $showingRecovery) {
             NavigationStack {
@@ -369,13 +385,14 @@ struct StudioProjectLibrary: View {
         transferTask?.cancel()
         showingImport = false; showingBackup = false
         importGeneration = nil; backupGeneration = nil; backupDocument = nil
+        missingAudioImport = nil; conflictImport = nil
         if transferTask != nil { transferNotice = "Transfer cancelled because the active screen or account changed. Existing device projects are preserved." }
     }
     private func startTransfer(_ operation: @escaping @MainActor (@escaping @MainActor () throws -> Void) async throws -> Void) {
         guard transferTask == nil, transferContext.isActive else { return }
         let id = UUID(), generation = transferContext.generation
         let context = transferContext
-        transferID = id; transferNotice = nil
+        transferID = id; transferNotice = nil; importCheckNotice = nil
         transferTask = Task { @MainActor in
             defer { if transferID == id { transferTask = nil; transferID = nil } }
             do {
@@ -387,6 +404,49 @@ struct StudioProjectLibrary: View {
             catch is CancellationError { transferNotice = "Transfer cancelled. Existing projects preserved." }
             catch { transferNotice = error.localizedDescription }
         }
+    }
+    /// Reads, version-checks and decodes the chosen backup off the main actor,
+    /// checks free space, then looks for an earlier import of the same file or
+    /// the original project on this device. Nothing is written here.
+    private func preparePortableImport(_ url: URL, check: @escaping @MainActor () throws -> Void) async throws -> StudioPendingPortableImport {
+        let reader = Task.detached(priority: .userInitiated) { () throws -> (Data, String, AnimationProject) in
+            let data = try StudioPortableBundleFile.read(url)
+            try StudioPortableBundleFormat.requireSupported(data)
+            let source = try DeviceStorageManager().projectFromPortableBundle(data, checkCancellation: { try Task.checkCancellation() })
+            return (data, StudioPortableBundleFormat.sha256Hex(data), source)
+        }
+        let (data, digest, source) = try await withTaskCancellationHandler(operation: { try await reader.value },
+                                                                           onCancel: { reader.cancel() })
+        try check()
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let admission = StudioStorageBudget.standard.admit(estimatedWriteBytes: Int64(data.count),
+                                                           availableBytes: StudioStorageBudget.availableBytes(at: documents))
+        if let refusal = admission.message { throw StudioLibraryFailure(errorDescription: refusal) }
+        vm.loadRecoverableProjects()
+        let conflict = StudioPortableImportConflict.detect(bundleSHA256: digest, sourceProjectID: source.id,
+            ledger: StudioPortableImportLedger.shared.entries(), library: vm.savedProjects, recentlyDeleted: vm.recoverableProjects)
+        return StudioPendingPortableImport(data: data, digest: digest, source: source, conflict: conflict)
+    }
+    /// Imports through the production Studio path, records the import, then
+    /// reopens the new copy from device storage and checks its originals.
+    private func performPortableImport(_ pending: StudioPendingPortableImport, droppingMissingAudio: Bool,
+                                       check: @escaping @MainActor () throws -> Void) async throws {
+        let metadata: AnimationMetadata
+        do {
+            metadata = try await vm.importPortableProject(pending.data, droppingMissingAudio: droppingMissingAudio, checkCancellation: check)
+        } catch {
+            if !droppingMissingAudio, error.localizedDescription.contains("missing referenced managed audio") { missingAudioImport = pending }
+            throw error
+        }
+        let dropped = vm.lastImportWarnings
+        // Advisory only: a ledger write failure never undoes a completed import.
+        try? StudioPortableImportLedger.shared.record(bundleSHA256: pending.digest, projectID: metadata.id)
+        let restored = try? DeviceStorageManager.shared.loadAnimation(id: metadata.id)
+        let report = StudioPortableRestoreVerifier.verify(source: pending.source, restored: restored)
+        transferNotice = "Imported \(metadata.title) as a new project." + (dropped.isEmpty ? "" : " " + dropped.joined(separator: " "))
+        var note = report.summary
+        if case .originalOnDevice = pending.conflict { note = pending.conflict.message + " " + note }
+        importCheckNotice = note
     }
     @ViewBuilder private func projectActions(_ project: AnimationMetadata) -> some View {
         Button {
@@ -413,6 +473,16 @@ struct StudioProjectLibrary: View {
         }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.library.menu.remove")
     }
 }
+
+/// A chosen backup held between reading and the creator's decision. Dropped on
+/// any screen, scene or account change.
+private struct StudioPendingPortableImport {
+    let data: Data
+    let digest: String
+    let source: AnimationProject
+    let conflict: StudioPortableImportConflict
+}
+private struct StudioLibraryFailure: LocalizedError { let errorDescription: String? }
 
 /// Opaque, bounded native project data. No ZIP paths or executable content.
 private struct StudioPortableProjectFile: FileDocument {
@@ -460,6 +530,15 @@ private struct StudioStorageSheet: View {
     @State private var confirmingCleanup = false
     @State private var refresh = UUID()
     @State private var cacheBytes = DeviceStorageManager.snapshotEncodingCacheFootprint.bytes
+    @State private var availableBytes: Int64?
+    @State private var extrasMeasured = false
+    @State private var leftovers: StudioScratchSweeper.Review?
+    @State private var waveforms: StudioRegenerableCacheTrimmer.Usage?
+    @State private var leftoverAction: StudioLeftoverAction?
+    @State private var leftoverNotice: String?
+    @State private var leftoverBusy = false
+    @ObservedObject private var gifShare = StudioGIFShareLifetime.shared
+    @ObservedObject private var movieShare = StudioMovieShareLifetime.shared
 
     var body: some View {
         NavigationStack {
@@ -484,6 +563,17 @@ private struct StudioStorageSheet: View {
                     }
                     Button("Refresh usage") { refresh = UUID() }
                         .disabled(scanning).accessibilityIdentifier("studio.storage.refresh")
+                }
+                if extrasMeasured {
+                    Section("Free space") { freeSpaceRows }
+                    Section("Leftover temporary files") { leftoverRows }
+                        .confirmationDialog(leftoverAction?.title ?? "", isPresented: Binding(
+                            get: { leftoverAction != nil }, set: { if !$0 { leftoverAction = nil } }),
+                            titleVisibility: .visible, presenting: leftoverAction) { action in
+                            Button(action.confirm, role: .destructive) { performLeftover(action) }
+                                .accessibilityIdentifier("studio.storage.leftovers.confirm")
+                            Button("Cancel", role: .cancel) { leftoverAction = nil }
+                        } message: { action in Text(action.detail) }
                 }
                 Section("Older successful saves") {
                     Text("Remove obsolete full-document snapshots only when their successful save history can be verified. Keeps the current and previous version, original media, legacy files, and failed-save recovery data. Permanent removal is optional; back up projects first. This does not clear Undo or delete your project.")
@@ -564,6 +654,12 @@ private struct StudioStorageSheet: View {
             .task(id: refresh) {
                 guard scenePhase == .active else { return }
                 scanning = true; usage = nil; error = nil
+                let sweeper = StudioScratchSweeper.temporary, trimmer = StudioRegenerableCacheTrimmer.waveforms
+                let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let extras = await Task.detached(priority: .utility) {
+                    (StudioStorageBudget.availableBytes(at: documents), try? sweeper.review(), try? trimmer.measure())
+                }.value
+                availableBytes = extras.0; leftovers = extras.1; waveforms = extras.2; extrasMeasured = true
                 cacheBytes = DeviceStorageManager.snapshotEncodingCacheFootprint.bytes
                 let request = vm.storageScanRequest
                 let worker = Task.detached(priority: .utility) { try request.scan() }
@@ -599,8 +695,114 @@ private struct StudioStorageSheet: View {
     private func bytes(_ amount: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: amount, countStyle: .file)
     }
+    @ViewBuilder private var freeSpaceRows: some View {
+        let budget = StudioStorageBudget.standard
+        switch budget.status(availableBytes: availableBytes) {
+        case .unknown:
+            Text("This device did not report free space. Saves still stop safely and keep the last saved version if space runs out.")
+                .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).accessibilityIdentifier("studio.storage.free.unknown")
+        case .healthy(let available):
+            LabeledContent("Available for important data", value: bytes(available)).accessibilityIdentifier("studio.storage.free")
+        case .low(let available):
+            LabeledContent("Available for important data", value: bytes(available)).accessibilityIdentifier("studio.storage.free")
+            Text("Space is getting low. Imports check for room first; nothing is removed from your projects automatically.")
+                .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).accessibilityIdentifier("studio.storage.free.low")
+        case .critical(let available):
+            LabeledContent("Available for important data", value: bytes(available)).accessibilityIdentifier("studio.storage.free")
+            Text("Very little space is left. Saves may fail; when they do, your last saved version stays intact. Remove leftovers below, back up and move old projects to Files, or free space in Settings.")
+                .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundStyle(.red)
+                .accessibilityIdentifier("studio.storage.free.critical")
+        }
+    }
+    @ViewBuilder private var leftoverRows: some View {
+        Text("Files left in the app's temporary folder by an import, recording or export that ended early, and regenerable waveform previews. Your projects, their originals and saved versions are never in this list.")
+            .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundStyle(.secondary)
+        if let leftovers {
+            LabeledContent("Abandoned working files", value: "\(bytes(leftovers.scratchBytes)) · \(leftovers.scratch.count) items")
+                .accessibilityIdentifier("studio.storage.leftovers.scratch")
+            LabeledContent("Export copies left behind", value: "\(bytes(leftovers.exportBytes)) · \(leftovers.exports.count) items")
+                .accessibilityIdentifier("studio.storage.leftovers.exports")
+            if leftovers.recent > 0 {
+                Text("\(leftovers.recent) recent items may belong to work in progress and are not offered for removal.")
+                    .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
+            }
+            Button("Remove abandoned working files") { leftoverAction = .scratch }
+                .disabled(leftovers.scratch.isEmpty || leftoverBusy || vm.isManagingProjects)
+                .accessibilityIdentifier("studio.storage.leftovers.remove-scratch")
+            Button("Remove leftover export copies", role: .destructive) { leftoverAction = .exports }
+                .disabled(leftovers.exports.isEmpty || leftoverBusy || gifShare.isReserved || movieShare.isReserved)
+                .accessibilityIdentifier("studio.storage.leftovers.remove-exports")
+        } else {
+            Text("The temporary folder could not be measured. Nothing will be removed.")
+                .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
+        }
+        if let waveforms {
+            LabeledContent("Waveform previews", value: "\(bytes(waveforms.ownedBytes)) · \(waveforms.entries.count) records")
+                .accessibilityIdentifier("studio.storage.waveforms")
+            Button("Clear waveform previews") { leftoverAction = .waveforms }
+                .disabled(waveforms.entries.isEmpty || leftoverBusy)
+                .accessibilityIdentifier("studio.storage.waveforms.clear")
+        }
+        if let leftoverNotice {
+            Text(leftoverNotice).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
+                .accessibilityIdentifier("studio.storage.leftovers.result")
+        }
+    }
+    private func performLeftover(_ action: StudioLeftoverAction) {
+        leftoverAction = nil
+        guard !leftoverBusy else { return }
+        // Waveform clearing does not depend on the temporary-folder review.
+        guard action == .waveforms || leftovers != nil else { return }
+        let review = leftovers ?? StudioScratchSweeper.Review()
+        if action == .exports && (gifShare.isReserved || movieShare.isReserved) {
+            leftoverNotice = "An export is still with the sharing app. Nothing was removed."; return
+        }
+        leftoverBusy = true
+        let sweeper = StudioScratchSweeper.temporary, trimmer = StudioRegenerableCacheTrimmer.waveforms
+        Task { @MainActor in
+            let receipt = await Task.detached(priority: .utility) { () -> StudioStorageRemovalReceipt in
+                switch action {
+                case .scratch: return sweeper.remove(StudioScratchSweeper.Review(scratch: review.scratch), includeExports: false)
+                case .exports: return sweeper.remove(StudioScratchSweeper.Review(exports: review.exports), includeExports: true)
+                case .waveforms: return (try? trimmer.trim(toBudget: 0)) ?? StudioStorageRemovalReceipt(failed: 1)
+                }
+            }.value
+            var text = "Removed \(receipt.removedEntries) item\(receipt.removedEntries == 1 ? "" : "s") (\(bytes(receipt.removedBytes)) of file contents)."
+            if receipt.skippedChanged > 0 { text += " \(receipt.skippedChanged) changed since review and were kept." }
+            if receipt.failed > 0 { text += " \(receipt.failed) could not be removed and were left as they were." }
+            leftoverNotice = text
+            leftoverBusy = false
+            refresh = UUID()
+        }
+    }
     private func row(_ title: String, _ bucket: StudioStorageUsage.Bucket) -> some View {
         LabeledContent(title, value: "\(bytes(bucket.bytes)) · \(bucket.files) files")
+    }
+}
+
+private enum StudioLeftoverAction: Identifiable {
+    case scratch, exports, waveforms
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .scratch: return "Remove abandoned working files?"
+        case .exports: return "Remove leftover export copies?"
+        case .waveforms: return "Clear waveform previews?"
+        }
+    }
+    var confirm: String {
+        switch self {
+        case .scratch: return "Remove working files"
+        case .exports: return "Remove export copies"
+        case .waveforms: return "Clear previews"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .scratch: return "These are unfinished import, recording and mixing files older than an hour. Projects and their originals are not affected."
+        case .exports: return "These are rendered GIF and video copies left in the temporary folder. Copies you already saved or shared elsewhere, and the projects they came from, are not affected. This cannot be undone."
+        case .waveforms: return "Waveforms are measured again from each project's own audio the next time they are shown. Audio is not affected."
+        }
     }
 }
 

@@ -11,6 +11,8 @@ struct ProfileView: View {
     @State private var destination: Destination?
     @State private var localProjectCount: Int?
     @State private var publishedCount: Int?
+    @State private var stats: CreatorStatsResponse?
+    @State private var statsProblem: String?
 
     private enum Destination: String, Identifiable {
         case account, analytics, subscription, publishing, records, admin
@@ -37,9 +39,13 @@ struct ProfileView: View {
         return name.isEmpty ? (authVM.isAuthenticated ? "Your profile" : "Guest") : name
     }
     private var reportedPlan: String? {
-        guard let tier = profile?.subscriptionTier?.lowercased(),
-              ["free", "pro", "creator", "studio"].contains(tier) else { return nil }
-        return tier.capitalized
+        // Server values are constrained by users-profiles.sql: free, monthly_4_99, monthly_9_99.
+        switch profile?.subscriptionTier?.lowercased() {
+        case "free": return "Free"
+        case "monthly_4_99": return "Creator"
+        case "monthly_9_99": return "Pro"
+        default: return nil
+        }
     }
     private var avatarURL: URL? {
         guard let raw = profile?.avatarURL, let url = URL(string: raw),
@@ -76,15 +82,17 @@ struct ProfileView: View {
                 }
                 HStack(spacing: 0) {
                     statistic(localProjectCount.map(String.init) ?? "—", "Projects")
-                    statistic(publishedCount.map(String.init) ?? "—", "Published")
-                    statistic("—", "Followers")
-                    statistic("—", "Likes")
+                    statistic(stats?.published_videos.map(String.init) ?? "—", "Published")
+                    statistic(stats?.followers.map(String.init) ?? "—", "Followers")
+                    statistic(stats?.likes_received.map(String.init) ?? "—", "Likes")
                 }
                 .padding(.vertical, 14).background(Color(hex: "141414"))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .accessibilityIdentifier("profile.statistics")
-                Text("Projects counts saved animations on this device. Published counts your approved renditions returned by the service. Follower and like totals have no service contract yet, so nothing is estimated.")
+                Text("Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall; a dash means the total was not loaded, never an estimate.")
                     .font(.specialElite(11)).foregroundStyle(.secondary)
+                if let statsProblem { Text(statsProblem).font(.specialElite(11)).foregroundStyle(.secondary).accessibilityIdentifier("profile.statistics.problem") }
+                if let following = stats?.following { Text("Following \(following) creator\(following == 1 ? "" : "s").").font(.specialElite(11)).foregroundStyle(.secondary) }
                 if authVM.isAuthenticated {
                     ProfilePortfolioSection(onCount: { publishedCount = $0 })
                 }
@@ -128,9 +136,18 @@ struct ProfileView: View {
         .foregroundStyle(.white)
         .task(id: authVM.userId) {
             // Device-level inventory, never presented as a server/account portfolio.
-            localProjectCount = nil; publishedCount = nil
+            localProjectCount = nil; publishedCount = nil; stats = nil; statsProblem = nil
             if let listing = try? DeviceStorageManager.shared.listAnimationsReportingFailures(), listing.failures.isEmpty {
                 localProjectCount = listing.animations.count
+            }
+            guard authVM.isAuthenticated, let account = authVM.userId else { return }
+            do {
+                let loaded = try await CommunityServices.profile.stats()
+                guard !Task.isCancelled, account == authVM.userId else { return }
+                stats = loaded
+            } catch {
+                guard !Task.isCancelled, account == authVM.userId else { return }
+                statsProblem = "Totals unavailable: " + (CommunityGateway.normalize(error).errorDescription ?? "service unavailable.")
             }
         }
         .onChange(of: authVM.userId) { _ in destination = nil }
@@ -217,6 +234,14 @@ struct ProfileSettingsView: View {
             }
             Section("Studio") {
                 Text("Change grid, onion skin and project settings in the Studio menu. Those controls apply to the actual project.")
+            }
+            if authVM.isAuthenticated {
+                Section("Your data") {
+                    AccountDataExportRow()
+                }
+            }
+            Section("Diagnostics") {
+                DiagnosticsSettingsView()
             }
             if authVM.isAuthenticated {
                 Section {
@@ -555,7 +580,7 @@ private struct ProfilePortfolioSection: View {
     @State private var requestID = UUID()
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Portfolio").font(.specialElite(16)).foregroundStyle(.secondary)
+            Text(loaded && problem == nil ? "Portfolio · \(items.count) approved" : "Portfolio").font(.specialElite(16)).foregroundStyle(.secondary)
             if let problem { CommunityMessage(text: problem, kind: .info) }
             if loaded && items.isEmpty && problem == nil {
                 Text("No approved renditions yet. Submit an exported MP4 for review from Publishing.").font(.specialElite(12)).foregroundStyle(.secondary)
@@ -564,7 +589,7 @@ private struct ProfilePortfolioSection: View {
             ForEach(items) { item in
                 Button {
                     guard let url = CommunityMediaURL.checked(item.url) else { return }
-                    playback?.player.pause(); playback = ProfilePlayback(player: AVPlayer(url: url), title: item.title)
+                    playback = ProfilePlayback(url: url, title: item.title)
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "play.rectangle.fill").foregroundStyle(Color.sdRed)
@@ -589,13 +614,11 @@ private struct ProfilePortfolioSection: View {
                 items = rows; loaded = true; onCount(rows.count)
             } catch { if requestID == id { loaded = true; problem = CommunityGateway.normalize(error).errorDescription } }
         }
-        .sheet(item: $playback) { item in
-            VideoPlayer(player: item.player).onAppear { item.player.play() }.onDisappear { item.player.pause() }
-        }
-        .onDisappear { playback?.player.pause(); playback = nil }
+        .sheet(item: $playback) { item in CommunityVideoPlayer(url: item.url, title: item.title) }
+        .onDisappear { playback = nil }
     }
 }
-private struct ProfilePlayback: Identifiable { let id = UUID(); let player: AVPlayer; let title: String }
+private struct ProfilePlayback: Identifiable { let id = UUID(); let url: URL; let title: String }
 
 /// Member side of feed removal appeals: own appeals and a bounded submission.
 /// Structured review only; this is not a message to anyone.

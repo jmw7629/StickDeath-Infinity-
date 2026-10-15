@@ -1,0 +1,9 @@
+@font-face{font-family:Special Elite;src:url('../../SpecialElite-Regular.ttf') format('truetype')}
+html,body{margin:0;width:800px;height:800px;overflow:hidden}
+body{background:#161618;font-family:'Special Elite',monospace;color:#efeae0;position:relative}
+.grid{position:absolute;inset:0;background:linear-gradient(0deg,#1d1d21 1px,transparent 1px),linear-gradient(90deg,#1d1d21 1px,transparent 1px);background-size:40px 40px}
+.card{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+.card>svg{width:640px;height:640px;display:block}
+.label{position:absolute;left:36px;bottom:30px;font-size:18px;letter-spacing:.2em;color:#bdb9b3;text-transform:uppercase}
+.tag{position:absolute;right:36px;top:30px;font-size:16px;letter-spacing:.2em;color:#ff454c;text-transform:uppercase}
+text{font-family:'Special Elite',monospace}

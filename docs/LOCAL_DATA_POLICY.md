@@ -54,6 +54,27 @@ Back and successful sign-in both return to the app shell with the same project.
   nothing local is affected either way. On a server without the lifecycle
   candidate the request is refused and the UI says so.
 
+## Budgets, eviction and leftovers (#171)
+
+Automatic or one-tap cleanup may remove only regenerable data (waveform
+summaries, encoder caches) and abandoned scratch. Project originals, saved
+revisions, recovery data, Recently Deleted, managed media and user exports are
+essential: `StudioEvictionPlanner` never selects them, and when essential data
+alone exceeds a budget the plan reports a shortfall instead of deleting work.
+Imports check free space first (`StudioStorageBudget.admit`: twice the backup
+size plus 256 MB headroom); the check is advisory and never replaces handling a
+real out-of-space write. The Device Storage screen shows free space, abandoned
+working files and export copies left in the temporary folder, and waveform
+previews; each removal is an explicit, confirmed action, re-checks every entry
+before removing it and reports actual bytes. Details: `docs/DATA_LIFECYCLE.md`.
+
+## Server-side project storage retired
+
+The unused `ProjectService` (editable frame data in a `studio_projects` row)
+and `StorageService` (project JSON and media uploads to a public bucket) were
+removed. Nothing called them, and both contradicted this policy. Avatar upload
+lives in `Services/Social/AvatarUploadService.swift`.
+
 ## Backup inclusion
 
 Everything under `Documents/` (projects, revisions, Recently Deleted, imported
@@ -127,8 +148,12 @@ against its receipt and refuse to open a mismatch (`payloadIntegrity`), and
 reported instead of skipped, and `rollbackMigration(id:)` restores the legacy
 reader without deleting anything (#169). Portable `.sdiproject` bundles carry
 the whole record with a checksum and import under a fresh identity after
-staging-area validation; dropping missing audio with a warning list is still a
-coordinator patch (#170). The storage scan separates projects, recoverable
+staging-area validation; missing referenced audio can be dropped with a
+per-clip warning list. The library checks the backup's format version first
+(a newer format is refused by name), asks before re-importing a file already
+imported, notes when the original project is still on the device, and after
+import reopens the copy from storage and verifies every original image and
+sound byte-for-byte (#170). The storage scan separates projects, recoverable
 unsaved data, Recently Deleted, media and regenerable caches, and write errors
 map to fixed, path-free messages (#171). File protection, the install marker,
 sign-out behaviour and diagnostics rules above cover isolation (#172). Evidence:

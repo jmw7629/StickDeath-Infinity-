@@ -219,6 +219,21 @@ struct FloatingToolSettingsPanel: View {
                 if [.stipple, .grain, .watercolor].contains(vm.brushFamily) {
                     SettingsSlider(label: "Grain", value: Binding(get: { vm.brushGrain * 100 }, set: { vm.brushGrain = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
                 }
+                if vm.brushFamily == .airbrush {
+                    SettingsSlider(label: "Build-up", value: Binding(get: { vm.brushBuildup * 100 }, set: { vm.brushBuildup = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
+                    Text("Paint keeps flowing while you hold still or move slowly; it appears when you lift. Saved per tool.")
+                        .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                        .accessibilityIdentifier("studio.brush.buildup-help")
+                }
+                if vm.brushFamily == .watercolor {
+                    SettingsSlider(label: "Bleed", value: Binding(get: { vm.brushBleed * 100 }, set: { vm.brushBleed = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
+                }
+                if vm.brushFamily == .neon {
+                    SettingsToggle(label: "Additive glow", isOn: $vm.brushAdditiveGlow, accent: accentColor)
+                        .accessibilityIdentifier("studio.brush.additive-glow")
+                    Text("Adds light to the artwork underneath, so the glow never darkens it.")
+                        .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                }
                 if vm.brushFamily == .gradient {
                     Button { vm.activePanel = .gradientEndColor } label: {
                         HStack {

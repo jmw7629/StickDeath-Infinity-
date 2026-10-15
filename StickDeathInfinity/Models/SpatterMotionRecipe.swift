@@ -3015,13 +3015,23 @@ struct SpatterInstructionBatch: Equatable {
     func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
         var commands: [StudioCommand] = []
+        // Errors raised by the caller's own check (cancellation, deadline, changed
+        // context) pass through unchanged so the session reports them truthfully
+        // instead of as an unsupported line.
+        var checkError: Error?
+        func guardedCheck() throws {
+            do { try checkCancellation() } catch { checkError = error; throw error }
+        }
         for line in lines {
             try checkCancellation()
             let request: StudioCommandRequest
-            do { request = try SpatterInstructionRouter.prepareContextOnly(line.text, kind: line.kind, in: context, requestID: requestID, checkCancellation: checkCancellation) }
+            do { request = try SpatterInstructionRouter.prepareContextOnly(line.text, kind: line.kind, in: context, requestID: requestID, checkCancellation: guardedCheck) }
             catch is CancellationError { throw CancellationError() }
             catch let error as SpatterInstructionBatch.Failure { throw error }
-            catch { throw Failure.unsupportedLine(line.number, (error as? LocalizedError)?.errorDescription ?? line.text) }
+            catch {
+                if let checkError { throw checkError }
+                throw Failure.unsupportedLine(line.number, (error as? LocalizedError)?.errorDescription ?? line.text)
+            }
             guard case .apply(let list) = request.action else { throw Failure.unsupportedLine(line.number, line.text) }
             commands += list.map { $0.prefixingAliases("b\(line.number)_") }
         }
@@ -3030,6 +3040,15 @@ struct SpatterInstructionBatch: Equatable {
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision, action: .apply(commands))
     }
     var summary: String { "\(lines.count) instructions (" + lines.map { $0.kind.rawValue }.joined(separator: ", ") + ")" }
+    /// Shown when every line prepared but the combined typed request failed while
+    /// committing (a later line conflicting with an earlier one, a work budget or
+    /// a document limit). The executor stages a copy, so the editor, its history
+    /// and the clipboard are exactly as they were before Apply.
+    static func rollbackNotice(_ error: Error) -> String {
+        let reason = ((error as? LocalizedError)?.errorDescription ?? String(describing: error))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return "The batch could not be applied as a whole: \(reason.prefix(240)) Every line was rolled back; nothing changed and no Undo step was added."
+    }
 }
 
 /// Text shown before Apply: what the draft was recognized as and, when the

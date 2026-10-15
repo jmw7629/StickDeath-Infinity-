@@ -23,6 +23,12 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 
 PROVIDERS = ("apple", "stripe")
 TIERS = ("creator", "pro")
+# Owner decision 2026-10-14: the free trial applies to both paid plans. A
+# provider-reported trial maps to the canonical ``trialing`` status of that
+# tier, which the entitlement view and the Spatter meter treat as the tier
+# itself. Trial length and eligibility are store configuration (App Store
+# introductory offer; Stripe trial settings), never embedded here.
+TRIAL_TIERS = ("creator", "pro")
 PERIODS = ("monthly", "annual")
 CANONICAL_STATUSES = ("active", "trialing", "grace", "past_due", "cancelled", "expired", "revoked", "refunded")
 LEDGER_KINDS = ("charge", "refund", "fee", "payout", "adjustment")

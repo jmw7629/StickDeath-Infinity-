@@ -3,4 +3,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://stickdeath-infinity.invalid/sitemap.xml
+Sitemap: https://stickdeathinfinity.com/sitemap.xml

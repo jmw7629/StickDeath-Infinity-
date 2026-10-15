@@ -285,3 +285,296 @@ create function public.sdi_moderation_appeal(action text,media uuid default null
 revoke all on function public.sdi_moderation_appeal(text,uuid,text,uuid,bigint,text) from public,anon;
 grant execute on function public.sdi_moderation_appeal(text,uuid,text,uuid,bigint,text) to authenticated;
 commit;
+
+-- Rooms v2.1 (#232, #233). Server-side rebase of concurrent commands, undo
+-- ownership, and bounded transfer of explicitly shared assets. Still no chat,
+-- calls, camera, microphone, screen or background harvesting: an asset exists
+-- here only because an editor chose that file, and it is a temporary transfer
+-- copy. The sender's local original is never touched by anything below.
+begin;
+-- Optional entity a command edits ("frame:<id>", "layer:<id>", "audio:<id>").
+-- Commands without a target are treated as touching the whole document.
+alter table sdi_private.room_commands add column target text check(target is null or length(target) between 1 and 200);
+alter table sdi_private.room_commands add column undoes uuid;
+create unique index room_commands_one_undo on sdi_private.room_commands(room_id,undoes) where undoes is not null;
+
+create or replace function sdi_private.room_command(action text,room uuid default null,op_id uuid default null,base_revision bigint default null,
+ kind text default null,payload jsonb default null,after bigint default 0,page_size integer default 200) returns jsonb
+language plpgsql security definer set search_path='' as $$
+#variable_conflict use_column
+declare actor uuid:=auth.uid(); target public.sdi_rooms; n integer; existing bigint; items jsonb; overlap jsonb;
+ entity text; undone sdi_private.room_commands; undo_ref uuid;
+begin
+ if actor is null or not sdi_private.account_active() then return jsonb_build_object('error','Sign in with a full account.'); end if;
+ insert into sdi_private.room_command_budget values(actor,clock_timestamp(),1)
+ on conflict(user_id) do update set
+ attempts=case when room_command_budget.window_start<clock_timestamp()-interval '1 minute' then 1 else room_command_budget.attempts+1 end,
+ window_start=case when room_command_budget.window_start<clock_timestamp()-interval '1 minute' then clock_timestamp() else room_command_budget.window_start end
+ returning attempts into n;
+ if n>300 then return jsonb_build_object('error','Too many edits per minute. Pause and resynchronize.'); end if;
+ if action='since' then
+  if not sdi_private.room_access(room) then return jsonb_build_object('error','Room is unavailable.'); end if;
+  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
+   select revision,op_id,author,base_revision,kind,payload,target,undoes,created_at from sdi_private.room_commands
+   where room_id=room and revision>coalesce(after,0) order by revision limit least(greatest(coalesce(page_size,200),1),500)
+  ) item;
+  return jsonb_build_object('commands',items,'head',(select command_revision from public.sdi_rooms where id=room));
+ end if;
+ if action<>'append' then return jsonb_build_object('error','Unsupported command operation.'); end if;
+ if not sdi_private.room_can_edit(room) then return jsonb_build_object('error','You can view this project but not edit it.'); end if;
+ if op_id is null or base_revision is null or base_revision<0 or kind is null or length(kind) not between 1 and 64 or payload is null
+  or jsonb_typeof(payload)<>'object' or octet_length(payload::text)>65536
+  or (payload ? 'target' and (jsonb_typeof(payload->'target')<>'string' or length(payload->>'target') not between 1 and 200)) then
+  return jsonb_build_object('error','A command id, base revision, kind and bounded payload are required.'); end if;
+ select * into target from public.sdi_rooms where id=room and not closed for update;
+ if not found then return jsonb_build_object('error','Room is unavailable.'); end if;
+ select revision into existing from sdi_private.room_commands where room_id=target.id and op_id=room_command.op_id;
+ if existing is not null then return jsonb_build_object('status','duplicate','revision',existing,'head',target.command_revision); end if;
+ if base_revision>target.command_revision then return jsonb_build_object('error','Base revision is ahead of the room. Resynchronize.'); end if;
+ entity:=payload->>'target';
+ -- Undo ownership: a creator may undo only their own command, once.
+ if kind='undo' then
+  if coalesce(payload->>'undo_op','') !~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
+   return jsonb_build_object('error','Undo needs the operation id it reverses.'); end if;
+  undo_ref:=(payload->>'undo_op')::uuid;
+  select * into undone from sdi_private.room_commands c where c.room_id=target.id and c.op_id=undo_ref;
+  if not found then return jsonb_build_object('error','That edit is not in this room.'); end if;
+  if undone.author<>actor then return jsonb_build_object('error','You can undo only your own edits.'); end if;
+  if undone.kind='undo' then return jsonb_build_object('error','Redo is a new edit, not an undo of an undo.'); end if;
+  if exists(select 1 from sdi_private.room_commands c where c.room_id=target.id and c.undoes=undo_ref) then
+   return jsonb_build_object('error','That edit was already undone.'); end if;
+  entity:=undone.target;
+ end if;
+ if base_revision<target.command_revision then
+  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
+   select revision,op_id,author,base_revision,kind,payload,target,undoes,created_at from sdi_private.room_commands
+   where room_id=target.id and revision>base_revision order by revision limit 200
+  ) item;
+  -- Rebase only when the edit names its entity, the gap is small enough to
+  -- return in full, and no intervening command touched that entity (or the
+  -- whole document). Anything else is an explicit conflict, never an overwrite.
+  select coalesce(jsonb_agg(c.op_id order by c.revision),'[]'::jsonb) into overlap from sdi_private.room_commands c
+   where c.room_id=target.id and c.revision>base_revision and (c.target is null or entity is null or c.target=entity);
+  if entity is null or target.command_revision-base_revision>200 or jsonb_array_length(overlap)>0 then
+   return jsonb_build_object('error','conflict','head',target.command_revision,'missing',items,'overlap',overlap);
+  end if;
+ end if;
+ if target.command_revision>=100000 then return jsonb_build_object('error','This room reached its edit history limit. Start a new shared project.'); end if;
+ insert into sdi_private.room_commands(room_id,revision,op_id,author,base_revision,kind,payload,target,undoes)
+ values(target.id,target.command_revision+1,op_id,actor,base_revision,kind,payload,entity,case when kind='undo' then undo_ref end);
+ update public.sdi_rooms set command_revision=command_revision+1 where id=target.id;
+ if base_revision<target.command_revision then
+  return jsonb_build_object('status','rebased','revision',target.command_revision+1,'head',target.command_revision+1,'missing',items);
+ end if;
+ return jsonb_build_object('status','applied','revision',target.command_revision+1);
+end $$;
+
+-- Bounded asset transfer (#233). Files move in 32 KiB chunks through this
+-- operation boundary; the server recomputes the SHA-256 of the whole file
+-- before anyone can download it, and every copy expires. Quotas: 8 MiB per
+-- file, 64 MiB and 100 files live per room, 30 files per sender per day,
+-- 600 transfer calls per minute per account.
+create table sdi_private.room_assets (
+ id uuid primary key default gen_random_uuid(),
+ room_id uuid not null references public.sdi_rooms(id) on delete cascade,
+ uploader uuid not null references auth.users(id) on delete cascade,
+ project_ref text not null,
+ name text not null check(length(name) between 1 and 120),
+ mime text not null check(mime in('image/png','image/jpeg','audio/mp4','audio/mpeg','audio/wav','audio/x-caf')),
+ byte_size integer not null check(byte_size between 1 and 8388608),
+ chunk_count integer not null check(chunk_count between 1 and 256),
+ sha256 text not null check(sha256 ~ '^[a-f0-9]{64}$'),
+ license text not null check(license in('own-work','cc0','cc-by','licensed-library')),
+ attribution text not null default '' check(length(attribution)<=500),
+ state text not null default 'receiving' check(state in('receiving','available','deleted')),
+ end_reason text check(end_reason in('rejected','withdrawn','expired','room_closed','membership_ended')),
+ problem text check(length(problem)<=500),
+ created_at timestamptz not null default clock_timestamp(),
+ expires_at timestamptz not null,
+ deleted_at timestamptz,
+ delete_verified boolean not null default false,
+ check((state='deleted')=(end_reason is not null)),
+ check(license<>'cc-by' or length(trim(attribution))>0)
+);
+create unique index room_assets_one_live_copy on sdi_private.room_assets(room_id,sha256) where state<>'deleted';
+create table sdi_private.room_asset_chunks (
+ asset_id uuid not null references sdi_private.room_assets(id) on delete cascade,
+ idx integer not null check(idx between 0 and 255),
+ data bytea not null check(octet_length(data) between 1 and 32768),
+ primary key(asset_id,idx)
+);
+create table sdi_private.room_asset_budget (
+ user_id uuid primary key references auth.users(id) on delete cascade, window_start timestamptz not null, attempts integer not null
+);
+-- Cleanup evidence: how many chunks were removed and whether none remain.
+create table sdi_private.room_asset_cleanup_audit (
+ id uuid primary key default gen_random_uuid(), asset_id uuid not null, room_id uuid not null,
+ reason text not null, chunks_removed integer not null, verified boolean not null,
+ created_at timestamptz not null default clock_timestamp()
+);
+alter table sdi_private.room_assets enable row level security;
+alter table sdi_private.room_asset_chunks enable row level security;
+alter table sdi_private.room_asset_budget enable row level security;
+alter table sdi_private.room_asset_cleanup_audit enable row level security;
+revoke all on sdi_private.room_assets,sdi_private.room_asset_chunks,sdi_private.room_asset_budget,sdi_private.room_asset_cleanup_audit
+ from public,anon,authenticated;
+
+-- Whether a given user (not necessarily the caller) still belongs to an open room.
+create function sdi_private.room_member_active(r uuid,u uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+ select exists(select 1 from public.sdi_rooms room where room.id=r and not room.closed and (room.owner_id=u or exists(
+  select 1 from public.sdi_room_members m where m.room_id=r and m.user_id=u and m.owner_approved and m.member_accepted and not m.revoked)))
+$$;
+revoke all on function sdi_private.room_member_active(uuid,uuid) from public,anon,authenticated;
+
+-- Delete a transfer copy's bytes and record verified evidence. Never touches
+-- anything on a device.
+create function sdi_private.room_asset_discard(asset uuid,reason text,note text default null) returns boolean
+language plpgsql security definer set search_path='' as $$
+declare removed integer; remaining boolean; a sdi_private.room_assets;
+begin
+ select * into a from sdi_private.room_assets where id=asset for update;
+ if not found or a.state='deleted' then return false; end if;
+ delete from sdi_private.room_asset_chunks where asset_id=asset;
+ get diagnostics removed=row_count;
+ remaining:=exists(select 1 from sdi_private.room_asset_chunks where asset_id=asset);
+ update sdi_private.room_assets set state='deleted',end_reason=reason,problem=coalesce(note,problem),deleted_at=clock_timestamp(),
+  delete_verified=not remaining where id=asset;
+ insert into sdi_private.room_asset_cleanup_audit(asset_id,room_id,reason,chunks_removed,verified) values(asset,a.room_id,reason,removed,not remaining);
+ return not remaining;
+end $$;
+revoke all on function sdi_private.room_asset_discard(uuid,text,text) from public,anon,authenticated;
+
+create function sdi_private.room_asset(action text,room uuid default null,asset uuid default null,name text default null,
+ mime text default null,byte_size bigint default null,sha256 text default null,license text default null,attribution text default '',
+ chunk_index integer default null,data text default null) returns jsonb
+language plpgsql security definer set search_path='' as $$
+#variable_conflict use_column
+declare actor uuid:=auth.uid(); target public.sdi_rooms; a sdi_private.room_assets; n integer; items jsonb; raw bytea;
+ expected integer; chunk_size constant integer:=32768; created uuid; whole bytea; chunks integer;
+begin
+ if actor is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor and not is_anonymous) then
+  return jsonb_build_object('error','Sign in with a full account.'); end if;
+ insert into sdi_private.room_asset_budget values(actor,clock_timestamp(),1)
+ on conflict(user_id) do update set
+ attempts=case when room_asset_budget.window_start<clock_timestamp()-interval '1 minute' then 1 else room_asset_budget.attempts+1 end,
+ window_start=case when room_asset_budget.window_start<clock_timestamp()-interval '1 minute' then clock_timestamp() else room_asset_budget.window_start end
+ returning attempts into n;
+ if n>600 then return jsonb_build_object('error','Too many transfer requests. Wait a minute.'); end if;
+ if room is null or not sdi_private.room_access(room) then return jsonb_build_object('error','Room is unavailable.'); end if;
+ select * into target from public.sdi_rooms where id=room and not closed;
+ if action='list' then
+  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
+   select x.id as asset_id,x.name,x.mime,x.byte_size,x.chunk_count,x.sha256,x.license,x.attribution,x.state,x.expires_at,x.created_at,
+    x.uploader=actor as mine,(select count(*) from sdi_private.room_asset_chunks c where c.asset_id=x.id) as received
+   from sdi_private.room_assets x where x.room_id=target.id and x.expires_at>clock_timestamp()
+    and (x.state='available' or (x.state='receiving' and x.uploader=actor))
+    and sdi_private.room_member_active(target.id,x.uploader)
+   order by x.created_at desc,x.id limit 100
+  ) item;
+  return jsonb_build_object('assets',items,'chunk_size',chunk_size);
+ end if;
+ if action='declare' then
+  if target.project_ref is null then return jsonb_build_object('error','Share a project in this room before sending assets.'); end if;
+  if not sdi_private.room_can_edit(target.id) then return jsonb_build_object('error','Only editors can share assets in this room.'); end if;
+  if name is null or length(trim(name)) not between 1 and 120 or mime is null
+   or mime not in('image/png','image/jpeg','audio/mp4','audio/mpeg','audio/wav','audio/x-caf')
+   or byte_size is null or byte_size not between 1 and 8388608 or sha256 is null or sha256 !~ '^[a-f0-9]{64}$'
+   or license is null or license not in('own-work','cc0','cc-by','licensed-library') or attribution is null or length(attribution)>500
+   or (license='cc-by' and length(trim(attribution))=0) then
+   return jsonb_build_object('error','A named PNG, JPEG or audio file up to 8 MB, its SHA-256 and its licence are required.'); end if;
+  select * into a from sdi_private.room_assets x where x.room_id=target.id and x.sha256=room_asset.sha256 and x.state<>'deleted' for update;
+  if found then
+   if a.expires_at>clock_timestamp() and sdi_private.room_member_active(target.id,a.uploader) then
+    if a.state='receiving' and a.uploader<>actor then return jsonb_build_object('error','Another member is already sending this file.'); end if;
+    return jsonb_build_object('status','existing','asset_id',a.id,'state',a.state,'chunk_size',chunk_size,'chunk_count',a.chunk_count,'expires_at',a.expires_at);
+   end if;
+   perform sdi_private.room_asset_discard(a.id,case when sdi_private.room_member_active(target.id,a.uploader) then 'expired' else 'membership_ended' end);
+  end if;
+  if (select count(*) from sdi_private.room_assets x where x.uploader=actor and x.created_at>clock_timestamp()-interval '1 day')>=30 then
+   return jsonb_build_object('error','Daily asset transfer limit reached.'); end if;
+  if (select count(*) from sdi_private.room_assets x where x.room_id=target.id and x.state<>'deleted')>=100
+   or (select coalesce(sum(x.byte_size),0) from sdi_private.room_assets x where x.room_id=target.id and x.state<>'deleted')+byte_size>67108864 then
+   return jsonb_build_object('error','This room reached its transfer quota. Withdraw older assets first.'); end if;
+  chunks:=((byte_size+chunk_size-1)/chunk_size)::integer;
+  insert into sdi_private.room_assets(room_id,uploader,project_ref,name,mime,byte_size,chunk_count,sha256,license,attribution,expires_at)
+  values(target.id,actor,target.project_ref,trim(name),mime,byte_size,chunks,sha256,license,trim(attribution),clock_timestamp()+interval '1 hour')
+  returning id into created;
+  return jsonb_build_object('status','declared','asset_id',created,'state','receiving','chunk_size',chunk_size,'chunk_count',chunks,
+   'expires_at',(select expires_at from sdi_private.room_assets where id=created));
+ end if;
+ select * into a from sdi_private.room_assets x where x.id=asset and x.room_id=target.id for update;
+ if not found or a.state='deleted' or a.expires_at<=clock_timestamp() then return jsonb_build_object('error','Asset is unavailable.'); end if;
+ if action='status' then
+  if a.uploader<>actor and a.state<>'available' then return jsonb_build_object('error','Asset is unavailable.'); end if;
+  return jsonb_build_object('asset_id',a.id,'state',a.state,'chunk_count',a.chunk_count,'expires_at',a.expires_at,
+   'received',(select coalesce(jsonb_agg(c.idx order by c.idx),'[]'::jsonb) from sdi_private.room_asset_chunks c where c.asset_id=a.id));
+ elsif action='put' then
+  if a.uploader<>actor or a.state<>'receiving' then return jsonb_build_object('error','Asset is unavailable.'); end if;
+  if not sdi_private.room_can_edit(target.id) then return jsonb_build_object('error','Only editors can share assets in this room.'); end if;
+  if chunk_index is null or chunk_index<0 or chunk_index>=a.chunk_count or data is null or length(data)>45000 then
+   return jsonb_build_object('error','Chunk index or size is invalid.'); end if;
+  begin raw:=decode(data,'base64'); exception when others then return jsonb_build_object('error','Chunk is not valid base64.'); end;
+  expected:=case when chunk_index=a.chunk_count-1 then a.byte_size-chunk_index*chunk_size else chunk_size end;
+  if octet_length(raw)<>expected then return jsonb_build_object('error','Chunk length does not match the declared file size.'); end if;
+  insert into sdi_private.room_asset_chunks(asset_id,idx,data) values(a.id,chunk_index,raw)
+  on conflict(asset_id,idx) do update set data=excluded.data;
+  return jsonb_build_object('status','stored','received',(select count(*) from sdi_private.room_asset_chunks c where c.asset_id=a.id));
+ elsif action='finalize' then
+  if a.uploader<>actor or a.state<>'receiving' then return jsonb_build_object('error','Asset is unavailable.'); end if;
+  if (select count(*) from sdi_private.room_asset_chunks c where c.asset_id=a.id)<>a.chunk_count then
+   return jsonb_build_object('error','incomplete','received',(select coalesce(jsonb_agg(c.idx order by c.idx),'[]'::jsonb) from sdi_private.room_asset_chunks c where c.asset_id=a.id));
+  end if;
+  select string_agg(c.data,''::bytea order by c.idx) into whole from sdi_private.room_asset_chunks c where c.asset_id=a.id;
+  if octet_length(whole)<>a.byte_size or encode(extensions.digest(whole,'sha256'),'hex')<>a.sha256 then
+   perform sdi_private.room_asset_discard(a.id,'rejected','Received bytes did not match the declared SHA-256; the copy was discarded.');
+   return jsonb_build_object('error','The transferred file was corrupt and has been discarded. Send it again.');
+  end if;
+  update sdi_private.room_assets set state='available',expires_at=clock_timestamp()+interval '72 hours' where id=a.id;
+  return jsonb_build_object('status','available','asset_id',a.id,'expires_at',(select expires_at from sdi_private.room_assets where id=a.id));
+ elsif action='get' then
+  if a.state<>'available' or not sdi_private.room_member_active(target.id,a.uploader) then return jsonb_build_object('error','Asset is unavailable.'); end if;
+  if chunk_index is null or chunk_index<0 or chunk_index>=a.chunk_count then return jsonb_build_object('error','Chunk index is invalid.'); end if;
+  return jsonb_build_object('asset_id',a.id,'chunk_index',chunk_index,'chunk_count',a.chunk_count,'sha256',a.sha256,
+   'data',(select encode(c.data,'base64') from sdi_private.room_asset_chunks c where c.asset_id=a.id and c.idx=chunk_index));
+ elsif action='withdraw' then
+  if a.uploader<>actor and target.owner_id<>actor then return jsonb_build_object('error','Only the sender or the room owner can withdraw an asset.'); end if;
+  return jsonb_build_object('status','withdrawn','verified',sdi_private.room_asset_discard(a.id,'withdrawn'));
+ end if;
+ return jsonb_build_object('error','Unsupported asset operation.');
+end $$;
+revoke all on function sdi_private.room_asset(text,uuid,uuid,text,text,bigint,text,text,text,integer,text) from public,anon;
+grant execute on function sdi_private.room_asset(text,uuid,uuid,text,text,bigint,text,text,text,integer,text) to authenticated;
+create function public.sdi_room_asset(action text,room uuid default null,asset uuid default null,name text default null,
+ mime text default null,byte_size bigint default null,sha256 text default null,license text default null,attribution text default '',
+ chunk_index integer default null,data text default null) returns jsonb language sql security invoker set search_path='' as $$
+ select sdi_private.room_asset(action,room,asset,name,mime,byte_size,sha256,license,attribution,chunk_index,data)$$;
+revoke all on function public.sdi_room_asset(text,uuid,uuid,text,text,bigint,text,text,text,integer,text) from public,anon;
+grant execute on function public.sdi_room_asset(text,uuid,uuid,text,text,bigint,text,text,text,integer,text) to authenticated;
+
+-- Scheduled cleanup (service role only): expired copies, closed rooms and
+-- senders whose membership ended. Returns verified counts for the run log.
+create function sdi_private.room_asset_sweep(max_items integer default 200) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare item record; done integer:=0; verified integer:=0;
+begin
+ for item in
+  select x.id,case when room.closed then 'room_closed'
+   when not sdi_private.room_member_active(x.room_id,x.uploader) then 'membership_ended' else 'expired' end as reason
+  from sdi_private.room_assets x join public.sdi_rooms room on room.id=x.room_id
+  where x.state<>'deleted' and (x.expires_at<=clock_timestamp() or room.closed or not sdi_private.room_member_active(x.room_id,x.uploader))
+  order by x.expires_at limit least(greatest(coalesce(max_items,200),1),1000)
+ loop
+  done:=done+1;
+  if sdi_private.room_asset_discard(item.id,item.reason) then verified:=verified+1; end if;
+ end loop;
+ return jsonb_build_object('discarded',done,'verified',verified,
+  'unverified_total',(select count(*) from sdi_private.room_assets where state='deleted' and not delete_verified));
+end $$;
+revoke all on function sdi_private.room_asset_sweep(integer) from public,anon,authenticated;
+grant execute on function sdi_private.room_asset_sweep(integer) to service_role;
+create function public.sdi_room_asset_sweep(max_items integer default 200) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.room_asset_sweep(max_items)$$;
+revoke all on function public.sdi_room_asset_sweep(integer) from public,anon,authenticated;
+grant execute on function public.sdi_room_asset_sweep(integer) to service_role;
+commit;

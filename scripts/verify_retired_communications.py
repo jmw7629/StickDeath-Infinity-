@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Guard retired communication code out of both native build definitions.
+"""Guard retired communication code out of every delivered surface (#260).
 
-This checks the real manifests, not a duplicate runtime model. It does not prove
-that old backend endpoints have been retired or that connected rooms work.
+Native: the real build manifests, Info.plist and every built Swift source.
+Cross-surface: deep-link routes, the Spatter system prompt, Android build and
+manifest, the backend SQL candidates and Python services, and that the SQL
+retirement candidate (security-retire-communications.sql) is in the apply order.
+It does not inspect a live database (run sdi_legacy_communication_exposure there)
+and does not prove connected rooms work.
 """
 from pathlib import Path
 import plistlib
@@ -25,6 +29,64 @@ DELETED_PATHS = {
     "Views/Messages/ContactsView.swift", "Views/Messages/VideoCall",
     "Views/Messages/WatchParty", "Views/Collab/CreatorRoomView.swift",
 }
+
+
+# Object names the backend must never create; mirrors
+# sdi_private.legacy_communication_name in backend/sql/security-retire-communications.sql.
+LEGACY_NAME = re.compile(
+    r"^(chats?|chat_[a-z0-9_]+|[a-z0-9_]+_chats?|messages?|message_[a-z0-9_]+|[a-z0-9_]+_messages?|direct_messages?|dms?|dm_[a-z0-9_]+"
+    r"|conversations?|conversation_[a-z0-9_]+|calls?|call_[a-z0-9_]+|[a-z0-9_]+_calls?|voice_[a-z0-9_]+|video_calls?|video_call_[a-z0-9_]+"
+    r"|livekit_[a-z0-9_]+|[a-z0-9_]+_livekit[a-z0-9_]*|typing_[a-z0-9_]+|watch_part(y|ies)[a-z0-9_]*)$")
+RETIRED_DEPENDENCIES = re.compile(r"livekit|webrtc|stream-chat|getstream|agora|twilio|jitsi|sendbird|vonage|daily-co|pusher-chat", re.I)
+# Phrases that advertise removed features as available (negations are allowed).
+ADVERTISING = re.compile(r"livekit calls|voice/video flow|start (?:a )?(?:voice|video) call|open (?:the )?messenger|send (?:a )?direct message", re.I)
+
+
+def legacy_name(name: str) -> bool:
+    return not name.startswith("sdi_") and "spatter" not in name and bool(LEGACY_NAME.match(name))
+
+
+def verify_cross_surface(root: Path = ROOT) -> None:
+    # Deep links: only the auth routes exist.
+    app = (root / "StickDeathInfinity/App/StickDeathInfinityApp.swift").read_text()
+    routes = set(re.findall(r'case \("([a-z]+)", "(/[a-z]*)"\)', app))
+    assert routes and {host for host, _ in routes} == {"auth"}, f"unexpected deep-link routes: {sorted(routes)}"
+    plist = plistlib.loads((root / "StickDeathInfinity/Info.plist").read_bytes())
+    schemes = {scheme for entry in plist.get("CFBundleURLTypes", []) for scheme in entry.get("CFBundleURLSchemes", [])}
+    assert schemes == {"stickdeath"}, f"unexpected URL schemes: {schemes}"
+    assert not {"voip", "audio"} & set(plist.get("UIBackgroundModes", [])), "call background modes present"
+    # Spatter must not advertise removed communication features.
+    for relative in ("StickDeathInfinity/Services/Spatter/SpatterService.swift", "StickDeathInfinity/ViewModels/SpatterAIViewModel.swift",
+                     "StickDeathInfinity/Views/Onboarding/OnboardingView.swift", "StickDeathInfinity/Views/Components/AppTutorialView.swift"):
+        path = root / relative
+        if path.exists():
+            text = path.read_text()
+            # The owner approved correcting the pinned Spatter prompt (2026-10-14), so the
+            # prompt is checked like every other surface again.
+            hit = ADVERTISING.search(text)
+            assert not hit, f"{relative} advertises a removed feature: {hit.group(0)!r}"
+    # Calendar stays a read-only schedule view in the legacy Messages folder.
+    calendar = (root / "StickDeathInfinity/Views/Messages/CalendarView.swift").read_text()
+    assert "sdi_calendar_range" in calendar and "TextField" not in calendar and "ChatMessage" not in calendar
+    assert sorted(p.name for p in (root / "StickDeathInfinity/Views/Messages").iterdir()) == ["CalendarView.swift"], "Messages folder holds more than Calendar"
+    # Dependencies on every platform.
+    for relative in ("Package.swift", "project.yml", "android/app/build.gradle.kts", "android/build.gradle.kts", "android/settings.gradle.kts"):
+        path = root / relative
+        if path.exists():
+            code = "\n".join(line for line in path.read_text().splitlines() if not line.strip().startswith(("//", "#")))
+            assert not RETIRED_DEPENDENCIES.search(code), f"{relative} declares a retired communication dependency"
+    manifest = (root / "android/app/src/main/AndroidManifest.xml").read_text()
+    assert "android.permission.RECORD_AUDIO" not in manifest and "MANAGE_OWN_CALLS" not in manifest and "READ_CONTACTS" not in manifest
+    # Backend: no candidate creates a messaging/calling object; the closing candidate is installed.
+    created = re.compile(r"create\s+(?:or\s+replace\s+)?(?:table|view|function|procedure)\s+(?:if\s+not\s+exists\s+)?(?:[a-z_]+\.)?([a-z0-9_]+)", re.I)
+    for path in sorted((root / "backend/sql").glob("*.sql")):
+        for name in created.findall(path.read_text()):
+            assert not legacy_name(name.lower()), f"{path.name} creates retired communication object {name}"
+    readme = (root / "backend/sql/README.md").read_text()
+    order = readme.split("<!-- apply-order -->", 1)[1].split("<!-- /apply-order -->", 1)[0]
+    assert "security-retire-communications.sql" in order, "SQL retirement candidate missing from the apply order"
+    for path in sorted((root / "backend").rglob("*.py")):
+        assert not re.search(r"^\s*(?:import|from)\s+(?:livekit|twilio|agora|stream_chat)", path.read_text(), re.M), str(path)
 
 
 def verify(root: Path = ROOT) -> None:
@@ -73,7 +135,9 @@ def verify(root: Path = ROOT) -> None:
         assert "URLSession" not in content and ".samples" not in content
         assert "MatchmakingView()" not in content
     print("RETIRED_COMMUNICATIONS_NATIVE_BOUNDARY=PASS")
-    print("Backend retirement and real collaboration are separate unverified gates.")
+    verify_cross_surface(root)
+    print("RETIRED_COMMUNICATIONS_CROSS_SURFACE=PASS (source only; live database exposure is checked with sdi_legacy_communication_exposure)")
+    print("Real connected collaboration is a separate unverified gate.")
 
 
 if __name__ == "__main__":

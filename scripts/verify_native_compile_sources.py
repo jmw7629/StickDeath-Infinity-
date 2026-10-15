@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # These production types refer to each other directly. Keep the real catalogue
 # in tests that compile preview sessions; a test-only stand-in would hide wiring.
 DEPENDENCIES = {
+    "StickDeathInfinity/Services/Storage/StudioStorageCleanup.swift": {"StickDeathInfinity/Services/StudioAudioWaveformCache.swift", "StickDeathInfinity/Services/Storage/StudioStorageBudget.swift"},
     # Community clients share one model file and one transport protocol.
     "StickDeathInfinity/Services/Social/CommunityTransport.swift": {"StickDeathInfinity/Models/CommunityModels.swift"},
     "StickDeathInfinity/Services/Social/FeedClient.swift": {"StickDeathInfinity/Models/CommunityModels.swift", "StickDeathInfinity/Services/Social/CommunityTransport.swift"},
@@ -24,6 +25,7 @@ DEPENDENCIES = {
     # The planner suite routes every catalogue example and executes typed commands.
     "Tests/SpatterPlanner/main.swift": {
         "StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift",
         "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
         "StickDeathInfinity/Models/StudioCommands.swift",
     },

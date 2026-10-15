@@ -396,8 +396,13 @@ descriptors with pressure, layers with lock mode/label/blend, holds, four-track 
 refuses with listed reasons. `SwiftProjectImport` accepts schema 1–35, lock modes, labels and legacy
 lines; shared fixtures are in `Tests/SDIFixtures` (verified here with Python).
 
+Connected client (`connect/`, see docs/ANDROID_DELIVERY.md "Connected client"): GoTrue email/guest/PKCE
+OAuth sign-in with Keystore-encrypted session restore, a PostgREST gateway, feed/profile/Rooms clients on
+the iOS RPC contracts and the Spatter cloud transport. The default build has no Supabase values and no
+INTERNET permission; owner-supplied public values merge `src/connected/AndroidManifest.xml`.
+
 Offline scaffolds: `BackendContract` (26 member RPCs cross-checked against `backend/sql` by a JVM
-test), `SessionState`/`AndroidIdentity` (honest "Not connected" account panel; no INTERNET permission),
+test), `SessionState`/`AndroidIdentity` (honest "Not connected" state for unconfigured builds),
 `SpatterCommandBridge` (the 31 iOS instruction sentences applied as one Undo step; no assistant
 service), `NotificationPreferences` (local model; no FCM, no POST_NOTIFICATIONS) and
 `LocalCrashReporter` (redacted local reports, five files / 30 days, never uploaded; installed by

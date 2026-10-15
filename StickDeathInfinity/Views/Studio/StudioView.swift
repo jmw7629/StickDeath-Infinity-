@@ -976,6 +976,7 @@ struct SpatterAISheet: View {
                                 .accessibilityIdentifier("spatter.studio.cloud.budget")
                         }
                     }
+                    SpatterPlanControls(vm: spatterVM, accountID: authVM.userId, dark: true)
                     if let notice = contextError ?? spatterVM.notice {
                         Text(notice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.8))
                             .accessibilityIdentifier("spatter.studio.notice")
@@ -1010,15 +1011,17 @@ struct SpatterAISheet: View {
                     .padding(.horizontal, 16)
                 }
 
+                SpatterSuggestionChips(vm: spatterVM, onFill: { prompt = $0 }, onSend: sendSuggestion, dark: true)
                 HStack(spacing: 8) {
-                    TextField("Ask Spatter for advice...", text: $prompt)
+                    TextField(spatterVM.freeTextLocked ? "Choose a suggested prompt above" : "Ask Spatter for advice...", text: $prompt)
                         .font(.specialElite(14)).foregroundColor(.white)
                         .padding(12).background(Color(hex: "1A1A24")).cornerRadius(12)
+                        .disabled(spatterVM.freeTextLocked)
                         .accessibilityIdentifier("spatter.studio.input")
                     Button(action: sendMessage) {
                         Image(systemName: "arrow.up.circle.fill").font(.system(size: 28)).foregroundColor(.red)
                     }
-                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spatterVM.isThinking)
+                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spatterVM.isThinking || spatterVM.freeTextLocked)
                     .accessibilityIdentifier("spatter.studio.send")
                 }
                 .padding(16)
@@ -1051,6 +1054,18 @@ struct SpatterAISheet: View {
             guard let vm else { return false }
             return SpatterContext.studio(vm.commandScreenContext) == context
         }) { prompt = "" }
+    }
+
+    private func sendSuggestion(_ suggestion: SpatterSuggestedPrompt) {
+        guard let context = SpatterContext.studio(vm.commandScreenContext) else {
+            contextError = "This Studio project is no longer open."
+            return
+        }
+        contextError = nil
+        spatterVM.submitSuggested(suggestion, context: context, stillCurrent: { [weak vm] in
+            guard let vm else { return false }
+            return SpatterContext.studio(vm.commandScreenContext) == context
+        })
     }
 }
 

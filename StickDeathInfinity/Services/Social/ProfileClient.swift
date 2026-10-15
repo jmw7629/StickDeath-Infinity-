@@ -2,9 +2,9 @@
 // ProfileClient — records & badges preferences (profile-records.sql),
 // the earned/locked achievement catalogue (achievements.sql), the creator's
 // own approved renditions as portfolio (sdi_watch_media) and the creator's
-// file-export permission (feed-publication.sql). Follower and like totals
-// have no server contract yet, so the profile shows them as unavailable
-// rather than estimating them.
+// file-export permission (feed-publication.sql). Published/follower/like
+// totals come from `sdi_creator_stats` (feed-integrity.sql); when they cannot
+// be loaded the profile shows a dash, never an estimate.
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
@@ -44,6 +44,15 @@ final class ProfileClient {
                                            filters: [.eq("owner_id", account.uuidString.lowercased())], limit: 100, as: ApprovedMedia.self)
         return items.filter { $0.approved != false && CommunityMediaURL.checked($0.url) != nil }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+    /// Server-counted creator totals (`sdi_creator_stats`). Own totals by
+    /// default; another creator's totals omit `following`. An incomplete or
+    /// negative reply is refused rather than shown.
+    func stats(of subject: UUID? = nil) async throws -> CreatorStatsResponse {
+        let response = try await gateway.call("sdi_creator_stats", params: CreatorStatsRequest(subject: subject), as: CreatorStatsResponse.self)
+        guard response.isComplete else { throw CommunityError.invalidResponse("Creator totals were incomplete.") }
+        if let subject, let returned = response.subject, returned != subject { throw CommunityError.invalidResponse("Creator totals were for another account.") }
+        return response
     }
     func setExportPermission(review: UUID, version: Int, allowed: Bool) async throws -> Bool {
         let response = try await gateway.call("sdi_export_consent", params: ExportConsentRequest(review: review, version: version, allowed: allowed), as: ExportConsentResponse.self)

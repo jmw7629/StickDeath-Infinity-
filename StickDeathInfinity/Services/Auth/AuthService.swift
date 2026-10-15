@@ -665,6 +665,40 @@ final class AuthService: ObservableObject {
         guard response.status == "cancelled" else { throw AuthError.accountOperationRefused("The deletion request could not be cancelled. Refresh and try again.") }
     }
 
+    /// The member's own server records exactly as `sdi_account_lifecycle('export')`
+    /// returns them (three exports a day, enforced by the server). Projects and
+    /// originals never leave the device, so they are not part of this file. The
+    /// bytes are returned unmodified for the member to save; nothing is cached.
+    func exportAccountData() async throws -> Data {
+        guard userId != nil else { throw AuthError.notAuthenticated }
+        let data: Data
+        do {
+            data = try await supabase.rpc("sdi_account_lifecycle", params: LifecycleRequest(action: "export")).execute().data
+        } catch let error as PostgrestError where error.code == "PGRST202" || error.code == "42883" {
+            throw AuthError.accountExportUnavailable
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw AuthError.accountOperationRefused("The export could not be read. Nothing was saved.")
+        }
+        if let message = object["error"] as? String { throw AuthError.accountOperationRefused(message) }
+        guard object["generated_at"] != nil, object["account"] != nil else {
+            throw AuthError.accountOperationRefused("The export was incomplete. Nothing was saved.")
+        }
+        return data
+    }
+
+    /// Writes an export to a complete-protection file the member can save or share.
+    /// The caller removes it when the sharing surface goes away; it is never kept.
+    nonisolated static func writeAccountExport(_ data: Data, now: Date = Date(),
+                                               directory: URL = FileManager.default.temporaryDirectory) throws -> URL {
+        let stamp = ISO8601DateFormatter.string(from: now, timeZone: TimeZone(identifier: "UTC")!, formatOptions: [.withFullDate])
+        let folder = directory.appendingPathComponent("account-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("stickdeath-account-export-\(stamp).json")
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        return url
+    }
+
     /// Recovery links return to this app and finish through the SDK's own PKCE
     /// verifier, so only the device that requested the link can complete it.
     static let passwordResetRedirect = URL(string: "stickdeath://auth/reset")!
@@ -672,16 +706,30 @@ final class AuthService: ObservableObject {
         let address = email.trimmingCharacters(in: .whitespacesAndNewlines)
         guard address.contains("@"), address.count <= 254 else { throw AuthError.invalidEmail }
         try await supabase.auth.resetPasswordForEmail(address, redirectTo: Self.passwordResetRedirect)
+        defaults.set(Date().timeIntervalSince1970, forKey: Self.recoveryRequestedKey)
+    }
+    /// Device-local proof that this device asked for a reset link. A recovery link is
+    /// accepted only while it is fresh (recovery links expire within an hour), so an
+    /// unsolicited or forwarded link cannot sign anyone in even if the SDK would
+    /// exchange its code.
+    static let recoveryRequestedKey = "sdi.auth.recoveryRequestedAt"
+    static let recoveryRequestLifetime: TimeInterval = 3600
+    private func takeRecoveryRequest(now: Date = Date()) -> Bool {
+        let requested = defaults.double(forKey: Self.recoveryRequestedKey)
+        defaults.removeObject(forKey: Self.recoveryRequestedKey)
+        let age = now.timeIntervalSince1970 - requested
+        return requested > 0 && age >= 0 && age <= Self.recoveryRequestLifetime
     }
     /// Set after a recovery link established a session; cleared once the password changes.
     @Published private(set) var passwordRecoveryPending = false
     func completePasswordRecovery(url: URL) async throws {
         guard DeepLinkRouter.route(url) == .passwordReset else { throw AuthError.invalidCallback }
+        guard takeRecoveryRequest() else { throw AuthError.invalidCallback }
         try beginAuthentication()
         defer { authenticationInProgress = false }
         let client = try supabase
-        // Without the verifier stored by this device's reset request the SDK
-        // rejects the code; an unsolicited or replayed link cannot sign in.
+        // The SDK's PKCE verifier is a second check; the recovery-request marker
+        // above already refuses links this device did not ask for.
         let session = try await client.auth.session(from: url)
         passwordRecoveryPending = true
         try await finishAuthentication(session.user)
@@ -787,7 +835,7 @@ final class AuthService: ObservableObject {
     enum AuthError: LocalizedError {
         case providerUnavailable(String)
         case providerDenied(String)
-        case operationInProgress, invalidCallback, accountDeletionUnavailable
+        case operationInProgress, invalidCallback, accountDeletionUnavailable, accountExportUnavailable
         case accountOperationRefused(String)
         case invalidEmail, weakPassword
         case notAuthenticated
@@ -804,6 +852,7 @@ final class AuthService: ObservableObject {
             case .operationInProgress: return "Another sign-in or sign-out is still finishing. Wait before trying again."
             case .invalidCallback: return "This sign-in callback is not for StickDeath Infinity."
             case .accountDeletionUnavailable: return "Account deletion is not configured on this server yet. Your account has not been deleted."
+            case .accountExportUnavailable: return "Data export is not configured on this server yet. Nothing was exported."
             case .accountOperationRefused(let reason): return reason
             case .notAuthenticated: return "Not authenticated"
             case .noPresentingViewController: return "No presenting view controller available"

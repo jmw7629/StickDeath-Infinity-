@@ -659,6 +659,48 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
                 try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "cancel leak")
             }
         }
+        try await test("real playback measures audio-clock drift against the host clock without a stall") {
+            let session = StudioAudioTimelineSession(scratchParent: scratch)
+            defer { session.close() }
+            let clock = StudioAudioTransport.FrameClock(fps: vm.fps, frameTicks: vm.document.frames.map(\.durationTicks))
+            try check(session.play(document: vm.document, tracks: vm.projectAudioTracks, duration: 1, from: 0,
+                auditionVolume: 0, frameClock: clock, stillCurrent: { true }, onTime: { _, _ in }), session.notice ?? "drift prepare refused")
+            for _ in 0..<2000 { if !session.isPreparing { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            try check(session.actualPlayerIsPlaying, session.notice ?? "drift player absent")
+            for _ in 0..<15 {
+                try await Task.sleep(nanoseconds: 20_000_000)
+                if !session.isPlaying { break }
+                session.tick()
+            }
+            let report = session.driftReport
+            print("AUDIO_DRIFT samples=\(report.samples) max=\(report.maximumDrift) mean=\(report.meanAbsoluteDrift) corrections=\(report.driftCorrections) frameError=\(report.maximumFrameError)")
+            try check(report.samples > 0 && !report.stalled && report.driftCorrections <= 2, "drift report \(report)")
+            session.stop()
+            try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "drift playback leaked output")
+        }
+        try await test("audible scrub plays a real grain at the newest coalesced position and releases its output") {
+            guard let clip = vm.document.audioClips.first else { throw Failure(message: "fixture has no clip") }
+            let first = clip.startTime + min(0.05, clip.duration / 4), newest = clip.startTime + clip.duration / 2
+            let duration = max(vm.audioDuration, clip.startTime + clip.duration)
+            let scrub = StudioAudioScrubAudition(scratchParent: scratch, auditionVolume: 0)
+            defer { scrub.close() }
+            try check(scrub.scrub(document: vm.document, tracks: vm.projectAudioTracks, timelineDuration: duration,
+                at: first, stillCurrent: { true }), scrub.notice ?? "scrub refused")
+            try check(scrub.scrub(document: vm.document, tracks: vm.projectAudioTracks, timelineDuration: duration,
+                at: newest, stillCurrent: { true }), "queued scrub refused")
+            for _ in 0..<4000 { if !scrub.isPreparing { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            try check(scrub.notice == nil, scrub.notice ?? "")
+            guard let grain = scrub.lastGrain else { throw Failure(message: "no grain played") }
+            try check(abs(grain.start - newest) <= 1.0 / 48_000 && grain.length <= StudioAudioScrubPlanner.defaultGrainSeconds + 1e-9,
+                "newest coalesced position did not play: \(grain)")
+            var stopped = false
+            scrub.stop { stopped = true }
+            try check(stopped && !scrub.actualPlayerIsPlaying, "stop continuation or player release failed")
+            try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "scrub grain leaked output")
+            // Stale requests never sound.
+            try check(!scrub.scrub(document: vm.document, tracks: vm.projectAudioTracks, timelineDuration: duration,
+                at: first, stillCurrent: { false }) && scrub.lastGrain == grain, "stale scrub sounded")
+        }
         try await test("timelines beyond 120 seconds play a real window from the playhead and report timeline times") {
             // Same clips, placed late on a long timeline: the mixer renders only the window.
             var long = vm.document

@@ -130,6 +130,110 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             let neonCore = neon.pixel(128,128)
             try require(neonCore[1] > 0 && neonCore[2] > 0 && neonCore[3] > 0, "Neon lacks its bright tinted core")
             pass("Airbrush Flow, Watercolor Pigment/Grain and Neon Glow/core alter real pixels with bounded shared geometry")
+
+            // Airbrush Build-up (#142): measured dwell time adds real paint.
+            let held = [StrokePoint(x:128,y:128,pressure:1,timestamp:0), StrokePoint(x:128,y:128,pressure:1,timestamp:0.5),
+                        StrokePoint(x:128,y:128,pressure:1,timestamp:1)]
+            // Minimum Flow keeps the centre below 8-bit saturation so 16 and 61 dabs stay distinguishable
+            // (at the default Flow each dab adds about 19 % alpha and both counts round to 255).
+            var spray = StudioBrushSettings(family: .airbrush, size: 30, smoothing: 0, pressureEnabled: false, texture: 0)
+            let dry = try geometry(spray, points: held)
+            spray.buildup = 1
+            let wet = try geometry(spray, points: held)
+            try require(dry.sampledPointCount == 1, "Build-up 0 should keep a single held dab: \(dry.sampledPointCount)")
+            try require(wet.sampledPointCount == 61, "One second at 60 dabs/s should add 60 dabs: \(wet.sampledPointCount)")
+            try require(wet == (try geometry(spray, points: held)), "Build-up is not deterministic")
+            let dryCentre = try bitmap(dry).pixel(128,128)[3], wetCentre = try bitmap(wet).pixel(128,128)[3]
+            try require(Int(wetCentre) > Int(dryCentre) + 40, "Build-up does not accumulate paint: \(dryCentre) -> \(wetCentre)")
+            spray.buildup = 0.25
+            let quarter = try geometry(spray, points: held)
+            try require(quarter.sampledPointCount == 16 && bitmap(quarter).pixel(128,128)[3] < wetCentre,
+                        "Build-up amount does not scale accumulation: \(quarter.sampledPointCount)")
+            spray.buildup = 1
+            let longHold = [StrokePoint(x:128,y:128,pressure:1,timestamp:0), StrokePoint(x:128,y:128,pressure:1,timestamp:100)]
+            try require(geometry(spray, points: longHold).sampledPointCount == 1 + StudioBrushRenderer.maximumBuildupDabsPerPosition,
+                        "A long hold must saturate at the per-position cap instead of failing")
+            var quickSpray = spray; quickSpray.buildup = 0
+            try require(geometry(spray, points: line(duration: 0.02)) == geometry(quickSpray, points: line(duration: 0.02)),
+                        "A quick stroke already pays its build-up debt and must be unchanged")
+            try require(geometry(spray, points: line(duration: nil)) == geometry(quickSpray, points: line(duration: nil)),
+                        "Untimed samples cannot invent dwell time")
+            var roundBuild = solid0(); roundBuild.buildup = 1
+            try require(geometry(roundBuild, points: held) == geometry(solid0(), points: held), "Build-up leaked into Round")
+            pass("Airbrush Build-up accumulates measured dwell time, scales with the control, saturates boundedly and leaves quick/untimed strokes unchanged")
+
+            // Watercolor Bleed (#142): pigment spreads past the brush edge.
+            func outside(_ raster: Raster, radius: Double) -> Int {
+                var count = 0
+                for y in 0..<256 { for x in 0..<256 where raster.bytes[(y*256+x)*4+3] > 2 {
+                    if hypot(Double(x) + 0.5 - 128, Double(y) + 0.5 - 128) > radius { count += 1 }
+                } }
+                return count
+            }
+            var wash = StudioBrushSettings(family: .watercolor, size: 30, smoothing: 0, pressureEnabled: false)
+            let tap = [StrokePoint(x:128,y:128)]
+            let contained = try bitmap(geometry(wash, points: tap))
+            wash.bleed = 1
+            let bled = try bitmap(geometry(wash, points: tap))
+            try require(outside(bled, radius: 20) > outside(contained, radius: 20) + 40,
+                        "Bleed does not spread pigment past the brush edge: \(outside(contained, radius: 20)) -> \(outside(bled, radius: 20))")
+            try require(bled.bytes == (try bitmap(geometry(wash, points: tap))).bytes, "Bleed is not seeded deterministically")
+            wash.bleed = 0.3
+            let partial = try bitmap(geometry(wash, points: tap))
+            try require(partial.bytes != bled.bytes && partial.bytes != contained.bytes, "Bleed amount has no distinct effect")
+            var plainWash = wash; plainWash.bleed = 0
+            try require(geometry(plainWash) == geometry(StudioBrushSettings(family: .watercolor, size: 30, smoothing: 0, pressureEnabled: false)),
+                        "Bleed 0 changed historical watercolor geometry")
+            pass("Watercolor Bleed spreads seeded pigment past the brush edge, scales with the control and keeps Bleed 0 historical pixels")
+
+            // Neon Additive glow (#142): plus-lighter never darkens the backdrop.
+            func overGray(_ geometry: StudioBrushRenderer.Geometry) throws -> (cg: [UInt8], ui: [UInt8]) {
+                let backdrop = try Self.context()
+                backdrop.setFillColor(CGColor(srgbRed: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+                backdrop.fill(CGRect(x: 0, y: 0, width: 256, height: 256))
+                backdrop.translateBy(x: 0, y: 256); backdrop.scaleBy(x: 1, y: -1)
+                try StudioBrushRenderer.draw(geometry, color: red, in: backdrop)
+                guard let image = backdrop.makeImage() else { throw Failure(description: "No additive image") }
+                var failure: Error?
+                let canvas = Canvas { context, _ in
+                    context.fill(Path(CGRect(x: 0, y: 0, width: 256, height: 256)), with: .color(Color(.sRGB, red: 0.5, green: 0.5, blue: 0.5, opacity: 1)))
+                    do { try StudioBrushRenderer.draw(geometry, color: red, context: &context) } catch { failure = error }
+                }.frame(width: 256, height: 256)
+                let renderer = ImageRenderer(content: canvas); renderer.scale = 1
+                guard let native = renderer.cgImage else { throw Failure(description: "No additive SwiftUI image") }
+                if let failure { throw failure }
+                let cgPixel = try raster(image).pixel(128, 136)
+                let uiPixel = try raster(native).pixel(128, 136)
+                return (cgPixel, uiPixel)
+            }
+            var tube = StudioBrushSettings(family: .neon, size: 30, smoothing: 0, pressureEnabled: false)
+            let normalTube = try geometry(tube, points: line())
+            tube.additiveGlow = true
+            let additiveTube = try geometry(tube, points: line())
+            try require(additiveTube.additiveGlow && !normalTube.additiveGlow && additiveTube.marks == normalTube.marks,
+                        "Additive glow must change compositing only, not geometry")
+            let normalHalo = try overGray(normalTube), additiveHalo = try overGray(additiveTube)
+            for (name, plain, added) in [("CoreGraphics", normalHalo.cg, additiveHalo.cg), ("SwiftUI", normalHalo.ui, additiveHalo.ui)] {
+                try require(plain[1] <= 120, "\(name) normal halo should cover the gray backdrop: \(plain)")
+                try require(added[1] >= 125 && added[2] >= 125, "\(name) additive halo darkened the backdrop: \(added)")
+                try require(Int(added[0]) > Int(plain[0]) + 5, "\(name) additive halo is not brighter: \(plain) -> \(added)")
+            }
+            var additiveRound = solid0(); additiveRound.additiveGlow = true
+            try require(geometry(additiveRound, points: line()) == geometry(solid0(), points: line()), "Additive glow leaked into Round")
+            pass("Neon Additive glow composites plus-lighter in both native renderers, brightening without darkening the backdrop")
+
+            var encodedDefaults = String(decoding: try JSONEncoder().encode(StudioBrushSettings()), as: UTF8.self)
+            try require(!encodedDefaults.contains("buildup") && !encodedDefaults.contains("bleed") && !encodedDefaults.contains("additiveGlow"),
+                        "Historical settings JSON gained new keys: \(encodedDefaults)")
+            let tuned = StudioBrushSettings(family: .airbrush, size: 12, buildup: 0.4, bleed: 0.2, additiveGlow: true)
+            try require(tuned == (try JSONDecoder().decode(StudioBrushSettings.self, from: JSONEncoder().encode(tuned))), "New brush settings do not roundtrip")
+            encodedDefaults = String(decoding: try JSONEncoder().encode(tuned), as: UTF8.self)
+            try require(encodedDefaults.contains("buildup") && encodedDefaults.contains("additiveGlow"), "Changed settings were not persisted")
+            for json in ["{\"buildup\":1.5}", "{\"bleed\":-0.1}", "{\"additiveGlow\":\"yes\"}"] {
+                do { _ = try JSONDecoder().decode(StudioBrushSettings.self, from: Data(json.utf8)); throw Failure(description: "Invalid new setting accepted: \(json)") }
+                catch is DecodingError {} catch is StudioBrushError {}
+            }
+            pass("Build-up, Bleed and Additive glow persist only when changed, roundtrip and reject out-of-range values")
             let defaults = try JSONDecoder().decode(StudioBrushSettings.self, from: Data("{}".utf8))
             try require(defaults == StudioBrushSettings(), "Explicit historical setting defaults changed")
             for json in ["{\"version\":2}", "{\"family\":\"missing\"}", "{\"size\":0}", "{\"family\":\"gradient\"}"] {
@@ -317,6 +421,7 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             print("STUDIO_BRUSH_TESTS=PASS \(groups) production geometry/pixel groups")
         } catch { print("STUDIO_BRUSH_TESTS=FAIL \(error)"); exit(1) }
     }
+    static func solid0() -> StudioBrushSettings { StudioBrushSettings(size: 24, smoothing: 0, pressureEnabled: false) }
     static func requireLast(_ marks: [StudioBrushRenderer.Mark]) throws -> StudioBrushRenderer.Mark {
         guard let last = marks.last else { throw Failure(description:"Missing last mark") }; return last
     }

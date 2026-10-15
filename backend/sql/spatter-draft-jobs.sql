@@ -166,4 +166,254 @@ revoke all on function public.sdi_spatter_draft_claim(date,text,bigint,text,json
  public.sdi_spatter_draft_status(date,date) from public,anon,authenticated;
 grant execute on function public.sdi_spatter_draft_claim(date,text,bigint,text,jsonb),public.sdi_spatter_draft_progress(uuid,text,text,jsonb,jsonb,text,text,jsonb) to service_role;
 grant execute on function public.sdi_spatter_draft_status(date,date) to authenticated;
+
+-- ── Spatter cloud-advice metering (#209) ─────────────────────────────────
+-- Server-side prompt accounting for backend/spatter/handler.py. The device never
+-- counts its own allowance. Owner decisions (2026-10-07, revised 2026-10-14,
+-- issue #209): Free accounts get 5 prompts per UTC calendar month and may only
+-- send one of the app's suggested prompts (an id from the fixed allowlist in
+-- sdi_private.spatter_suggested_prompt_ids, mirrored by
+-- backend/spatter/suggested_prompts.py and the iOS SpatterSuggestedPrompt
+-- catalogue); free text is refused before anything is counted. The free trial
+-- applies to both paid plans: a 'trialing' subscription maps to its own tier
+-- through sdi_private.entitlements. The USD 4.99 'creator' plan gets 15 prompts
+-- per billing period, keyed to the subscription's paid_through so a renewal
+-- starts a new period; the USD 9.99 'pro' plan has no plan allowance but still
+-- obeys the per-user
+-- daily safety cap, the per-minute rate, the global daily ceiling and the agent
+-- emergency stop. The global ceiling defaults to 0 (closed) so nothing can be
+-- spent until the owner sets it. One unit is one prompt; provider-reported
+-- usage units are recorded on the reservation when the handler commits it.
+create table sdi_private.spatter_usage_controls (
+ singleton boolean primary key default true check(singleton),
+ global_daily_cap integer not null default 0 check(global_daily_cap between 0 and 10000000),
+ user_daily_safety_cap integer not null default 100 check(user_daily_safety_cap between 0 and 10000),
+ user_per_minute_cap integer not null default 6 check(user_per_minute_cap between 1 and 600),
+ free_prompts integer not null default 5 check(free_prompts between 0 and 1000),
+ creator_period_prompts integer not null default 15 check(creator_period_prompts between 0 and 100000),
+ revision bigint not null default 1, updated_by uuid references auth.users(id) on delete set null,
+ updated_at timestamptz not null default clock_timestamp()
+);
+insert into sdi_private.spatter_usage_controls(singleton) values(true);
+-- One row per (account, bucket). Buckets: 'month:<utc yyyy-mm>' (free calendar
+-- month), 'free' (legacy one-time bucket, no longer written),
+-- 'period:<paid_through>' (creator billing period), 'day:<utc date>' (safety
+-- cap) and 'minute:<utc minute>' (rate). No prompt text is ever stored.
+create table sdi_private.spatter_usage_counters (
+ user_id uuid not null references auth.users(id) on delete cascade,
+ bucket text not null check(bucket ~ '^(free|month:[0-9]{4}-[0-9]{2}|period:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z|day:[0-9]{4}-[0-9]{2}-[0-9]{2}|minute:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2})$'),
+ used integer not null default 0 check(used>=0),
+ updated_at timestamptz not null default clock_timestamp(),
+ primary key(user_id,bucket)
+);
+create table sdi_private.spatter_usage_global (
+ day date primary key, used integer not null default 0 check(used>=0), updated_at timestamptz not null default clock_timestamp()
+);
+create table sdi_private.spatter_usage_reservations (
+ id uuid primary key default gen_random_uuid(),
+ user_id uuid not null references auth.users(id) on delete cascade,
+ plan text not null check(plan in('free','creator','pro')),
+ buckets text[] not null, day date not null,
+ state text not null default 'reserved' check(state in('reserved','committed','released')),
+ units integer not null default 0 check(units between 0 and 1000000000),
+ created_at timestamptz not null default clock_timestamp(), settled_at timestamptz
+);
+alter table sdi_private.spatter_usage_controls enable row level security;
+alter table sdi_private.spatter_usage_counters enable row level security;
+alter table sdi_private.spatter_usage_global enable row level security;
+alter table sdi_private.spatter_usage_reservations enable row level security;
+revoke all on sdi_private.spatter_usage_controls,sdi_private.spatter_usage_counters,sdi_private.spatter_usage_global,
+ sdi_private.spatter_usage_reservations from public,anon,authenticated;
+create index spatter_usage_reservations_open on sdi_private.spatter_usage_reservations(state,created_at);
+
+-- The only prompts a Free account may send. Ids only: the prompt text lives in
+-- the handler (backend/spatter/suggested_prompts.py), which replaces any client
+-- content with that canonical text for Free requests.
+create function sdi_private.spatter_suggested_prompt_ids() returns text[] language sql immutable set search_path='' as $$
+ select array['animation_tips','scene_ideas','fight_choreography','style_advice']::text[]
+$$;
+
+-- The account's current plan and allowance, without consuming anything.
+create function sdi_private.spatter_usage_plan(p_user uuid) returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare c sdi_private.spatter_usage_controls; v_tier text; v_paid timestamptz; v_plan text:='free'; v_bucket text; v_limit integer; v_used integer;
+ v_month timestamptz:=date_trunc('month',clock_timestamp() at time zone 'utc') at time zone 'utc';
+begin
+ select * into c from sdi_private.spatter_usage_controls;
+ select tier,paid_through into v_tier,v_paid from sdi_private.entitlements where user_id=p_user
+  order by case tier when 'pro' then 0 else 1 end,paid_through desc limit 1;
+ if v_tier is not null then v_plan:=v_tier; end if;
+ if v_plan='pro' then
+  return jsonb_build_object('plan','pro','unlimited',true,'limit',null,'used',null,'remaining',null,'period','none','resets_at',null);
+ elsif v_plan='creator' then
+  v_bucket:='period:'||to_char(v_paid at time zone 'utc','YYYY-MM-DD"T"HH24:MI:SS"Z"'); v_limit:=c.creator_period_prompts;
+ else
+  v_bucket:='month:'||to_char(v_month at time zone 'utc','YYYY-MM'); v_limit:=c.free_prompts;
+ end if;
+ select u.used into v_used from sdi_private.spatter_usage_counters u where u.user_id=p_user and u.bucket=v_bucket;
+ v_used:=coalesce(v_used,0);
+ return jsonb_build_object('plan',v_plan,'unlimited',false,'limit',v_limit,'used',v_used,'remaining',greatest(v_limit-v_used,0),
+  'period',case v_plan when 'creator' then 'billing_period' else 'calendar_month' end,
+  'resets_at',case v_plan when 'creator' then to_jsonb(v_paid) else to_jsonb(v_month+interval '1 month') end,
+  'suggested_prompts_only',v_plan='free','bucket',v_bucket);
+end $$;
+
+-- Service-only atomic reservation of one prompt. Every refusal carries a
+-- stable code the handler maps to an HTTP status and an honest client message.
+create function sdi_private.spatter_usage_reserve(p_user uuid,p_suggested_prompt text default null) returns jsonb language plpgsql security definer set search_path='' as $$
+declare c sdi_private.spatter_usage_controls; p jsonb; v_day date:=(clock_timestamp() at time zone 'utc')::date;
+ v_minute text:=to_char(date_trunc('minute',clock_timestamp() at time zone 'utc'),'YYYY-MM-DD"T"HH24:MI');
+ g integer; d integer; m integer; v_buckets text[]; b text; rid uuid;
+begin
+ if p_user is null or not exists(select 1 from auth.users where id=p_user) then
+  return jsonb_build_object('allowed',false,'code','unauthorized'); end if;
+ if exists(select 1 from sdi_private.account_controls where user_id=p_user and state<>'active') then
+  return jsonb_build_object('allowed',false,'code','account_restricted'); end if;
+ if (select emergency_stop from sdi_private.agent_global) then
+  return jsonb_build_object('allowed',false,'code','emergency_stop'); end if;
+ if p_suggested_prompt is not null and not (p_suggested_prompt=any(sdi_private.spatter_suggested_prompt_ids())) then
+  return jsonb_build_object('allowed',false,'code','unknown_suggested_prompt'); end if;
+ -- Free accounts may only send a suggested prompt; free text is refused before counting.
+ if sdi_private.spatter_usage_plan(p_user)->>'plan'='free' and p_suggested_prompt is null then
+  return jsonb_build_object('allowed',false,'code','suggested_prompt_required','plan','free','upgrade','creator_or_pro'); end if;
+ select * into c from sdi_private.spatter_usage_controls;
+ -- Serialize per account first, then lock the global day row; the order is fixed.
+ perform pg_advisory_xact_lock(hashtextextended('sdi_spatter_usage:'||p_user::text,0));
+ insert into sdi_private.spatter_usage_global(day) values(v_day) on conflict(day) do nothing;
+ select used into g from sdi_private.spatter_usage_global where day=v_day for update;
+ if g>=c.global_daily_cap then return jsonb_build_object('allowed',false,'code','global_limit'); end if;
+ select coalesce((select used from sdi_private.spatter_usage_counters where user_id=p_user and bucket='minute:'||v_minute),0) into m;
+ if m>=c.user_per_minute_cap then
+  return jsonb_build_object('allowed',false,'code','rate_limited',
+   'retry_after_seconds',greatest(1,60-floor(extract(second from clock_timestamp() at time zone 'utc'))::integer)); end if;
+ select coalesce((select used from sdi_private.spatter_usage_counters where user_id=p_user and bucket='day:'||v_day::text),0) into d;
+ if d>=c.user_daily_safety_cap then
+  return jsonb_build_object('allowed',false,'code','daily_safety_limit','resets_at',(v_day+1)::timestamp at time zone 'utc'); end if;
+ p:=sdi_private.spatter_usage_plan(p_user);
+ if not (p->>'unlimited')::boolean and (p->>'remaining')::integer<=0 then
+  return jsonb_build_object('allowed',false,'code','plan_allowance_exhausted','plan',p->>'plan','period',p->>'period','resets_at',p->'resets_at',
+   'upgrade',case p->>'plan' when 'free' then 'creator_or_pro' else 'pro' end); end if;
+ v_buckets:=array['minute:'||v_minute,'day:'||v_day::text];
+ if p->>'bucket' is not null then v_buckets:=v_buckets||(p->>'bucket'); end if;
+ foreach b in array v_buckets loop
+  insert into sdi_private.spatter_usage_counters as u(user_id,bucket,used) values(p_user,b,1)
+   on conflict(user_id,bucket) do update set used=u.used+1,updated_at=clock_timestamp();
+ end loop;
+ update sdi_private.spatter_usage_global set used=used+1,updated_at=clock_timestamp() where day=v_day;
+ insert into sdi_private.spatter_usage_reservations(user_id,plan,buckets,day) values(p_user,p->>'plan',v_buckets,v_day) returning id into rid;
+ return jsonb_build_object('allowed',true,'reservation',rid,'plan',p->>'plan','period',p->>'period',
+  'remaining',case when (p->>'unlimited')::boolean then null else to_jsonb((p->>'remaining')::integer-1) end,'resets_at',p->'resets_at');
+end $$;
+
+-- Settle a reservation exactly once: 'commit' records provider units after a
+-- delivered reply; 'release' refunds every counter after a provider failure.
+create function sdi_private.spatter_usage_settle(p_reservation uuid,p_outcome text,p_units integer default 0) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare r sdi_private.spatter_usage_reservations; b text;
+begin
+ if p_outcome is null or p_outcome not in('commit','release') or p_units is null or p_units<0 then
+  return jsonb_build_object('status','refused','reason','Invalid settlement.'); end if;
+ select * into r from sdi_private.spatter_usage_reservations where id=p_reservation for update;
+ if not found then return jsonb_build_object('status','refused','reason','Unknown reservation.'); end if;
+ if r.state<>'reserved' then return jsonb_build_object('status','refused','reason','Reservation is already '||r.state||'.'); end if;
+ if p_outcome='release' then
+  foreach b in array r.buckets loop
+   update sdi_private.spatter_usage_counters set used=greatest(used-1,0),updated_at=clock_timestamp() where user_id=r.user_id and bucket=b;
+  end loop;
+  update sdi_private.spatter_usage_global set used=greatest(used-1,0),updated_at=clock_timestamp() where day=r.day;
+  update sdi_private.spatter_usage_reservations set state='released',settled_at=clock_timestamp() where id=r.id;
+ else
+  update sdi_private.spatter_usage_reservations set state='committed',units=p_units,settled_at=clock_timestamp() where id=r.id;
+ end if;
+ return jsonb_build_object('status','confirmed','state',case p_outcome when 'commit' then 'committed' else 'released' end);
+end $$;
+
+-- Expired rate buckets are pruned; day buckets are kept 400 days for audit.
+-- Unsettled reservations older than 15 minutes stay counted (never refunded
+-- silently) and are marked committed with zero units.
+create function sdi_private.spatter_usage_sweep() returns integer language plpgsql security definer set search_path='' as $$
+declare touched integer:=0; n integer;
+begin
+ delete from sdi_private.spatter_usage_counters where bucket like 'minute:%' and updated_at<clock_timestamp()-interval '2 hours';
+ get diagnostics n=row_count; touched:=touched+n;
+ delete from sdi_private.spatter_usage_counters where bucket like 'day:%' and updated_at<clock_timestamp()-interval '400 days';
+ get diagnostics n=row_count; touched:=touched+n;
+ update sdi_private.spatter_usage_reservations set state='committed',settled_at=clock_timestamp()
+  where state='reserved' and created_at<clock_timestamp()-interval '15 minutes';
+ get diagnostics n=row_count; touched:=touched+n;
+ return touched;
+end $$;
+
+-- One service-only entry point for the handler: reserve | settle | sweep.
+create function sdi_private.spatter_usage_meter(action text,p_user uuid default null,p_reservation uuid default null,
+ p_outcome text default null,p_units integer default 0,p_suggested_prompt text default null) returns jsonb language plpgsql security definer set search_path='' as $$
+begin
+ if action='reserve' then return sdi_private.spatter_usage_reserve(p_user,p_suggested_prompt);
+ elsif action='settle' then return sdi_private.spatter_usage_settle(p_reservation,p_outcome,p_units);
+ elsif action='sweep' then return jsonb_build_object('touched',sdi_private.spatter_usage_sweep());
+ end if;
+ return jsonb_build_object('error','Unknown action.');
+end $$;
+
+-- Signed-in account's own allowance for Settings ("remaining prompts").
+create function sdi_private.spatter_my_usage() returns jsonb language plpgsql security definer set search_path='' as $$
+begin
+ if not sdi_private.account_active() then return jsonb_build_object('error','Sign in to view your Spatter allowance.'); end if;
+ return (sdi_private.spatter_usage_plan(auth.uid())-'bucket')
+  ||jsonb_build_object('service',case when (select emergency_stop from sdi_private.agent_global) then 'paused' else 'metered' end);
+end $$;
+
+-- Owner/admin controls with audit. Reading needs overview; changing needs the owner.
+create function sdi_private.spatter_usage_admin(action text,revision bigint default null,payload jsonb default '{}',reason text default '') returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare c sdi_private.spatter_usage_controls; is_owner boolean; v_day date:=(clock_timestamp() at time zone 'utc')::date; next_rev bigint;
+begin
+ if not sdi_private.admin_can('overview') or not sdi_private.account_active() then return jsonb_build_object('error','Current administrator MFA session required.'); end if;
+ select r.owner into is_owner from sdi_private.admin_roles r where r.user_id=auth.uid() and r.enabled;
+ select * into c from sdi_private.spatter_usage_controls;
+ if action='get' then
+  return jsonb_build_object('controls',to_jsonb(c)-'singleton'-'updated_by',
+   'global_used_today',coalesce((select g.used from sdi_private.spatter_usage_global g where g.day=v_day),0),
+   'committed_units_today',coalesce((select sum(r.units) from sdi_private.spatter_usage_reservations r where r.day=v_day and r.state='committed'),0),
+   'emergency_stop',(select a.emergency_stop from sdi_private.agent_global a));
+ elsif action='set' then
+  if not coalesce(is_owner,false) then return jsonb_build_object('error','Only the owner can change Spatter limits.'); end if;
+  if spatter_usage_admin.revision is distinct from c.revision then return jsonb_build_object('error','Limits changed elsewhere; reload.','revision',c.revision); end if;
+  if length(trim(coalesce(spatter_usage_admin.reason,''))) not between 1 and 2000 then return jsonb_build_object('error','A reason is required.'); end if;
+  if payload is null or jsonb_typeof(payload)<>'object' or exists(select 1 from jsonb_object_keys(payload) k
+   where k not in('global_daily_cap','user_daily_safety_cap','user_per_minute_cap','free_prompts','creator_period_prompts')) then
+   return jsonb_build_object('error','Unknown limit.'); end if;
+  begin
+   update sdi_private.spatter_usage_controls u set
+    global_daily_cap=coalesce((payload->>'global_daily_cap')::integer,u.global_daily_cap),
+    user_daily_safety_cap=coalesce((payload->>'user_daily_safety_cap')::integer,u.user_daily_safety_cap),
+    user_per_minute_cap=coalesce((payload->>'user_per_minute_cap')::integer,u.user_per_minute_cap),
+    free_prompts=coalesce((payload->>'free_prompts')::integer,u.free_prompts),
+    creator_period_prompts=coalesce((payload->>'creator_period_prompts')::integer,u.creator_period_prompts),
+    revision=c.revision+1,updated_by=auth.uid(),updated_at=clock_timestamp()
+   returning u.revision into next_rev;
+  exception when check_violation or invalid_text_representation or numeric_value_out_of_range then
+   return jsonb_build_object('error','A limit is outside its allowed range.');
+  end;
+  insert into sdi_private.agent_audit(actor,agent_key,action,reason)
+   values(auth.uid(),'spatter_advice','set_usage_limits '||payload::text,trim(spatter_usage_admin.reason));
+  return jsonb_build_object('status','confirmed','revision',next_rev);
+ end if;
+ return jsonb_build_object('error','Unknown action.');
+end $$;
+
+revoke all on function sdi_private.spatter_suggested_prompt_ids(),sdi_private.spatter_usage_plan(uuid),sdi_private.spatter_usage_reserve(uuid,text),sdi_private.spatter_usage_settle(uuid,text,integer),
+ sdi_private.spatter_usage_sweep(),sdi_private.spatter_usage_meter(text,uuid,uuid,text,integer,text),sdi_private.spatter_my_usage(),
+ sdi_private.spatter_usage_admin(text,bigint,jsonb,text) from public,anon,authenticated;
+grant execute on function sdi_private.spatter_usage_meter(text,uuid,uuid,text,integer,text) to service_role;
+grant execute on function sdi_private.spatter_my_usage(),sdi_private.spatter_usage_admin(text,bigint,jsonb,text) to authenticated;
+create function public.sdi_spatter_usage_meter(action text,p_user uuid default null,p_reservation uuid default null,p_outcome text default null,p_units integer default 0,
+ p_suggested_prompt text default null)
+ returns jsonb language sql security invoker set search_path='' as $$select sdi_private.spatter_usage_meter(action,p_user,p_reservation,p_outcome,p_units,p_suggested_prompt)$$;
+create function public.sdi_spatter_my_usage() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.spatter_my_usage()$$;
+create function public.sdi_spatter_usage_admin(action text,revision bigint default null,payload jsonb default '{}',reason text default '') returns jsonb
+ language sql security invoker set search_path='' as $$select sdi_private.spatter_usage_admin(action,revision,payload,reason)$$;
+revoke all on function public.sdi_spatter_usage_meter(text,uuid,uuid,text,integer,text),public.sdi_spatter_my_usage(),
+ public.sdi_spatter_usage_admin(text,bigint,jsonb,text) from public,anon,authenticated;
+grant execute on function public.sdi_spatter_usage_meter(text,uuid,uuid,text,integer,text) to service_role;
+grant execute on function public.sdi_spatter_my_usage(),public.sdi_spatter_usage_admin(text,bigint,jsonb,text) to authenticated;
 commit;

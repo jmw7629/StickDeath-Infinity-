@@ -15,6 +15,9 @@ private struct StudioAudioWorkspace: View {
     let opensLibrary: Bool
     @StateObject private var audio = StudioAudioPreviewSession()
     @StateObject private var timeline = StudioAudioTimelineSession()
+    /// Short real-mix grains while the ruler is tapped or dragged (#180).
+    @StateObject private var scrubAudio = StudioAudioScrubAudition()
+    @AppStorage("studio.audio.audible-scrub") private var audibleScrub = true
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingLibrary = false
     @State private var search = ""
@@ -104,9 +107,9 @@ private struct StudioAudioWorkspace: View {
             }
         }
         .onChange(of: search) { if search.count > 256 { search = String(search.prefix(256)) } }
-        .onDisappear { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
+        .onDisappear { audio.close(); timeline.close(); scrubAudio.close(); vm.stopPlayback(); fadeCapture = nil }
         .onChange(of: vm.document.id) { _, _ in
-            audio.close(); timeline.close(); trimCapture = nil; fadeCapture = nil; pendingDeleteClipID = nil; mixerTrack = nil
+            audio.close(); timeline.close(); scrubAudio.close(); trimCapture = nil; fadeCapture = nil; pendingDeleteClipID = nil; mixerTrack = nil
             restoreProjectAudioState()
         }
         .onChange(of: vm.playbackLoops) { _, _ in timeline.stop() }
@@ -121,7 +124,7 @@ private struct StudioAudioWorkspace: View {
             if let id { selectionMemory.remember(id, for: vm.document.id) }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
+            if phase != .active { audio.close(); timeline.close(); scrubAudio.close(); vm.stopPlayback(); fadeCapture = nil }
         }
     }
     /// Reopen state for the current project: the remembered clip selection and
@@ -159,7 +162,7 @@ private struct StudioAudioWorkspace: View {
                         Button("Cancel") { timeline.stop() }.foregroundColor(.sdStudioActionText)
                     }.padding(.horizontal, 16).padding(.bottom, 8)
                 }
-                if let notice = timeline.notice ?? vm.message {
+                if let notice = timeline.notice ?? scrubAudio.notice ?? vm.message {
                     Text(notice).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.7))
                         .padding(.horizontal, 16).accessibilityIdentifier("studio.audio.timelineNotice")
                 }
@@ -228,7 +231,7 @@ private struct StudioAudioWorkspace: View {
                 .font(.specialElite(12)).padding(.horizontal, 12).padding(.vertical, 9)
                 .background(Color.sdRed).clipShape(Capsule())
                 .accessibilityIdentifier("studio.audio.library.open")
-            Button { audio.close(); timeline.close(); vm.activePanel = .none } label: {
+            Button { audio.close(); timeline.close(); scrubAudio.close(); vm.activePanel = .none } label: {
                 Image(systemName: "xmark").font(.system(size: 10)).frame(width: 44, height: 44)
             }.accessibilityLabel("Close audio workspace").accessibilityIdentifier("studio.audio.close")
         }.padding(.leading, 12)
@@ -247,6 +250,8 @@ private struct StudioAudioWorkspace: View {
                 .contextMenu {
                     Toggle("Loop playback", isOn: $vm.playbackLoops)
                         .accessibilityIdentifier("studio.audio.loop")
+                    Toggle("Audible scrubbing", isOn: $audibleScrub)
+                        .accessibilityIdentifier("studio.audio.audible-scrub")
                 }
             Button { seek(vm.audioDuration) } label: { Image(systemName: "forward.end.fill").frame(width: 44, height: 44) }
                 .accessibilityLabel("Audio end")
@@ -261,19 +266,34 @@ private struct StudioAudioWorkspace: View {
     }
     private func seek(_ time: Double) {
         timeline.stop(); audio.stop(); vm.stopPlayback()
-        vm.displayAudioPlaybackTime(min(vm.audioDuration, max(0, time)), playing: false)
+        vm.displayAudioPlaybackTime(min(vm.audioDuration, StudioAudioTransport.floorSafeSeconds(max(0, time), fps: vm.fps)), playing: false)
+    }
+    /// Ruler tap/drag and accessibility adjustment: seek, then sound a short
+    /// real-mix grain at the new playhead when audible scrubbing is on (#180).
+    private func scrub(_ time: Double) {
+        seek(time)
+        guard audibleScrub, !audio.isBusy else { return }
+        let id = vm.document.id
+        scrubAudio.scrub(document: vm.document, tracks: vm.projectAudioTracks, timelineDuration: vm.audioDuration,
+            at: vm.audioPlayheadTime, stillCurrent: { vm.isEditing && vm.document.id == id })
     }
     private func togglePlayback() {
         if timeline.isPlaying { timeline.stop(); return }
         audio.stop(); vm.stopPlayback()
+        // A scrub grain may still hold the shared offline mixer; play once it is free.
+        scrubAudio.stop { startTimelinePlayback() }
+    }
+    private func startTimelinePlayback() {
+        guard !timeline.isPlaying, !timeline.isPreparing else { return }
         let id = vm.document.id, revision = vm.document.revision
         let start = vm.audioPlayheadTime < vm.audioDuration ? vm.audioPlayheadTime : 0
         _ = timeline.play(document: vm.document, tracks: vm.projectAudioTracks,
             duration: vm.audioDuration, from: start, loop: vm.playbackLoops,
+            frameClock: StudioAudioTransport.FrameClock(fps: vm.fps, frameTicks: vm.document.frames.map(\.durationTicks)),
             stillCurrent: { vm.isEditing && vm.document.id == id && vm.document.revision == revision },
             onTime: { time, playing in
                 guard vm.document.id == id, vm.document.revision == revision else { return }
-                vm.displayAudioPlaybackTime(min(vm.audioDuration, time), playing: playing)
+                vm.displayAudioPlaybackTime(min(vm.audioDuration, StudioAudioTransport.floorSafeSeconds(time, fps: vm.fps)), playing: playing)
             })
     }
     private var library: some View {
@@ -562,15 +582,15 @@ private struct StudioAudioWorkspace: View {
                                     .foregroundColor(.sdStudioActionText).offset(x: Double(second) * pps + 3, y: 8)
                             }
                         }.frame(height: 26).contentShape(Rectangle())
-                            .gesture(SpatialTapGesture().onEnded { value in seek(Double(value.location.x) / pps) })
+                            .gesture(DragGesture(minimumDistance: 0).onChanged { value in scrub(Double(value.location.x) / pps) })
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Audio playhead")
                             .accessibilityValue(clock(vm.audioPlayheadTime))
                             .accessibilityIdentifier("studio.audio.playhead-ruler")
                             .accessibilityAdjustableAction { direction in
                                 switch direction {
-                                case .increment: seek(vm.audioPlayheadTime + 1 / Double(vm.fps))
-                                case .decrement: seek(vm.audioPlayheadTime - 1 / Double(vm.fps))
+                                case .increment: scrub(vm.audioPlayheadTime + 1 / Double(vm.fps))
+                                case .decrement: scrub(vm.audioPlayheadTime - 1 / Double(vm.fps))
                                 @unknown default: break
                                 }
                             }
