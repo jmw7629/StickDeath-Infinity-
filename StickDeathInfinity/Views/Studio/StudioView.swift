@@ -1041,6 +1041,8 @@ struct SpatterAISheet: View {
             if state == .loading { spatterVM.suspendPersonalMemory() }
             else { spatterVM.configurePersonalMemory(accountID: authVM.userId) }
         }
+        // Free plan: any Spatter send opens the plans (owner decision 2026-10-15).
+        .sheet(isPresented: $spatterVM.upgradeRequested) { SubscriptionView() }
     }
 
     private func sendMessage() {

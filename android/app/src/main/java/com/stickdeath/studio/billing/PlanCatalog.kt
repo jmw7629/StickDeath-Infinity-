@@ -10,7 +10,7 @@ import kotlin.math.roundToInt
 // (docs/PLAN_DECISIONS_2026_10_15.md), plus the Spatter credits decision for Free accounts.
 // No Android imports, so the JVM unit tests exercise exactly the rules the app ships.
 //
-// - Plans: Free; Creator USD 4.99/month; Pro USD 9.99/month; a free trial on both paid plans.
+// - Plans: Free; Creator USD 4.99/month; Pro USD 9.99/month; no free trial.
 //   Amounts are never stored or shown from here: the price on screen is Google Play's
 //   formatted price, or "Price shown when configured".
 // - Free Studio limits (FlipaClip-style, no ads) apply only while [StudioPlanLimits.enforcing]
@@ -23,8 +23,8 @@ enum class PlanTier(val wire: String, val rank: Int, val title: String) {
 
     /** Bring-your-own AI key is part of both paid plans (owner decision 2026-10-14). */
     val includesOwnAIKey get() = this != Free
-    /** The free trial applies to both paid plans; the store decides whether one is shown. */
-    val offersTrial get() = this != Free
+    /** No plan offers a free trial (owner decision 2026-10-15); Spatter's suggested prompts are the preview. */
+    val offersTrial get() = false
 
     companion object {
         /** Unknown or missing plans are not guessed. */

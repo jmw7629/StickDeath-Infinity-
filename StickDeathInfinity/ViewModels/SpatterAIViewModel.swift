@@ -37,6 +37,9 @@ final class SpatterAIViewModel: ObservableObject {
     /// Last server-reported plan allowance (usage RPC or metered reply). Never computed on the device.
     @Published private(set) var cloudAllowance: SpatterAllowance?
     @Published private(set) var planCheck: PlanCheck = .unmanaged
+    /// Set when a Free account taps a suggested prompt or sends a message; the
+    /// Spatter screens present the plans sheet (owner decision 2026-10-15).
+    @Published var upgradeRequested = false
     @Published private(set) var personalPreferences = SpatterPersonalPreferences()
     @Published private(set) var memoryError: String?
     private let memoryStore: SpatterPersonalMemoryStore
@@ -210,6 +213,7 @@ final class SpatterAIViewModel: ObservableObject {
             appendAdvice("💀 " + BillingCopy.spatterUpgradeNote, origin: .local)
             messages = Array(messages.suffix(40))
             notice = BillingCopy.spatterUpgradeNote
+            upgradeRequested = true
             return true
         }
         if useCloud && suggestedPromptID == nil && freeTextLocked {

@@ -13,12 +13,12 @@
 //   Studio has FlipaClip-style limits (`StudioPlanLimits`); Creator = your own
 //   AI key plus a server-funded allowance capped at the plan's break-even cost
 //   each billing period, no Studio limits and SDI-channel submissions with the
-//   SDI watermark; Pro = unlimited prompts plus your own AI key. The free trial
-//   applies to both paid plans. Amounts are never stored here: the price shown
+//   SDI watermark; Pro = unlimited prompts plus your own AI key. There is no
+//   free trial (owner decision 2026-10-15, later). Amounts are never stored here: the price shown
 //   is Apple's `Product.displayPrice` or "Price shown when configured".
 // - Trial text appears only when the App Store reports an eligible
 //   introductory free-trial offer for that product (`BillingCopy.trial`), and
-//   only on a plan whose `offersTrial` is true (Creator and Pro).
+//   only on a plan whose `offersTrial` is true (none today).
 // - Annual plans appear only when the build configuration names annual product
 //   ids AND sets the explicit owner flag. Neither exists today.
 // - Every paid entitlement is labelled pending until the server enforces it.
@@ -134,9 +134,10 @@ struct BillingPlanDefinition: Equatable, Identifiable {
     let promptAllowance: SpatterPromptAllowance
 
     var id: String { productID ?? "free" }
-    /// The free trial applies to both paid plans (owner decision 2026-10-14).
+    /// No plan offers a free trial (owner decision 2026-10-15, replacing 2026-10-14):
+    /// Spatter's suggested prompts are the teaser instead.
     /// Whether one is shown still depends on the App Store's eligible offer.
-    var offersTrial: Bool { tier != .free }
+    var offersTrial: Bool { false }
     /// Bring-your-own AI key is part of both paid plans (owner decision 2026-10-14).
     var includesOwnAIKey: Bool { tier != .free }
     var studioLimits: StudioPlanLimits { StudioPlanLimits.forTier(tier) }

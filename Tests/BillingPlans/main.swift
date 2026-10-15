@@ -80,8 +80,8 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         try require(StudioPlanLimits.effective(tier: .free, enforcing: false) == .unrestricted, "unenforced Free is unrestricted")
         try require(StudioPlanLimits.effective(tier: .free, enforcing: true) == .free, "enforced Free is limited")
         try require(StudioPlanLimits.effective(tier: .creator, enforcing: true) == .unrestricted, "enforced Creator is unrestricted")
-        // Owner decisions 2026-10-14: trial and own AI key on both paid plans, neither on Free.
-        try require(empty.plans.map(\.offersTrial) == [false, true, true], "trial applies to Creator and Pro only")
+        // Owner decisions: own AI key on both paid plans (2026-10-14); no trial on any plan (2026-10-15).
+        try require(empty.plans.map(\.offersTrial) == [false, false, false], "no plan offers a trial (owner decision 2026-10-15)")
         try require(empty.plans.map(\.includesOwnAIKey) == [false, true, true], "own AI key on Creator and Pro only")
         for tier in [BillingPlanTier.creator, .pro] {
             let texts = empty.plans.first { $0.tier == tier }?.entitlements.map(\.text) ?? []
@@ -186,8 +186,8 @@ private struct Failure: Error, CustomStringConvertible { let description: String
                     "no trial claim without an eligible store offer")
         for tier in [BillingPlanTier.creator, .pro] {
             let plan = catalog.plans.first { $0.tier == tier }
-            try require(BillingCopy.trial(for: plan, days: 3, eligible: true) == "3-day free trial", "\(tier) trial from the store offer")
-            try require(BillingCopy.trial(for: plan, days: 3, eligible: false) == nil, "\(tier) trial needs eligibility")
+            // No trial on any plan, even if a store offer were left configured.
+            try require(BillingCopy.trial(for: plan, days: 3, eligible: true) == nil, "\(tier) shows no trial")
         }
         try require(BillingCopy.trial(for: catalog.plans.first { $0.tier == .free }, days: 3, eligible: true) == nil, "Free never shows a trial")
         try require(BillingCopy.trial(for: nil, days: 3, eligible: true) == nil, "unknown product shows no trial")

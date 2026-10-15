@@ -455,6 +455,7 @@ private final class NetworkTrap: URLProtocol {
                 try require(vm.submitSuggested(tip, context: .general), "suggested prompt rejected")
                 try require(vm.submit("Write my essay", context: .general), "typed prompt rejected")
                 try require(requests.isEmpty, "a Free prompt reached the server")
+                try require(vm.upgradeRequested, "Free send did not open the plans")
                 let answers = vm.messages.filter { $0.role == .assistant }.map(\.content)
                 try require(answers.count == 2 && answers.allSatisfy { $0.contains(BillingCopy.spatterUpgradeNote) }, "upgrade note not shown")
                 try require(vm.allowanceLockout == BillingCopy.spatterUpgradeNote, "upgrade link copy")

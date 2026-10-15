@@ -2,7 +2,7 @@
 
 The owner's decisions on 2026-10-15 replace the Free and Creator rules recorded on 2026-10-14
 (`docs/SPATTER_BILLING_DECISIONS_2026_10_14.md`). Prices are unchanged: Creator USD 4.99/month,
-Pro USD 9.99/month, with the free trial on both paid plans.
+Pro USD 9.99/month. There is no free trial (owner decision, evening of 2026-10-15).
 
 ## Free
 
@@ -69,4 +69,24 @@ per-minute rate, global daily ceiling and emergency stop still apply).
 
 - Ads: not added. They would need a new ad network and its privacy and tracking disclosures.
 - Live verification: the limits are not verified in a store build yet. The App Store
-  subscriptions, their trial offers and the Info.plist product ids are owner configuration.
+  subscriptions and the Info.plist product ids are owner configuration. No trial offers.
+
+## Owner answers, evening of 2026-10-15
+
+- **No free trial** on any plan. Spatter stays visible on Free and its suggested prompts are
+  the teaser; any tap on a suggested prompt or any message send opens the plans screen
+  (`SpatterAIViewModel.upgradeRequested`), where Free can subscribe or buy credits.
+- **No partial refunds.** Only a full refund of a credit pack claws its credits back; the
+  owner can still correct a balance with the audited `grant` action.
+- **Stripe:** the old "StickDeath Pro" USD 4.99 product and its price are archived. The live
+  Creator (`sdi.creator.monthly.web`, USD 4.99) and Pro (`sdi.pro.monthly.web`, USD 9.99)
+  monthly prices carry lookup keys.
+- **Merch:** Shopify is not started because it bills from the start. The store page is a
+  "coming soon" page with concept designs, a poll on whether to open the store, per-design
+  thumbs up/down and moderated design suggestions (`backend/sql/merch-interest.sql`).
+- **Name and rights:** StickDeath Infinity holds the rights to its name and brand. The
+  historical StickDeath had no legal entity or ownership. Historical StickDeath artwork,
+  sounds and SWFs remain reference material only and are still not committed (AGENTS.md).
+- **Spatter spending:** the owner approved opening the global daily cap ("go"); the value
+  set at install is 100 prompts per UTC day (about USD 2 at the USD 0.02 estimate) and can be
+  changed in the command center.

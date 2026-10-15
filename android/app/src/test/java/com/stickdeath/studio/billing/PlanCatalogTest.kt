@@ -53,7 +53,7 @@ class PlanCatalogTest {
     }
 
     @Test fun trialAndOwnKeyBelongToPaidPlansOnly() {
-        assertFalse(PlanTier.Free.offersTrial); assertTrue(PlanTier.Creator.offersTrial); assertTrue(PlanTier.Pro.offersTrial)
+        assertFalse(PlanTier.Free.offersTrial); assertFalse(PlanTier.Creator.offersTrial); assertFalse(PlanTier.Pro.offersTrial)
         assertFalse(PlanTier.Free.includesOwnAIKey); assertTrue(PlanTier.Creator.includesOwnAIKey)
         assertEquals(PlanTier.Pro, PlanTier.best(PlanTier.Creator, null, PlanTier.Pro))
         assertEquals(PlanTier.Free, PlanTier.best(null, null))
