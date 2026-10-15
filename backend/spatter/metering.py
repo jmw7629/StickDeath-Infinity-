@@ -12,14 +12,17 @@ the same rules for tests and single-process previews:
 * emergency stop (``sdi_private.agent_global``) refuses everything;
 * a global daily ceiling, closed (0) until the owner sets it;
 * a per-account per-minute rate and a per-account daily safety cap;
-* plan allowances from the owner's decisions (2026-10-07, revised 2026-10-14):
-  ``free`` 5 suggested prompts per UTC calendar month and no free text (a
-  request without an allowlisted suggested-prompt id is refused with
-  ``suggested_prompt_required`` before anything is counted), ``creator``
-  (USD 4.99) 15 per billing period keyed to the subscription's paid-through
-  date, ``pro`` (USD 9.99) no plan allowance. A trialing subscription meters as
-  its own tier (the free trial applies to both paid plans). Prompts a member
-  sends with their own AI key go device-to-provider and never reach this meter.
+* plan rules from the owner's decisions (2026-10-07, revised 2026-10-14 and
+  2026-10-15): ``free`` is never served -- every Free request is refused with
+  ``upgrade_required`` (upgrade ``creator_or_pro``) before anything is counted,
+  so the server spends nothing on Free. ``creator`` (USD 4.99) gets a
+  server-funded allowance per billing period, keyed to the subscription's
+  paid-through date, of ``floor(creator_period_budget_microusd /
+  prompt_cost_estimate_microusd)`` prompts (defaults 3_490_000 / 20_000 = 174:
+  USD 4.99 net of a 30% store commission, at a conservative USD 0.02 per
+  prompt). ``pro`` (USD 9.99) has no plan allowance. A trialing subscription
+  meters as its own tier. Prompts a member sends with their own AI key go
+  device-to-provider and never reach this meter.
 
 Nothing here reads a secret, contacts a provider or decides an entitlement: the
 plan comes from the server-side entitlement view, never from the request.
@@ -37,15 +40,15 @@ PLANS = ("free", "creator", "pro")
 REFUSAL_CODES = (
     "unauthorized", "account_restricted", "emergency_stop", "global_limit",
     "rate_limited", "daily_safety_limit", "plan_allowance_exhausted",
-    "suggested_prompt_required", "unknown_suggested_prompt",
+    "upgrade_required", "unknown_suggested_prompt",
 )
 
 
 @dataclass(frozen=True)
 class Decision:
     """Outcome of one reservation attempt. ``remaining`` is None for an
-    unlimited plan. Free resets at the next UTC calendar month, Creator at the
-    subscription's paid-through date."""
+    unlimited plan. Creator resets at the subscription's paid-through date;
+    Free is never allowed."""
 
     allowed: bool
     code: str = ""
@@ -92,7 +95,8 @@ def decision_from_rpc(payload: Mapping[str, Any]) -> Decision:
     reservation = payload.get("reservation")
     plan = payload.get("plan")
     remaining = payload.get("remaining")
-    if not isinstance(reservation, str) or plan not in PLANS:
+    # Free is never served: an allowed Free decision is malformed.
+    if not isinstance(reservation, str) or plan not in ("creator", "pro"):
         return Decision(allowed=False, code="unavailable")
     if remaining is not None and not (isinstance(remaining, int) and remaining >= 0):
         return Decision(allowed=False, code="unavailable")
@@ -133,9 +137,14 @@ class Controls:
     global_daily_cap: int = 0
     user_daily_safety_cap: int = 100
     user_per_minute_cap: int = 6
-    free_prompts: int = 5
-    creator_period_prompts: int = 15
+    creator_period_budget_microusd: int = 3_490_000
+    prompt_cost_estimate_microusd: int = 20_000
     emergency_stop: bool = False
+
+    @property
+    def creator_period_limit(self) -> int:
+        """Server-funded Creator prompts per billing period (break-even)."""
+        return self.creator_period_budget_microusd // max(1, self.prompt_cost_estimate_microusd)
 
 
 @dataclass
@@ -170,15 +179,13 @@ class InMemoryMeter:
             return {"plan": "pro", "unlimited": True, "remaining": None, "period": "none", "resets_at": None, "bucket": None}
         if ent and ent[0] == "creator":
             paid = ent[1].astimezone(_dt.timezone.utc)
-            bucket, limit = "period:" + paid.strftime("%Y-%m-%dT%H:%M:%SZ"), self.controls.creator_period_prompts
-            period, resets = "billing_period", paid
-        else:
-            now = self._utc()
-            bucket, limit, period = "month:" + now.strftime("%Y-%m"), self.controls.free_prompts, "calendar_month"
-            resets = _dt.datetime(now.year + (now.month == 12), now.month % 12 + 1, 1, tzinfo=_dt.timezone.utc)
-        used = self.counters.get((user_id, bucket), 0)
-        return {"plan": "creator" if bucket.startswith("period:") else "free", "unlimited": False, "limit": limit, "used": used,
-                "remaining": max(limit - used, 0), "period": period, "resets_at": resets, "bucket": bucket}
+            bucket, limit = "period:" + paid.strftime("%Y-%m-%dT%H:%M:%SZ"), self.controls.creator_period_limit
+            used = self.counters.get((user_id, bucket), 0)
+            return {"plan": "creator", "unlimited": False, "limit": limit, "used": used, "remaining": max(limit - used, 0),
+                    "period": "billing_period", "resets_at": paid, "bucket": bucket}
+        # Free: visible but never served; nothing is allotted or counted.
+        return {"plan": "free", "unlimited": False, "limit": 0, "used": 0, "remaining": 0, "period": "none",
+                "resets_at": None, "bucket": None, "available": False, "upgrade": "creator_or_pro"}
 
     def reserve(self, user_id: str, suggested_prompt: Optional[str] = None) -> Decision:
         state = self.account_state(user_id)
@@ -186,12 +193,12 @@ class InMemoryMeter:
             return Decision(False, "unauthorized")
         if state != "active":
             return Decision(False, "account_restricted")
+        if self.plan(user_id)["plan"] == "free":
+            return Decision(False, "upgrade_required", plan="free", upgrade="creator_or_pro")
         if self.controls.emergency_stop:
             return Decision(False, "emergency_stop")
         if suggested_prompt is not None and suggested_prompt not in SUGGESTED_PROMPT_IDS:
             return Decision(False, "unknown_suggested_prompt")
-        if self.plan(user_id)["plan"] == "free" and suggested_prompt is None:
-            return Decision(False, "suggested_prompt_required", plan="free", upgrade="creator_or_pro")
         now = self._utc()
         day = now.date()
         if self.global_used.get(day, 0) >= self.controls.global_daily_cap:
@@ -206,7 +213,7 @@ class InMemoryMeter:
         plan = self.plan(user_id)
         if not plan["unlimited"] and plan["remaining"] <= 0:
             return Decision(False, "plan_allowance_exhausted", plan=plan["plan"], period=plan["period"],
-                            resets_at=plan["resets_at"], upgrade="creator_or_pro" if plan["plan"] == "free" else "pro")
+                            resets_at=plan["resets_at"], upgrade="pro")
         buckets = [minute, day_bucket] + ([plan["bucket"]] if plan["bucket"] else [])
         for bucket in buckets:
             self.counters[(user_id, bucket)] = self.counters.get((user_id, bucket), 0) + 1

@@ -50,22 +50,31 @@ the single source for plans, periods, purchase state and plan copy. Both views a
 
 | Plan | Product | Owner-stated entitlements (2026-10-07, #250/#259) | Enforced today |
 | --- | --- | --- | --- |
-| Free | none | Full Studio on device; no video upload/download; **5 suggested Spatter prompts per month** (the app's suggested prompts only, no free text; server-counted per UTC calendar month) | Studio only |
-| Creator | USD 4.99 monthly | No watermark; upload/download; **15 Spatter prompts per month** (server-counted, reset at renewal); **own AI key** (prompts sent with it are not counted) | none (pending) |
+| Free | none | Full Studio on device; no video upload/download; **Spatter visible with its suggested prompts but not active** (every request refused with `upgrade_required`; the server spends nothing) | Studio only |
+| Creator | USD 4.99 monthly | No watermark; upload/download; **own AI key** (prompts sent with it are not counted) plus a **server-funded Spatter allowance per billing period within break-even** (default 174, reset at renewal) | none (pending) |
 | Pro | USD 9.99 monthly | Everything in Creator; **unlimited Spatter prompts**; **own AI key** | none (pending) |
 
-Owner decisions 2026-10-14 (#209/#259): Free = 5 suggested prompts per month;
-Creator $4.99 = 15 prompts per month + own AI key; Pro $9.99 = unlimited + own AI
-key; **the free trial applies to both paid plans** (Creator and Pro). Details and
-evidence: `docs/SPATTER_BILLING_DECISIONS_2026_10_14.md`.
+Owner decisions 2026-10-14 (#209/#259), Spatter metering revised 2026-10-15:
+Free = Spatter visible but not active (no server-funded prompts; requests are
+refused with `upgrade_required`, upgrade `creator_or_pro`, before anything is
+counted; the former 5-per-month Free allowance is retired); Creator $4.99 = own
+AI key + server-funded prompts per billing period of
+`floor(creator_period_budget_microusd / prompt_cost_estimate_microusd)`, defaults
+3 490 000 (USD 4.99 net of a 30% store commission, rounded down; the budget can
+never exceed the 4 990 000 gross price) / 20 000 (USD 0.02, an owner-editable
+conservative estimate per prompt) = 174; Pro $9.99 = unlimited (still under the
+safety, rate and global caps and the emergency stop) + own AI key; **the free
+trial applies to both paid plans** (Creator and Pro). Actual provider cost is not
+recorded (the provider contract returns usage units only). Background:
+`docs/SPATTER_BILLING_DECISIONS_2026_10_14.md`.
 
 - Every paid entitlement carries `isLive = false` and is shown with a pending marker
   and the note that it turns on when the server applies the plan from Apple's
   verified purchase. No server enforcement is claimed.
 - Remaining prompts: `BillingCopy.prompts` shows a count only when the server
   reports one (`sdi_spatter_my_usage` or a metered reply's `allowance`); the
-  plan screens show the plan line without a count. At zero on Free it offers
-  Creator or Pro; on Creator, Pro.
+  plan screens show the plan line without a count. Free has no count and
+  offers Creator or Pro; Creator at zero offers Pro.
 - Trial: applies to both paid plans (`BillingPlanDefinition.offersTrial` is
   true for Creator and Pro, false for Free). Copy is shown only when the loaded
   `Product` has a free-trial introductory offer and `isEligibleForIntroOffer` is

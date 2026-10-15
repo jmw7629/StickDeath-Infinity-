@@ -64,24 +64,26 @@ kept for the original daily-budget tests). `SqlMeter` calls the service-only RPC
 `backend/sql/tests/070_spatter_draft_jobs.sql`). Order of checks, all server-side:
 
 1. account exists and is not suspended/banned (`account_controls`);
+   then **Free is refused** (owner decision 2026-10-15): Spatter and its
+   suggested prompts are visible on Free but never served, so every Free
+   request gets 402 `upgrade_required` + `plan: free` + `upgrade:
+   creator_or_pro` and the message "Spatter is part of Creator and Pro. Upgrade
+   to activate it; Creator also lets you use your own AI key." before any
+   counter, reservation or provider call;
 2. agent emergency stop (`sdi_private.agent_global.emergency_stop`) → 503 `emergency_stop`;
 3. global daily ceiling → 503 `global_limit` (**defaults to 0, i.e. closed, until the owner sets it**);
 4. per-account per-minute rate (default 6) → 429 `rate_limited` + `retryAfterSeconds`;
 5. per-account daily safety cap (default 100) → 429 `daily_safety_limit`;
 6. plan allowance from `sdi_private.entitlements` → 429 `plan_allowance_exhausted` + `upgrade`:
-   * `free`: **5 suggested prompts per UTC calendar month, no free text** (owner
-     decision 2026-10-14). The request must carry `suggestedPromptId` from the
-     fixed allowlist (`suggested_prompts.py`, mirrored by
-     `sdi_private.spatter_suggested_prompt_ids()` and the iOS
-     `SpatterSuggestedPrompt.all`; `test_suggested_prompts.py` keeps all three
-     identical). Without one the request is refused with 403
-     `suggested_prompt_required` + `upgrade: creator_or_pro` before anything is
-     counted (this check runs right after the emergency stop); an unknown id is
-     400 `unknown_suggested_prompt`. For Free the handler discards every client
-     message (history and client system prompt included) and sends only a fixed
-     server system line plus the canonical prompt text for that id. The
-     allowance resets at 00:00 UTC on the first of the next month;
-   * `creator` (USD 4.99/month): 15 prompts per billing period, keyed to `paid_through`, so a renewal opens a new period; free text allowed;
+   * `creator` (USD 4.99/month): `floor(creator_period_budget_microusd /
+     prompt_cost_estimate_microusd)` server-funded prompts per billing period
+     (defaults 3 490 000 / 20 000 = 174: USD 4.99 net of a 30% store commission
+     at a conservative USD 0.02 per prompt; the budget is capped at the gross
+     price), keyed to `paid_through`, so a renewal opens a new period;
+   * a paid request may carry `suggestedPromptId` from the fixed allowlist
+     (`suggested_prompts.py`, mirrored by `sdi_private.spatter_suggested_prompt_ids()`
+     and the iOS `SpatterSuggestedPrompt.all`; `test_suggested_prompts.py` keeps
+     all three identical); an unknown id is 400 `unknown_suggested_prompt`;
    * `pro` (USD 9.99/month): unlimited by plan; steps 1–5 still apply.
    * The free trial applies to both paid plans: a `trialing` subscription is
      metered as its own tier (Creator or Pro), not as Free.
@@ -97,11 +99,12 @@ are swept as committed, never silently refunded. Prompt text is never stored.
 Successful metered replies carry `allowance` instead of the daily `budget`:
 
 ```json
-{"schemaVersion": 1, "reply": "…", "usage": {"units": 9}, "allowance": {"plan": "creator", "period": "billing_period", "remaining": 14, "resetsAt": "2026-11-01T00:00:00Z"}}
+{"schemaVersion": 1, "reply": "…", "usage": {"units": 9}, "allowance": {"plan": "creator", "period": "billing_period", "remaining": 173, "resetsAt": "2026-11-01T00:00:00Z"}}
 ```
 
-`remaining` is `null` for `pro`; `resetsAt` is the next calendar month for
-`free` (`period: "calendar_month"`) and the renewal date for `creator`. Error bodies add `code` (and `retryable` for 502). Signed-in users read
+`remaining` is `null` for `pro`; `resetsAt` is the renewal date for `creator`.
+Provider usage units (tokens) are recorded on commit; actual provider cost is
+not, because the provider contract does not return it. Error bodies add `code` (and `retryable` for 502). Signed-in users read
 their own allowance with `public.sdi_spatter_my_usage()` (for Settings); the owner
 reads/changes limits with `public.sdi_spatter_usage_admin('get'|'set', …)`,
 revisioned, reason-required and audited in `sdi_private.agent_audit`.
@@ -123,7 +126,7 @@ touching any allowance.
 backend.spatter.test_handler backend.spatter.test_metering`) runs the contract
 with fakes: JWT acceptance/rejection (including a real HS256 verifier with a
 per-run random key), expiry, role refusal, bounds, 503 without a provider (no
-allowance consumed), every metering refusal code, free/creator/pro allowances,
+allowance consumed), every metering refusal code, Free refusal (upgrade_required), creator cost-model and pro allowances,
 renewal reset, refund-once settlement, meter outage, retries, timeouts, model
 switches and credential non-disclosure. No sockets, provider or database.
 `scripts/backend/run_sql_tests.sh` runs the SQL rules on a throwaway PostgreSQL.
@@ -132,10 +135,11 @@ switches and credential non-disclosure. No sockets, provider or database.
 
 * Owner: choose and configure a provider adapter and model, deploy the
   function, apply the SQL, and set `global_daily_cap` above 0.
-* Owner decisions 2026-10-14 (implemented in source): Free = 5 suggested
-  prompts per month; Creator $4.99 = 15 prompts per month + own AI key; Pro
-  $9.99 = unlimited + own AI key; trial on both paid plans. See
-  docs/SPATTER_BILLING_DECISIONS_2026_10_14.md.
+* Owner decisions (implemented in source; metering revised 2026-10-15): Free =
+  Spatter visible but not active (`upgrade_required`); Creator $4.99 = own AI
+  key + break-even server allowance (default 174 per period); Pro $9.99 =
+  unlimited + own AI key; trial on both paid plans. See
+  docs/SPATTER_BILLING_DECISIONS_2026_10_14.md for the earlier decisions.
 * The iOS client now decodes `allowance` and reads the remaining count from
   `sdi_spatter_my_usage`; non-2xx JSON error bodies (`code`, `retryAfterSeconds`)
   are still not read by the bounded transport, so the client refreshes the
