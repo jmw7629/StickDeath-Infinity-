@@ -160,7 +160,7 @@ jobs:
     # Production took 47m09s on run 37668843963 before image-region dependencies.
     # Forty-five VM recipes now compile the region service and the new admin
     # suite adds coverage. Keep bounded headroom and every sequential gate.
-    timeout-minutes: 65
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
