@@ -37,6 +37,20 @@ struct ExportPanel: View {
         }
     }
 
+    /// Free-plan notes, kept out of `body` so it type-checks in reasonable time.
+    @ViewBuilder private var pngSequenceLockNote: some View {
+        if supportedFormat == .pngSequence, !vm.planLimits.pngSequenceExport {
+            Label("Transparent PNG sequences: " + vm.planLimits.upgradeNote, systemImage: "lock.fill")
+                .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
+        }
+    }
+
+    private var watermarkSummary: String {
+        vm.planLimits.exportWatermark
+            ? "A small SDI mark is added at the bottom right of exported images and videos; your project is unchanged. "
+            : "No watermark is added. "
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Capsule().fill(Color.white.opacity(0.2)).frame(width: 36, height: 4).padding(.top, 8)
@@ -105,10 +119,7 @@ struct ExportPanel: View {
                             .pickerStyle(.segmented)
                             .disabled(session.isRunning || session.isSharing)
                             .accessibilityIdentifier("studio.export.background")
-                            if supportedFormat == .pngSequence, !vm.planLimits.pngSequenceExport {
-                                Label("Transparent PNG sequences: " + vm.planLimits.upgradeNote, systemImage: "lock.fill")
-                                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
-                            }
+                            pngSequenceLockNote
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -233,7 +244,7 @@ struct ExportPanel: View {
                             .accessibilityIdentifier("studio.export.share-explanation")
                         quickShareSection(proxy: proxy)
                     }
-                    Text((vm.planLimits.exportWatermark ? "A small SDI mark is added at the bottom right of exported images and videos; your project is unchanged. " : "No watermark is added. ") + "Files are named after the project (ASCII letters, digits, '-' and '_'; otherwise \"animation\"). PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC with library sound credits in its manifest. GIF uses reduced colors, a white background and no audio. Video reference layers are never exported.")
+                    Text(watermarkSummary + "Files are named after the project (ASCII letters, digits, '-' and '_'; otherwise \"animation\"). PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC with library sound credits in its manifest. GIF uses reduced colors, a white background and no audio. Video reference layers are never exported.")
                         .font(.specialElite(10))
                         .foregroundColor(.white.opacity(0.5))
                 }
