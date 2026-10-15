@@ -450,7 +450,7 @@ private final class NetworkTrap: URLProtocol {
                 for _ in 0..<100 where vm.planCheck != .known { try await Task.sleep(nanoseconds: 5_000_000) }
                 try require(vm.planCheck == .known && vm.cloudAllowance?.plan == .free, "server usage not loaded")
                 try require(vm.previewOnly && !vm.freeTextLocked && vm.suggestionsLockout == nil, "Free is not a preview")
-                try require(vm.budgetText == "Free: Spatter answers need Creator or Pro.", "free plan line")
+                try require(vm.budgetText == "Free: Spatter answers need Creator, Pro or credits.", "free plan line")
                 let tip = SpatterSuggestedPrompt.all[0]
                 try require(vm.submitSuggested(tip, context: .general), "suggested prompt rejected")
                 try require(vm.submit("Write my essay", context: .general), "typed prompt rejected")

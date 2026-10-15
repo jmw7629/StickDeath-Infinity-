@@ -75,7 +75,7 @@ struct SpatterOwnKeyTests {
                 """.utf8))
                 try require(free.plan == .free && free.remaining == 3 && free.limit == 5 && free.suggestedPromptsOnly, "free usage")
                 try require(free.resetsAt == ISO8601DateFormatter().date(from: "2026-11-01T00:00:00Z"), "reset date")
-                try require(free.displayText == "Free: Spatter answers need Creator or Pro." && free.isExhausted
+                try require(free.displayText == "Free: Spatter answers need Creator, Pro or credits." && free.isExhausted
                             && free.lockoutText?.contains("Creator and Pro") == true, "free copy")
                 let pro = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"pro\",\"unlimited\":true,\"limit\":null,\"remaining\":null}".utf8))
                 try require(pro.plan == .pro && pro.remaining == nil && !pro.isExhausted && pro.displayText.contains("unlimited"), "pro usage")
