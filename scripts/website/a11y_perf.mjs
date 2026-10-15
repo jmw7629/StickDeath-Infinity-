@@ -309,14 +309,61 @@ async function main() {
     const formStatus = await accountPage.locator('#account-form-status').textContent();
     record('account sign-in validates locally before any request', formStatus.includes('at least 8 characters') && accountRequests.every((u) => u.startsWith(base)), formStatus, 'account.html@390x844');
     await accountContext.close();
-    // store.html unconfigured: planned products without prices, no checkout, no external request.
+    // store.html "coming soon" (owner decision 2026-10-15). Default config (enabled:false):
+    // concepts without prices or cart, "Voting opens soon", every control disabled, no number, no external request.
     const storeContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const storePage = await storeContext.newPage();
     const storeRequests = []; storePage.on('request', (r) => storeRequests.push(r.url()));
     await storePage.goto(base + 'store.html', { waitUntil: 'load' }); await storePage.waitForTimeout(400);
-    const storeState = await storePage.evaluate(() => ({ status: document.querySelector('#store-status').textContent, prices: [...document.querySelectorAll('.price')].map((p) => p.textContent), cartHidden: document.querySelector('#cart').hidden, products: document.querySelectorAll('.merch img').length, captions: document.querySelectorAll('.merch figcaption').length }));
-    record('store shows the 22-design merch gallery without prices or cart when unconfigured', storeState.products === 22 && storeState.captions === 22 && storeState.cartHidden && storeState.prices.length === 0 && storeState.status.includes('not open yet'), JSON.stringify(storeState).slice(0, 200), 'store.html@390x844');
-    record('store requests only its own files when unconfigured', storeRequests.every((u) => u.startsWith(base)), `${storeRequests.length} requests`, 'store.html@390x844');
+    const storeSnapshot = () => ({ status: document.querySelector('#merch-status').textContent, prices: document.querySelectorAll('.price').length, cart: !!document.querySelector('#cart, #cart-checkout, a[href*="shopify"], .price') || [...document.querySelectorAll('main button')].some((b) => /add to cart|checkout/i.test(b.textContent)), products: document.querySelectorAll('.merch img').length, concepts: document.querySelectorAll('.merch .concept-tag').length, conceptGroups: document.querySelectorAll('.merch .votes button.vote').length, enabled: [...document.querySelectorAll('button.vote, #idea-submit, #idea-form input, #idea-form textarea')].filter((b) => !b.disabled).length, counts: [...document.querySelectorAll('.vote-count')].map((c) => c.textContent), poll: [...document.querySelectorAll('.poll-votes .vote-count')].map((c) => c.textContent), stored: (() => { try { return localStorage.getItem('sdi.merch.voter'); } catch (_) { return 'blocked'; } })() });
+    const storeState = await storePage.evaluate(storeSnapshot);
+    record('store is a coming-soon concept gallery: 22 labelled concepts, no prices, no cart or checkout', storeState.products === 22 && storeState.concepts === 22 && storeState.prices === 0 && !storeState.cart, JSON.stringify(storeState).slice(0, 200), 'store.html@390x844');
+    record('store voting disabled until connected: "Voting opens soon", controls disabled, no counts, no voter key', storeState.status.includes('Voting opens soon') && storeState.conceptGroups === 44 && storeState.enabled === 0 && storeState.counts.every((c) => c === '–') && storeState.stored === null, JSON.stringify({ status: storeState.status, enabled: storeState.enabled, stored: storeState.stored }), 'store.html@390x844');
+    record('store requests only its own files when voting is not enabled', storeRequests.every((u) => u.startsWith(base)), `${storeRequests.length} requests`, 'store.html@390x844');
     await storeContext.close();
+    // Connected (test double for the RPCs; the fixture numbers exist only in this harness): counts come from the
+    // server reply, a vote posts the right body and shows the server's count, ideas render as text, the idea form validates first.
+    const MOCK = 'https://merch-backend.test';
+    const mockConfig = `window.SDI_MERCH_CONFIG = { enabled: true, backendURL: '${MOCK}', publishableKey: 'sb_publishable_test_only_key' };`;
+    const mockContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const mockPage = await mockContext.newPage();
+    const rpcCalls = [];
+    await mockPage.route('**/store-config.js', (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: mockConfig }));
+    await mockPage.route(`${MOCK}/**`, (route) => {
+      const request = route.request(); const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'apikey, authorization, content-type', 'access-control-allow-methods': 'POST, OPTIONS' };
+      if (request.method() === 'OPTIONS') { route.fulfill({ status: 204, headers: cors }); return; }
+      const name = new URL(request.url()).pathname.split('/').pop(); const body = JSON.parse(request.postData() || '{}');
+      rpcCalls.push({ name, body, apikey: request.headers().apikey });
+      const reply = name === 'sdi_merch_totals' ? { voting_open: true, suggestions_open: true, mine: {}, ideas: [{ id: '11111111-1111-4111-8111-111111111111', title: 'Glow <b>tee</b>', description: 'Glow in the dark eyes.', handle: 'stickfan', up: 2, down: 0 }], targets: [{ kind: 'store', key: 'open-store', up: 7, down: 2, member_up: 3, member_down: 1 }, { kind: 'concept', key: 'swat-cap', up: 4, down: 1, member_up: 0, member_down: 0 }] }
+        : name === 'sdi_merch_vote' ? { status: 'recorded', mine: body.value, counts: { kind: 'store', key: 'open-store', up: 8, down: 2, member_up: 3, member_down: 1 } }
+        : name === 'sdi_merch_suggest' ? { status: 'pending', id: '22222222-2222-4222-8222-222222222222' } : { error: 'unknown' };
+      route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(reply) });
+    });
+    await mockPage.goto(base + 'store.html', { waitUntil: 'load' }); await mockPage.waitForFunction(() => document.querySelector('#merch-status').textContent.includes('Voting is open'), null, { timeout: 5000 }).catch(() => {});
+    const live = await mockPage.evaluate(() => ({ status: document.querySelector('#merch-status').textContent, poll: [...document.querySelectorAll('.poll-votes .vote-count')].map((c) => c.textContent), members: document.querySelector('#poll-members').textContent, cap: [...document.querySelectorAll('[data-target="concept:swat-cap"] .vote-count')].map((c) => c.textContent), other: [...document.querySelectorAll('[data-target="concept:swat-tee"] .vote-count')].map((c) => c.textContent), ideaTitle: document.querySelector('#idea-list h3') && document.querySelector('#idea-list h3').textContent, ideaMarkup: document.querySelectorAll('#idea-list b').length, enabled: document.querySelectorAll('button.vote:not(:disabled)').length, key: localStorage.getItem('sdi.merch.voter') }));
+    record('store shows server counts when connected and renders ideas as text', live.status.includes('Voting is open') && live.poll.join() === '7,2' && live.members.startsWith('3 yes and 1 not yet') && live.cap.join() === '4,1' && live.other.join() === '0,0' && live.ideaTitle === 'Glow <b>tee</b>' && live.ideaMarkup === 0 && live.enabled === 48 && live.key === null && rpcCalls[0] && rpcCalls[0].name === 'sdi_merch_totals' && rpcCalls[0].body.voter_key === null && rpcCalls[0].apikey === 'sb_publishable_test_only_key', JSON.stringify(live).slice(0, 260), 'store.html@390x844 mock');
+    await mockPage.click('.poll-votes .vote-up');
+    await mockPage.waitForFunction(() => document.querySelector('.poll-votes .vote-up').getAttribute('aria-pressed') === 'true', null, { timeout: 5000 }).catch(() => {});
+    const voted = await mockPage.evaluate(() => ({ count: document.querySelector('.poll-votes .vote-up .vote-count').textContent, pressed: document.querySelector('.poll-votes .vote-up').getAttribute('aria-pressed'), label: document.querySelector('.poll-votes .vote-up').getAttribute('aria-label'), key: localStorage.getItem('sdi.merch.voter') }));
+    const voteCall = rpcCalls.find((c) => c.name === 'sdi_merch_vote');
+    record('store vote posts one target with a browser key and shows the server count', voteCall && voteCall.body.target_kind === 'store' && voteCall.body.target_key === 'open-store' && voteCall.body.value === 1 && /^[0-9a-f-]{36}$/.test(voteCall.body.voter_key) && voted.key === voteCall.body.voter_key && voted.count === '8' && voted.pressed === 'true' && voted.label.includes('your vote'), JSON.stringify({ voted, body: voteCall && voteCall.body }).slice(0, 260), 'store.html@390x844 mock');
+    await mockPage.fill('#idea-title', 'Link idea'); await mockPage.fill('#idea-description', 'See https://example.com for it');
+    await mockPage.click('#idea-submit');
+    const linkStatus = await mockPage.locator('#idea-status').textContent();
+    const suggestBefore = rpcCalls.filter((c) => c.name === 'sdi_merch_suggest').length;
+    await mockPage.fill('#idea-title', 'Stickzilla plush'); await mockPage.fill('#idea-description', 'A soft Stickzilla plush with felt spikes.'); await mockPage.fill('#idea-handle', '@stickfan');
+    await mockPage.click('#idea-submit');
+    await mockPage.waitForFunction(() => document.querySelector('#idea-status').textContent.includes('moderator'), null, { timeout: 5000 }).catch(() => {});
+    const suggestCall = rpcCalls.find((c) => c.name === 'sdi_merch_suggest');
+    const ideaStatus = await mockPage.locator('#idea-status').textContent();
+    record('store idea form validates locally, then sends a moderated suggestion', suggestBefore === 0 && linkStatus.includes('Leave out links') && suggestCall && suggestCall.body.title === 'Stickzilla plush' && suggestCall.body.handle === 'stickfan' && /^[0-9a-f-]{36}$/.test(suggestCall.body.idempotency) && ideaStatus.includes('moderator'), JSON.stringify({ linkStatus, ideaStatus, body: suggestCall && suggestCall.body }).slice(0, 260), 'store.html@390x844 mock');
+    await mockContext.close();
+    // Enabled but unreachable: the same honest offline state, no numbers.
+    const downContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const downPage = await downContext.newPage();
+    await downPage.route('**/store-config.js', (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: mockConfig }));
+    await downPage.route(`${MOCK}/**`, (route) => route.abort('connectionrefused'));
+    await downPage.goto(base + 'store.html', { waitUntil: 'load' }); await downPage.waitForFunction(() => document.querySelector('#merch-status').textContent.includes('Voting opens soon'), null, { timeout: 9000 }).catch(() => {});
+    const down = await downPage.evaluate(storeSnapshot);
+    record('store shows "Voting opens soon" with controls disabled when the vote service is unreachable', down.status.includes('Voting opens soon') && down.enabled === 0 && down.counts.every((c) => c === '–'), JSON.stringify({ status: down.status, enabled: down.enabled }), 'store.html@390x844 unreachable');
+    await downContext.close();
     // index.html: splash is decorative and gone within three seconds; hero speed slider changes the animation.
     const splashContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const splashPage = await splashContext.newPage();
     await splashPage.goto(base + LONG, { waitUntil: 'load' });
@@ -476,8 +523,8 @@ async function main() {
     const accountStatic = await (async () => { await nojsPage.goto(base + 'account.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Sign-in requires JavaScript' }); })();
     record('noscript guidance visible with JavaScript disabled', noscriptVisible, '', LONG + '@390x844 no-js');
     record('account page states that sign-in requires JavaScript when it is off', accountStatic, '', 'account.html@390x844 no-js');
-    const storeStatic = await (async () => { await nojsPage.goto(base + 'store.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The cart needs JavaScript' }); })();
-    record('store page states that the cart needs JavaScript when it is off', storeStatic, '', 'store.html@390x844 no-js');
+    const storeStatic = await (async () => { await nojsPage.goto(base + 'store.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Voting and suggestions need JavaScript' }); })();
+    record('store page states that voting needs JavaScript when it is off', storeStatic, '', 'store.html@390x844 no-js');
     const adminStatic = await (async () => { await nojsPage.goto(base + 'admin.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The command center is not configured' }); })();
     record('admin shell states "not configured" without JavaScript', adminStatic, '', 'admin.html@390x844 no-js');
     await nojs.close();

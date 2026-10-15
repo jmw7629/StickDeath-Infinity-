@@ -14,7 +14,7 @@ tables (`users`, `posts`, `likes`, `comments`, `follows`, `challenges`, `challen
 2. Every function in `sdi_private` and every public `sdi_*` wrapper pins `search_path = ''`.
 3. Public `sdi_*` wrappers are `security invoker`; the `security definer` bodies live in
    `sdi_private` and bind every action to `auth.uid()`.
-4. No public `sdi_*` function is executable by `anon` or `PUBLIC`.
+4. No public `sdi_*` function is executable by `PUBLIC`. Exactly three are executable by `anon`: `sdi_merch_totals`, `sdi_merch_vote` and `sdi_merch_suggest` (merch interest, 2026-10-15), pinned by `backend/sql/tests/080_rls_review.sql`.
 5. Each public `sdi_*` function is executable by exactly one of `authenticated` (client surface)
    or `service_role` (worker surface). The service-only set is listed verbatim in the test; adding
    a worker function means reviewing and extending that list.
