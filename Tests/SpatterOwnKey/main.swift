@@ -90,6 +90,17 @@ struct SpatterOwnKeyTests {
                 }
             }
 
+            try await test("credits let Free pay as you go and keep Creator going") {
+                let paying = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"free\",\"limit\":0,\"remaining\":0,\"credits\":12}".utf8))
+                try require(paying.credits == 12 && paying.hasCredits && !paying.isExhausted && paying.lockoutText == nil
+                            && paying.displayText == "Free: pay as you go with Spatter credits. Credits: 12.", "free with credits")
+                let creatorCredits = SpatterAllowance(plan: .creator, remaining: 0, limit: 174, resetsAt: nil, credits: 3)
+                try require(!creatorCredits.isExhausted, "creator with credits is not exhausted")
+                let bogus = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"free\",\"credits\":-1}".utf8))
+                try require(bogus.credits == nil && bogus.isExhausted, "negative credits are not a balance")
+                try require(SpatterClientError.httpStatus(402).errorDescription?.contains("credits") == true, "402 offers credits")
+            }
+
             try await test("free always shows the upgrade note; creator lockout says when it resets") {
                 let free = SpatterAllowance(plan: .free, remaining: nil, limit: nil, resetsAt: nil)
                 try require(free.isExhausted && free.lockoutText?.contains("Upgrade in Profile") == true, "free upgrade note")

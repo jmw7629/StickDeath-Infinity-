@@ -32,6 +32,24 @@ Modelled on FlipaClip's free tier, without ads (no ad network is added).
   the small watermarked SDI mark at the bottom right. The editable original stays on the
   device.
 
+## Spatter credits
+
+Owner decision (later on 2026-10-15): "You can purchase more credits to keep going and in
+free you can pay as you go if you want."
+
+- Credit packs are consumable store products (App Store, Google Play, Stripe on the web).
+  One credit is one server-funded Spatter prompt. Pack sizes are server configuration and
+  prices are store configuration; the apps show only the store's price.
+- Order of spending: the plan's allowance first (Creator), then credits. Pro never spends
+  credits. Free with credits uses Spatter pay-as-you-go, typed questions included; Free
+  without credits gets the upgrade note.
+- Credits are granted only after the server verifies the store's signed transaction, exactly
+  once per transaction. The iOS app finishes a credit transaction only after the grant, so
+  an unconfirmed purchase is redelivered rather than lost. Refunds claw credits back.
+- Break-even: price a pack at no less than its credits times the per-prompt cost estimate,
+  divided by 0.7 for the store commission (for example 100 credits at USD 0.02 need at
+  least USD 2.86).
+
 ## Pro (USD 9.99/month)
 
 Everything in Creator, with unlimited Spatter prompts (the per-user daily safety cap,

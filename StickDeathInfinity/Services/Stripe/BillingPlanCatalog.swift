@@ -154,16 +154,31 @@ struct BillingPlanCatalog: Equatable {
     static let placeholderCreatorMonthly = "com.stickdeath.infinity.creator.monthly"
     static let placeholderProMonthly = "com.stickdeath.infinity.pro.monthly"
 
+    /// Spatter credit packs (owner decision 2026-10-15): consumable products that
+    /// keep Spatter going after a plan's allowance, or pay-as-you-go on Free.
+    /// One credit is one server-funded prompt. Pack sizes and prices are App
+    /// Store Connect and server configuration; the app never assumes either.
+    static let creditPackSmallKey = "SDI_STOREKIT_CREDITS_SMALL_PRODUCT_ID"
+    static let creditPackLargeKey = "SDI_STOREKIT_CREDITS_LARGE_PRODUCT_ID"
+    static let placeholderCreditPackSmall = "com.stickdeath.infinity.credits.small"
+    static let placeholderCreditPackLarge = "com.stickdeath.infinity.credits.large"
+
     let plans: [BillingPlanDefinition]
     let usesPlaceholderIdentifiers: Bool
     let annualConfigured: Bool
+    var creditPackProductIDs: [String] = [placeholderCreditPackSmall, placeholderCreditPackLarge]
+    /// False until both credit-pack ids are configured; purchases stay off until then.
+    var creditPacksConfigured = false
+
+    func isCreditPack(_ productID: String) -> Bool { creditPackProductIDs.contains(productID) }
 
     static let freeEntitlements = [
         BillingEntitlement(text: "Studio on this device, up to 3 layers per frame", isLive: true),
         BillingEntitlement(text: "Projects stay on this device", isLive: true),
         BillingEntitlement(text: "Onion skin 1 frame back", isLive: true),
         BillingEntitlement(text: "Exports up to 720p with the SDI watermark", isLive: true),
-        BillingEntitlement(text: "Preview Spatter and its suggested prompts (answers need Creator or Pro)", isLive: true),
+        BillingEntitlement(text: "Preview Spatter and its suggested prompts (answers need Creator, Pro or credits)", isLive: true),
+        BillingEntitlement(text: "Pay as you go with Spatter credits", isLive: false),
     ]
     static let creatorEntitlements = [
         BillingEntitlement(text: "Everything in Free", isLive: true),
@@ -172,6 +187,7 @@ struct BillingPlanCatalog: Equatable {
         BillingEntitlement(text: "Import audio and use the sound library", isLive: true),
         BillingEntitlement(text: "Blur, Smudge, Sharpen, Dodge/Burn, extra brushes and background cut", isLive: true),
         BillingEntitlement(text: "Spatter prompts each billing period, up to the plan's break-even allowance", isLive: false),
+        BillingEntitlement(text: "Buy Spatter credits to keep going after the allowance", isLive: false),
         BillingEntitlement(text: "Use your own AI key (those prompts are not counted)", isLive: false),
         BillingEntitlement(text: "Submit videos to the official SDI YouTube, TikTok and social channels (watermarked, reviewed before posting)", isLive: false),
     ]
@@ -216,9 +232,15 @@ struct BillingPlanCatalog: Equatable {
         // A misconfigured build that reuses one id for two plans offers neither of the duplicates.
         let duplicates = Set(ids.filter { id in ids.filter { $0 == id }.count > 1 })
         let offered = plans.filter { $0.productID.map { !duplicates.contains($0) } ?? true }
-        return BillingPlanCatalog(plans: offered,
-                                  usesPlaceholderIdentifiers: creator == nil || pro == nil,
-                                  annualConfigured: offered.contains { $0.period == .annual })
+        var catalog = BillingPlanCatalog(plans: offered,
+                                         usesPlaceholderIdentifiers: creator == nil || pro == nil,
+                                         annualConfigured: offered.contains { $0.period == .annual })
+        let small = value(creditPackSmallKey), large = value(creditPackLargeKey)
+        if let small, let large, small != large, !offered.contains(where: { $0.productID == small || $0.productID == large }) {
+            catalog.creditPackProductIDs = [small, large]
+            catalog.creditPacksConfigured = true
+        }
+        return catalog
     }
 
     /// The identifiers requested from the App Store, monthly first.
@@ -532,8 +554,18 @@ enum BillingCopy {
         }
     }
 
-    /// The only answer Spatter gives a Free account. Shown on the device; nothing is sent.
-    static let spatterUpgradeNote = "Spatter is part of Creator and Pro. Upgrade in Profile, Plans to activate it. Creator also lets you use your own AI key."
+    /// The only answer Spatter gives a Free account without credits. Shown on the device; nothing is sent.
+    static let spatterUpgradeNote = "Spatter is part of Creator and Pro. Upgrade in Profile, Plans to activate it, or buy Spatter credits there to pay as you go. Creator also lets you use your own AI key."
+
+    /// Server-reported credit balance; nil means the server has not reported one.
+    static func credits(_ balance: Int?) -> String {
+        guard let balance else { return "Your Spatter credit balance appears once the server reports it." }
+        let value = max(0, balance)
+        return value == 1 ? "1 Spatter credit (1 prompt)." : "\(value) Spatter credits (1 prompt each)."
+    }
+
+    static let creditsNote = "Credits keep Spatter going after your plan's allowance, or let Free pay as you go. One credit is one prompt. Credits are added only after the StickDeath server confirms Apple's purchase."
+    static let creditsNotConfigured = "Spatter credit packs are not on sale yet."
 
     static let pendingEntitlementNote = "Marked features turn on when the server applies your plan from Apple's verified purchase."
     static let manageNote = "Billed by Apple. Manage, change or cancel in Apple subscription settings; cancelling keeps access until the period ends. Projects stay on this device."

@@ -122,6 +122,8 @@ struct SubscriptionView: View {
                     }
                 }
 
+                creditsCard
+
                 Button(action: {
                     Task { await store.restorePurchases() }
                 }) {
@@ -139,6 +141,57 @@ struct SubscriptionView: View {
     }
 
     private var isSubscribed: Bool { store.billing.activeEntitlement != nil }
+
+    // MARK: - Spatter credits (owner decision 2026-10-15)
+
+    private var creditsCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Spatter credits")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(.white)
+                .accessibilityAddTraits(.isHeader)
+            Text(BillingCopy.creditsNote)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            if store.creditPacks.isEmpty {
+                Text(BillingCopy.creditsNotConfigured)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(store.creditPacks, id: \.id) { pack in
+                    Button(action: { Task { await buyCredits(pack) } }) {
+                        HStack {
+                            Text(pack.displayName).foregroundColor(.white)
+                            Spacer()
+                            Text(pack.displayPrice).foregroundColor(.white).bold()
+                        }
+                        .font(.system(size: 13))
+                        .padding(12)
+                        .background(Color.white.opacity(0.06))
+                        .cornerRadius(10)
+                    }
+                    .disabled(store.isProcessing)
+                    .accessibilityHint(Text("Buys this Spatter credit pack from Apple"))
+                }
+            }
+            if let notice = store.creditNotice {
+                Text(notice)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(Color.white.opacity(0.04))
+        .cornerRadius(12)
+    }
+
+    private func buyCredits(_ pack: Product) async {
+        do { try await store.purchaseCredits(pack) }
+        catch StripeService.PaymentError.cancelled { }
+        catch StripeService.PaymentError.pending { }
+        catch { store.creditNotice = error.localizedDescription }
+    }
 
     private func secondaryLabel(_ text: String) -> some View {
         Text(text)

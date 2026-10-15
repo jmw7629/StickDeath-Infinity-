@@ -80,8 +80,10 @@ final class SpatterAIViewModel: ObservableObject {
     /// Free plan: Spatter and its suggested prompts stay visible, but every send
     /// gets the upgrade note on the device. Applies when the Studio enforces the
     /// Free limits, or when cloud advice is on and the server reports Free.
+    /// Free with server-reported Spatter credits pays as it goes through cloud advice.
     var previewOnly: Bool {
-        !StudioPlanLimits.current.spatterActive || (useCloud && cloudAllowance?.plan == .free)
+        if useCloud, cloudAllowance?.hasCredits == true { return false }
+        return !StudioPlanLimits.current.spatterActive || (useCloud && cloudAllowance?.plan == .free)
     }
 
     /// True while cloud advice is on and the server has not reported a plan yet:

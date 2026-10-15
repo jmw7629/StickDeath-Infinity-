@@ -61,6 +61,17 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         for tier in [BillingPlanTier.creator, .pro] {
             try require(empty.plans.first { $0.tier == tier }?.studioLimits == .unrestricted, "\(tier) has no Studio limits")
         }
+        // Spatter credit packs (owner decision 2026-10-15): off until both ids are configured.
+        try require(!empty.creditPacksConfigured && empty.isCreditPack(BillingPlanCatalog.placeholderCreditPackSmall), "credit packs off by default")
+        let packs = BillingPlanCatalog.load(info: [BillingPlanCatalog.creditPackSmallKey: "sdi.credits.s", BillingPlanCatalog.creditPackLargeKey: "sdi.credits.l"])
+        try require(packs.creditPacksConfigured && packs.creditPackProductIDs == ["sdi.credits.s", "sdi.credits.l"]
+                    && !packs.productIDs.contains("sdi.credits.s"), "configured packs are consumables, not plans")
+        try require(!BillingPlanCatalog.load(info: [BillingPlanCatalog.creditPackSmallKey: "sdi.credits.s"]).creditPacksConfigured, "both packs required")
+        try require(!BillingPlanCatalog.load(info: [BillingPlanCatalog.creditPackSmallKey: "x", BillingPlanCatalog.creditPackLargeKey: "x"]).creditPacksConfigured,
+                    "duplicate pack ids refused")
+        try require(BillingCopy.credits(nil).contains("once the server reports") && BillingCopy.credits(1) == "1 Spatter credit (1 prompt)."
+                    && BillingCopy.credits(-4) == "0 Spatter credits (1 prompt each).", "credit copy never invents a balance")
+        try require(BillingCopy.spatterUpgradeNote.contains("credits"), "upgrade note offers credits")
         // Nobody is limited until the App Store sells real plans.
         try require(!StudioPlanLimits.enforcing(catalog: empty, storeLoaded: true), "placeholder ids never enforce limits")
         let live = BillingPlanCatalog.load(info: [BillingPlanCatalog.creatorMonthlyKey: "sdi.creator.m", BillingPlanCatalog.proMonthlyKey: "sdi.pro.m"])

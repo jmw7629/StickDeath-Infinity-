@@ -104,6 +104,18 @@ final class StripeService: ObservableObject {
     /// Whether the App Store reports this account as eligible for a product's
     /// introductory offer. Absent means unknown; no trial is shown then.
     @Published private(set) var introOfferEligibility: [String: Bool] = [:]
+    /// Loaded Spatter credit packs (consumables), cheapest first. Empty until
+    /// both pack ids are configured and App Store Connect has the products.
+    @Published private(set) var creditPacks: [Product] = []
+    /// Honest status of the last credit purchase; shown under the packs.
+    @Published var creditNotice: String?
+
+    /// Sends Apple's signed transaction (JWS) for a credit pack to the StickDeath
+    /// server, which verifies it and grants the credits exactly once. Returns the
+    /// new balance when the server reports it. Nil means the grant endpoint is not
+    /// configured: the transaction then stays unfinished so StoreKit redelivers it
+    /// and nothing is lost.
+    var creditGrant: ((_ signedTransaction: String, _ productID: String) async throws -> Int?)?
 
     let catalog = StoreProductID.catalog
 
@@ -130,6 +142,16 @@ final class StripeService: ObservableObject {
         transactionListener = listenForTransactions()
         Task { await loadProducts() }
         Task { await refreshEntitlements() }
+    }
+
+    /// Retry credit grants Apple delivered but the server has not confirmed yet.
+    /// Call after `creditGrant` is configured (for example after sign-in).
+    func retryUnfinishedCreditGrants() async {
+        for await result in Transaction.unfinished {
+            guard let transaction = try? checkVerified(result), catalog.isCreditPack(transaction.productID),
+                  transaction.revocationDate == nil else { continue }
+            await grantCredits(transaction, signed: result.jwsRepresentation)
+        }
     }
 
     deinit {
@@ -161,6 +183,62 @@ final class StripeService: ObservableObject {
             productLoadState = .failed(error.localizedDescription)
             lastError = "Could not load subscription plans from the App Store."
             send(.catalogFailed(error.localizedDescription))
+        }
+        await loadCreditPacks()
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // MARK: - Spatter credits (consumables)
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Load the credit packs. Placeholder ids are never requested.
+    func loadCreditPacks() async {
+        guard catalog.creditPacksConfigured else { creditPacks = []; return }
+        do {
+            let products = try await Product.products(for: catalog.creditPackProductIDs)
+            creditPacks = products.filter { $0.type == .consumable }.sorted { $0.price < $1.price }
+        } catch {
+            creditPacks = []
+            creditNotice = "Could not load Spatter credit packs from the App Store."
+        }
+    }
+
+    /// Buy one credit pack. Credits count only after the server confirms the grant.
+    func purchaseCredits(_ product: Product) async throws {
+        guard catalog.isCreditPack(product.id), catalog.creditPacksConfigured else { throw PaymentError.invalidProduct }
+        guard let userIdString = AuthService.shared.userId, let appAccountToken = UUID(uuidString: userIdString) else {
+            throw PaymentError.notAuthenticated
+        }
+        isProcessing = true
+        creditNotice = nil
+        defer { isProcessing = false }
+        let result = try await product.purchase(options: [.appAccountToken(appAccountToken)])
+        switch result {
+        case .success(let verification):
+            let transaction = try checkVerified(verification)
+            await grantCredits(transaction, signed: verification.jwsRepresentation)
+        case .userCancelled:
+            throw PaymentError.cancelled
+        case .pending:
+            creditNotice = "Apple is waiting for approval. Credits are added when Apple confirms the purchase."
+            throw PaymentError.pending
+        @unknown default:
+            throw PaymentError.unknown
+        }
+    }
+
+    /// Finish a credit transaction only after the server granted it.
+    private func grantCredits(_ transaction: Transaction, signed: String) async {
+        guard let creditGrant else {
+            creditNotice = "Purchase received. Credits are added once the StickDeath server can confirm it; the purchase is kept until then."
+            return
+        }
+        do {
+            let balance = try await creditGrant(signed, transaction.productID)
+            await transaction.finish()
+            creditNotice = "Credits added. " + BillingCopy.credits(balance)
+        } catch {
+            creditNotice = "Purchase received, but the server could not confirm it yet (\(error.localizedDescription)). It will be retried; nothing is lost."
         }
     }
 
@@ -416,6 +494,16 @@ final class StripeService: ObservableObject {
             for await result in Transaction.updates {
                 do {
                     let transaction = try self.checkVerified(result)
+
+                    // Credit packs finish only after the server grants them.
+                    if StoreProductID.catalog.isCreditPack(transaction.productID) {
+                        if transaction.revocationDate == nil {
+                            await self.grantCredits(transaction, signed: result.jwsRepresentation)
+                        } else {
+                            await transaction.finish()
+                        }
+                        continue
+                    }
 
                     // Refresh entitlements on any transaction update
                     await MainActor.run {
