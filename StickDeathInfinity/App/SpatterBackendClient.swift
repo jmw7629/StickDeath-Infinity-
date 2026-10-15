@@ -151,7 +151,7 @@ struct SpatterAllowance: Equatable {
         case .creator:
             return "You've used this billing period's Spatter allowance. It resets"
                 + (reset.map { " on \($0)" } ?? " at renewal")
-                + ". Buy Spatter credits to keep going, upgrade to Pro for unlimited prompts, or add your own AI key."
+                + ". Upgrade to Pro for unlimited prompts, buy Spatter credits to keep going, or add your own AI key."
         case .pro:
             return nil
         }

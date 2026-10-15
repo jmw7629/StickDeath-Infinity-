@@ -88,7 +88,7 @@ private struct Failure: Error, CustomStringConvertible { let description: String
             try require(texts.contains { $0.hasPrefix("Use your own AI key") }, "\(tier) lists the own AI key")
         }
         try require(empty.plans.first { $0.tier == .free }?.entitlements.map(\.text)
-                        .contains("Preview Spatter and its suggested prompts (answers need Creator or Pro)") == true,
+                        .contains("Preview Spatter and its suggested prompts (answers need Creator, Pro or credits)") == true,
                     "Free lists the Spatter preview")
         // Device-enforced Studio extras are live; server-applied extras stay pending.
         let serverExtras = empty.plans.filter { $0.tier != .free }.flatMap(\.entitlements)
