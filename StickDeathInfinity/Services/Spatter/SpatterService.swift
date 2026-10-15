@@ -36,7 +36,7 @@ final class SpatterService {
     - Studio Systems: Layers, timeline, onion skin, undo/redo, autosave, export, grid
     - AI Animation: Autonomous builder, fix-this-scene, cinematic pass, viral pass
     - Social: TikTok/YouTube strategy, thumbnail intelligence, comment bait, social agent
-    - Collaboration: LiveKit calls, voice/video flow, studio share, watch together, rooms
+    - Collaboration: invitation-based Studio project rooms, Watch Together and Calendar; no chat or calls
     - Community: Challenges, creator support, reward loops, creator identity
     - Business: Owner ops, payment entitlements, bug triage, investor reporting, moderation
     - Lore: Old Internet Mode, Corrupted Spatter Mode

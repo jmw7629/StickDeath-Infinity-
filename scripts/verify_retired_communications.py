@@ -61,15 +61,8 @@ def verify_cross_surface(root: Path = ROOT) -> None:
         path = root / relative
         if path.exists():
             text = path.read_text()
-            if relative.endswith("SpatterService.swift"):
-                # The original systemPrompt block is pinned by verify_spatter_client.py and
-                # changes only with the owner's approval; it is reported, not failed, here.
-                pinned = re.search(r'private let systemPrompt = """(.*?)\n    """', text, re.S)
-                if pinned:
-                    stale = ADVERTISING.search(pinned.group(1))
-                    if stale:
-                        print(f"OWNER_DECISION: pinned Spatter prompt still mentions {stale.group(0)!r}")
-                    text = text[:pinned.start()] + text[pinned.end():]
+            # The owner approved correcting the pinned Spatter prompt (2026-10-14), so the
+            # prompt is checked like every other surface again.
             hit = ADVERTISING.search(text)
             assert not hit, f"{relative} advertises a removed feature: {hit.group(0)!r}"
     # Calendar stays a read-only schedule view in the legacy Messages folder.

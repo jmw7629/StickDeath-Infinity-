@@ -1,42 +1,112 @@
 {
-  "cap": {
-    "source": "18482e5a14c961494ce2ad5173e926a24eceebabc52145a6fdd8901e55b3c53b",
-    "bytes": 12616,
-    "sha256": "0bd6135283aca2fdc14b2b6cb5f144ce0d0bcee63910174a0aa3d317a3010b3a"
+  "anger-management-mug": {
+    "source": "e5a3a28f0c31c3f0881db0235746300a478120009e33e982fc6b1ace23a2c8b2",
+    "bytes": 13084,
+    "sha256": "7f05cf5439f7b7d3d76b6189ce7220df4ce7706882fd8fa38ca6e620310383bd"
   },
-  "classic-tee": {
-    "source": "8c4c1e02c517cec40cd827468bb2ddf6384f976712962ceb553241d4e439029e",
-    "bytes": 14132,
-    "sha256": "eab63f035e6039be68fbf63f68f3dc81f23901873c9044df87dc5326beee64ae"
+  "anti-auto-theft-tee": {
+    "source": "3a4e4a658fc8dd3c8d5949d96e8fdfa1302dd5c14b3b2f314b3c1e3fc251b8f6",
+    "bytes": 16168,
+    "sha256": "10af591dd47a200e266422a05cc67b6bb2013af21f1ee29f50dda2b282a84e49"
   },
-  "enamel-pin": {
-    "source": "c72033144dc8e4b560a22964563c9d790394ea5ba33bab5e17a5068b4ece7566",
-    "bytes": 19890,
-    "sha256": "4df1d63e5b7b27b32632ee9856f91840481c456d533d7f794fa178e391e12592"
+  "body-count-tee": {
+    "source": "79ffbe3f745304bc8153d8796806cb6ffc676778c01630bb5a627969648ae6fb",
+    "bytes": 24556,
+    "sha256": "de06832cc9654c142e53e9ae83eedcb75e5601f8ddd9921fcf95cdd346d8b958"
   },
-  "hoodie": {
-    "source": "5b5a64124cc55e899a9c6a3de0faa63d429273dd4b84747fc3e0098d8f0232bb",
-    "bytes": 13390,
-    "sha256": "1c0187339d1db22a8e1937b8ca183889d03a97b1ac6c739b387b210431df31cc"
+  "character-sticker-sheet": {
+    "source": "c0f591050174a8afb6e4fb4d3cf30b01645ce1de452d619556efe2257a9cc96d",
+    "bytes": 21162,
+    "sha256": "09e88d6ea9c8fd77c488042fd033e2dff2c571330a5baab92985a8f669d44a12"
   },
-  "mug": {
-    "source": "62314ce14e904bd049516f0cf44cfd50f6800ba977028825d274e19ea83414f1",
-    "bytes": 11882,
-    "sha256": "d1059dd9d2bbd150885a17fb34055c7a96b7f60bc7f8e2ad6af5d4c10d0e8a80"
+  "classic-splatter-tee": {
+    "source": "2206f23fc774350bcb5541c9fc66beae00fa26ffd839e8550ba849d8d6531b81",
+    "bytes": 19626,
+    "sha256": "7ac61d16656c39a7ae68d17da523ea6e8edd10ebf169a8941d01874aa7923cca"
   },
-  "poster": {
-    "source": "0bbea2885e1f1e061c35b1bd5191ee61a2887f30770abd928673b79543b8d1b0",
-    "bytes": 24192,
-    "sha256": "b0cb3f88d3a772f2237e78b2a5b0427702dbba28cc906f5daf2771ab873bc21a"
+  "escape-from-greenville-tee": {
+    "source": "fa0ea7f1eeaa3b71e0b5e5a712166620befd0d15d7be99ae5da209fb30fdb9fd",
+    "bytes": 20446,
+    "sha256": "9ec30ad1682c2bb2cf83f96c0c3a172f59e0ae2ebf6b4db1239ce9354a130f5f"
   },
-  "sticker-pack": {
-    "source": "4a754d483bba019e259f6cc59632d0be7a476947ee97983cbce564c1e755e0bf",
-    "bytes": 26394,
-    "sha256": "f593c59fffaf37fb88995fff8419bae046a536881987ce5a9d69c3faa2572a43"
+  "green-gene-pin": {
+    "source": "e968618c37f6da791c18180b59779dc42f507804e37c5a1775018e8ae534edca",
+    "bytes": 18634,
+    "sha256": "3d48ae302a5a4e45f9c4103a531ab117ae3a8bffc613d2a2b974285eae0c6ba8"
   },
-  "tote": {
-    "source": "5788f2eb7f84153563063b2d06582a3ac84b40767e2207a31453b510ccf86b7a",
-    "bytes": 13800,
-    "sha256": "564298c4bab34bc635a9f25f3ac6b2c0fe161143851cf6ec8c0d824271701943"
+  "greenville-mug": {
+    "source": "0098b5098080ce559f9a9835cbcaaf5343372718bfb9a0d81089cf3bcc7bd72c",
+    "bytes": 14884,
+    "sha256": "2eb01782e0a79b1f97d37584f63f4d85126eb6cc024a09ef76a7e96d74e1a906"
+  },
+  "penitentiary-tee": {
+    "source": "57b9ccf332b1886af269a7a3fc964f1d66e83e0436207b0dd6c365079b26ef1c",
+    "bytes": 13442,
+    "sha256": "9cd3592bdb53c0d3bebeea1fa3d83c43d9bce20a4dc759cea557d97e6c29bbf6"
+  },
+  "series-enamel-pins": {
+    "source": "6ff34f443718013d5e50d7e8042231a0487aede49936d48e39b40ced16a92de5",
+    "bytes": 19636,
+    "sha256": "f47cc797c10c73ca19db4871f18d5d5d78ddd1529e244faa7b44b2d69a59b7d6"
+  },
+  "stick-tour-tote": {
+    "source": "aa53032f1bcb00be808dd5f64f7c8363bc9f7863d47244d775f949b4fe692b7b",
+    "bytes": 18586,
+    "sha256": "4f94b3256a654f2d1bbeaf7ae6ed7d85863e2fcce12a65b8bb1725fcabf3cc5b"
+  },
+  "stickdeath-drip-hoodie": {
+    "source": "664afdc3c810719a27d401dc10debc86f4e2f3ca6a761a977ecb4190694339bf",
+    "bytes": 13796,
+    "sha256": "2e5c02993b87aa0ffb427e68abacb4916d972cc3e6f81f781518ea7c60177962"
+  },
+  "stickzilla-poster": {
+    "source": "5f2556caec35f3eefdfbca52d4752d2ce70f79d086a8d50f43fc90a5efa8d92a",
+    "bytes": 17830,
+    "sha256": "ee5a1e957655434d519ce1eef19aa3a8e2df212a6c97ffb123ed5f7850552238"
+  },
+  "summoning-the-beast-hoodie": {
+    "source": "71a89fddb2a9470e2a9a121399e77d7295491a488cfa7b74b3a699d560e8449d",
+    "bytes": 19080,
+    "sha256": "57db874a1f33dbb04fb96e32c2f060b77b1b216e1e1930021beca9febf6c0d0b"
+  },
+  "super-beast-deck": {
+    "source": "df91c2bc394b1d17c045a0eaf7718c02251623f95180e0f1edb2cb67f672eba8",
+    "bytes": 14732,
+    "sha256": "edb95eb636989def9fbc5a6ac4c6ee95903a61941209e57ce9087f8b555878c1"
+  },
+  "super-beast-tee": {
+    "source": "d05f75d2a8fc8fe11c1317549ca318f5495168b59f2d10e1cead564ad158c1a1",
+    "bytes": 19076,
+    "sha256": "65b22a2c5a119fd7f101a210e07fc3650598d7e3d21acc3e5a546a0bf9d25394"
+  },
+  "survivor-beanie": {
+    "source": "ec317ccf5d5b49a5632733992da2cf81d6168434df72c1c4007d8036bccad919",
+    "bytes": 9600,
+    "sha256": "381b65d554b7bbdc6eac78ae43dce2d9702ff82b02bb0769970ccc509bbd3dbc"
+  },
+  "swat-cap": {
+    "source": "f4bad60693d4ca6d288a450f5b468ac2b12f168901703861f1465aa2712f9a1e",
+    "bytes": 11760,
+    "sha256": "3af12ceff52218e6ef9a6280aa7c1d70181b060681c67bbea0d545ec8a0a38a5"
+  },
+  "swat-patch": {
+    "source": "2335483ebeb0e461f2e9cc37b0c1f7e271d5c805f898bc596112ae1c62d2d53c",
+    "bytes": 15100,
+    "sha256": "93a5201ecfd76392a152144b5ac15eb876df1e0a6c1dd86c3f8579770b8735ad"
+  },
+  "swat-phone-case": {
+    "source": "864e59b5f5d876dcb9ab75df3580ba7d2ed21100f1fed94dee4363e246797e58",
+    "bytes": 9276,
+    "sha256": "4aa763b53b11776ad4bb6497f95d4508b27aca123b9d9392e21145433c7dbd5e"
+  },
+  "swat-tee": {
+    "source": "e7a76b1db7be82cf5c008b3c6cf73c4176ea5c1ce453fe8f75babda692475f55",
+    "bytes": 15622,
+    "sha256": "5c23c642e78368dcc2612e42f501ab81f96f0342df5797fea0f93bdf0e9738db"
+  },
+  "walk-in-the-park-poster": {
+    "source": "47cd1ba1df2fbae6474dbc777638ec6eb1a8e01cfbdf696fc27773a1c0e8054c",
+    "bytes": 13676,
+    "sha256": "4a0959d1b8936145bde616757af195969748c966b0d0f6dd6da4c2f2f4ccab85"
   }
 }

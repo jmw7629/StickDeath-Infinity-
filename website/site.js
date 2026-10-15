@@ -1,5 +1,7 @@
 'use strict';
 (() => {
+  // Embedded inside a StickDeath OS window: hide the site chrome, keep the content.
+  try { if (new URLSearchParams(location.search).get('embed') === '1') document.documentElement.classList.add('embed'); } catch (_) { /* ignore */ }
   const menu = document.querySelector('.menu');
   const nav = document.querySelector('#navigation');
   const compact = matchMedia('(max-width:700px)');

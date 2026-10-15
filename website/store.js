@@ -1,7 +1,7 @@
 'use strict';
 // Store page. Two modes:
-//  • unconfigured (SDI_STORE_CONFIG = null): the eight planned products render from the
-//    static cards in store.html with no price and no checkout; the status says so.
+//  • unconfigured (SDI_STORE_CONFIG = null): the merch artwork gallery in store.html shows
+//    with no price and no checkout; the status says so.
 //  • configured: products, variants and prices are read live from the owner's Shopify
 //    Storefront API (public token) and the cart is a Shopify cart; Checkout opens the
 //    Shopify-hosted checkout URL. Prices are never typed into this page.
@@ -19,7 +19,7 @@
   const money = (m) => { try { return new Intl.NumberFormat(undefined, { style: 'currency', currency: m.currencyCode }).format(Number(m.amount)); } catch (_) { return `${m.amount} ${m.currencyCode}`; } };
   const valid = config && typeof config.domain === 'string' && /^[a-z0-9-]+\.myshopify\.com$/i.test(config.domain) && typeof config.storefrontAccessToken === 'string' && config.storefrontAccessToken.length > 10;
   if (!valid) {
-    say('The store is not open yet. These are the planned products; prices and checkout appear here once the owner connects the Shopify store.');
+    say('The store is not open yet. Sizes, prices and checkout appear here once the Shopify store is connected.');
     grid.querySelectorAll('.price').forEach((p) => { p.textContent = 'Price on opening'; });
     return;
   }
@@ -68,7 +68,7 @@
       products.forEach((product) => {
         const card = document.createElement('article'); card.className = 'product';
         const img = document.createElement('img'); img.loading = 'lazy'; img.decoding = 'async'; img.width = 800; img.height = 800;
-        if (product.featuredImage) { img.src = product.featuredImage.url; img.alt = product.featuredImage.altText || product.title; } else { img.src = 'assets/merch/sticker-pack.webp'; img.alt = `${product.title} (no store image yet)`; }
+        if (product.featuredImage) { img.src = product.featuredImage.url; img.alt = product.featuredImage.altText || product.title; } else { img.src = 'assets/merch/character-sticker-sheet.webp'; img.alt = `${product.title} (no store image yet)`; }
         const h3 = document.createElement('h2'); h3.textContent = product.title;
         const desc = document.createElement('p'); desc.textContent = product.description.slice(0, 160);
         const variants = product.variants.edges.map((e) => e.node);
