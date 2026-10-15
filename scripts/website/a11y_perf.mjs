@@ -45,13 +45,14 @@ const site = path.join(repo, 'website');
 const jsonIndex = process.argv.indexOf('--json');
 const jsonOut = jsonIndex > -1 ? process.argv[jsonIndex + 1] : null;
 
-const PAGES = ['index.html', 'studio.html', 'community.html', 'screens.html', 'play.html', 'store.html', 'brand.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
+const LONG = 'about.html'; // the long-form page (help desk, support form, hero); index.html is the desktop
+const PAGES = ['index.html', 'about.html', 'studio.html', 'community.html', 'screens.html', 'play.html', 'store.html', 'brand.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
 const VIEWPORTS = [{ name: '320x640', width: 320, height: 640 }, { name: '390x844', width: 390, height: 844 }, { name: '1440x900', width: 1440, height: 900 }];
 // 2026-10-14 rebuild: the home page shows real captures (lazy WebP) and the unmodified
 // Special Elite TTF stays at 166 KB, so the transfer and request budgets moved from
 // 250 KB / 8 to 420 KB / 12. LCP and CLS budgets are unchanged.
 const BUDGET = { bytes: 420_000, requests: 12, lcpMs: 2500, cls: 0.05 };
-const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.mp4': 'video/mp4', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.mp4': 'video/mp4', '.m4a': 'audio/mp4', '.wav': 'audio/wav', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
 
 const results = [];
 const measurements = {};
@@ -153,7 +154,7 @@ async function auditPage(page, base, file, viewport) {
   // Reveal every data-reveal section (scroll through once) so the audit covers the whole page.
   await page.evaluate(async () => { for (let y = 0; y <= document.body.scrollHeight; y += 400) { window.scrollTo(0, y); await new Promise((r) => setTimeout(r, 15)); } window.scrollTo(0, 0); });
   await page.waitForTimeout(900);
-  if (file === 'index.html') await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
+  if (file === LONG) await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
   const audit = await page.evaluate(auditScript);
   record('no console errors / page errors', errors.length === 0, errors.join(' | ').slice(0, 300), scope);
   record('zero third-party requests', offsite.length === 0, offsite.join(', ').slice(0, 300), scope);
@@ -176,10 +177,10 @@ async function auditPage(page, base, file, viewport) {
 }
 
 async function indexBehaviour(context, base, viewport, articles) {
-  const scope = `index.html@${viewport.name}`;
+  const scope = `${LONG}@${viewport.name}`;
   const page = await context.newPage();
   const errors = []; page.on('pageerror', (e) => errors.push(String(e))); page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
-  await page.goto(base + 'index.html', { waitUntil: 'load' });
+  await page.goto(base + LONG, { waitUntil: 'load' });
   // Skip link.
   await page.keyboard.press('Tab');
   const skip = await page.evaluate(() => { const el = document.activeElement; const r = el.getBoundingClientRect(); return { isSkip: el.classList.contains('skip'), href: el.getAttribute('href'), visible: r.top >= 0 && r.height > 0 }; });
@@ -219,7 +220,7 @@ async function indexBehaviour(context, base, viewport, articles) {
   // Fragment routing for every article.
   const routeFailures = [];
   for (const article of articles) {
-    await page.goto(base + 'index.html#help/' + article.id, { waitUntil: 'load' });
+    await page.goto(base + LONG + '#help/' + article.id, { waitUntil: 'load' });
     try {
       await page.waitForSelector(`#article-${article.id}[open]`, { timeout: 3000 });
       const focused = await page.evaluate((id) => document.activeElement === document.querySelector(`#article-${id} summary`), article.id);
@@ -228,7 +229,7 @@ async function indexBehaviour(context, base, viewport, articles) {
   }
   record(`every #help/<id> fragment opens and focuses its topic (${articles.length} ids)`, routeFailures.length === 0, routeFailures.join('; '), scope);
   // Support form flow.
-  await page.goto(base + 'index.html', { waitUntil: 'load' });
+  await page.goto(base + LONG, { waitUntil: 'load' });
   await page.click('#support-form button[type=submit]');
   const invalid = await page.textContent('#support-status');
   await page.fill('#problem', 'The exported GIF was silent even though the clip was audible.');
@@ -312,21 +313,123 @@ async function main() {
     const storeContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const storePage = await storeContext.newPage();
     const storeRequests = []; storePage.on('request', (r) => storeRequests.push(r.url()));
     await storePage.goto(base + 'store.html', { waitUntil: 'load' }); await storePage.waitForTimeout(400);
-    const storeState = await storePage.evaluate(() => ({ status: document.querySelector('#store-status').textContent, prices: [...document.querySelectorAll('.price')].map((p) => p.textContent), cartHidden: document.querySelector('#cart').hidden, products: document.querySelectorAll('.product').length }));
-    record('store shows the planned line-up without prices or cart when unconfigured', storeState.products === 8 && storeState.cartHidden && storeState.prices.every((p) => p === 'Price on opening') && storeState.status.includes('not open yet'), JSON.stringify(storeState).slice(0, 200), 'store.html@390x844');
+    const storeState = await storePage.evaluate(() => ({ status: document.querySelector('#store-status').textContent, prices: [...document.querySelectorAll('.price')].map((p) => p.textContent), cartHidden: document.querySelector('#cart').hidden, products: document.querySelectorAll('.merch img').length, captions: document.querySelectorAll('.merch figcaption').length }));
+    record('store shows the 22-design merch gallery without prices or cart when unconfigured', storeState.products === 22 && storeState.captions === 22 && storeState.cartHidden && storeState.prices.length === 0 && storeState.status.includes('not open yet'), JSON.stringify(storeState).slice(0, 200), 'store.html@390x844');
     record('store requests only its own files when unconfigured', storeRequests.every((u) => u.startsWith(base)), `${storeRequests.length} requests`, 'store.html@390x844');
     await storeContext.close();
     // index.html: splash is decorative and gone within three seconds; hero speed slider changes the animation.
     const splashContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const splashPage = await splashContext.newPage();
-    await splashPage.goto(base + 'index.html', { waitUntil: 'load' });
+    await splashPage.goto(base + LONG, { waitUntil: 'load' });
     const splashEarly = await splashPage.evaluate(() => { const s = document.querySelector('#splash'); return s ? { present: true, ariaHidden: s.getAttribute('aria-hidden'), focusable: s.querySelectorAll('a,button,input,[tabindex]').length } : { present: false }; });
     await splashPage.waitForTimeout(3000);
     const splashLate = await splashPage.evaluate(() => Boolean(document.querySelector('#splash')));
-    record('home splash is decorative (aria-hidden, no focusable controls) and removed within 3 s', splashEarly.present && splashEarly.ariaHidden === 'true' && splashEarly.focusable === 0 && !splashLate, JSON.stringify({ splashEarly, splashLate }), 'index.html@390x844');
+    record('home splash is decorative (aria-hidden, no focusable controls) and removed within 3 s', splashEarly.present && splashEarly.ariaHidden === 'true' && splashEarly.focusable === 0 && !splashLate, JSON.stringify({ splashEarly, splashLate }), LONG + '@390x844');
     await splashPage.locator('#hero-fps').fill('24');
     const fpsState = await splashPage.evaluate(() => ({ out: document.querySelector('#hero-fps-value').textContent, dur: document.querySelector('.flipbook .pose').style.animationDuration }));
-    record('hero speed slider retimes the flipbook', fpsState.out === '24 fps' && fpsState.dur === '0.25s', JSON.stringify(fpsState), 'index.html@390x844');
+    record('hero speed slider retimes the flipbook', fpsState.out === '24 fps' && fpsState.dur === '0.25s', JSON.stringify(fpsState), LONG + '@390x844');
     await splashContext.close();
+    // index.html (desktop): menu opens a window; half size; maximize fills and restore returns the size; the flame docks the window and the dock brings it back; drag moves it; Escape and the close box close.
+    const deskContext = await browser.newContext({ viewport: { width: 1440, height: 900 } }); const deskPage = await deskContext.newPage();
+    const deskErrors = []; deskPage.on('pageerror', (e) => deskErrors.push(String(e))); deskPage.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
+    await deskPage.goto(base + 'index.html', { waitUntil: 'load' }); await deskPage.click('#boot-skip'); await deskPage.waitForTimeout(300);
+    const bootGone = await deskPage.evaluate(() => !document.querySelector('#boot') && !document.querySelector('#win-about').hidden);
+    record('desktop: skipping the boot shows the desktop with the About window', bootGone, '', 'index.html@1440x900');
+    await deskPage.click('.menubar [data-open=juke]'); await deskPage.waitForTimeout(200);
+    const opened = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); return { hidden: w.hidden, active: w.classList.contains('active'), status: document.querySelector('#status-windows').textContent }; });
+    record('desktop: menu bar opens the Jukebox window in front', !opened.hidden && opened.active && opened.status.startsWith('2 windows'), JSON.stringify(opened), 'index.html@1440x900');
+    const geoOf = () => deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); return { w: w.offsetWidth, h: w.offsetHeight, l: w.offsetLeft, t: w.offsetTop }; });
+    const jukeBefore = await geoOf();
+    // Drag the title bar 120px right and 60px down.
+    const tb = await deskPage.locator('#win-juke .titlebar h2').boundingBox();
+    await deskPage.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2); await deskPage.mouse.down(); await deskPage.mouse.move(tb.x + tb.width / 2 + 120, tb.y + tb.height / 2 + 60, { steps: 8 }); await deskPage.mouse.up();
+    const dragged = await geoOf();
+    record('desktop: dragging the title bar moves the window freely', dragged.l === jukeBefore.l + 120 && dragged.t === jukeBefore.t + 60, `${JSON.stringify(jukeBefore)} → ${JSON.stringify(dragged)}`, 'index.html@1440x900');
+    await deskPage.click('#win-juke [data-half]'); await deskPage.waitForTimeout(100);
+    const half = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); const d = document.querySelector('#main').getBoundingClientRect(); return { ok: Math.abs(w.offsetWidth - d.width / 2) < 3 && Math.abs(w.offsetHeight - d.height / 2) < 3, label: w.querySelector('[data-half]').getAttribute('aria-label') }; });
+    record('desktop: half size sets the window to half the desktop', half.ok && /Restore/.test(half.label), JSON.stringify(half), 'index.html@1440x900');
+    await deskPage.click('#win-juke [data-max]'); await deskPage.waitForTimeout(100);
+    const maxed = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); const d = document.querySelector('#main').getBoundingClientRect(); return { fills: Math.abs(w.offsetWidth - d.width) < 3 && Math.abs(w.offsetHeight - d.height) < 3, label: w.querySelector('[data-max]').getAttribute('aria-label') }; });
+    record('desktop: maximize fills the desktop and relabels the control as Restore', maxed.fills && /Restore/.test(maxed.label), JSON.stringify(maxed), 'index.html@1440x900');
+    await deskPage.click('#win-juke [data-max]'); await deskPage.waitForTimeout(100);
+    const restored = await geoOf();
+    record('desktop: restore returns the window to its normal size and dragged place', Math.abs(restored.w - jukeBefore.w) < 3 && Math.abs(restored.h - jukeBefore.h) < 3 && restored.l === dragged.l && restored.t === dragged.t, `${JSON.stringify(dragged)} → ${JSON.stringify(restored)}`, 'index.html@1440x900');
+    await deskPage.click('#win-juke [data-dock]'); await deskPage.waitForTimeout(100);
+    const docked = await deskPage.evaluate(() => ({ hidden: document.querySelector('#win-juke').hidden, task: document.querySelector('#taskbar [data-task="win-juke"]')?.textContent || null, status: document.querySelector('#status-windows').textContent }));
+    record('desktop: the flame saves the window to the dock', docked.hidden && docked.task === 'Jukebox' && /1 in the dock/.test(docked.status), JSON.stringify(docked), 'index.html@1440x900');
+    await deskPage.click('#taskbar [data-task="win-juke"]'); await deskPage.waitForTimeout(100);
+    const back = await deskPage.evaluate(() => ({ hidden: document.querySelector('#win-juke').hidden, task: Boolean(document.querySelector('#taskbar [data-task="win-juke"]')), l: document.querySelector('#win-juke').offsetLeft }));
+    record('desktop: the dock button brings the window back where it was', !back.hidden && !back.task && back.l === dragged.l, JSON.stringify(back), 'index.html@1440x900');
+    // Edge snapping: drag the title bar to the left edge → left half at full height; drag it back out → normal size again.
+    const tb2 = await deskPage.locator('#win-juke .titlebar h2').boundingBox(); const deskBox = await deskPage.locator('#main').boundingBox();
+    await deskPage.mouse.move(tb2.x + tb2.width / 2, tb2.y + tb2.height / 2); await deskPage.mouse.down(); await deskPage.mouse.move(deskBox.x + 1, tb2.y + tb2.height / 2 + 40, { steps: 10 }); await deskPage.mouse.up(); await deskPage.waitForTimeout(100);
+    const snapped = await deskPage.evaluate(() => { const w = document.querySelector('#win-juke'); const d = document.querySelector('#main').getBoundingClientRect(); return { l: w.offsetLeft, w: w.offsetWidth, h: w.offsetHeight, half: Math.abs(w.offsetWidth - d.width / 2) < 3, full: Math.abs(w.offsetHeight - d.height) < 3, cls: w.classList.contains('snapped') }; });
+    record('desktop: dragging to the left edge snaps the window to the left half', snapped.l === 0 && snapped.half && snapped.full && snapped.cls, JSON.stringify(snapped), 'index.html@1440x900');
+    const tb3 = await deskPage.locator('#win-juke .titlebar h2').boundingBox();
+    await deskPage.mouse.move(tb3.x + tb3.width / 2, tb3.y + tb3.height / 2); await deskPage.mouse.down(); await deskPage.mouse.move(tb3.x + tb3.width / 2 + 300, tb3.y + tb3.height / 2 + 120, { steps: 10 }); await deskPage.mouse.up(); await deskPage.waitForTimeout(100);
+    const unsnapped = await geoOf();
+    record('desktop: dragging a snapped window away restores its normal size', Math.abs(unsnapped.w - jukeBefore.w) < 3 && Math.abs(unsnapped.h - jukeBefore.h) < 3 && unsnapped.l > 100 && !(await deskPage.evaluate(() => document.querySelector('#win-juke').classList.contains('snapped'))), `${JSON.stringify(unsnapped)} vs ${JSON.stringify(jukeBefore)}`, 'index.html@1440x900');
+    // Layout memory: a reload brings the same windows back in the same places.
+    await deskPage.goto(base + 'index.html', { waitUntil: 'load' }); await deskPage.click('#boot-skip'); await deskPage.waitForTimeout(300);
+    const remembered = await deskPage.evaluate(() => { const j = document.querySelector('#win-juke'); return { juke: !j.hidden, l: j.offsetLeft, t: j.offsetTop, about: !document.querySelector('#win-about').hidden, status: document.querySelector('#status-windows').textContent, focusInJuke: j.contains(document.activeElement) }; });
+    record('desktop: a reload restores the open windows where they were', remembered.juke && remembered.about && remembered.l === unsnapped.l && remembered.t === unsnapped.t && remembered.status.startsWith('2 windows') && remembered.focusInJuke, JSON.stringify(remembered), 'index.html@1440x900');
+    await deskPage.keyboard.press('Escape'); await deskPage.waitForTimeout(100);
+    const escaped = await deskPage.evaluate(() => document.querySelector('#win-juke').hidden);
+    record('desktop: Escape closes the front window', escaped, '', 'index.html@1440x900');
+    // Desktop menu: opens with aria-expanded, Shortcuts window, CRT toggle persists, Close all.
+    await deskPage.click('#desk-menu'); await deskPage.waitForTimeout(50);
+    const menuOpen = await deskPage.evaluate(() => ({ expanded: document.querySelector('#desk-menu').getAttribute('aria-expanded'), visible: !document.querySelector('#desk-menu-list').hidden, focusInMenu: document.querySelector('#desk-menu-list').contains(document.activeElement) }));
+    await deskPage.click('#desk-menu-list [data-act=keys]'); await deskPage.waitForTimeout(100);
+    const keysOpen = await deskPage.evaluate(() => ({ open: !document.querySelector('#win-keys').hidden, menuClosed: document.querySelector('#desk-menu-list').hidden, rows: document.querySelectorAll('#win-keys dt').length }));
+    record('desktop: the Desktop menu opens, focuses its first item and the Shortcuts item opens that window', menuOpen.expanded === 'true' && menuOpen.visible && menuOpen.focusInMenu && keysOpen.open && keysOpen.menuClosed && keysOpen.rows >= 6, JSON.stringify({ ...menuOpen, ...keysOpen }), 'index.html@1440x900');
+    await deskPage.click('#desk-menu'); await deskPage.click('#desk-menu-list [data-act=crt]'); await deskPage.waitForTimeout(50);
+    const crtOn = await deskPage.evaluate(() => ({ cls: document.documentElement.classList.contains('crt'), checked: document.querySelector('[data-act=crt]').getAttribute('aria-checked') }));
+    await deskPage.goto(base + 'index.html', { waitUntil: 'load' }); await deskPage.click('#boot-skip'); await deskPage.waitForTimeout(300);
+    const crtKept = await deskPage.evaluate(() => document.documentElement.classList.contains('crt'));
+    await deskPage.click('#desk-menu'); await deskPage.click('#desk-menu-list [data-act=crt]'); await deskPage.waitForTimeout(50);
+    record('desktop: CRT scanlines toggle sets aria-checked, applies the class and survives a reload', crtOn.cls && crtOn.checked === 'true' && crtKept && !(await deskPage.evaluate(() => document.documentElement.classList.contains('crt'))), JSON.stringify({ ...crtOn, crtKept }), 'index.html@1440x900');
+    // Icons: drag moves an icon, the place is remembered, and a plain click still opens the window.
+    const iconBox = await deskPage.locator('.icons button[data-open=studio]').boundingBox();
+    await deskPage.mouse.move(iconBox.x + iconBox.width / 2, iconBox.y + iconBox.height / 2); await deskPage.mouse.down(); await deskPage.mouse.move(iconBox.x + iconBox.width / 2 + 200, iconBox.y + iconBox.height / 2 + 150, { steps: 8 }); await deskPage.mouse.up(); await deskPage.waitForTimeout(100);
+    const iconMoved = await deskPage.evaluate(() => { const li = document.querySelector('.icons button[data-open=studio]').closest('li'); return { l: li.offsetLeft, t: li.offsetTop, studioOpen: !document.querySelector('#win-studio').hidden }; });
+    await deskPage.goto(base + 'index.html', { waitUntil: 'load' }); await deskPage.click('#boot-skip'); await deskPage.waitForTimeout(300);
+    const iconKept = await deskPage.evaluate(() => { const li = document.querySelector('.icons button[data-open=studio]').closest('li'); return { l: li.offsetLeft, t: li.offsetTop }; });
+    await deskPage.click('.icons button[data-open=studio]'); await deskPage.waitForTimeout(100);
+    const studioOpened = await deskPage.evaluate(() => !document.querySelector('#win-studio').hidden);
+    record('desktop: icons drag to a new place, keep it after a reload, and still open on click', iconMoved.l >= 190 && iconMoved.t >= 140 && !iconMoved.studioOpen && iconKept.l === iconMoved.l && iconKept.t === iconMoved.t && studioOpened, JSON.stringify({ iconMoved, iconKept, studioOpened }), 'index.html@1440x900');
+    // Privacy window: counters are off by default, count only when switched on, and Forget clears the layout.
+    await deskPage.click('.taskbar .tip'); await deskPage.waitForTimeout(100);
+    const privDefault = await deskPage.evaluate(() => ({ open: !document.querySelector('#win-privacy').hidden, diag: document.querySelector('#priv-diag').getAttribute('aria-checked'), counts: document.querySelector('#priv-counts').textContent }));
+    await deskPage.click('#priv-diag'); await deskPage.click('.menubar [data-open=clips]'); await deskPage.waitForTimeout(100); await deskPage.click('.taskbar .tip'); await deskPage.waitForTimeout(100);
+    const privOn = await deskPage.evaluate(() => ({ diag: document.querySelector('#priv-diag').getAttribute('aria-checked'), counts: document.querySelector('#priv-counts').textContent }));
+    await deskPage.click('#priv-diag');
+    const privOff = await deskPage.evaluate(() => document.querySelector('#priv-counts').textContent);
+    await deskPage.click('#priv-forget'); await deskPage.waitForTimeout(50);
+    const forgot = await deskPage.evaluate(() => ({ status: document.querySelector('#priv-forget-status').textContent, stored: (() => { try { return localStorage.length; } catch (_) { return -1; } })() }));
+    record('desktop: privacy counters are off by default, count window opens only while on, and Forget empties storage', privDefault.open && privDefault.diag === 'false' && privDefault.counts === 'Counters are off.' && privOn.diag === 'true' && /clips ×1/.test(privOn.counts) && /Not sent anywhere/.test(privOn.counts) && privOff === 'Counters are off.' && /Cleared/.test(forgot.status) && forgot.stored === 0, JSON.stringify({ privDefault, privOn, privOff, forgot }), 'index.html@1440x900');
+    // Screensaver: the menu starts it, focus lands on its button, any key dismisses it and focus returns.
+    await deskPage.click('#desk-menu'); await deskPage.click('#desk-menu-list [data-act=saver]'); await deskPage.waitForTimeout(150);
+    const saverOn = await deskPage.evaluate(() => ({ shown: !document.querySelector('#saver').hidden, focus: document.activeElement.id, moved: document.querySelector('#saver-mark').style.transform !== '' }));
+    await deskPage.keyboard.press('Escape'); await deskPage.waitForTimeout(50);
+    const saverOff = await deskPage.evaluate(() => ({ shown: !document.querySelector('#saver').hidden, focus: document.activeElement.id }));
+    record('desktop: the screensaver shows on demand, focuses its exit button, and a key press returns to the desktop', saverOn.shown && saverOn.focus === 'saver-back' && saverOn.moved && !saverOff.shown && saverOff.focus === 'desk-menu', JSON.stringify({ saverOn, saverOff }), 'index.html@1440x900');
+    // Close all from the menu, then the close box on a reopened window counts zero.
+    await deskPage.click('#desk-menu'); await deskPage.click('#desk-menu-list [data-act=closeall]'); await deskPage.waitForTimeout(100);
+    const allClosed = await deskPage.evaluate(() => document.querySelector('#status-windows').textContent);
+    await deskPage.click('.menubar [data-open=about]'); await deskPage.waitForTimeout(100);
+    await deskPage.click('#win-about [data-close]'); await deskPage.waitForTimeout(100);
+    const closedAll = await deskPage.evaluate(() => document.querySelector('#status-windows').textContent);
+    record('desktop: Close all empties the desktop and the close box counts zero', allClosed.startsWith('0 windows') && closedAll.startsWith('0 windows'), `${allClosed} / ${closedAll}`, 'index.html@1440x900');
+    record('desktop: no page errors during the window journey', deskErrors.length === 0, deskErrors.join(' | ').slice(0, 300), 'index.html@1440x900');
+    await deskContext.close();
+    // Phone: windows are freeform and draggable by touch-style pointer too.
+    const phoneContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }); const phonePage = await phoneContext.newPage();
+    await phonePage.goto(base + 'index.html', { waitUntil: 'load' }); await phonePage.click('#boot-skip'); await phonePage.waitForTimeout(300);
+    const pBefore = await phonePage.evaluate(() => { const w = document.querySelector('#win-about'); const d = document.querySelector('#main').getBoundingClientRect(); return { l: w.offsetLeft, t: w.offsetTop, w: w.offsetWidth, fits: w.offsetWidth < d.width && w.offsetHeight < d.height }; });
+    const ptb = await phonePage.locator('#win-about .titlebar h2').boundingBox();
+    await phonePage.mouse.move(ptb.x + ptb.width / 2, ptb.y + ptb.height / 2); await phonePage.mouse.down(); await phonePage.mouse.move(ptb.x + ptb.width / 2 + 40, ptb.y + ptb.height / 2 + 90, { steps: 6 }); await phonePage.mouse.up();
+    const pAfter = await phonePage.evaluate(() => { const w = document.querySelector('#win-about'); return { l: w.offsetLeft, t: w.offsetTop }; });
+    record('phone: windows are freeform (smaller than the screen) and drag by the title bar', pBefore.fits && pAfter.l === pBefore.l + 40 && pAfter.t === pBefore.t + 90, `${JSON.stringify(pBefore)} → ${JSON.stringify(pAfter)}`, 'index.html@390x844');
+    await phoneContext.close();
     // play.html: the browser flipbook draws, adds frames, plays and downloads.
     const playContext = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
     const playPage = await playContext.newPage();
@@ -359,22 +462,22 @@ async function main() {
     // Reduced motion.
     const reduced = await browser.newContext({ reducedMotion: 'reduce', viewport: { width: 390, height: 844 } });
     const reducedPage = await reduced.newPage();
-    await reducedPage.goto(base + 'index.html', { waitUntil: 'load' });
+    await reducedPage.goto(base + LONG, { waitUntil: 'load' });
     const motion = await reducedPage.evaluate(() => ({ matches: matchMedia('(prefers-reduced-motion: reduce)').matches, scrollBehavior: getComputedStyle(document.documentElement).scrollBehavior }));
-    record('prefers-reduced-motion → scroll-behavior auto', motion.matches && motion.scrollBehavior === 'auto', JSON.stringify(motion), 'index.html@390x844');
+    record('prefers-reduced-motion → scroll-behavior auto', motion.matches && motion.scrollBehavior === 'auto', JSON.stringify(motion), LONG + '@390x844');
     await reduced.close();
     // No JavaScript.
     const nojs = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
     const nojsPage = await nojs.newPage();
-    await nojsPage.goto(base + 'index.html', { waitUntil: 'load' });
+    await nojsPage.goto(base + LONG, { waitUntil: 'load' });
     // Playwright's isVisible() reports false for content rendered inside <noscript>, so measure in-page: the paragraph must have a box and non-hidden styles.
     const rendered = ({ text }) => { const el = [...document.querySelectorAll('noscript p, main p, main h2')].find((p) => p.textContent.includes(text)); if (!el) return false; const cs = getComputedStyle(el); return el.getClientRects().length > 0 && cs.display !== 'none' && cs.visibility !== 'hidden'; };
     const noscriptVisible = await nojsPage.evaluate(rendered, { text: 'Enable JavaScript for searchable help' });
     const accountStatic = await (async () => { await nojsPage.goto(base + 'account.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Sign-in requires JavaScript' }); })();
-    record('noscript guidance visible with JavaScript disabled', noscriptVisible, '', 'index.html@390x844 no-js');
+    record('noscript guidance visible with JavaScript disabled', noscriptVisible, '', LONG + '@390x844 no-js');
     record('account page states that sign-in requires JavaScript when it is off', accountStatic, '', 'account.html@390x844 no-js');
-    const storeStatic = await (async () => { await nojsPage.goto(base + 'store.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Live prices and the cart need JavaScript' }); })();
-    record('store page states that prices need JavaScript when it is off', storeStatic, '', 'store.html@390x844 no-js');
+    const storeStatic = await (async () => { await nojsPage.goto(base + 'store.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The cart needs JavaScript' }); })();
+    record('store page states that the cart needs JavaScript when it is off', storeStatic, '', 'store.html@390x844 no-js');
     const adminStatic = await (async () => { await nojsPage.goto(base + 'admin.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The command center is not configured' }); })();
     record('admin shell states "not configured" without JavaScript', adminStatic, '', 'admin.html@390x844 no-js');
     await nojs.close();
@@ -400,9 +503,9 @@ async function main() {
     const local = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const localPage = await local.newPage();
     const localErrors = []; localPage.on('pageerror', (e) => localErrors.push(String(e))); localPage.on('console', (m) => { if (m.type() === 'error') localErrors.push(m.text()); });
-    await localPage.goto('file://' + path.join(site, 'index.html'), { waitUntil: 'load' });
+    await localPage.goto('file://' + path.join(site, LONG), { waitUntil: 'load' });
     const localCount = await localPage.evaluate(() => document.querySelectorAll('#help-results details').length);
-    record(`file:// load renders all ${articles.length} help topics without errors`, localCount === articles.length && localErrors.length === 0, `${localCount} topics; ${localErrors.join(' | ').slice(0, 200)}`, 'index.html file://');
+    record(`file:// load renders all ${articles.length} help topics without errors`, localCount === articles.length && localErrors.length === 0, `${localCount} topics; ${localErrors.join(' | ').slice(0, 200)}`, LONG + ' file://');
     await local.close();
     await perf(browser, base);
   } finally {

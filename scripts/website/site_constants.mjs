@@ -14,6 +14,7 @@ export const SITE_NAME = 'StickDeath Infinity';
 // Policy drafts stay non-indexable until legal review and owner approval.
 export const PAGES = [
   { file: 'index.html', indexable: true, canonicalPath: '' },
+  { file: 'about.html', indexable: true },
   { file: 'studio.html', indexable: true },
   { file: 'community.html', indexable: true },
   { file: 'screens.html', indexable: true },

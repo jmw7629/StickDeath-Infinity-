@@ -13,21 +13,17 @@ can be done from the repository.
 3. Settings → Payments: enable Shopify Payments (or the processor you prefer). Taxes and shipping
    rates are configured here too; the website never computes them.
 
-## 2. Add the eight products
+## 2. Import the 22 products
 
-Use the rendered mock-ups in `website/assets/merch/` as the product images until real photos exist
-(they are 800 × 800 WebP; Shopify accepts WebP). Suggested handles match the website cards:
+`docs/shopify-products.csv` is a ready Shopify product import (Products → Import → upload the file).
+It creates all 22 designs as **drafts with no price**, with sizes S–3XL on tees and hoodies, the
+tag `sdi-merch`, alt text, and the mock-up image (Shopify downloads it from a commit-pinned copy of
+this repository). After the import, open each product, set the price (and cost, weight and stock if
+you track them), then set it to Active. Regenerate the file after art changes with
+`node scripts/website/shopify_csv.mjs`.
 
-| Handle | Title | Image | Options |
-| --- | --- | --- | --- |
-| `classic-tee` | Classic tee | `classic-tee.webp` | Size S–3XL |
-| `hoodie` | Hoodie | `hoodie.webp` | Size S–3XL |
-| `dad-cap` | Dad cap | `cap.webp` | — |
-| `sticker-pack` | Sticker pack | `sticker-pack.webp` | — |
-| `poster` | Poster 18 × 24 in | `poster.webp` | — |
-| `mug` | Mug 11 oz | `mug.webp` | — |
-| `tote` | Tote | `tote.webp` | — |
-| `enamel-pin` | Enamel pin | `enamel-pin.webp` | — |
+If you use a print-on-demand app (Printful, Printify and similar), create the products there
+instead and upload the same images from `website/assets/merch/`; keep the `sdi-merch` tag.
 
 Give every product the tag `sdi-merch` (the website can filter on it) and set prices in Shopify.
 Prices are never typed into the website.
@@ -57,7 +53,7 @@ window.SDI_STORE_CONFIG = {
 
 Commit it (the token is public; the repository is public) and deploy. The page then loads live
 products and prices, keeps a cart on Shopify and opens Shopify's hosted checkout. If the store is
-unreachable it falls back to the planned line-up without prices and says so.
+unreachable it falls back to the merch gallery without prices and says so.
 
 Also add the website origin (`https://stickdeathinfinity.com`) under Settings → Domains or the
 app's allowed origins if Shopify asks for it, so browsers can call the Storefront API from the site.
