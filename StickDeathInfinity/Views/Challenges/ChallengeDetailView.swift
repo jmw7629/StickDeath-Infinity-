@@ -168,6 +168,6 @@ struct ChallengeDetailView: View {
             try await CommunityServices.challenges.vote(challenge: challenge.id, entry: entry.id)
             guard revision == epoch else { return }
             notice = "Favourite recorded. You can change it until voting ends."; await load()
-        } catch { if revision == epoch { error = CommunityGateway.normalize(error).errorDescription } }
+        } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
     }
 }

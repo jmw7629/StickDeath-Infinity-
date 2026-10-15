@@ -140,7 +140,8 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let p = try parent("held")
             let out = try await service.mux(video: v, audio: a, outputParent: p)
             let asset = AVURLAsset(url: try out.checkedURLs()[0])
-            try require(CMTimeCompare(try await asset.load(.duration), CMTime(value: 15, timescale: 12)) == 0, "movie did not extend to the audio tail")
+            let heldDuration = try await asset.load(.duration)
+            try require(CMTimeCompare(heldDuration, CMTime(value: 15, timescale: 12)) == 0, "movie did not extend to the audio tail")
             let samples = try await decodeAudio(asset, track: try await asset.loadTracks(withMediaType: .audio)[0])
             try require(samples.count == 120_000 && out.receipt.heldLastFrameTicks == 3 && out.receipt.audioClipWindowsChecked == 1, "held receipt")
             var tail: Float = 0; for n in (50_000..<58_000) { tail = max(tail, abs(samples[n * 2])) }
@@ -346,6 +347,11 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                     try unexpected.cleanup(); throw TestError.failed("different valid AAC adopted at callback")
                 } catch StudioAudioVideoMuxService.MuxError.verificationFailed {
                     try require(replaced, "actual valid-media replacement callback ran")
+                } catch StudioAudioVideoMuxService.MuxError.audioLoudness(let clip, let source, let decoded) {
+                    // The verifying decode measures the substituted quieter AAC
+                    // against the source mix before the digest recheck runs.
+                    try require(replaced && phase == .verifying && clip == 0 && decoded < source,
+                                "loudness rejection only for the verifying-phase substitution")
                 }
                 try empty(p); try inputsIntact()
             }

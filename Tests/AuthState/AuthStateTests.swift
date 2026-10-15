@@ -387,6 +387,7 @@ import Supabase
 
     func testAppleUsernameFallsBackForPrivateRelayAndDisplayNameIsBounded() async throws {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
         let relay = try decoder.decode(User.self, from: Data("""
         {"id":"\(AuthFixtureTransport.first)","aud":"authenticated","role":"authenticated","email":"abc123@privaterelay.appleid.com","app_metadata":{},"user_metadata":{},"identities":[],"is_anonymous":false,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}
         """.utf8))
@@ -488,7 +489,9 @@ import Supabase
         defer { session.invalidateAndCancel() }
         let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
             options: .init(auth: .init(storage: AuthFixtureStorage(), flowType: .pkce, autoRefreshToken: false), global: .init(session: session)))
-        let service = AuthService(client: client)
+        let isolated = UserDefaults(suiteName: "sdi-auth-\(UUID().uuidString)")!
+        // An isolated store: no reset request was made on this "device".
+        let service = AuthService(client: client, defaults: isolated)
         let model = AuthViewModel(auth: service, initializeOnStart: false)
         await service.initialize()
         await model.handleDeepLink(URL(string: "stickdeath://messages/thread/1")!)
@@ -575,14 +578,16 @@ import Supabase
         let (service, model, transport, _, _) = try await profileFixture()
         defer { transport.invalidateAndCancel() }
         AuthFixtureTransport.resetLifecycle()
-        XCTAssertNil(try await service.accountDeletionStatus(), "No request yet must read as nil, not as a state")
+        let initialDeletionStatus = try await service.accountDeletionStatus()
+        XCTAssertNil(initialDeletionStatus, "No request yet must read as nil, not as a state")
         await model.requestAccountDeletion()
         XCTAssertNil(model.error)
         XCTAssertEqual(model.accountDeletion?.state, .pending)
         XCTAssertEqual(model.accountDeletion?.revision, 1)
         XCTAssertEqual(model.accountDeletion?.scheduledFor, ISO8601DateFormatter().date(from: "2026-10-20T01:00:00Z"))
         XCTAssertEqual(model.notice, "Account deletion is scheduled for 2026-10-20 01:00 UTC. Cancel before then to keep the account. Projects on this device are untouched; subscriptions must be cancelled through the App Store or billing portal.")
-        XCTAssertEqual(try await service.accountDeletionStatus()?.state, .pending)
+        let pendingDeletionStatus = try await service.accountDeletionStatus()
+        XCTAssertEqual(pendingDeletionStatus?.state, .pending)
         await model.cancelAccountDeletion()
         XCTAssertNil(model.error)
         XCTAssertEqual(model.accountDeletion?.state, .cancelled)

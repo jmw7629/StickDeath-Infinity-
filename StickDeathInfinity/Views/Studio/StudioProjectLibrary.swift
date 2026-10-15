@@ -151,6 +151,7 @@ struct StudioProjectLibrary: View {
                     if vm.savedProjects.isEmpty {
                         VStack(spacing: 14) {
                             Image(systemName: "pencil.and.scribble").font(.system(size: 48)).foregroundColor(.red)
+                                .accessibilityHidden(true) // decorative; the text below carries the meaning
                             Text("Your next animation starts here.").font(.specialElite(18)).foregroundColor(.white)
                             Text("Create, draw and save offline. Your projects stay on this device.")
                                 .font(.custom("SpecialElite-Regular", size: 16, relativeTo: .callout)).foregroundColor(.gray).multilineTextAlignment(.center)

@@ -36,10 +36,33 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         let storage = DeviceStorageManager(documentsDirectory: docs, cachesDirectory: docs)
         let vm = StudioViewModel(storage: storage)
         try requireAsync(await vm.createProject(name: "Movie round trip", width: 64, height: 96, fps: 8), "Create failed")
-        let originalFrame = vm.document.activeFrameID
+        let originalFrame = vm.document.activeFrameID, authoredLayer = vm.document.activeLayerID
         let frames = try vm.attachImportedImageSequence(pictures.map(\.image), expectedProjectID: vm.document.id,
             expectedRevision: vm.document.revision, frameID: originalFrame, layerID: vm.document.activeLayerID)
         try require(vm.document.activeFrameID == frames[0] && vm.frames.count == 4, "Reference sequence not appended after original frame")
+        guard let referenceLayer = vm.layers.first(where: \.isReference) else {
+            throw Failure(message: "Imported movie lost its separate tracing reference layer")
+        }
+        // Imported video is a tracing reference, deliberately excluded from export.
+        // Check the actual source pixels, then draw authored marks through the same
+        // command as the canvas. Export must retain marks but omit reference pixels.
+        for (index, frameID) in frames.enumerated() {
+            guard let bitmap = NSBitmapImageRep(data: pictures[index].image.normalizedPNG),
+                  let color = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.deviceRGB) else {
+                throw Failure(message: "Imported reference pixels cannot be decoded")
+            }
+            // H.264 and color-space conversion are lossy: require the expected
+            // dominant source channel, as the source-frame decoder suite does.
+            let primary = index == 0 ? color.greenComponent : color.blueComponent
+            let other = index == 0 ? color.blueComponent : color.greenComponent
+            try require(primary - color.redComponent > 0.55 && primary - other > 0.55,
+                "Trimmed source reference color changed: index=\(index) RGB=\(color.redComponent),\(color.greenComponent),\(color.blueComponent) actual=\(pictures[index].actualSeconds)")
+            let stroke = DrawnElement(id: UUID().uuidString, tool: .brush,
+                points: [StrokePoint(x: 16, y: 48), StrokePoint(x: 48, y: 48)],
+                color: index == 0 ? "#00FF00" : "#0000FF", width: 16, opacity: 1, layerID: authoredLayer)
+            try require(vm.commitElement(stroke, frameID: frameID), "Authored tracing stroke was not committed")
+        }
+
         let clipID = try vm.attachImportedAudio(soundtrack.audio.track, expectedProjectID: vm.document.id,
             expectedRevision: vm.document.revision, frameID: frames[0], trackNumber: 2)
         try require(vm.audioClips[0].startTime == 0.125, "Audio not attached alongside first imported image")
@@ -59,6 +82,8 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             "Reopen changed canonical timing/order")
         try require(reopened.audioTrack(forAssetID: soundtrack.audio.id)?.audioData == soundtrack.audio.originalData,
             "Cold reopen changed source audio bytes")
+        try require(reopened.layers.first(where: { $0.id == referenceLayer.id })?.isReference == true,
+                    "Cold reopen lost reference-layer separation")
         var rasters: [String: Data] = [:]
         for (index, frame) in reopened.frames.dropFirst().enumerated() {
             guard let id = frame.rasterAssetID, let data = reopened.rasterData(id) else { throw Failure(message: "Managed image missing") }
@@ -210,7 +235,11 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let p = CVPixelBufferGetBaseAddress(image)!.assumingMemoryBound(to: UInt8.self)
                 .advanced(by: 48 * CVPixelBufferGetBytesPerRow(image) + 32 * 4)
             let b = p[0], g = p[1], r = p[2]
+            let corner = CVPixelBufferGetBaseAddress(image)!.assumingMemoryBound(to: UInt8.self)
+                .advanced(by: 8 * CVPixelBufferGetBytesPerRow(image) + 8 * 4)
+            let referenceExcluded = corner[0] > 220 && corner[1] > 220 && corner[2] > 220
             CVPixelBufferUnlockBaseAddress(image, .readOnly)
+            try require(referenceExcluded, "Tracing reference leaked into final movie")
             if count == 0 { try require(r > 220 && g > 220 && b > 220, "Original blank frame overwritten") }
             else if count == 1 { try require(g > 180 && r < 60 && b < 60, "First trimmed movie frame is not green") }
             else { try require(b > 180 && r < 60 && g < 60, "Subsequent movie frame is not blue") }
