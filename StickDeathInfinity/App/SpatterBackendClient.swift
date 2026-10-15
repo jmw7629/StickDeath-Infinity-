@@ -101,7 +101,9 @@ struct SpatterAllowance: Equatable {
     let resetsAt: Date?
 
     var suggestedPromptsOnly: Bool { plan == .free }
-    var isExhausted: Bool { plan != .pro && remaining == 0 }
+    /// Free has no server-funded Spatter (owner decision 2026-10-15), so it is
+    /// always exhausted; Creator is exhausted when its break-even allowance is used.
+    var isExhausted: Bool { plan == .free || (plan == .creator && remaining == 0) }
 
     private static func day(_ date: Date?) -> String? {
         guard let date else { return nil }
@@ -120,9 +122,7 @@ struct SpatterAllowance: Equatable {
             let of = limit.map { " of \($0)" } ?? ""
             return "Creator: \(remaining)\(of) Spatter prompts left this billing period."
         case .free:
-            guard let remaining else { return "Free: remaining suggested prompts appear once the server reports them." }
-            let of = limit.map { " of \($0)" } ?? ""
-            return "Free: \(remaining)\(of) suggested prompts left this month."
+            return "Free: Spatter answers need Creator or Pro."
         }
     }
 
@@ -132,11 +132,9 @@ struct SpatterAllowance: Equatable {
         let reset = Self.day(resetsAt)
         switch plan {
         case .free:
-            return "You've used this month's suggested Spatter prompts. They reset"
-                + (reset.map { " on \($0)" } ?? " next month")
-                + ". Upgrade to Creator or Pro to keep asking Spatter now."
+            return "Spatter is part of Creator and Pro. Upgrade in Profile, Plans to activate it. Creator also lets you use your own AI key."
         case .creator:
-            return "You've used this billing period's 15 Spatter prompts. They reset"
+            return "You've used this billing period's Spatter allowance. It resets"
                 + (reset.map { " on \($0)" } ?? " at renewal")
                 + ". Upgrade to Pro for unlimited prompts, or add your own AI key."
         case .pro:

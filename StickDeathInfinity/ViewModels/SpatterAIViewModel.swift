@@ -75,15 +75,21 @@ final class SpatterAIViewModel: ObservableObject {
         if usageLoader != nil { planCheck = .checking }
     }
 
-    // MARK: - Plan gate (Free = suggested prompts only, 5 per month)
+    // MARK: - Plan gate (owner decision 2026-10-15: Free previews Spatter only)
 
-    /// True while cloud advice is on and the server has not reported a paid plan:
-    /// the text field is disabled and only the suggested prompts can be sent.
-    /// Local guidance (cloud off) never calls a provider and stays free text.
+    /// Free plan: Spatter and its suggested prompts stay visible, but every send
+    /// gets the upgrade note on the device. Applies when the Studio enforces the
+    /// Free limits, or when cloud advice is on and the server reports Free.
+    var previewOnly: Bool {
+        !StudioPlanLimits.current.spatterActive || (useCloud && cloudAllowance?.plan == .free)
+    }
+
+    /// True while cloud advice is on and the server has not reported a plan yet:
+    /// the text field is disabled until the plan is known. Local guidance (cloud
+    /// off) never calls a provider and stays free text.
     var freeTextLocked: Bool {
-        guard useCloud, usageLoader != nil else { return false }
-        guard let plan = cloudAllowance?.plan else { return true }
-        return plan == .free
+        guard useCloud, usageLoader != nil, !previewOnly else { return false }
+        return cloudAllowance?.plan == nil
     }
 
     /// Why the text field is disabled, for the label under it.
@@ -93,17 +99,17 @@ final class SpatterAIViewModel: ObservableObject {
         case .checking: return "Checking your Spatter plan… Suggested prompts are available meanwhile."
         case .unavailable: return "Your Spatter plan could not be checked. Sign in or try again; until then only suggested prompts can be sent."
         case .unmanaged, .known:
-            return "The Free plan includes 5 suggested Spatter prompts per month. Typing your own question needs Creator or Pro."
+            return BillingCopy.spatterUpgradeNote
         }
     }
 
-    /// The suggested prompts are locked when the server reports Free's monthly allowance is used.
-    var suggestionsLockout: String? {
-        guard useCloud, cloudAllowance?.plan == .free else { return nil }
-        return cloudAllowance?.lockoutText
+    /// Suggested prompts are never disabled: on Free they answer with the upgrade note.
+    var suggestionsLockout: String? { nil }
+    /// A used-up allowance (Creator) or the Free upgrade note, for display with the upgrade link.
+    var allowanceLockout: String? {
+        if previewOnly { return BillingCopy.spatterUpgradeNote }
+        return useCloud ? cloudAllowance?.lockoutText : nil
     }
-    /// Any plan's used-up allowance (Free or Creator), for display with the upgrade link.
-    var allowanceLockout: String? { useCloud ? cloudAllowance?.lockoutText : nil }
 
     /// Own AI key routing is offered only when the server last reported a paid plan.
     var ownKeyEligible: Bool { cloudAllowance?.plan.allowsOwnKey ?? false }
@@ -189,6 +195,21 @@ final class SpatterAIViewModel: ObservableObject {
                             stillCurrent: @escaping () -> Bool) -> Bool {
         let prompt = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !isThinking else { return false }
+        // Free plan (owner decision 2026-10-15): Spatter and its suggested prompts
+        // stay visible, but every send gets the upgrade note. Nothing is sent to a
+        // provider or the server, and no project is read or edited.
+        if previewOnly {
+            guard !prompt.isEmpty, prompt.utf8.count <= 6000 else {
+                status = .invalidInput
+                notice = "Enter a message of at most 6,000 UTF-8 bytes. Your draft has been kept."
+                return false
+            }
+            messages.append(.init(id: UUID().uuidString, role: .user, content: prompt, timestamp: Date()))
+            appendAdvice("💀 " + BillingCopy.spatterUpgradeNote, origin: .local)
+            messages = Array(messages.suffix(40))
+            notice = BillingCopy.spatterUpgradeNote
+            return true
+        }
         if useCloud && suggestedPromptID == nil && freeTextLocked {
             status = .invalidInput
             notice = freeTextLockReason
@@ -329,7 +350,7 @@ final class SpatterAIViewModel: ObservableObject {
     /// These are instructions for the user, never execution receipts.
     static let currentGuideVersion = "2026-10-13.1"
     /// Price points the owner approved; nothing here reads a live store or entitlement.
-    static let pricingGuide = "The planned subscription plans are USD 4.99 per month and USD 9.99 per month. Annual pricing is not configured and cannot be offered until the owner records it explicitly. Free includes 5 of the app's suggested Spatter prompts per month (no typed questions to cloud advice); Creator includes 15 Spatter prompts per month and the option to use your own AI key; Pro includes unlimited prompts and the option to use your own AI key. Prompts sent with your own key go from your device to your provider and are not counted. A trial applies to both Creator and Pro, but the store shows one only when your account is eligible. I cannot see live store prices, trials, taxes or your current entitlement; the store sheet that processes the purchase shows what actually applies, and nothing is charged from this conversation."
+    static let pricingGuide = "The planned subscription plans are USD 4.99 per month and USD 9.99 per month: Creator and Pro. Annual pricing is not configured and cannot be offered until the owner records it explicitly. Free lets you see Spatter and its suggested prompts, but Spatter answers only with an upgrade note; the free Studio allows 3 layers per frame, onion skin 1 frame back, preset canvas sizes and exports up to 720p with the SDI watermark, and locks audio import, the sound library, Blur, Smudge, Sharpen, Dodge/Burn, extra brushes, background cut and PNG sequences. Creator removes those limits, lets you use your own AI key (those prompts go from your device to your provider and are not counted) and includes Spatter prompts each billing period up to the plan's break-even allowance, and lets you submit videos to the official SDI YouTube, TikTok and social channels with the SDI watermark after consent, rights review, moderation and owner approval. Pro adds unlimited Spatter prompts. A trial applies to both Creator and Pro, but the store shows one only when your account is eligible. I cannot see live store prices, trials, taxes or your current entitlement; the store sheet that processes the purchase shows what actually applies, and nothing is charged from this conversation."
     /// Verified sign-in and account facts. Nothing here grants account access.
     static let accountGuide = "Sign in with Apple, Google, GitHub or Microsoft through the sign-in screen; the app restores a saved session on launch and shows Loading until that check finishes. Guest use keeps projects and local Spatter preferences on this device under a separate guest scope, and signing in later does not merge or upload them. Admin roles come from server-authorized metadata, never from the app. In-app account deletion is not available yet: the screen does not offer a delete button and I cannot delete, merge, rename or inspect accounts, change email or reset passwords from this conversation. Editable projects stay on your device; the server keeps only identity, access, vote, consent, billing and job metadata. Do not paste passwords, verification codes or card numbers here."
     /// Rooms as implemented today: invitation codes, mutual agreement, no chat or calls.

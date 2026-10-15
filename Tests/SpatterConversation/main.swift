@@ -438,27 +438,26 @@ private final class NetworkTrap: URLProtocol {
                 vm.endSession()
                 try require(vm.budgetText == nil && vm.shareProjectNames == false && vm.useCloud == false, "Session end kept cloud state")
             }
-            try await test("free plan sends only suggested prompts, five a month, from the server's count") {
+            try await test("free plan previews Spatter: every send gets the upgrade note and nothing is sent") {
                 var requests: [SpatterCloudRequest] = []
-                var usage = SpatterAllowance(plan: .free, remaining: 2, limit: 5, resetsAt: nil)
+                var usage = SpatterAllowance(plan: .free, remaining: 0, limit: 0, resetsAt: nil)
                 let vm = SpatterAIViewModel(promptResponder: { request in
                     requests.append(request)
-                    return SpatterCloudReply(schemaVersion: 1, reply: "Tips.", usageUnits: 1, budget: nil,
-                                             allowance: SpatterAllowance(plan: .free, remaining: 0, limit: nil, resetsAt: nil))
+                    return SpatterCloudReply(schemaVersion: 1, reply: "Tips.", usageUnits: 1, budget: nil, allowance: nil)
                 }, usageLoader: { usage })
-                try require(!vm.freeTextLocked, "local guide was locked")
+                try require(!vm.freeTextLocked && !vm.previewOnly, "local guide was locked")
                 vm.useCloud = true
                 for _ in 0..<100 where vm.planCheck != .known { try await Task.sleep(nanoseconds: 5_000_000) }
-                try require(vm.planCheck == .known && vm.cloudAllowance?.remaining == 2, "server usage not loaded")
-                try require(vm.freeTextLocked && vm.freeTextLockReason?.contains("Creator or Pro") == true, "free text not locked on Free")
-                try require(!vm.submit("Write my essay", context: .general) && requests.isEmpty && vm.status == .invalidInput, "free text sent on Free")
-                try require(vm.budgetText == "Free: 2 of 5 suggested prompts left this month.", "server count not shown")
+                try require(vm.planCheck == .known && vm.cloudAllowance?.plan == .free, "server usage not loaded")
+                try require(vm.previewOnly && !vm.freeTextLocked && vm.suggestionsLockout == nil, "Free is not a preview")
+                try require(vm.budgetText == "Free: Spatter answers need Creator or Pro.", "free plan line")
                 let tip = SpatterSuggestedPrompt.all[0]
                 try require(vm.submitSuggested(tip, context: .general), "suggested prompt rejected")
-                try await idle(vm)
-                try require(requests.count == 1 && requests[0].suggestedPromptID == "animation_tips" && !requests[0].ownKeyEligible, "suggested id not sent")
-                try require(vm.cloudAllowance?.remaining == 0 && vm.suggestionsLockout?.contains("Upgrade to Creator or Pro") == true, "lockout not shown")
-                try require(!vm.submitSuggested(tip, context: .general) && requests.count == 1, "suggested prompt sent after the allowance was used")
+                try require(vm.submit("Write my essay", context: .general), "typed prompt rejected")
+                try require(requests.isEmpty, "a Free prompt reached the server")
+                let answers = vm.messages.filter { $0.role == .assistant }.map(\.content)
+                try require(answers.count == 2 && answers.allSatisfy { $0.contains(BillingCopy.spatterUpgradeNote) }, "upgrade note not shown")
+                try require(vm.allowanceLockout == BillingCopy.spatterUpgradeNote, "upgrade link copy")
                 vm.endSession()
                 try require(vm.cloudAllowance == nil, "plan survived the session")
                 usage = SpatterAllowance(plan: .creator, remaining: 9, limit: 15, resetsAt: nil)
@@ -467,7 +466,7 @@ private final class NetworkTrap: URLProtocol {
                 try require(!vm.freeTextLocked && vm.ownKeyEligible, "paid plan still locked")
                 try require(vm.submit("Free text on Creator", context: .general), "paid free text rejected")
                 try await idle(vm)
-                try require(requests.count == 2 && requests[1].suggestedPromptID == nil && requests[1].ownKeyEligible, "paid request flags")
+                try require(requests.count == 1 && requests[0].suggestedPromptID == nil && requests[0].ownKeyEligible, "paid request flags")
                 let ownKey = SpatterAIViewModel(promptResponder: { _ in
                     SpatterCloudReply(schemaVersion: 1, reply: "Own.", usageUnits: nil, budget: nil, allowance: nil, viaOwnKey: true)
                 }, usageLoader: { SpatterAllowance(plan: .pro, remaining: nil, limit: nil, resetsAt: nil) })

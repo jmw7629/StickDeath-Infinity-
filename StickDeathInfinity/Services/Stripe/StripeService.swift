@@ -89,10 +89,10 @@ final class StripeService: ObservableObject {
     /// Tier derived from Apple's current entitlements on this device. This
     /// is a local, best-effort view; the server reconciliation is the
     /// authority once it is configured.
-    @Published var currentTier: AppConfig.SubscriptionTier = .free
+    @Published var currentTier: AppConfig.SubscriptionTier = .free { didSet { applyStudioLimits() } }
     @Published var subscriptionStatus: SubscriptionStatus = .none
     @Published var availableProducts: [Product] = []
-    @Published var productLoadState: ProductLoadState = .notLoaded
+    @Published var productLoadState: ProductLoadState = .notLoaded { didSet { applyStudioLimits() } }
     @Published var isProcessing = false
     @Published var lastError: String?
     /// Set when a purchase or restore succeeded with Apple but the server
@@ -106,6 +106,22 @@ final class StripeService: ObservableObject {
     @Published private(set) var introOfferEligibility: [String: Bool] = [:]
 
     let catalog = StoreProductID.catalog
+
+    /// Free-plan Studio limits (owner decision 2026-10-15) apply only once the
+    /// App Store has loaded real plans, so nobody is locked out of a feature
+    /// they cannot buy. Paid tiers are unrestricted.
+    private func applyStudioLimits() {
+        let tier: BillingPlanTier
+        switch currentTier {
+        case .free: tier = .free
+        case .creator: tier = .creator
+        case .pro, .studio: tier = .pro
+        }
+        let loaded: Bool
+        if case .loaded = productLoadState { loaded = true } else { loaded = false }
+        let enforcing = StudioPlanLimits.enforcing(catalog: catalog, storeLoaded: loaded)
+        StudioPlanLimits.current = StudioPlanLimits.effective(tier: tier, enforcing: enforcing)
+    }
 
     private var transactionListener: Task<Void, Error>?
 

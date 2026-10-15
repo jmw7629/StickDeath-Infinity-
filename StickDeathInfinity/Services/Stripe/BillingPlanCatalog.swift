@@ -8,11 +8,14 @@
 // settings/onboarding views render only what this file returns.
 //
 // - Plans: Free, Creator (USD 4.99/month) and Pro (USD 9.99/month), the
-//   owner's 2026-10-07 decisions as revised 2026-10-14: Free = 5 suggested
-//   Spatter prompts per month (no free text); Creator = 15 prompts per month
-//   plus your own AI key; Pro = unlimited prompts plus your own AI key; the
-//   free trial applies to both paid plans. Amounts are never stored here: the
-//   price shown is Apple's `Product.displayPrice` or "Price shown when configured".
+//   owner's decisions as revised 2026-10-15: Free shows Spatter and its
+//   suggested prompts but Spatter answers only with an upgrade note, and the
+//   Studio has FlipaClip-style limits (`StudioPlanLimits`); Creator = your own
+//   AI key plus a server-funded allowance capped at the plan's break-even cost
+//   each billing period, no Studio limits and SDI-channel submissions with the
+//   SDI watermark; Pro = unlimited prompts plus your own AI key. The free trial
+//   applies to both paid plans. Amounts are never stored here: the price shown
+//   is Apple's `Product.displayPrice` or "Price shown when configured".
 // - Trial text appears only when the App Store reports an eligible
 //   introductory free-trial offer for that product (`BillingCopy.trial`), and
 //   only on a plan whose `offersTrial` is true (Creator and Pro).
@@ -42,11 +45,76 @@ enum BillingPeriod: String, Equatable {
 }
 
 enum SpatterPromptAllowance: Equatable {
-    /// Free: this many of the app's suggested prompts per calendar month, no free text.
-    case suggestedPerMonth(Int)
-    /// Counted per billing period on the server, resetting at each renewal.
-    case perMonth(Int)
+    /// Free: Spatter and its suggested prompts are visible, but every send gets
+    /// the upgrade note on the device and nothing reaches the server.
+    case previewOnly
+    /// Creator: server-funded prompts per billing period, capped so their cost
+    /// stays within the plan's break-even budget. The count comes only from the
+    /// server; prompts sent with the member's own AI key are not counted.
+    case breakEvenPerPeriod
     case unlimited
+}
+
+/// Studio limits per plan (owner decision 2026-10-15, modelled on FlipaClip's
+/// free tier, without ads). Nil or true means no limit. Enforcement starts only
+/// when the App Store sells real plans (`StudioPlanLimits.enforcing`), so no
+/// one is locked out of a feature they cannot buy yet.
+struct StudioPlanLimits: Equatable {
+    /// Maximum layers per frame.
+    let maxLayers: Int?
+    /// Onion-skin frames before / after the current frame.
+    let maxOnionSkinBack: Int?
+    let maxOnionSkinForward: Int?
+    /// Custom canvas width/height (presets stay available).
+    let customCanvasSize: Bool
+    /// Longest exported video/GIF edge in pixels (720p = 1280).
+    let maxExportLongEdge: Int?
+    /// The SDI watermark burned into exported videos and GIFs.
+    let exportWatermark: Bool
+    /// Importing your own audio, and the built-in sound library.
+    let audioImport: Bool
+    let soundLibrary: Bool
+    /// Blur, Smudge, Sharpen, Dodge/Burn, extra brushes and background cut.
+    let advancedTools: Bool
+    /// Transparent PNG image-sequence export.
+    let pngSequenceExport: Bool
+    /// Submitting a finished video to the official SDI YouTube, TikTok and social
+    /// channels (still subject to consent, rights review, moderation and the
+    /// owner's approval; the channel rendition carries the SDI watermark).
+    let sdiChannelSubmission: Bool
+    /// Spatter answers and edits. Free still shows Spatter and its suggested
+    /// prompts, but every send gets `BillingCopy.spatterUpgradeNote` instead.
+    let spatterActive: Bool
+
+    static let free = StudioPlanLimits(maxLayers: 3, maxOnionSkinBack: 1, maxOnionSkinForward: 0,
+                                       customCanvasSize: false, maxExportLongEdge: 1280, exportWatermark: true,
+                                       audioImport: false, soundLibrary: false, advancedTools: false,
+                                       pngSequenceExport: false, sdiChannelSubmission: false, spatterActive: false)
+    static let unrestricted = StudioPlanLimits(maxLayers: nil, maxOnionSkinBack: nil, maxOnionSkinForward: nil,
+                                               customCanvasSize: true, maxExportLongEdge: nil, exportWatermark: false,
+                                               audioImport: true, soundLibrary: true, advancedTools: true,
+                                               pngSequenceExport: true, sdiChannelSubmission: true, spatterActive: true)
+
+    static func forTier(_ tier: BillingPlanTier) -> StudioPlanLimits {
+        tier == .free ? .free : .unrestricted
+    }
+
+    /// Limits apply only once the catalog names real App Store products and the
+    /// store has loaded them; until then every account keeps the full Studio.
+    static func enforcing(catalog: BillingPlanCatalog, storeLoaded: Bool) -> Bool {
+        !catalog.usesPlaceholderIdentifiers && storeLoaded
+    }
+
+    /// What the Studio applies right now.
+    static func effective(tier: BillingPlanTier, enforcing: Bool) -> StudioPlanLimits {
+        enforcing ? forTier(tier) : .unrestricted
+    }
+
+    /// The shared value the Studio reads; `StripeService` updates it whenever
+    /// the tier or store state changes. Starts unrestricted.
+    static var current = StudioPlanLimits.unrestricted
+
+    static let upgradeNote = "This is part of Creator and Pro. Upgrade in Profile, Plans to unlock it."
 }
 
 struct BillingEntitlement: Equatable {
@@ -71,6 +139,7 @@ struct BillingPlanDefinition: Equatable, Identifiable {
     var offersTrial: Bool { tier != .free }
     /// Bring-your-own AI key is part of both paid plans (owner decision 2026-10-14).
     var includesOwnAIKey: Bool { tier != .free }
+    var studioLimits: StudioPlanLimits { StudioPlanLimits.forTier(tier) }
 }
 
 struct BillingPlanCatalog: Equatable {
@@ -90,17 +159,21 @@ struct BillingPlanCatalog: Equatable {
     let annualConfigured: Bool
 
     static let freeEntitlements = [
-        BillingEntitlement(text: "Full Studio on this device", isLive: true),
+        BillingEntitlement(text: "Studio on this device, up to 3 layers per frame", isLive: true),
         BillingEntitlement(text: "Projects stay on this device", isLive: true),
-        BillingEntitlement(text: "Video upload and download not included", isLive: false),
-        BillingEntitlement(text: "5 suggested Spatter prompts per month", isLive: false),
+        BillingEntitlement(text: "Onion skin 1 frame back", isLive: true),
+        BillingEntitlement(text: "Exports up to 720p with the SDI watermark", isLive: true),
+        BillingEntitlement(text: "Preview Spatter and its suggested prompts (answers need Creator or Pro)", isLive: true),
     ]
     static let creatorEntitlements = [
         BillingEntitlement(text: "Everything in Free", isLive: true),
-        BillingEntitlement(text: "No watermark", isLive: false),
-        BillingEntitlement(text: "Upload and download your videos", isLive: false),
-        BillingEntitlement(text: "15 Spatter prompts per month", isLive: false),
+        BillingEntitlement(text: "Unlimited layers, full onion skin and custom canvas sizes", isLive: true),
+        BillingEntitlement(text: "No watermark, 1080p and larger exports, PNG sequences", isLive: true),
+        BillingEntitlement(text: "Import audio and use the sound library", isLive: true),
+        BillingEntitlement(text: "Blur, Smudge, Sharpen, Dodge/Burn, extra brushes and background cut", isLive: true),
+        BillingEntitlement(text: "Spatter prompts each billing period, up to the plan's break-even allowance", isLive: false),
         BillingEntitlement(text: "Use your own AI key (those prompts are not counted)", isLive: false),
+        BillingEntitlement(text: "Submit videos to the official SDI YouTube, TikTok and social channels (watermarked, reviewed before posting)", isLive: false),
     ]
     static let proEntitlements = [
         BillingEntitlement(text: "Everything in Creator", isLive: true),
@@ -120,10 +193,10 @@ struct BillingPlanCatalog: Equatable {
         let pro = value(proMonthlyKey)
         var plans = [
             BillingPlanDefinition(tier: .free, name: "Free", period: .monthly, productID: nil,
-                                  entitlements: freeEntitlements, promptAllowance: .suggestedPerMonth(5)),
+                                  entitlements: freeEntitlements, promptAllowance: .previewOnly),
             BillingPlanDefinition(tier: .creator, name: "Creator", period: .monthly,
                                   productID: creator ?? placeholderCreatorMonthly,
-                                  entitlements: creatorEntitlements, promptAllowance: .perMonth(15)),
+                                  entitlements: creatorEntitlements, promptAllowance: .breakEvenPerPeriod),
             BillingPlanDefinition(tier: .pro, name: "Pro", period: .monthly,
                                   productID: pro ?? placeholderProMonthly,
                                   entitlements: proEntitlements, promptAllowance: .unlimited),
@@ -133,7 +206,7 @@ struct BillingPlanCatalog: Equatable {
         let proAnnual = ownerFlag ? value(proAnnualKey) : nil
         if let id = creatorAnnual {
             plans.append(BillingPlanDefinition(tier: .creator, name: "Creator", period: .annual, productID: id,
-                                               entitlements: creatorEntitlements, promptAllowance: .perMonth(15)))
+                                               entitlements: creatorEntitlements, promptAllowance: .breakEvenPerPeriod))
         }
         if let id = proAnnual {
             plans.append(BillingPlanDefinition(tier: .pro, name: "Pro", period: .annual, productID: id,
@@ -441,27 +514,26 @@ enum BillingCopy {
         }
     }
 
-    /// `remaining` comes only from the server's count; nil means it has not reported one.
-    static func prompts(_ allowance: SpatterPromptAllowance, remaining: Int?) -> String {
+    /// `remaining` and `limit` come only from the server's count; nil means it has not reported one.
+    static func prompts(_ allowance: SpatterPromptAllowance, remaining: Int?, limit: Int? = nil) -> String {
         switch (allowance, remaining) {
         case (.unlimited, _):
             return "Unlimited Spatter prompts."
-        case (.suggestedPerMonth(let total), nil):
-            return "\(total) suggested Spatter prompts per month. Remaining prompts appear once the server reports them."
-        case (_, nil):
-            return "Remaining Spatter prompts appear once the server reports them."
-        case (.perMonth(let total), let reported?):
-            let left = max(0, min(reported, total))
-            return left == 0
-                ? "All \(total) Spatter prompts used this month. Upgrade to Pro for unlimited prompts, or wait for your renewal."
-                : "\(left) of \(total) Spatter prompts left this month."
-        case (.suggestedPerMonth(let total), let reported?):
-            let left = max(0, min(reported, total))
-            return left == 0
-                ? "All \(total) suggested Spatter prompts used this month. Choose Creator or Pro to keep using Spatter now, or wait for next month."
-                : "\(left) of \(total) suggested Spatter prompts left this month."
+        case (.previewOnly, _):
+            return spatterUpgradeNote
+        case (.breakEvenPerPeriod, nil):
+            return "Spatter prompts each billing period, up to the plan's break-even allowance. Remaining prompts appear once the server reports them. Prompts sent with your own AI key are not counted."
+        case (.breakEvenPerPeriod, let reported?):
+            let left = max(0, limit.map { min(reported, $0) } ?? reported)
+            if left == 0 {
+                return "This period's Spatter allowance is used. Add your own AI key, upgrade to Pro for unlimited prompts, or wait for your renewal."
+            }
+            return limit.map { "\(left) of \($0) Spatter prompts left this billing period." } ?? "\(left) Spatter prompts left this billing period."
         }
     }
+
+    /// The only answer Spatter gives a Free account. Shown on the device; nothing is sent.
+    static let spatterUpgradeNote = "Spatter is part of Creator and Pro. Upgrade in Profile, Plans to activate it. Creator also lets you use your own AI key."
 
     static let pendingEntitlementNote = "Marked features turn on when the server applies your plan from Apple's verified purchase."
     static let manageNote = "Billed by Apple. Manage, change or cancel in Apple subscription settings; cancelling keeps access until the period ends. Projects stay on this device."

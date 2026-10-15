@@ -46,9 +46,29 @@ private struct Failure: Error, CustomStringConvertible { let description: String
                     "two monthly placeholder ids requested from the App Store")
         try require(empty.usesPlaceholderIdentifiers && !empty.annualConfigured && empty.periods == [.monthly], "no annual without configuration")
         try require(empty.tier(forProductID: "com.example.unknown") == .free, "unknown id grants nothing")
-        try require(empty.plans.first { $0.tier == .creator }?.promptAllowance == .perMonth(15), "Creator 15 prompts per month")
+        try require(empty.plans.first { $0.tier == .creator }?.promptAllowance == .breakEvenPerPeriod, "Creator break-even allowance per period")
         try require(empty.plans.first { $0.tier == .pro }?.promptAllowance == .unlimited, "Pro unlimited prompts")
-        try require(empty.plans.first { $0.tier == .free }?.promptAllowance == .suggestedPerMonth(5), "Free 5 suggested prompts per month")
+        try require(empty.plans.first { $0.tier == .free }?.promptAllowance == .previewOnly, "Free previews Spatter only")
+        // Owner decision 2026-10-15: FlipaClip-style Free limits, none on paid plans.
+        let freeLimits = empty.plans.first { $0.tier == .free }!.studioLimits
+        try require(freeLimits.maxLayers == 3 && freeLimits.maxOnionSkinBack == 1 && freeLimits.maxOnionSkinForward == 0,
+                    "Free: 3 layers, onion skin 1 back and 0 forward")
+        try require(!freeLimits.customCanvasSize && freeLimits.maxExportLongEdge == 1280 && freeLimits.exportWatermark,
+                    "Free: presets only, 720p exports, watermark")
+        try require(!freeLimits.audioImport && !freeLimits.soundLibrary && !freeLimits.advancedTools
+                    && !freeLimits.pngSequenceExport && !freeLimits.sdiChannelSubmission && !freeLimits.spatterActive,
+                    "Free: locked extras and Spatter preview only")
+        for tier in [BillingPlanTier.creator, .pro] {
+            try require(empty.plans.first { $0.tier == tier }?.studioLimits == .unrestricted, "\(tier) has no Studio limits")
+        }
+        // Nobody is limited until the App Store sells real plans.
+        try require(!StudioPlanLimits.enforcing(catalog: empty, storeLoaded: true), "placeholder ids never enforce limits")
+        let live = BillingPlanCatalog.load(info: [BillingPlanCatalog.creatorMonthlyKey: "sdi.creator.m", BillingPlanCatalog.proMonthlyKey: "sdi.pro.m"])
+        try require(!StudioPlanLimits.enforcing(catalog: live, storeLoaded: false), "store not loaded: no limits")
+        try require(StudioPlanLimits.enforcing(catalog: live, storeLoaded: true), "real plans loaded: limits apply")
+        try require(StudioPlanLimits.effective(tier: .free, enforcing: false) == .unrestricted, "unenforced Free is unrestricted")
+        try require(StudioPlanLimits.effective(tier: .free, enforcing: true) == .free, "enforced Free is limited")
+        try require(StudioPlanLimits.effective(tier: .creator, enforcing: true) == .unrestricted, "enforced Creator is unrestricted")
         // Owner decisions 2026-10-14: trial and own AI key on both paid plans, neither on Free.
         try require(empty.plans.map(\.offersTrial) == [false, true, true], "trial applies to Creator and Pro only")
         try require(empty.plans.map(\.includesOwnAIKey) == [false, true, true], "own AI key on Creator and Pro only")
@@ -56,10 +76,13 @@ private struct Failure: Error, CustomStringConvertible { let description: String
             let texts = empty.plans.first { $0.tier == tier }?.entitlements.map(\.text) ?? []
             try require(texts.contains { $0.hasPrefix("Use your own AI key") }, "\(tier) lists the own AI key")
         }
-        try require(empty.plans.first { $0.tier == .free }?.entitlements.map(\.text).contains("5 suggested Spatter prompts per month") == true,
-                    "Free lists 5 suggested prompts per month")
-        let paidExtras = empty.plans.filter { $0.tier != .free }.flatMap(\.entitlements).filter { !$0.text.hasPrefix("Everything") }
-        try require(!paidExtras.isEmpty && paidExtras.allSatisfy { !$0.isLive }, "paid extras stay pending until server enforcement")
+        try require(empty.plans.first { $0.tier == .free }?.entitlements.map(\.text)
+                        .contains("Preview Spatter and its suggested prompts (answers need Creator or Pro)") == true,
+                    "Free lists the Spatter preview")
+        // Device-enforced Studio extras are live; server-applied extras stay pending.
+        let serverExtras = empty.plans.filter { $0.tier != .free }.flatMap(\.entitlements)
+            .filter { $0.text.contains("Spatter") || $0.text.contains("AI key") || $0.text.contains("SDI YouTube") }
+        try require(!serverExtras.isEmpty && serverExtras.allSatisfy { !$0.isLive }, "server-applied extras stay pending")
         let text = empty.plans.flatMap(\.entitlements).map(\.text).joined(separator: " ")
         for banned in ["$", "USD", "19.99", "Studio plan", "coins", "POPULAR", "sale", "Save "] {
             try require(!text.contains(banned), "no hard-coded price, retired tier or sale claim: \(banned)")
@@ -191,13 +214,12 @@ private struct Failure: Error, CustomStringConvertible { let description: String
                     "free copy")
         try require(BillingCopy.server(.notConfigured).hasPrefix("Server verification deferred"), "deferred server copy")
 
-        try require(BillingCopy.prompts(.perMonth(15), remaining: nil).contains("once the server reports"), "no invented prompt count")
-        try require(BillingCopy.prompts(.perMonth(15), remaining: 4) == "4 of 15 Spatter prompts left this month.", "remaining prompts")
-        try require(BillingCopy.prompts(.perMonth(15), remaining: 0).contains("Upgrade to Pro"), "upgrade prompt at the limit")
-        try require(BillingCopy.prompts(.perMonth(15), remaining: 99) == "15 of 15 Spatter prompts left this month.", "server count clamped")
+        try require(BillingCopy.prompts(.breakEvenPerPeriod, remaining: nil).contains("once the server reports"), "no invented prompt count")
+        try require(BillingCopy.prompts(.breakEvenPerPeriod, remaining: 4, limit: 174) == "4 of 174 Spatter prompts left this billing period.", "remaining prompts")
+        try require(BillingCopy.prompts(.breakEvenPerPeriod, remaining: 0, limit: 174).contains("own AI key"), "own key offered at the limit")
+        try require(BillingCopy.prompts(.breakEvenPerPeriod, remaining: 999, limit: 174) == "174 of 174 Spatter prompts left this billing period.", "server count clamped")
         try require(BillingCopy.prompts(.unlimited, remaining: nil) == "Unlimited Spatter prompts.", "Pro unlimited")
-        try require(BillingCopy.prompts(.suggestedPerMonth(5), remaining: 0).contains("Creator or Pro"), "free prompts exhausted")
-        try require(BillingCopy.prompts(.suggestedPerMonth(5), remaining: 3) == "3 of 5 suggested Spatter prompts left this month.", "free remaining")
-        try require(BillingCopy.prompts(.suggestedPerMonth(5), remaining: nil).hasPrefix("5 suggested Spatter prompts per month"), "free plan line")
+        try require(BillingCopy.prompts(.previewOnly, remaining: 3) == BillingCopy.spatterUpgradeNote, "Free only sees the upgrade note")
+        try require(BillingCopy.spatterUpgradeNote.contains("Creator and Pro"), "upgrade note names the paid plans")
     }
 }
