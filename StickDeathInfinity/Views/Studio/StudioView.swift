@@ -356,7 +356,9 @@ struct StudioBottomBar: View {
                         .clipShape(Circle())
                         .offset(x: 8, y: -4)
                 }
-                .frame(maxWidth: .infinity)
+                // Same 44-point minimum tap target as the other bottom-bar buttons.
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
             }
             .accessibilityIdentifier("studio.layers.open")
             .accessibilityLabel("Layers")
