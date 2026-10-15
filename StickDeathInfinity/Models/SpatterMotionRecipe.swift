@@ -3015,13 +3015,23 @@ struct SpatterInstructionBatch: Equatable {
     func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
         var commands: [StudioCommand] = []
+        // Errors raised by the caller's own check (cancellation, deadline, changed
+        // context) pass through unchanged so the session reports them truthfully
+        // instead of as an unsupported line.
+        var checkError: Error?
+        func guardedCheck() throws {
+            do { try checkCancellation() } catch { checkError = error; throw error }
+        }
         for line in lines {
             try checkCancellation()
             let request: StudioCommandRequest
-            do { request = try SpatterInstructionRouter.prepareContextOnly(line.text, kind: line.kind, in: context, requestID: requestID, checkCancellation: checkCancellation) }
+            do { request = try SpatterInstructionRouter.prepareContextOnly(line.text, kind: line.kind, in: context, requestID: requestID, checkCancellation: guardedCheck) }
             catch is CancellationError { throw CancellationError() }
             catch let error as SpatterInstructionBatch.Failure { throw error }
-            catch { throw Failure.unsupportedLine(line.number, (error as? LocalizedError)?.errorDescription ?? line.text) }
+            catch {
+                if let checkError { throw checkError }
+                throw Failure.unsupportedLine(line.number, (error as? LocalizedError)?.errorDescription ?? line.text)
+            }
             guard case .apply(let list) = request.action else { throw Failure.unsupportedLine(line.number, line.text) }
             commands += list.map { $0.prefixingAliases("b\(line.number)_") }
         }
