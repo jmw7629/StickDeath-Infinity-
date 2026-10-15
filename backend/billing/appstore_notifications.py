@@ -19,6 +19,14 @@ Idempotency is the notification's ``notificationUUID``: the database keeps one
 row per ``(provider, event_id)`` and answers ``duplicate`` for replays, which this
 handler returns as 200 so Apple stops retrying. Sandbox notifications are recorded
 with ``payload.environment`` and never produce ledger (revenue) rows.
+
+Spatter credit packs (consumables, owner decision 2026-10-15): when a
+``credit_packs`` catalogue is injected, a ``REFUND`` for an approved pack also
+claws the credits back through ``public.sdi_spatter_credits_refund`` and a
+``ONE_TIME_CHARGE`` (if Apple sends one) grants through
+``public.sdi_spatter_credits_grant`` for the ``appAccountToken`` account. Both
+are idempotent per transaction id, so they are safe alongside the in-app
+redemption in ``appstore_credits`` and on notification replays.
 """
 from __future__ import annotations
 
@@ -29,12 +37,13 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
-from .contract import (ApplyEventCall, ContractError, LedgerEntry, ProductCatalog, Response, SQLExecutor, as_uuid,
-                       execute_and_respond, from_epoch, parse_json_object)
+from .contract import (ApplyEventCall, ContractError, CreditPackCatalog, LedgerEntry, ProductCatalog, Response, SQLExecutor,
+                       apply_event, as_uuid, from_epoch, grant_credits, parse_json_object, refund_credits)
 
 MAX_BODY_BYTES = 256 * 1024
 ENVIRONMENTS = ("Sandbox", "Production")
 SUBSCRIPTION_TYPE = "Auto-Renewable Subscription"
+CONSUMABLE_TYPE = "Consumable"
 
 # Status mapping by notificationType (and subtype where it matters).
 _ACTIVE_TYPES = {"SUBSCRIBED", "DID_RENEW", "DID_CHANGE_RENEWAL_STATUS", "DID_CHANGE_RENEWAL_PREF", "OFFER_REDEEMED",
@@ -258,8 +267,27 @@ def map_notification(note: Notification, catalog: ProductCatalog) -> ApplyEventC
                           cancel_at_period_end=cancel_at_period_end, ledger=ledger)
 
 
+def credit_action(note: Notification, credit_packs: Optional[CreditPackCatalog], executor: SQLExecutor) -> Optional[dict]:
+    """Grant or claw back Spatter credits for a verified consumable notification."""
+    tx = note.transaction or {}
+    if credit_packs is None or tx.get("type") != CONSUMABLE_TYPE:
+        return None
+    pack = credit_packs.get("apple", tx.get("productId"))
+    ref = tx.get("transactionId")
+    if pack is None or not isinstance(ref, str) or not ref or len(ref) > 200:
+        return None
+    if note.notification_type == "REFUND":
+        return refund_credits(executor, "apple", ref)
+    if note.notification_type == "ONE_TIME_CHARGE":
+        user = as_uuid(tx.get("appAccountToken"))
+        if user is not None and tx.get("revocationDate") is None:
+            return grant_credits(executor, user, "apple", pack.product_id, ref, livemode=note.environment == "Production")
+    return None
+
+
 def handle(headers: Mapping[str, str], raw_body: bytes, *, executor: SQLExecutor, catalog: ProductCatalog,
            config: AppStoreConfig, verifier: Optional[ChainVerifier] = None,
+           credit_packs: Optional[CreditPackCatalog] = None,
            now: Callable[[], _dt.datetime] = lambda: _dt.datetime.now(_dt.timezone.utc)) -> Response:
     """Process one POST from App Store Server Notifications V2."""
     try:
@@ -267,6 +295,12 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *, executor: SQLExecutor
         if note.signed_at > now() + _dt.timedelta(minutes=5):
             raise ContractError(400, "notification from the future")
         call = map_notification(note, catalog)
-        return execute_and_respond(executor, call)
+        body = apply_event(executor, call)
+        # Also on a duplicate notification: the credit calls are idempotent and
+        # this completes a replay whose first attempt failed after recording.
+        credits = credit_action(note, credit_packs, executor)
+        if credits is not None:
+            body["credits"] = credits
+        return Response(200, body)
     except ContractError as error:
         return Response(error.status, {"error": error.reason})

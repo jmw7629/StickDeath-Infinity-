@@ -82,6 +82,30 @@ webhook secret, SQL executor); the deployment wraps them in its edge-function ru
 - Sandbox and production environments are separate configurations; sandbox events
   are recorded with `payload.environment` and never counted as revenue.
 
+## Spatter credit packs (owner decision 2026-10-15)
+
+Consumable packs credit `sdi_private.spatter_credit_ledger` through the
+service-only `public.sdi_spatter_credits_grant` / `_refund` (see
+`backend/sql/spatter-draft-jobs.sql`); both are idempotent per
+(provider, transaction). `contract.CreditPack` / `CreditPackCatalog` hold the
+approved packs (no prices; Stripe packs bind a `price_...` id).
+
+- `appstore_credits` (new edge-function candidate): the app posts the StoreKit 2
+  signed transaction with the member's bearer token; the handler verifies the
+  JWS with the same pinned-root verifier, requires the bundle, environment,
+  `type: Consumable`, an approved pack, no revocation and `appAccountToken` equal
+  to the member, then grants. Sandbox grants are flagged `livemode = false`.
+- `appstore-notifications` with `credit_packs=`: `REFUND` for a pack claws back;
+  `ONE_TIME_CHARGE` grants.
+- `stripe-checkout` `action: "credits"`: one-time `mode=payment` session for an
+  approved Stripe pack only, pack and member in session and PaymentIntent metadata.
+- `stripe-webhook` with `credit_packs=`: paid `checkout.session.completed` /
+  `async_payment_succeeded` grants by PaymentIntent (plus a live-mode `charge`
+  ledger row); fully refunded `charge.refunded` claws back. Partial refunds do not.
+- Google Play: no verification path exists; not implemented.
+
+Tests: `backend/tests/test_spatter_credits.py`.
+
 ## Reconciliation
 
 - A scheduled service job calls `sdi_billing_reconcile()` after replaying missed

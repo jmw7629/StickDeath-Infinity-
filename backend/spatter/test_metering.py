@@ -153,6 +153,40 @@ class MeteringRuleTests(unittest.TestCase):
         self.assertEqual(m.global_used[NOW.date()], 0)
 
 
+class CreditRuleTests(unittest.TestCase):
+    def test_free_pays_as_it_goes_and_release_refunds_the_credit(self):
+        m = meter(entitlement=FREE)
+        m.credits[USER] = 2
+        first = m.reserve(USER)  # free text is allowed on credit
+        self.assertEqual((first.allowed, first.plan, first.funding, first.credits, first.remaining), (True, "free", "credit", 1, 0))
+        self.assertTrue(m.settle(first.reservation, "release"))
+        self.assertEqual(m.credits[USER], 2)
+        for expected in (1, 0):
+            decision = m.reserve(USER, TIP)
+            self.assertEqual(decision.credits, expected)
+            self.assertTrue(m.settle(decision.reservation, "commit", 1))
+        refused = m.reserve(USER)
+        self.assertEqual((refused.code, refused.buy_credits, refused.upgrade), ("upgrade_required", True, "creator_or_pro"))
+        self.assertFalse(any(key[1].startswith("period:") for key in m.counters))
+
+    def test_creator_spends_allowance_then_credits(self):
+        m = meter(controls={"creator_period_budget_microusd": 40_000})  # limit 2
+        m.credits[USER] = 1
+        fundings = [m.reserve(USER).funding for _ in range(3)]
+        self.assertEqual(fundings, ["allowance", "allowance", "credit"])
+        refused = m.reserve(USER)
+        self.assertEqual((refused.code, refused.upgrade, refused.buy_credits), ("plan_allowance_exhausted", "pro", True))
+
+    def test_pro_never_spends_credits_and_caps_come_first(self):
+        m = meter(entitlement=lambda _u: ("pro", PAID), controls={"user_daily_safety_cap": 1})
+        m.credits[USER] = 5
+        self.assertEqual((m.reserve(USER).funding, m.credits[USER]), ("unlimited", 5))
+        self.assertEqual(m.reserve(USER).code, "daily_safety_limit")
+        free = meter(entitlement=FREE, controls={"emergency_stop": True})
+        free.credits[USER] = 5
+        self.assertEqual((free.reserve(USER).code, free.credits[USER]), ("emergency_stop", 5))
+
+
 class SqlMeterDecodeTests(unittest.TestCase):
     def test_rpc_contract_and_strict_decode(self):
         calls = []
@@ -160,20 +194,26 @@ class SqlMeterDecodeTests(unittest.TestCase):
         def rpc(name, params):
             calls.append((name, params))
             if params["action"] == "reserve":
-                return {"allowed": True, "reservation": "r-1", "plan": "creator", "period": "billing_period",
-                        "remaining": 14, "resets_at": "2026-11-01T00:00:00+00:00"}
+                return {"allowed": True, "reservation": "r-1", "plan": "creator", "period": "billing_period", "funding": "allowance",
+                        "remaining": 14, "credits": 3, "resets_at": "2026-11-01T00:00:00+00:00"}
             return {"status": "confirmed", "state": "committed"}
 
         m = metering.SqlMeter(rpc)
         decision = m.reserve(USER)
-        self.assertEqual((decision.allowed, decision.remaining, decision.resets_at), (True, 14, PAID))
+        self.assertEqual((decision.allowed, decision.remaining, decision.resets_at, decision.funding, decision.credits),
+                         (True, 14, PAID, "allowance", 3))
         self.assertTrue(m.settle("r-1", "commit", 7))
         self.assertEqual(calls[0], ("sdi_spatter_usage_meter", {"action": "reserve", "p_user": USER}))
         self.assertEqual(calls[1][1], {"action": "settle", "p_reservation": "r-1", "p_outcome": "commit", "p_units": 7})
         m.reserve(USER, TIP)
         self.assertEqual(calls[2][1], {"action": "reserve", "p_user": USER, "p_suggested_prompt": TIP})
-        refused = metering.decision_from_rpc({"allowed": False, "code": "upgrade_required", "plan": "free", "upgrade": "creator_or_pro"})
-        self.assertEqual((refused.code, refused.plan, refused.upgrade), ("upgrade_required", "free", "creator_or_pro"))
+        refused = metering.decision_from_rpc({"allowed": False, "code": "upgrade_required", "plan": "free", "upgrade": "creator_or_pro",
+                                              "buy_credits": True, "credits": 0})
+        self.assertEqual((refused.code, refused.plan, refused.upgrade, refused.buy_credits, refused.credits),
+                         ("upgrade_required", "free", "creator_or_pro", True, 0))
+        paygo = metering.decision_from_rpc({"allowed": True, "reservation": "r-2", "plan": "free", "period": "none", "funding": "credit",
+                                            "remaining": 0, "credits": 4, "resets_at": None})
+        self.assertEqual((paygo.allowed, paygo.plan, paygo.funding, paygo.credits, paygo.remaining), (True, "free", "credit", 4, 0))
         retired = metering.decision_from_rpc({"allowed": False, "code": "suggested_prompt_required", "plan": "free"})
         self.assertEqual(retired.code, "unavailable")
 
@@ -181,8 +221,11 @@ class SqlMeterDecodeTests(unittest.TestCase):
         for payload in [None, {}, {"allowed": "true"}, {"allowed": True}, {"allowed": True, "reservation": "r", "plan": "gold", "remaining": 1},
                         {"allowed": True, "reservation": "r", "plan": "free", "remaining": -1},
                         {"allowed": True, "reservation": "r", "plan": "free"}, {"allowed": False, "code": "made_up"},
-                        # Free is never served, so an "allowed" Free decision is malformed.
-                        {"allowed": True, "reservation": "r", "plan": "free", "remaining": 3}]:
+                        # Free is served only on a credit; Pro never spends credits; funding and credits are required.
+                        {"allowed": True, "reservation": "r", "plan": "free", "remaining": 0, "funding": "allowance", "credits": 1},
+                        {"allowed": True, "reservation": "r", "plan": "pro", "remaining": None, "funding": "credit", "credits": 1},
+                        {"allowed": True, "reservation": "r", "plan": "creator", "remaining": 1, "credits": 1},
+                        {"allowed": True, "reservation": "r", "plan": "creator", "remaining": 1, "funding": "allowance", "credits": -1}]:
             decision = metering.decision_from_rpc(payload or {})
             self.assertFalse(decision.allowed, payload)
         self.assertEqual(metering.decision_from_rpc({"allowed": False, "code": "global_limit"}).code, "global_limit")
@@ -196,7 +239,8 @@ class MeteredHandlerTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(response.body, {"schemaVersion": 1, "reply": "hold the pose", "usage": {"units": 9},
                                          "allowance": {"plan": "creator", "period": "billing_period",
-                                                       "remaining": DEFAULT_CREATOR_LIMIT - 1, "resetsAt": "2026-11-01T00:00:00Z"}})
+                                                       "remaining": DEFAULT_CREATOR_LIMIT - 1, "resetsAt": "2026-11-01T00:00:00Z",
+                                                       "credits": 0, "funding": "allowance"}})
         self.assertNotIn("budget", response.body)
         (reservation,) = m.reservations.values()
         self.assertEqual((reservation.state, reservation.units), ("committed", 9))
@@ -210,10 +254,27 @@ class MeteredHandlerTests(unittest.TestCase):
             response = run(m, router(adapter), raw=raw)
             self.assertEqual(response.status, 402)
             self.assertEqual(response.body, {"schemaVersion": 1, "error": handler.UPGRADE_MESSAGE, "code": "upgrade_required",
-                                             "plan": "free", "upgrade": "creator_or_pro"})
-        self.assertEqual(handler.UPGRADE_MESSAGE, "Spatter is part of Creator and Pro. Upgrade to activate it; "
-                                                  "Creator also lets you use your own AI key.")
+                                             "plan": "free", "upgrade": "creator_or_pro", "buyCredits": True, "credits": 0})
+        self.assertEqual(handler.UPGRADE_MESSAGE, "Spatter is part of Creator and Pro, or buy Spatter credits to pay as you go.")
         self.assertEqual((adapter.calls, m.reservations, m.counters, m.global_used), ([], {}, {}, {}))
+
+    def test_free_with_credits_is_served_and_reports_the_balance(self):
+        m = meter(entitlement=FREE)
+        m.credits[USER] = 3
+        adapter = FakeAdapter([("tip", 2)])
+        response = run(m, router(adapter))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body["allowance"], {"plan": "free", "period": "none", "remaining": 0, "resetsAt": None,
+                                                      "credits": 2, "funding": "credit"})
+        self.assertEqual(adapter.messages, [[{"role": "user", "content": "animate a step"}]])
+        failing = run(m, router(FakeAdapter([RuntimeError("down")])))
+        self.assertEqual(failing.status, 502)
+        self.assertEqual(m.credits[USER], 2)  # the failed prompt's credit was released
+
+    def test_creator_exhausted_offers_pro_or_credits(self):
+        response = run(meter(controls={"creator_period_budget_microusd": 0}), router(FakeAdapter([])))
+        self.assertEqual((response.status, response.body["code"], response.body["upgrade"], response.body["buyCredits"], response.body["credits"]),
+                         (429, "plan_allowance_exhausted", "pro", True, 0))
 
     def test_meter_that_wrongly_allows_free_still_never_calls_provider(self):
         class Lenient:

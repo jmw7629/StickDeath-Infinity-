@@ -64,17 +64,22 @@ kept for the original daily-budget tests). `SqlMeter` calls the service-only RPC
 `backend/sql/tests/070_spatter_draft_jobs.sql`). Order of checks, all server-side:
 
 1. account exists and is not suspended/banned (`account_controls`);
-   then **Free is refused** (owner decision 2026-10-15): Spatter and its
-   suggested prompts are visible on Free but never served, so every Free
-   request gets 402 `upgrade_required` + `plan: free` + `upgrade:
-   creator_or_pro` and the message "Spatter is part of Creator and Pro. Upgrade
-   to activate it; Creator also lets you use your own AI key." before any
-   counter, reservation or provider call;
+   then **Free without Spatter credits is refused** (owner decisions
+   2026-10-15): Free has no server-funded allowance, so a Free request with a
+   zero credit balance gets 402 `upgrade_required` + `plan: free` + `upgrade:
+   creator_or_pro` + `buyCredits: true` + `credits: 0` and the message
+   "Spatter is part of Creator and Pro, or buy Spatter credits to pay as you
+   go." before any counter, reservation or provider call;
 2. agent emergency stop (`sdi_private.agent_global.emergency_stop`) → 503 `emergency_stop`;
 3. global daily ceiling → 503 `global_limit` (**defaults to 0, i.e. closed, until the owner sets it**);
 4. per-account per-minute rate (default 6) → 429 `rate_limited` + `retryAfterSeconds`;
 5. per-account daily safety cap (default 100) → 429 `daily_safety_limit`;
-6. plan allowance from `sdi_private.entitlements` → 429 `plan_allowance_exhausted` + `upgrade`:
+6. funding, in order: the plan allowance from `sdi_private.entitlements`
+   (Pro unlimited; Creator's period allowance), then **one Spatter credit**
+   (1 credit = 1 prompt). Nothing left → Creator gets 429
+   `plan_allowance_exhausted` + `upgrade: pro` + `buyCredits: true`; Free gets
+   the 402 above. Free with credits pays as it goes (free text allowed). Pro
+   never spends credits. Steps 2–5 apply before any credit is spent:
    * `creator` (USD 4.99/month): `floor(creator_period_budget_microusd /
      prompt_cost_estimate_microusd)` server-funded prompts per billing period
      (defaults 3 490 000 / 20 000 = 174: USD 4.99 net of a 30% store commission
@@ -93,19 +98,25 @@ kept for the original daily-budget tests). `SqlMeter` calls the service-only RPC
 
 A reservation is taken only after the provider is known to be configured, and
 settled exactly once: `commit` with provider usage units after a reply,
-`release` (refunds every counter) after a provider failure. Stale reservations
+`release` (refunds every counter, and a spent credit as a `release` ledger
+row) after a provider failure. Stale reservations
 are swept as committed, never silently refunded. Prompt text is never stored.
 
 Successful metered replies carry `allowance` instead of the daily `budget`:
 
 ```json
-{"schemaVersion": 1, "reply": "…", "usage": {"units": 9}, "allowance": {"plan": "creator", "period": "billing_period", "remaining": 173, "resetsAt": "2026-11-01T00:00:00Z"}}
+{"schemaVersion": 1, "reply": "…", "usage": {"units": 9}, "allowance": {"plan": "creator", "period": "billing_period", "remaining": 173, "resetsAt": "2026-11-01T00:00:00Z", "credits": 0, "funding": "allowance"}}
 ```
 
-`remaining` is `null` for `pro`; `resetsAt` is the renewal date for `creator`.
+`remaining` is `null` for `pro`; `resetsAt` is the renewal date for `creator`
+(`null` and `period: "none"` for `free` and `pro`). `credits` is the Spatter
+credit balance after this prompt; `funding` is `allowance`, `unlimited` or
+`credit`. A Free pay-as-you-go reply looks like
+`{"plan": "free", "period": "none", "remaining": 0, "resetsAt": null, "credits": 2, "funding": "credit"}`.
 Provider usage units (tokens) are recorded on commit; actual provider cost is
 not, because the provider contract does not return it. Error bodies add `code` (and `retryable` for 502). Signed-in users read
-their own allowance with `public.sdi_spatter_my_usage()` (for Settings); the owner
+their own allowance and credit balance with `public.sdi_spatter_my_usage()`
+(for Settings; shape in `docs/BILLING_CONTRACT.md`); the owner
 reads/changes limits with `public.sdi_spatter_usage_admin('get'|'set', …)`,
 revisioned, reason-required and audited in `sdi_private.agent_audit`.
 
@@ -136,7 +147,8 @@ switches and credential non-disclosure. No sockets, provider or database.
 * Owner: choose and configure a provider adapter and model, deploy the
   function, apply the SQL, and set `global_daily_cap` above 0.
 * Owner decisions (implemented in source; metering revised 2026-10-15): Free =
-  Spatter visible but not active (`upgrade_required`); Creator $4.99 = own AI
+  Spatter visible, pay as you go with purchased credits, otherwise
+  `upgrade_required`; credit packs need owner approval and store products; Creator $4.99 = own AI
   key + break-even server allowance (default 174 per period); Pro $9.99 =
   unlimited + own AI key; trial on both paid plans. See
   docs/SPATTER_BILLING_DECISIONS_2026_10_14.md for the earlier decisions.

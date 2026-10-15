@@ -317,3 +317,97 @@ def ledger_from(entries: Sequence[Tuple[str, str, Any, Any]]) -> List[LedgerEntr
             continue
         rows.append(LedgerEntry(ref=str(ref), kind=kind, amount_minor=amount, currency=code))
     return rows
+
+
+# ── Spatter credit packs (owner decision 2026-10-15, later) ──────────────────
+# Consumable store products that credit the Spatter ledger. 1 credit = 1 prompt.
+# No price is carried: the stores own prices; Stripe uses a configured price id.
+CREDIT_GRANT_RPC = "sdi_spatter_credits_grant"
+CREDIT_REFUND_RPC = "sdi_spatter_credits_refund"
+
+
+@dataclass(frozen=True)
+class CreditPack:
+    """One approved credit pack (``sdi_private.spatter_credit_packs``)."""
+
+    product_id: str
+    provider: str
+    credits: int
+    stripe_price_id: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.product_id or len(self.product_id) > 200:
+            raise ValueError("product_id must be 1..200 characters")
+        if self.provider not in PROVIDERS:
+            raise ValueError("provider must be apple or stripe (Google Play has no verification path yet)")
+        if not isinstance(self.credits, int) or isinstance(self.credits, bool) or not 1 <= self.credits <= 100_000:
+            raise ValueError("credits must be 1..100000")
+        if self.provider == "stripe" and not (self.stripe_price_id or "").startswith("price_"):
+            raise ValueError("stripe credit packs need a configured price id")
+        if self.provider == "apple" and self.stripe_price_id is not None:
+            raise ValueError("apple credit packs carry no stripe price id")
+
+
+class CreditPackCatalog:
+    """Approved credit packs the handlers may sell or grant. The database checks
+    approval again on every grant, so a stale catalogue can never over-grant."""
+
+    def __init__(self, packs: Iterable[CreditPack] = ()):
+        self._by_id: Dict[Tuple[str, str], CreditPack] = {}
+        self._by_price: Dict[str, CreditPack] = {}
+        for pack in packs:
+            key = (pack.provider, pack.product_id)
+            if key in self._by_id:
+                raise ValueError("duplicate credit pack %s" % pack.product_id)
+            self._by_id[key] = pack
+            if pack.stripe_price_id:
+                if pack.stripe_price_id in self._by_price:
+                    raise ValueError("duplicate stripe price id")
+                self._by_price[pack.stripe_price_id] = pack
+
+    @classmethod
+    def from_rows(cls, rows: Iterable[Mapping[str, Any]], stripe_price_ids: Optional[Mapping[str, str]] = None) -> "CreditPackCatalog":
+        packs = []
+        for row in rows:
+            if not row.get("approved") or row.get("provider") not in PROVIDERS:
+                continue
+            packs.append(CreditPack(product_id=str(row["product_id"]), provider=str(row["provider"]), credits=int(row["credits"]),
+                                    stripe_price_id=(stripe_price_ids or {}).get(str(row["product_id"])) if row["provider"] == "stripe" else None))
+        return cls(packs)
+
+    def get(self, provider: str, product_id: Any) -> Optional[CreditPack]:
+        if not isinstance(product_id, str) or not product_id:
+            return None
+        return self._by_id.get((provider, product_id))
+
+    def by_stripe_price(self, price_id: Optional[str]) -> Optional[CreditPack]:
+        return self._by_price.get(price_id) if price_id else None
+
+
+def _credit_call(executor: SQLExecutor, name: str, params: Mapping[str, Any]) -> dict:
+    try:
+        result = executor(name, params)
+    except Exception:
+        raise ContractError(500, "database unavailable") from None
+    if not isinstance(result, Mapping) or result.get("status") not in ("granted", "duplicate", "refused", "refunded", "ignored"):
+        raise ContractError(500, "database unavailable")
+    body = {"status": result["status"]}
+    for key in ("credits", "credits_added", "clawed_back", "shortfall", "reason"):
+        if key in result:
+            body[key] = result[key]
+    return body
+
+
+def grant_credits(executor: SQLExecutor, user_id: str, provider: str, product_id: str, transaction_ref: str, livemode: bool) -> dict:
+    """``public.sdi_spatter_credits_grant``: idempotent per (provider, transaction)."""
+    if as_uuid(user_id) is None or provider not in PROVIDERS or not transaction_ref or len(transaction_ref) > 200:
+        raise ContractError(400, "invalid credit grant")
+    return _credit_call(executor, CREDIT_GRANT_RPC, {"p_user": as_uuid(user_id), "p_provider": provider, "p_product_id": product_id,
+                                                     "p_transaction_ref": transaction_ref, "p_livemode": bool(livemode)})
+
+
+def refund_credits(executor: SQLExecutor, provider: str, transaction_ref: str) -> dict:
+    """``public.sdi_spatter_credits_refund``: claws back up to the balance, once."""
+    if provider not in PROVIDERS or not transaction_ref or len(transaction_ref) > 200:
+        raise ContractError(400, "invalid credit refund")
+    return _credit_call(executor, CREDIT_REFUND_RPC, {"p_provider": provider, "p_transaction_ref": transaction_ref})

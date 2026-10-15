@@ -8,6 +8,12 @@ key. No HTTP call is made here. The two approved monthly products are the only
 accepted offers; annual and unknown ids are refused. No amount appears anywhere:
 line items reference the configured ``price_...`` id from the Stripe dashboard.
 
+Spatter credit packs (owner decision 2026-10-15): ``{"action": "credits",
+"pack_id": ...}`` builds a one-time ``mode=payment`` Checkout Session for an
+approved Stripe credit pack only (never a subscription product). The pack id
+and member travel in session and PaymentIntent metadata; credits are granted
+only by ``stripe_webhook`` on the signed ``checkout.session.completed``.
+
 The hosted URL returned by Stripe is the only thing the client may receive
 (``client_response``). A success redirect is not proof of payment; entitlement
 appears only after ``stripe_webhook`` applies the signed events.
@@ -21,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .contract import ApprovedProduct, ContractError, ProductCatalog, Response, header, parse_json_object
+from .contract import ApprovedProduct, ContractError, CreditPack, CreditPackCatalog, ProductCatalog, Response, header, parse_json_object
 
 MAX_BODY_BYTES = 8 * 1024
 MAX_URL_LENGTH = 2048
@@ -128,6 +134,28 @@ def checkout_request(user_id: str, product: ApprovedProduct, return_url: str, co
     return StripeRequest(CHECKOUT_PATH, form, _idempotency_key("checkout", user_id, product.product_id, minute))
 
 
+def credits_checkout_request(user_id: str, pack: CreditPack, return_url: str, config: CheckoutConfig, now: _dt.datetime) -> StripeRequest:
+    """One-time payment for one approved credit pack. No amount is embedded."""
+    if pack.provider != "stripe" or not pack.stripe_price_id:
+        raise ContractError(400, "not an approved Stripe credit pack")
+    form = {
+        "mode": "payment",
+        "line_items[0][price]": pack.stripe_price_id,
+        "line_items[0][quantity]": "1",
+        "client_reference_id": user_id,
+        "success_url": _with_query(return_url, {"checkout": "success", "session_id": "{CHECKOUT_SESSION_ID}"}),
+        "cancel_url": _with_query(return_url, {"checkout": "cancelled"}),
+        "metadata[sdi_user_id]": user_id,
+        "metadata[sdi_credit_pack]": pack.product_id,
+        "payment_intent_data[metadata][sdi_user_id]": user_id,
+        "payment_intent_data[metadata][sdi_credit_pack]": pack.product_id,
+        "billing_address_collection": "auto",
+    }
+    assert not any("amount" in key for key in form), "no amount may be embedded"
+    minute = now.astimezone(_dt.timezone.utc).strftime("%Y%m%d%H%M")
+    return StripeRequest(CHECKOUT_PATH, form, _idempotency_key("credits", user_id, pack.product_id, minute))
+
+
 def portal_request(customer_id: str, return_url: str, now: _dt.datetime) -> StripeRequest:
     if not isinstance(customer_id, str) or not customer_id.startswith("cus_"):
         raise ContractError(404, "no billing account for this member")
@@ -147,8 +175,10 @@ def client_response(stripe_session: Mapping[str, Any]) -> dict:
 def handle(headers: Mapping[str, str], raw_body: bytes, *, verify_jwt: Callable[[str], Mapping[str, Any]],
            account_active: Callable[[str], bool], catalog: ProductCatalog, config: CheckoutConfig,
            customer_for_user: Optional[Callable[[str], Optional[str]]] = None,
+           credit_packs: Optional[CreditPackCatalog] = None,
            now: Callable[[], _dt.datetime] = lambda: _dt.datetime.now(_dt.timezone.utc)) -> Response:
     """Body: ``{"action": "checkout", "product_id": "...", "return_url": "https://..."}``
+    ``{"action": "credits", "pack_id": "...", "return_url": "https://..."}``
     or ``{"action": "portal", "return_url": "https://..."}``. Returns the Stripe
     request to perform server-side, never a price and never a Stripe secret."""
     try:
@@ -174,6 +204,11 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *, verify_jwt: Callable[
             if product.period != "monthly":
                 raise ContractError(400, "annual offers are not available")
             request = checkout_request(user_id, product, return_url, config, current)
+        elif action == "credits":
+            pack = credit_packs.get("stripe", body.get("pack_id")) if credit_packs else None
+            if pack is None:
+                raise ContractError(400, "unknown or unapproved credit pack")
+            request = credits_checkout_request(user_id, pack, return_url, config, current)
         elif action == "portal":
             customer = customer_for_user(user_id) if customer_for_user else None
             request = portal_request(customer, return_url, current)

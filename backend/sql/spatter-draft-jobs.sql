@@ -172,9 +172,10 @@ grant execute on function public.sdi_spatter_draft_status(date,date) to authenti
 -- counts its own allowance. Owner decisions (2026-10-07, revised 2026-10-14
 -- and 2026-10-15, issue #209):
 -- * Free: Spatter and its suggested prompts are visible in the app, but the
---   server never spends anything for a Free account. Every Free request is
---   refused with the stable code 'upgrade_required' (plan 'free', upgrade
---   'creator_or_pro') before any counter, reservation or provider call. The
+--   server never funds a Free prompt. A Free account with no Spatter credits
+--   is refused with the stable code 'upgrade_required' (plan 'free', upgrade
+--   'creator_or_pro', buy_credits true) before any counter, reservation or
+--   provider call; with credits it pays as it goes (see credits below). The
 --   former Free allowance (5 suggested prompts per calendar month, column
 --   free_prompts and 'month:'/'free' buckets) is retired; this file was never
 --   applied, so the column and buckets are removed rather than left unused.
@@ -190,6 +191,14 @@ grant execute on function public.sdi_spatter_draft_status(date,date) to authenti
 -- * Pro (USD 9.99/month): no plan allowance, but still obeys the per-user daily
 --   safety cap, the per-minute rate, the global daily ceiling and the agent
 --   emergency stop.
+-- * Spatter credits (owner decision 2026-10-15, later): consumable store packs
+--   (sdi_private.spatter_credit_packs, no prices: the store owns them) credit
+--   an append-only ledger. 1 credit = 1 prompt. A reservation spends the plan
+--   allowance first (Creator's period allowance; Pro is unlimited and never
+--   spends credits), then one credit. Safety, rate and global caps and the
+--   emergency stop apply before either. A released reservation refunds its
+--   credit. Purchases and refunds are granted only by verified provider
+--   events through the service-only spatter_credits_grant/_refund functions.
 -- A 'trialing' subscription maps to its own tier through
 -- sdi_private.entitlements. The global ceiling defaults to 0 (closed) so
 -- nothing can be spent until the owner sets it. One unit is one prompt;
@@ -224,7 +233,10 @@ create table sdi_private.spatter_usage_global (
 create table sdi_private.spatter_usage_reservations (
  id uuid primary key default gen_random_uuid(),
  user_id uuid not null references auth.users(id) on delete cascade,
- plan text not null check(plan in('creator','pro')),
+ plan text not null check(plan in('free','creator','pro')),
+ -- What paid for the prompt: the plan allowance, Pro's unlimited plan, or one credit.
+ funding text not null check(funding in('allowance','unlimited','credit')),
+ check(plan<>'free' or funding='credit'),
  buckets text[] not null, day date not null,
  state text not null default 'reserved' check(state in('reserved','committed','released')),
  units integer not null default 0 check(units between 0 and 1000000000),
@@ -237,6 +249,67 @@ alter table sdi_private.spatter_usage_reservations enable row level security;
 revoke all on sdi_private.spatter_usage_controls,sdi_private.spatter_usage_counters,sdi_private.spatter_usage_global,
  sdi_private.spatter_usage_reservations from public,anon,authenticated;
 create index spatter_usage_reservations_open on sdi_private.spatter_usage_reservations(state,created_at);
+
+-- Spatter credit packs: consumable store products the owner approves. No price
+-- is stored; App Store Connect, Google Play and the Stripe dashboard own prices.
+create table sdi_private.spatter_credit_packs (
+ product_id text primary key check(length(product_id) between 1 and 200),
+ provider text not null check(provider in('apple','stripe','google')),
+ credits integer not null check(credits between 1 and 100000),
+ approved boolean not null default false,
+ updated_by uuid references auth.users(id) on delete set null,
+ updated_at timestamptz not null default clock_timestamp()
+);
+-- Append-only credit ledger; the balance is sum(delta) and never negative.
+-- Purchases and refunds are unique per (provider, provider_ref) so verified
+-- provider events grant and claw back exactly once. livemode=false marks a
+-- sandbox/test-mode grant; those never create finance_ledger rows.
+create table sdi_private.spatter_credit_ledger (
+ id uuid primary key default gen_random_uuid(),
+ user_id uuid not null references auth.users(id) on delete cascade,
+ delta integer not null check(delta between -100000 and 100000),
+ kind text not null check(kind in('purchase','spend','release','refund','admin_grant')),
+ provider text check(provider in('apple','stripe','google')),
+ provider_ref text check(provider_ref is null or length(provider_ref) between 1 and 200),
+ product_id text check(product_id is null or length(product_id) between 1 and 200),
+ reservation_id uuid references sdi_private.spatter_usage_reservations(id) on delete cascade,
+ livemode boolean not null default true,
+ shortfall integer not null default 0 check(shortfall between 0 and 100000),
+ -- The owner who made an admin_grant. No foreign key: the ledger is append-only
+ -- and an FK set-null would be an update.
+ actor uuid,
+ created_at timestamptz not null default clock_timestamp(),
+ check(kind not in('purchase','refund') or (provider is not null and provider_ref is not null)),
+ check(kind<>'purchase' or delta>0), check(kind<>'spend' or delta=-1), check(kind<>'release' or delta=1),
+ check(kind<>'refund' or delta<=0), check(kind<>'admin_grant' or delta<>0),
+ check(kind not in('spend','release') or reservation_id is not null),
+ check(kind='refund' or shortfall=0)
+);
+create unique index spatter_credit_ledger_provider_once on sdi_private.spatter_credit_ledger(provider,provider_ref,kind) where kind in('purchase','refund');
+create unique index spatter_credit_ledger_reservation_once on sdi_private.spatter_credit_ledger(reservation_id,kind) where reservation_id is not null;
+create index spatter_credit_ledger_user on sdi_private.spatter_credit_ledger(user_id,created_at desc);
+alter table sdi_private.spatter_credit_packs enable row level security;
+alter table sdi_private.spatter_credit_ledger enable row level security;
+revoke all on sdi_private.spatter_credit_packs,sdi_private.spatter_credit_ledger from public,anon,authenticated;
+create function sdi_private.spatter_credit_balance(p_user uuid) returns integer language sql stable security definer set search_path='' as $$
+ select coalesce(sum(l.delta),0)::integer from sdi_private.spatter_credit_ledger l where l.user_id=p_user
+$$;
+-- Append-only: no update; delete only through the account purge cascade (the
+-- account row is already gone). Every insert must leave the balance >= 0.
+create function sdi_private.spatter_credit_ledger_guard() returns trigger language plpgsql set search_path='' as $$
+begin
+ if tg_op='UPDATE' then raise exception 'spatter_credit_ledger is append-only'; end if;
+ if tg_op='DELETE' then
+  if exists(select 1 from auth.users where id=old.user_id) then raise exception 'spatter_credit_ledger is append-only'; end if;
+  return old;
+ end if;
+ if sdi_private.spatter_credit_balance(new.user_id)<0 then raise exception 'spatter credit balance cannot be negative'; end if;
+ return new;
+end $$;
+create trigger spatter_credit_ledger_no_change before update or delete on sdi_private.spatter_credit_ledger
+ for each row execute function sdi_private.spatter_credit_ledger_guard();
+create trigger spatter_credit_ledger_non_negative after insert on sdi_private.spatter_credit_ledger
+ for each row execute function sdi_private.spatter_credit_ledger_guard();
 
 -- The app's suggested-prompt chips. Ids only: the labels and text live in
 -- backend/spatter/suggested_prompts.py. A paid request may name one; an id not
@@ -253,23 +326,25 @@ create function sdi_private.spatter_creator_period_limit(c sdi_private.spatter_u
 -- The account's current plan and allowance, without consuming anything.
 create function sdi_private.spatter_usage_plan(p_user uuid) returns jsonb language plpgsql stable security definer set search_path='' as $$
 declare c sdi_private.spatter_usage_controls; v_tier text; v_paid timestamptz; v_bucket text; v_limit integer; v_used integer;
+ v_credits integer:=sdi_private.spatter_credit_balance(p_user);
 begin
  select * into c from sdi_private.spatter_usage_controls;
  select tier,paid_through into v_tier,v_paid from sdi_private.entitlements where user_id=p_user
   order by case tier when 'pro' then 0 else 1 end,paid_through desc limit 1;
  if v_tier='pro' then
-  return jsonb_build_object('plan','pro','unlimited',true,'limit',null,'used',null,'remaining',null,'period','none','resets_at',null);
+  return jsonb_build_object('plan','pro','unlimited',true,'limit',null,'used',null,'remaining',null,'period','none','resets_at',null,
+   'credits',v_credits,'available',true);
  elsif v_tier='creator' then
   v_bucket:='period:'||to_char(v_paid at time zone 'utc','YYYY-MM-DD"T"HH24:MI:SS"Z"');
   v_limit:=sdi_private.spatter_creator_period_limit(c);
   select u.used into v_used from sdi_private.spatter_usage_counters u where u.user_id=p_user and u.bucket=v_bucket;
   v_used:=coalesce(v_used,0);
   return jsonb_build_object('plan','creator','unlimited',false,'limit',v_limit,'used',v_used,'remaining',greatest(v_limit-v_used,0),
-   'period','billing_period','resets_at',to_jsonb(v_paid),'bucket',v_bucket);
+   'period','billing_period','resets_at',to_jsonb(v_paid),'credits',v_credits,'available',v_limit>v_used or v_credits>0,'bucket',v_bucket);
  end if;
- -- Free: Spatter is visible but not served; nothing is ever allotted or counted.
+ -- Free: no server-funded allowance; Spatter works only on purchased credits.
  return jsonb_build_object('plan','free','unlimited',false,'limit',0,'used',0,'remaining',0,'period','none','resets_at',null,
-  'available',false,'upgrade','creator_or_pro');
+  'credits',v_credits,'available',v_credits>0,'upgrade','creator_or_pro');
 end $$;
 
 -- Service-only atomic reservation of one prompt. Every refusal carries a
@@ -277,16 +352,17 @@ end $$;
 create function sdi_private.spatter_usage_reserve(p_user uuid,p_suggested_prompt text default null) returns jsonb language plpgsql security definer set search_path='' as $$
 declare c sdi_private.spatter_usage_controls; p jsonb; v_day date:=(clock_timestamp() at time zone 'utc')::date;
  v_minute text:=to_char(date_trunc('minute',clock_timestamp() at time zone 'utc'),'YYYY-MM-DD"T"HH24:MI');
- g integer; d integer; m integer; v_buckets text[]; b text; rid uuid;
+ g integer; d integer; m integer; v_buckets text[]; b text; rid uuid; v_funding text; v_credits integer;
 begin
  if p_user is null or not exists(select 1 from auth.users where id=p_user) then
   return jsonb_build_object('allowed',false,'code','unauthorized'); end if;
  if exists(select 1 from sdi_private.account_controls where user_id=p_user and state<>'active') then
   return jsonb_build_object('allowed',false,'code','account_restricted'); end if;
- -- Free (owner decision 2026-10-15): Spatter is visible but never served, so
- -- nothing is spent; refused before any counter or reservation.
- if not exists(select 1 from sdi_private.entitlements where user_id=p_user and tier in('creator','pro')) then
-  return jsonb_build_object('allowed',false,'code','upgrade_required','plan','free','upgrade','creator_or_pro'); end if;
+ -- Free without credits (owner decisions 2026-10-15): nothing is funded, so
+ -- the request is refused before any counter or reservation.
+ if not exists(select 1 from sdi_private.entitlements where user_id=p_user and tier in('creator','pro'))
+  and sdi_private.spatter_credit_balance(p_user)<=0 then
+  return jsonb_build_object('allowed',false,'code','upgrade_required','plan','free','upgrade','creator_or_pro','buy_credits',true,'credits',0); end if;
  if (select emergency_stop from sdi_private.agent_global) then
   return jsonb_build_object('allowed',false,'code','emergency_stop'); end if;
  if p_suggested_prompt is not null and not (p_suggested_prompt=any(sdi_private.spatter_suggested_prompt_ids())) then
@@ -304,24 +380,37 @@ begin
  select coalesce((select used from sdi_private.spatter_usage_counters where user_id=p_user and bucket='day:'||v_day::text),0) into d;
  if d>=c.user_daily_safety_cap then
   return jsonb_build_object('allowed',false,'code','daily_safety_limit','resets_at',(v_day+1)::timestamp at time zone 'utc'); end if;
+ -- Funding order: plan allowance (Pro unlimited, Creator period), then one credit.
  p:=sdi_private.spatter_usage_plan(p_user);
- if not (p->>'unlimited')::boolean and (p->>'remaining')::integer<=0 then
+ v_credits:=(p->>'credits')::integer;
+ if (p->>'unlimited')::boolean then v_funding:='unlimited';
+ elsif (p->>'remaining')::integer>0 then v_funding:='allowance';
+ elsif v_credits>0 then v_funding:='credit';
+ elsif p->>'plan'='free' then
+  return jsonb_build_object('allowed',false,'code','upgrade_required','plan','free','upgrade','creator_or_pro','buy_credits',true,'credits',0);
+ else
   return jsonb_build_object('allowed',false,'code','plan_allowance_exhausted','plan',p->>'plan','period',p->>'period','resets_at',p->'resets_at',
-   'upgrade','pro'); end if;
+   'upgrade','pro','buy_credits',true,'credits',0); end if;
  v_buckets:=array['minute:'||v_minute,'day:'||v_day::text];
- if p->>'bucket' is not null then v_buckets:=v_buckets||(p->>'bucket'); end if;
+ if v_funding='allowance' then v_buckets:=v_buckets||(p->>'bucket'); end if;
  foreach b in array v_buckets loop
   insert into sdi_private.spatter_usage_counters as u(user_id,bucket,used) values(p_user,b,1)
    on conflict(user_id,bucket) do update set used=u.used+1,updated_at=clock_timestamp();
  end loop;
  update sdi_private.spatter_usage_global set used=used+1,updated_at=clock_timestamp() where day=v_day;
- insert into sdi_private.spatter_usage_reservations(user_id,plan,buckets,day) values(p_user,p->>'plan',v_buckets,v_day) returning id into rid;
- return jsonb_build_object('allowed',true,'reservation',rid,'plan',p->>'plan','period',p->>'period',
-  'remaining',case when (p->>'unlimited')::boolean then null else to_jsonb((p->>'remaining')::integer-1) end,'resets_at',p->'resets_at');
+ insert into sdi_private.spatter_usage_reservations(user_id,plan,funding,buckets,day) values(p_user,p->>'plan',v_funding,v_buckets,v_day) returning id into rid;
+ if v_funding='credit' then
+  insert into sdi_private.spatter_credit_ledger(user_id,delta,kind,reservation_id) values(p_user,-1,'spend',rid);
+  v_credits:=v_credits-1;
+ end if;
+ return jsonb_build_object('allowed',true,'reservation',rid,'plan',p->>'plan','period',p->>'period','funding',v_funding,
+  'remaining',case v_funding when 'unlimited' then null when 'allowance' then to_jsonb((p->>'remaining')::integer-1) else to_jsonb((p->>'remaining')::integer) end,
+  'credits',v_credits,'resets_at',p->'resets_at');
 end $$;
 
 -- Settle a reservation exactly once: 'commit' records provider units after a
--- delivered reply; 'release' refunds every counter after a provider failure.
+-- delivered reply; 'release' refunds every counter (and a spent credit, as a
+-- 'release' ledger row) after a provider failure.
 create function sdi_private.spatter_usage_settle(p_reservation uuid,p_outcome text,p_units integer default 0) returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.spatter_usage_reservations; b text;
@@ -336,6 +425,9 @@ begin
    update sdi_private.spatter_usage_counters set used=greatest(used-1,0),updated_at=clock_timestamp() where user_id=r.user_id and bucket=b;
   end loop;
   update sdi_private.spatter_usage_global set used=greatest(used-1,0),updated_at=clock_timestamp() where day=r.day;
+  if r.funding='credit' then
+   insert into sdi_private.spatter_credit_ledger(user_id,delta,kind,reservation_id) values(r.user_id,1,'release',r.id);
+  end if;
   update sdi_private.spatter_usage_reservations set state='released',settled_at=clock_timestamp() where id=r.id;
  else
   update sdi_private.spatter_usage_reservations set state='committed',units=p_units,settled_at=clock_timestamp() where id=r.id;
@@ -370,7 +462,7 @@ begin
  return jsonb_build_object('error','Unknown action.');
 end $$;
 
--- Signed-in account's own allowance for Settings ("remaining prompts").
+-- Signed-in account's own allowance and credit balance for Settings.
 create function sdi_private.spatter_my_usage() returns jsonb language plpgsql security definer set search_path='' as $$
 begin
  if not sdi_private.account_active() then return jsonb_build_object('error','Sign in to view your Spatter allowance.'); end if;
@@ -433,4 +525,117 @@ revoke all on function public.sdi_spatter_usage_meter(text,uuid,uuid,text,intege
  public.sdi_spatter_usage_admin(text,bigint,jsonb,text) from public,anon,authenticated;
 grant execute on function public.sdi_spatter_usage_meter(text,uuid,uuid,text,integer,text) to service_role;
 grant execute on function public.sdi_spatter_my_usage(),public.sdi_spatter_usage_admin(text,bigint,jsonb,text) to authenticated;
+
+-- ── Spatter credits: verified grants, refunds and owner administration ──────
+-- Service-only. Called by backend/billing after a verified provider purchase
+-- (Apple signed transaction, Stripe checkout.session.completed). Only approved
+-- packs grant; a repeated transaction is a duplicate, never a second grant; a
+-- transaction already refunded never grants. livemode=false (sandbox / Stripe
+-- test mode) grants are allowed for testing and flagged on the ledger row.
+create function sdi_private.spatter_credits_grant(p_user uuid,p_provider text,p_product_id text,p_transaction_ref text,p_livemode boolean)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare pk sdi_private.spatter_credit_packs; v_id uuid;
+begin
+ if p_user is null or not exists(select 1 from auth.users where id=p_user) then
+  return jsonb_build_object('status','refused','reason','Unknown account.'); end if;
+ if p_provider is null or p_provider not in('apple','stripe','google') or p_transaction_ref is null
+  or length(p_transaction_ref) not between 1 and 200 or p_livemode is null then
+  return jsonb_build_object('status','refused','reason','Provider, transaction reference and mode are required.'); end if;
+ select * into pk from sdi_private.spatter_credit_packs k where k.product_id=p_product_id and k.provider=p_provider and k.approved;
+ if not found then return jsonb_build_object('status','refused','reason','Not an approved credit pack.'); end if;
+ perform pg_advisory_xact_lock(hashtextextended('sdi_spatter_usage:'||p_user::text,0));
+ if exists(select 1 from sdi_private.spatter_credit_ledger l where l.provider=p_provider and l.provider_ref=p_transaction_ref and l.kind='refund') then
+  return jsonb_build_object('status','refused','reason','Transaction was refunded.'); end if;
+ insert into sdi_private.spatter_credit_ledger(user_id,delta,kind,provider,provider_ref,product_id,livemode)
+ values(p_user,pk.credits,'purchase',p_provider,p_transaction_ref,pk.product_id,p_livemode)
+ on conflict(provider,provider_ref,kind) where kind in('purchase','refund') do nothing returning id into v_id;
+ if v_id is null then
+  return jsonb_build_object('status','duplicate','credits',sdi_private.spatter_credit_balance(p_user)); end if;
+ return jsonb_build_object('status','granted','credits_added',pk.credits,'credits',sdi_private.spatter_credit_balance(p_user),'livemode',p_livemode);
+end $$;
+
+-- Service-only. A verified provider refund claws back the pack's credits up to
+-- the remaining balance (the balance never goes negative); any credits already
+-- spent are recorded as the shortfall on the refund row.
+create function sdi_private.spatter_credits_refund(p_provider text,p_transaction_ref text) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare buy sdi_private.spatter_credit_ledger; v_balance integer; v_claw integer;
+begin
+ if p_provider is null or p_transaction_ref is null then return jsonb_build_object('status','refused','reason','Provider and transaction reference are required.'); end if;
+ select * into buy from sdi_private.spatter_credit_ledger l where l.provider=p_provider and l.provider_ref=p_transaction_ref and l.kind='purchase';
+ if not found then return jsonb_build_object('status','ignored','reason','No credit purchase for this transaction.'); end if;
+ perform pg_advisory_xact_lock(hashtextextended('sdi_spatter_usage:'||buy.user_id::text,0));
+ if exists(select 1 from sdi_private.spatter_credit_ledger l where l.provider=p_provider and l.provider_ref=p_transaction_ref and l.kind='refund') then
+  return jsonb_build_object('status','duplicate','credits',sdi_private.spatter_credit_balance(buy.user_id)); end if;
+ v_balance:=sdi_private.spatter_credit_balance(buy.user_id);
+ v_claw:=least(greatest(v_balance,0),buy.delta);
+ insert into sdi_private.spatter_credit_ledger(user_id,delta,kind,provider,provider_ref,product_id,livemode,shortfall)
+ values(buy.user_id,-v_claw,'refund',buy.provider,buy.provider_ref,buy.product_id,buy.livemode,buy.delta-v_claw);
+ return jsonb_build_object('status','refunded','clawed_back',v_claw,'shortfall',buy.delta-v_claw,'credits',sdi_private.spatter_credit_balance(buy.user_id));
+end $$;
+
+-- Finance administrators read packs and a member's credit history; only the
+-- owner, with a recent MFA step-up, approves packs or grants/removes credits.
+-- Every mutation is written to finance_audit with a reason.
+create function sdi_private.spatter_credit_admin(action text,product text default null,provider text default null,credits integer default null,
+ approved boolean default null,member uuid default null,delta integer default null,reason text default '') returns jsonb
+language plpgsql security definer set search_path='' as $$
+#variable_conflict use_column
+declare denial jsonb; items jsonb; v_balance integer;
+begin
+ denial:=sdi_private.admin_gate('spatter_credit_admin.'||coalesce(action,'?'),'finance',action in('set_pack','grant'),30);
+ if denial is not null then return denial; end if;
+ if action='packs' then
+  select coalesce(jsonb_agg(row_to_json(k) order by k.provider,k.product_id),'[]'::jsonb) into items from sdi_private.spatter_credit_packs k;
+  return jsonb_build_object('packs',items,'label','Credits per pack; prices live in the store dashboards.');
+ elsif action='balance' then
+  if member is null then return jsonb_build_object('error','Select the member.'); end if;
+  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
+   select l.id,l.delta,l.kind,l.provider,l.provider_ref,l.product_id,l.livemode,l.shortfall,l.created_at from sdi_private.spatter_credit_ledger l
+   where l.user_id=member order by l.created_at desc,l.id limit 50) item;
+  return jsonb_build_object('credits',sdi_private.spatter_credit_balance(member),'entries',items);
+ end if;
+ if action not in('set_pack','grant') then return jsonb_build_object('error','Unsupported credit operation.'); end if;
+ if not exists(select 1 from sdi_private.admin_roles r where r.user_id=auth.uid() and r.enabled and r.owner) then
+  return jsonb_build_object('error','Owner permission required.'); end if;
+ if reason is null or length(trim(reason)) not between 1 and 2000 then return jsonb_build_object('error','A reason of at most 2000 characters is required.'); end if;
+ if action='set_pack' then
+  if product is null or length(trim(product)) not between 1 and 200 or provider is null or provider not in('apple','stripe','google')
+   or credits is null or credits not between 1 and 100000 or approved is null then
+   return jsonb_build_object('error','Product id, provider, credits (1 to 100000) and approval required.'); end if;
+  insert into sdi_private.spatter_credit_packs(product_id,provider,credits,approved,updated_by,updated_at)
+  values(trim(product),provider,credits,approved,auth.uid(),clock_timestamp())
+  on conflict(product_id) do update set provider=excluded.provider,credits=excluded.credits,approved=excluded.approved,
+   updated_by=excluded.updated_by,updated_at=excluded.updated_at;
+  insert into sdi_private.finance_audit(actor,action,reason)
+  values(auth.uid(),'set_credit_pack '||trim(product)||' provider='||provider||' credits='||credits||' approved='||approved,trim(spatter_credit_admin.reason));
+  return jsonb_build_object('status','confirmed');
+ end if;
+ -- grant: a signed owner adjustment (goodwill credit or correction).
+ if member is null or not exists(select 1 from auth.users u where u.id=member) or delta is null or delta=0 or delta not between -100000 and 100000 then
+  return jsonb_build_object('error','Select the member and a non-zero credit change between -100000 and 100000.'); end if;
+ perform pg_advisory_xact_lock(hashtextextended('sdi_spatter_usage:'||member::text,0));
+ v_balance:=sdi_private.spatter_credit_balance(member);
+ if v_balance+delta<0 then return jsonb_build_object('error','The balance cannot go below zero.','credits',v_balance); end if;
+ insert into sdi_private.spatter_credit_ledger(user_id,delta,kind,actor) values(member,delta,'admin_grant',auth.uid());
+ insert into sdi_private.finance_audit(actor,action,reason) values(auth.uid(),'grant_spatter_credits '||member||' '||delta,trim(spatter_credit_admin.reason));
+ return jsonb_build_object('status','confirmed','credits',v_balance+delta);
+end $$;
+
+revoke all on function sdi_private.spatter_credit_balance(uuid),sdi_private.spatter_credit_ledger_guard(),
+ sdi_private.spatter_credits_grant(uuid,text,text,text,boolean),sdi_private.spatter_credits_refund(text,text),
+ sdi_private.spatter_credit_admin(text,text,text,integer,boolean,uuid,integer,text) from public,anon,authenticated;
+grant execute on function sdi_private.spatter_credits_grant(uuid,text,text,text,boolean),sdi_private.spatter_credits_refund(text,text) to service_role;
+grant execute on function sdi_private.spatter_credit_admin(text,text,text,integer,boolean,uuid,integer,text) to authenticated;
+create function public.sdi_spatter_credits_grant(p_user uuid,p_provider text,p_product_id text,p_transaction_ref text,p_livemode boolean) returns jsonb
+ language sql security invoker set search_path='' as $$select sdi_private.spatter_credits_grant(p_user,p_provider,p_product_id,p_transaction_ref,p_livemode)$$;
+create function public.sdi_spatter_credits_refund(p_provider text,p_transaction_ref text) returns jsonb
+ language sql security invoker set search_path='' as $$select sdi_private.spatter_credits_refund(p_provider,p_transaction_ref)$$;
+create function public.sdi_spatter_credit_admin(action text,product text default null,provider text default null,credits integer default null,
+ approved boolean default null,member uuid default null,delta integer default null,reason text default '') returns jsonb
+ language sql security invoker set search_path='' as $$select sdi_private.spatter_credit_admin(action,product,provider,credits,approved,member,delta,reason)$$;
+revoke all on function public.sdi_spatter_credits_grant(uuid,text,text,text,boolean),public.sdi_spatter_credits_refund(text,text),
+ public.sdi_spatter_credit_admin(text,text,text,integer,boolean,uuid,integer,text) from public,anon,authenticated;
+grant execute on function public.sdi_spatter_credits_grant(uuid,text,text,text,boolean),public.sdi_spatter_credits_refund(text,text) to service_role;
+grant execute on function public.sdi_spatter_credit_admin(text,text,text,integer,boolean,uuid,integer,text) to authenticated;
 commit;
