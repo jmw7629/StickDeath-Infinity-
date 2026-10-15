@@ -81,10 +81,12 @@ echo "== row counts identical for $TABLES tables ($NONEMPTY non-empty)"
 NO_RLS="$("${PSQL[@]}" -d restored -tA -c "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind='r' and n.nspname in('sdi_private','public') and not c.relrowsecurity")"
 [ "$NO_RLS" = "0" ] || { echo "Restored tables without RLS: $NO_RLS" >&2; exit 1; }
 echo "== row level security enabled on every restored table"
-ANON_FN="$("${PSQL[@]}" -d restored -tA -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'sdi\_%' and has_function_privilege('anon',p.oid,'execute')")"
+# Exactly the three merch-interest RPCs are callable with the publishable key
+# (merch-interest.sql, pinned by 080_rls_review.sql); nothing else may be.
+ANON_FN="$("${PSQL[@]}" -d restored -tA -c "select coalesce(string_agg(p.proname,',' order by p.proname),'') from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'sdi\_%' and has_function_privilege('anon',p.oid,'execute')")"
 SVC_FN="$("${PSQL[@]}" -d restored -tA -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'sdi\_%' and has_function_privilege('service_role',p.oid,'execute')")"
-[ "$ANON_FN" = "0" ] || { echo "anon can execute $ANON_FN functions after restore" >&2; exit 1; }
-echo "== grants intact: anon=0 service-only=$SVC_FN"
+[ "$ANON_FN" = "sdi_merch_suggest,sdi_merch_totals,sdi_merch_vote" ] || { echo "anon can execute unexpected functions after restore: $ANON_FN" >&2; exit 1; }
+echo "== grants intact: anon=merch-interest only service-only=$SVC_FN"
 ENTITLED="$("${PSQL[@]}" -d restored -tA -c "select count(*) from sdi_private.entitlements")"
 [ "$ENTITLED" = "1" ] || { echo "Entitlement view did not come back ($ENTITLED)" >&2; exit 1; }
 echo "== fixture entitlement readable after restore"
