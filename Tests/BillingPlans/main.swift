@@ -48,7 +48,16 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         try require(empty.tier(forProductID: "com.example.unknown") == .free, "unknown id grants nothing")
         try require(empty.plans.first { $0.tier == .creator }?.promptAllowance == .perMonth(15), "Creator 15 prompts per month")
         try require(empty.plans.first { $0.tier == .pro }?.promptAllowance == .unlimited, "Pro unlimited prompts")
-        try require(empty.plans.first { $0.tier == .free }?.promptAllowance == .trial(5), "Free 5 trial prompts")
+        try require(empty.plans.first { $0.tier == .free }?.promptAllowance == .suggestedPerMonth(5), "Free 5 suggested prompts per month")
+        // Owner decisions 2026-10-14: trial and own AI key on both paid plans, neither on Free.
+        try require(empty.plans.map(\.offersTrial) == [false, true, true], "trial applies to Creator and Pro only")
+        try require(empty.plans.map(\.includesOwnAIKey) == [false, true, true], "own AI key on Creator and Pro only")
+        for tier in [BillingPlanTier.creator, .pro] {
+            let texts = empty.plans.first { $0.tier == tier }?.entitlements.map(\.text) ?? []
+            try require(texts.contains { $0.hasPrefix("Use your own AI key") }, "\(tier) lists the own AI key")
+        }
+        try require(empty.plans.first { $0.tier == .free }?.entitlements.map(\.text).contains("5 suggested Spatter prompts per month") == true,
+                    "Free lists 5 suggested prompts per month")
         let paidExtras = empty.plans.filter { $0.tier != .free }.flatMap(\.entitlements).filter { !$0.text.hasPrefix("Everything") }
         try require(!paidExtras.isEmpty && paidExtras.allSatisfy { !$0.isLive }, "paid extras stay pending until server enforcement")
         let text = empty.plans.flatMap(\.entitlements).map(\.text).joined(separator: " ")
@@ -141,6 +150,13 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         try require(BillingCopy.trial(days: 3, eligible: true) == "3-day free trial", "trial from the store offer")
         try require(BillingCopy.trial(days: 3, eligible: false) == nil && BillingCopy.trial(days: nil, eligible: true) == nil,
                     "no trial claim without an eligible store offer")
+        for tier in [BillingPlanTier.creator, .pro] {
+            let plan = catalog.plans.first { $0.tier == tier }
+            try require(BillingCopy.trial(for: plan, days: 3, eligible: true) == "3-day free trial", "\(tier) trial from the store offer")
+            try require(BillingCopy.trial(for: plan, days: 3, eligible: false) == nil, "\(tier) trial needs eligibility")
+        }
+        try require(BillingCopy.trial(for: catalog.plans.first { $0.tier == .free }, days: 3, eligible: true) == nil, "Free never shows a trial")
+        try require(BillingCopy.trial(for: nil, days: 3, eligible: true) == nil, "unknown product shows no trial")
 
         let end = Date(timeIntervalSince1970: 1_792_800_000) // 2026-10-24 UTC
         let us = BillingCopy.date(end, locale: Locale(identifier: "en_US"), timeZone: utc)
@@ -180,6 +196,8 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         try require(BillingCopy.prompts(.perMonth(15), remaining: 0).contains("Upgrade to Pro"), "upgrade prompt at the limit")
         try require(BillingCopy.prompts(.perMonth(15), remaining: 99) == "15 of 15 Spatter prompts left this month.", "server count clamped")
         try require(BillingCopy.prompts(.unlimited, remaining: nil) == "Unlimited Spatter prompts.", "Pro unlimited")
-        try require(BillingCopy.prompts(.trial(5), remaining: 0).contains("Creator or Pro"), "trial prompts exhausted")
+        try require(BillingCopy.prompts(.suggestedPerMonth(5), remaining: 0).contains("Creator or Pro"), "free prompts exhausted")
+        try require(BillingCopy.prompts(.suggestedPerMonth(5), remaining: 3) == "3 of 5 suggested Spatter prompts left this month.", "free remaining")
+        try require(BillingCopy.prompts(.suggestedPerMonth(5), remaining: nil).hasPrefix("5 suggested Spatter prompts per month"), "free plan line")
     }
 }

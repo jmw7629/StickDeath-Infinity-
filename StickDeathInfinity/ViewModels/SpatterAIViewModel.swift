@@ -8,6 +8,13 @@ final class SpatterAIViewModel: ObservableObject {
     typealias Responder = ([SpatterChatMessage], SpatterContext) async throws -> String
     /// Provider-neutral reply with the server's optional remaining budget.
     typealias RichResponder = ([SpatterChatMessage], SpatterContext) async throws -> SpatterCloudReply
+    /// Full cloud request: messages, context, chosen suggested prompt and own-key eligibility.
+    typealias PromptResponder = (SpatterCloudRequest) async throws -> SpatterCloudReply
+    /// Reads the signed-in account's allowance from the server (`sdi_spatter_my_usage`).
+    typealias UsageLoader = () async throws -> SpatterAllowance
+    /// Where the cloud plan stands. `.unmanaged` means this instance has no
+    /// server plan source (previews and tests), so no plan gate is applied.
+    enum PlanCheck: Equatable { case unmanaged, checking, known, unavailable }
     enum Status: Equatable {
         case localGuide, lookingUp, requestingCloud, cloudAdvice, cancelled, stale
         case unavailable(SpatterClientError), invalidInput
@@ -15,7 +22,9 @@ final class SpatterAIViewModel: ObservableObject {
 
     @Published var isOrbVisible = false
     @Published var isExpanded = false
-    @Published var useCloud = false
+    @Published var useCloud = false {
+        didSet { if useCloud && !oldValue { refreshUsage() } }
+    }
     /// Sub-toggle of cloud advice. Off (default) replaces the project and layer
     /// names in the cloud snapshot with ordinals; local guidance is unaffected.
     @Published var shareProjectNames = false
@@ -25,27 +34,103 @@ final class SpatterAIViewModel: ObservableObject {
     @Published private(set) var notice: String?
     /// Last server-reported allowance. Nil until a versioned reply carries one.
     @Published private(set) var cloudBudget: SpatterBudget?
+    /// Last server-reported plan allowance (usage RPC or metered reply). Never computed on the device.
+    @Published private(set) var cloudAllowance: SpatterAllowance?
+    @Published private(set) var planCheck: PlanCheck = .unmanaged
     @Published private(set) var personalPreferences = SpatterPersonalPreferences()
     @Published private(set) var memoryError: String?
     private let memoryStore: SpatterPersonalMemoryStore
     private var memoryScope: SpatterPersonalMemoryStore.Scope?
-    private let responder: RichResponder
+    private let responder: PromptResponder
+    private let usageLoader: UsageLoader?
+    private var usageGeneration = UUID()
     private var request: Task<Void, Never>?
     private var generation = UUID()
     private var scope: String?
     private var cloudHistory: [SpatterChatMessage] = []
 
     static let capabilityNotice = "Advice only. Editing, saving, export and publishing through chat are unavailable. Local references can describe features still under development."
-    var budgetText: String? { cloudBudget?.displayText }
+    var budgetText: String? { cloudAllowance?.displayText ?? cloudBudget?.displayText }
 
     init(responder: @escaping Responder, memoryStore: SpatterPersonalMemoryStore = .init()) {
-        self.responder = { messages, context in
-            SpatterCloudReply(schemaVersion: 0, reply: try await responder(messages, context), usageUnits: nil, budget: nil)
+        self.responder = { request in
+            SpatterCloudReply(schemaVersion: 0, reply: try await responder(request.messages, request.context), usageUnits: nil, budget: nil)
         }
+        self.usageLoader = nil
         self.memoryStore = memoryStore
     }
     init(richResponder: @escaping RichResponder, memoryStore: SpatterPersonalMemoryStore = .init()) {
-        self.responder = richResponder; self.memoryStore = memoryStore
+        self.responder = { request in try await richResponder(request.messages, request.context) }
+        self.usageLoader = nil
+        self.memoryStore = memoryStore
+    }
+    /// Plan-aware coordinator (owner decisions 2026-10-14): Free accounts may only
+    /// send the suggested prompts while cloud advice is on; the allowance shown is
+    /// whatever the server reports through `usageLoader`.
+    init(promptResponder: @escaping PromptResponder, usageLoader: UsageLoader?,
+         memoryStore: SpatterPersonalMemoryStore = .init()) {
+        self.responder = promptResponder
+        self.usageLoader = usageLoader
+        self.memoryStore = memoryStore
+        if usageLoader != nil { planCheck = .checking }
+    }
+
+    // MARK: - Plan gate (Free = suggested prompts only, 5 per month)
+
+    /// True while cloud advice is on and the server has not reported a paid plan:
+    /// the text field is disabled and only the suggested prompts can be sent.
+    /// Local guidance (cloud off) never calls a provider and stays free text.
+    var freeTextLocked: Bool {
+        guard useCloud, usageLoader != nil else { return false }
+        guard let plan = cloudAllowance?.plan else { return true }
+        return plan == .free
+    }
+
+    /// Why the text field is disabled, for the label under it.
+    var freeTextLockReason: String? {
+        guard freeTextLocked else { return nil }
+        switch planCheck {
+        case .checking: return "Checking your Spatter plan… Suggested prompts are available meanwhile."
+        case .unavailable: return "Your Spatter plan could not be checked. Sign in or try again; until then only suggested prompts can be sent."
+        case .unmanaged, .known:
+            return "The Free plan includes 5 suggested Spatter prompts per month. Typing your own question needs Creator or Pro."
+        }
+    }
+
+    /// The suggested prompts are locked when the server reports Free's monthly allowance is used.
+    var suggestionsLockout: String? {
+        guard useCloud, cloudAllowance?.plan == .free else { return nil }
+        return cloudAllowance?.lockoutText
+    }
+    /// Any plan's used-up allowance (Free or Creator), for display with the upgrade link.
+    var allowanceLockout: String? { useCloud ? cloudAllowance?.lockoutText : nil }
+
+    /// Own AI key routing is offered only when the server last reported a paid plan.
+    var ownKeyEligible: Bool { cloudAllowance?.plan.allowsOwnKey ?? false }
+
+    func refreshUsage() {
+        guard let usageLoader else { return }
+        let generation = usageGeneration
+        planCheck = .checking
+        Task { [weak self] in
+            do {
+                let allowance = try await usageLoader()
+                guard let self, self.usageGeneration == generation else { return }
+                self.cloudAllowance = allowance; self.planCheck = .known
+            } catch {
+                guard let self, self.usageGeneration == generation else { return }
+                self.planCheck = .unavailable
+            }
+        }
+    }
+
+    /// Send one of the app's suggested prompts. The visible text is its label;
+    /// the server substitutes its own canonical prompt for Free accounts.
+    @discardableResult
+    func submitSuggested(_ suggestion: SpatterSuggestedPrompt, context: SpatterContext,
+                         stillCurrent: @escaping () -> Bool = { true }) -> Bool {
+        guard SpatterSuggestedPrompt.find(suggestion.id) == suggestion else { return false }
+        return submitCore(suggestion.label, context: context, suggestedPromptID: suggestion.id, stillCurrent: stillCurrent)
     }
     func suspendPersonalMemory() {
         endSession(); personalPreferences = .init(); memoryScope = nil; memoryError = nil
@@ -97,8 +182,23 @@ final class SpatterAIViewModel: ObservableObject {
     @discardableResult
     func submit(_ content: String, context: SpatterContext,
                 stillCurrent: @escaping () -> Bool = { true }) -> Bool {
+        submitCore(content, context: context, suggestedPromptID: nil, stillCurrent: stillCurrent)
+    }
+
+    private func submitCore(_ content: String, context: SpatterContext, suggestedPromptID: String?,
+                            stillCurrent: @escaping () -> Bool) -> Bool {
         let prompt = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !isThinking else { return false }
+        if useCloud && suggestedPromptID == nil && freeTextLocked {
+            status = .invalidInput
+            notice = freeTextLockReason
+            return false
+        }
+        if useCloud && suggestedPromptID != nil, let lockout = suggestionsLockout {
+            status = .invalidInput
+            notice = lockout
+            return false
+        }
         guard !prompt.isEmpty, prompt.utf8.count <= 6000 else {
             status = .invalidInput
             notice = "Enter a message of at most 6,000 UTF-8 bytes. Your draft has been kept."
@@ -122,13 +222,15 @@ final class SpatterAIViewModel: ObservableObject {
         isThinking = true
         status = cloud ? .requestingCloud : .lookingUp
         let history = boundedCloudHistory(adding: prompt)
+        let ownKeyEligible = self.ownKeyEligible
         request = Task { [weak self] in
             guard let self else { return }
             await Task.yield()
             do {
                 try Task.checkCancellation()
                 if cloud {
-                    let reply = try await self.responder(history, cloudContext)
+                    let reply = try await self.responder(SpatterCloudRequest(
+                        messages: history, context: cloudContext, suggestedPromptID: suggestedPromptID, ownKeyEligible: ownKeyEligible))
                     let response = reply.reply
                     try Task.checkCancellation()
                     guard !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -139,6 +241,10 @@ final class SpatterAIViewModel: ObservableObject {
                     self.appendAdvice(response, origin: .cloud)
                     self.cloudHistory = history + [.init(role: .assistant, content: response)]
                     if let budget = reply.budget { self.cloudBudget = budget }
+                    if let allowance = reply.allowance { self.cloudAllowance = allowance; self.planCheck = .known }
+                    if reply.viaOwnKey {
+                        self.notice = "Answered with your own AI key, directly from this device. It did not count against your plan."
+                    } else if reply.allowance == nil { self.refreshUsage() }
                     self.status = .cloudAdvice
                 } else {
                     let response = self.personalizedLocalGuidance(for: prompt, context: context)
@@ -157,7 +263,9 @@ final class SpatterAIViewModel: ObservableObject {
                 else if error is AppConfigurationError { classified = .notConfigured }
                 else { classified = .networkUnavailable }
                 self.status = .unavailable(classified)
-                self.notice = classified.localizedDescription
+                // Own-key errors carry their own key-free message.
+                self.notice = (error as? SpatterUserFacingError)?.errorDescription ?? classified.localizedDescription
+                if cloud { self.refreshUsage() }
                 self.appendAdvice(self.personalizedLocalGuidance(for: prompt, context: context), origin: .local)
             }
             guard self.generation == requestID else { return }
@@ -204,6 +312,8 @@ final class SpatterAIViewModel: ObservableObject {
     func endSession() {
         cancel(); messages.removeAll(); cloudHistory.removeAll(); scope = nil
         useCloud = false; shareProjectNames = false; cloudBudget = nil; notice = nil; status = .localGuide
+        // A plan belongs to one account; a new session asks the server again.
+        usageGeneration = UUID(); cloudAllowance = nil; planCheck = usageLoader == nil ? .unmanaged : .checking
     }
 
     // Compatibility for the retained, currently unmounted orb surface.
@@ -219,7 +329,7 @@ final class SpatterAIViewModel: ObservableObject {
     /// These are instructions for the user, never execution receipts.
     static let currentGuideVersion = "2026-10-13.1"
     /// Price points the owner approved; nothing here reads a live store or entitlement.
-    static let pricingGuide = "The planned subscription plans are USD 4.99 per month and USD 9.99 per month. Annual pricing is not configured and cannot be offered until the owner records it explicitly. I cannot see live store prices, trials, taxes or your current entitlement; the store sheet that processes the purchase shows what actually applies, and nothing is charged from this conversation."
+    static let pricingGuide = "The planned subscription plans are USD 4.99 per month and USD 9.99 per month. Annual pricing is not configured and cannot be offered until the owner records it explicitly. Free includes 5 of the app's suggested Spatter prompts per month (no typed questions to cloud advice); Creator includes 15 Spatter prompts per month and the option to use your own AI key; Pro includes unlimited prompts and the option to use your own AI key. Prompts sent with your own key go from your device to your provider and are not counted. A trial applies to both Creator and Pro, but the store shows one only when your account is eligible. I cannot see live store prices, trials, taxes or your current entitlement; the store sheet that processes the purchase shows what actually applies, and nothing is charged from this conversation."
     /// Verified sign-in and account facts. Nothing here grants account access.
     static let accountGuide = "Sign in with Apple, Google, GitHub or Microsoft through the sign-in screen; the app restores a saved session on launch and shows Loading until that check finishes. Guest use keeps projects and local Spatter preferences on this device under a separate guest scope, and signing in later does not merge or upload them. Admin roles come from server-authorized metadata, never from the app. In-app account deletion is not available yet: the screen does not offer a delete button and I cannot delete, merge, rename or inspect accounts, change email or reset passwords from this conversation. Editable projects stay on your device; the server keeps only identity, access, vote, consent, billing and job metadata. Do not paste passwords, verification codes or card numbers here."
     /// Rooms as implemented today: invitation codes, mutual agreement, no chat or calls.
@@ -572,6 +682,16 @@ struct SpatterMessage: Identifiable {
     var origin: Origin?
     enum SpatterRole { case user, assistant }
     enum Origin { case local, cloud }
+}
+
+/// One cloud request from the coordinator. `suggestedPromptID` is set only when
+/// the member chose a suggested prompt; `ownKeyEligible` is true only when the
+/// server last reported a paid plan.
+struct SpatterCloudRequest {
+    let messages: [SpatterChatMessage]
+    let context: SpatterContext
+    let suggestedPromptID: String?
+    let ownKeyEligible: Bool
 }
 
 /// A bounded advice snapshot. Generic routes cannot carry an open Studio project.

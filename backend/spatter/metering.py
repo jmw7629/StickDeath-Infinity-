@@ -12,9 +12,14 @@ the same rules for tests and single-process previews:
 * emergency stop (``sdi_private.agent_global``) refuses everything;
 * a global daily ceiling, closed (0) until the owner sets it;
 * a per-account per-minute rate and a per-account daily safety cap;
-* plan allowances from the owner's 2026-10-07 decisions: ``free`` 5 prompts
-  treated as one-time, ``creator`` (USD 4.99) 15 per billing period keyed to
-  the subscription's paid-through date, ``pro`` (USD 9.99) no plan allowance.
+* plan allowances from the owner's decisions (2026-10-07, revised 2026-10-14):
+  ``free`` 5 suggested prompts per UTC calendar month and no free text (a
+  request without an allowlisted suggested-prompt id is refused with
+  ``suggested_prompt_required`` before anything is counted), ``creator``
+  (USD 4.99) 15 per billing period keyed to the subscription's paid-through
+  date, ``pro`` (USD 9.99) no plan allowance. A trialing subscription meters as
+  its own tier (the free trial applies to both paid plans). Prompts a member
+  sends with their own AI key go device-to-provider and never reach this meter.
 
 Nothing here reads a secret, contacts a provider or decides an entitlement: the
 plan comes from the server-side entitlement view, never from the request.
@@ -26,17 +31,21 @@ import uuid as _uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Tuple
 
+from .suggested_prompts import SUGGESTED_PROMPT_IDS
+
 PLANS = ("free", "creator", "pro")
 REFUSAL_CODES = (
     "unauthorized", "account_restricted", "emergency_stop", "global_limit",
     "rate_limited", "daily_safety_limit", "plan_allowance_exhausted",
+    "suggested_prompt_required", "unknown_suggested_prompt",
 )
 
 
 @dataclass(frozen=True)
 class Decision:
     """Outcome of one reservation attempt. ``remaining`` is None for an
-    unlimited plan; ``resets_at`` is None for a one-time allowance."""
+    unlimited plan. Free resets at the next UTC calendar month, Creator at the
+    subscription's paid-through date."""
 
     allowed: bool
     code: str = ""
@@ -50,7 +59,7 @@ class Decision:
 
 
 class Meter(Protocol):
-    def reserve(self, user_id: str) -> Decision: ...
+    def reserve(self, user_id: str, suggested_prompt: Optional[str] = None) -> Decision: ...
 
     def settle(self, reservation: str, outcome: str, units: int = 0) -> bool: ...
 
@@ -105,8 +114,11 @@ class SqlMeter:
     def __init__(self, rpc: Callable[[str, Dict[str, Any]], Mapping[str, Any]]):
         self._rpc = rpc
 
-    def reserve(self, user_id: str) -> Decision:
-        return decision_from_rpc(self._rpc(self.FUNCTION, {"action": "reserve", "p_user": user_id}))
+    def reserve(self, user_id: str, suggested_prompt: Optional[str] = None) -> Decision:
+        params: Dict[str, Any] = {"action": "reserve", "p_user": user_id}
+        if suggested_prompt is not None:
+            params["p_suggested_prompt"] = suggested_prompt
+        return decision_from_rpc(self._rpc(self.FUNCTION, params))
 
     def settle(self, reservation: str, outcome: str, units: int = 0) -> bool:
         if outcome not in ("commit", "release"):
@@ -161,12 +173,14 @@ class InMemoryMeter:
             bucket, limit = "period:" + paid.strftime("%Y-%m-%dT%H:%M:%SZ"), self.controls.creator_period_prompts
             period, resets = "billing_period", paid
         else:
-            bucket, limit, period, resets = "free", self.controls.free_prompts, "one_time", None
+            now = self._utc()
+            bucket, limit, period = "month:" + now.strftime("%Y-%m"), self.controls.free_prompts, "calendar_month"
+            resets = _dt.datetime(now.year + (now.month == 12), now.month % 12 + 1, 1, tzinfo=_dt.timezone.utc)
         used = self.counters.get((user_id, bucket), 0)
-        return {"plan": "creator" if bucket != "free" else "free", "unlimited": False, "limit": limit, "used": used,
+        return {"plan": "creator" if bucket.startswith("period:") else "free", "unlimited": False, "limit": limit, "used": used,
                 "remaining": max(limit - used, 0), "period": period, "resets_at": resets, "bucket": bucket}
 
-    def reserve(self, user_id: str) -> Decision:
+    def reserve(self, user_id: str, suggested_prompt: Optional[str] = None) -> Decision:
         state = self.account_state(user_id)
         if state is None:
             return Decision(False, "unauthorized")
@@ -174,6 +188,10 @@ class InMemoryMeter:
             return Decision(False, "account_restricted")
         if self.controls.emergency_stop:
             return Decision(False, "emergency_stop")
+        if suggested_prompt is not None and suggested_prompt not in SUGGESTED_PROMPT_IDS:
+            return Decision(False, "unknown_suggested_prompt")
+        if self.plan(user_id)["plan"] == "free" and suggested_prompt is None:
+            return Decision(False, "suggested_prompt_required", plan="free", upgrade="creator_or_pro")
         now = self._utc()
         day = now.date()
         if self.global_used.get(day, 0) >= self.controls.global_daily_cap:
