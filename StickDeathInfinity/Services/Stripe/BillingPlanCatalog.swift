@@ -8,8 +8,14 @@
 // settings/onboarding views render only what this file returns.
 //
 // - Plans: Free, Creator (USD 4.99/month) and Pro (USD 9.99/month), the
-//   owner's 2026-10-07 decisions. Amounts are never stored here: the price
-//   shown is Apple's `Product.displayPrice` or "Price shown when configured".
+//   owner's 2026-10-07 decisions as revised 2026-10-14: Free = 5 suggested
+//   Spatter prompts per month (no free text); Creator = 15 prompts per month
+//   plus your own AI key; Pro = unlimited prompts plus your own AI key; the
+//   free trial applies to both paid plans. Amounts are never stored here: the
+//   price shown is Apple's `Product.displayPrice` or "Price shown when configured".
+// - Trial text appears only when the App Store reports an eligible
+//   introductory free-trial offer for that product (`BillingCopy.trial`), and
+//   only on a plan whose `offersTrial` is true (Creator and Pro).
 // - Annual plans appear only when the build configuration names annual product
 //   ids AND sets the explicit owner flag. Neither exists today.
 // - Every paid entitlement is labelled pending until the server enforces it.
@@ -36,8 +42,8 @@ enum BillingPeriod: String, Equatable {
 }
 
 enum SpatterPromptAllowance: Equatable {
-    /// A one-time allowance (the owner's 5 free prompts; one-time until the owner says otherwise).
-    case trial(Int)
+    /// Free: this many of the app's suggested prompts per calendar month, no free text.
+    case suggestedPerMonth(Int)
     /// Counted per billing period on the server, resetting at each renewal.
     case perMonth(Int)
     case unlimited
@@ -60,6 +66,11 @@ struct BillingPlanDefinition: Equatable, Identifiable {
     let promptAllowance: SpatterPromptAllowance
 
     var id: String { productID ?? "free" }
+    /// The free trial applies to both paid plans (owner decision 2026-10-14).
+    /// Whether one is shown still depends on the App Store's eligible offer.
+    var offersTrial: Bool { tier != .free }
+    /// Bring-your-own AI key is part of both paid plans (owner decision 2026-10-14).
+    var includesOwnAIKey: Bool { tier != .free }
 }
 
 struct BillingPlanCatalog: Equatable {
@@ -82,17 +93,19 @@ struct BillingPlanCatalog: Equatable {
         BillingEntitlement(text: "Full Studio on this device", isLive: true),
         BillingEntitlement(text: "Projects stay on this device", isLive: true),
         BillingEntitlement(text: "Video upload and download not included", isLive: false),
-        BillingEntitlement(text: "5 Spatter prompts to try", isLive: false),
+        BillingEntitlement(text: "5 suggested Spatter prompts per month", isLive: false),
     ]
     static let creatorEntitlements = [
         BillingEntitlement(text: "Everything in Free", isLive: true),
         BillingEntitlement(text: "No watermark", isLive: false),
         BillingEntitlement(text: "Upload and download your videos", isLive: false),
         BillingEntitlement(text: "15 Spatter prompts per month", isLive: false),
+        BillingEntitlement(text: "Use your own AI key (those prompts are not counted)", isLive: false),
     ]
     static let proEntitlements = [
         BillingEntitlement(text: "Everything in Creator", isLive: true),
         BillingEntitlement(text: "Unlimited Spatter prompts", isLive: false),
+        BillingEntitlement(text: "Use your own AI key", isLive: false),
     ]
 
     /// Build from the app's Info.plist dictionary. Unexpanded `$(VAR)` values are not configuration.
@@ -107,7 +120,7 @@ struct BillingPlanCatalog: Equatable {
         let pro = value(proMonthlyKey)
         var plans = [
             BillingPlanDefinition(tier: .free, name: "Free", period: .monthly, productID: nil,
-                                  entitlements: freeEntitlements, promptAllowance: .trial(5)),
+                                  entitlements: freeEntitlements, promptAllowance: .suggestedPerMonth(5)),
             BillingPlanDefinition(tier: .creator, name: "Creator", period: .monthly,
                                   productID: creator ?? placeholderCreatorMonthly,
                                   entitlements: creatorEntitlements, promptAllowance: .perMonth(15)),
@@ -360,6 +373,12 @@ enum BillingCopy {
         return days == 1 ? "1-day free trial" : "\(days)-day free trial"
     }
 
+    /// Trial copy for one plan: never on Free, and only from an eligible store offer.
+    static func trial(for plan: BillingPlanDefinition?, days: Int?, eligible: Bool) -> String? {
+        guard plan?.offersTrial == true else { return nil }
+        return trial(days: days, eligible: eligible)
+    }
+
     static func planTitle(_ plan: BillingPlanDefinition) -> String {
         plan.tier == .free ? plan.name : "\(plan.name) (\(plan.period == .monthly ? "monthly" : "annual"))"
     }
@@ -427,6 +446,8 @@ enum BillingCopy {
         switch (allowance, remaining) {
         case (.unlimited, _):
             return "Unlimited Spatter prompts."
+        case (.suggestedPerMonth(let total), nil):
+            return "\(total) suggested Spatter prompts per month. Remaining prompts appear once the server reports them."
         case (_, nil):
             return "Remaining Spatter prompts appear once the server reports them."
         case (.perMonth(let total), let reported?):
@@ -434,11 +455,11 @@ enum BillingCopy {
             return left == 0
                 ? "All \(total) Spatter prompts used this month. Upgrade to Pro for unlimited prompts, or wait for your renewal."
                 : "\(left) of \(total) Spatter prompts left this month."
-        case (.trial(let total), let reported?):
+        case (.suggestedPerMonth(let total), let reported?):
             let left = max(0, min(reported, total))
             return left == 0
-                ? "All \(total) trial Spatter prompts used. Choose Creator or Pro to keep using Spatter."
-                : "\(left) of \(total) trial Spatter prompts left."
+                ? "All \(total) suggested Spatter prompts used this month. Choose Creator or Pro to keep using Spatter now, or wait for next month."
+                : "\(left) of \(total) suggested Spatter prompts left this month."
         }
     }
 

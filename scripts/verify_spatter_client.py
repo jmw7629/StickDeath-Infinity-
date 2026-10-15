@@ -31,13 +31,28 @@ def main() -> None:
         r'https://(?:api\.openai\.com|text\.pollinations\.ai|'
         r'generativelanguage\.googleapis\.com|api\.anthropic\.com)\b|'
         r'\b(?:openAIKey|geminiKey|openAIAPIKey|geminiAPIKey|superuserEmails)\b', re.I)
+    # Owner decision 2026-10-14 (#209): Creator/Pro members may use their own AI
+    # key, sent device-to-provider. Exactly one bounded client may name the two
+    # provider endpoints; every other app source keeps the original prohibition.
+    own_key_client = 'StickDeathInfinity/Services/Spatter/SpatterOwnKey.swift'
+    own_key_store = 'StickDeathInfinity/Services/Spatter/SpatterOwnKeyKeychain.swift'
+    own_key_forbidden = re.compile(
+        r'https://(?:text\.pollinations\.ai|generativelanguage\.googleapis\.com)\b|'
+        r'\b(?:openAIKey|geminiKey|openAIAPIKey|geminiAPIKey|superuserEmails)\b|'
+        r'\bSpatterBackendClient\(|\bprint\(|\bNSLog\(|\bos_log\(|\bLogger\(', re.I)
     bad = []
     for path in sorted(tracked):
         if path.startswith('StickDeathInfinity/') and path.endswith('.swift'):
-            if forbidden.search((ROOT / path).read_text()):
+            pattern = own_key_forbidden if path == own_key_client else forbidden
+            if pattern.search((ROOT / path).read_text()):
                 bad.append(path)
     if bad:
         raise ValueError('Forbidden client-provider/admin contract in: ' + ', '.join(bad))
+    if own_key_client in tracked:
+        store = (ROOT / own_key_store).read_text() if own_key_store in tracked else ''
+        if not all(marker in store for marker in ('kSecAttrAccessibleWhenUnlockedThisDeviceOnly',
+                                                   'kSecAttrSynchronizable as String: kCFBooleanFalse')):
+            raise ValueError('Own AI key must be stored this-device-only and never synchronizable')
     app = ROOT / 'StickDeathInfinity'
     service = (app / 'Services/Spatter/SpatterService.swift').read_text()
     brain = (app / 'AI/SpatterBrainLoader.swift').read_text()

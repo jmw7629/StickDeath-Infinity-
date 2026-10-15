@@ -30,6 +30,17 @@ jobs:
             Tests/SpatterClient/main.swift \
             -o /tmp/sdi-spatter-client-tests
           timeout 60s /tmp/sdi-spatter-client-tests
+      - name: Verify Spatter plan access and own AI key client against fake transports
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Services/Spatter/SpatterOwnKey.swift \
+            Tests/SpatterOwnKey/main.swift \
+            -o /tmp/sdi-spatter-own-key-tests
+          timeout 60s /tmp/sdi-spatter-own-key-tests
       - name: Verify Foundation-only audio timeline logic waveform cache and sound credits
         shell: bash
         run: |

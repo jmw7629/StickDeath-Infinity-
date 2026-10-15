@@ -36,7 +36,7 @@ final class SpatterService {
     - Studio Systems: Layers, timeline, onion skin, undo/redo, autosave, export, grid
     - AI Animation: Autonomous builder, fix-this-scene, cinematic pass, viral pass
     - Social: TikTok/YouTube strategy, thumbnail intelligence, comment bait, social agent
-    - Collaboration: LiveKit calls, voice/video flow, studio share, watch together, rooms
+    - Collaboration: invitation-based Studio project rooms, Watch Together and Calendar; no chat or calls
     - Community: Challenges, creator support, reward loops, creator identity
     - Business: Owner ops, payment entitlements, bug triage, investor reporting, moderation
     - Lore: Old Internet Mode, Corrupted Spatter Mode
@@ -94,13 +94,21 @@ final class SpatterService {
     /// retired messaging/call lines; see Tests/SpatterConversation for the check.
     func chatReply(
         messages: [(role: String, content: String)],
-        context: SpatterContext? = nil
+        context: SpatterContext? = nil,
+        suggestedPromptID: String? = nil,
+        ownKeyEligible: Bool = false
     ) async throws -> SpatterCloudReply {
         guard AppConfig.backendURL != nil else { throw SpatterClientError.notConfigured }
         let supabase = try SupabaseManager.shared.client
         // Obtain an SDK-managed authenticated session before any optional knowledge request.
         guard let sessionToken = try? await supabase.auth.session.accessToken,
               !sessionToken.isEmpty else { throw SpatterClientError.notAuthenticated }
+        // Own AI key (Creator/Pro, owner decision 2026-10-14): only when the server
+        // last reported a paid plan and this account saved a key on this device.
+        var ownKey: SpatterOwnKeyCredential?
+        if ownKeyEligible, let account = try? await supabase.auth.session.user.id.uuidString.lowercased() {
+            ownKey = (try? Self.ownKeyStore.load(account: account)) ?? nil
+        }
         try Task.checkCancellation()
 
         let embeddedKnowledge = buildKnowledgeContext(
@@ -117,13 +125,35 @@ final class SpatterService {
             }
             apiMessages.append(SpatterChatMessage(role: role, content: message.content))
         }
+        if let ownKey {
+            // Device-to-provider with the member's key; the backend never sees it
+            // and the prompt does not count against the plan allowance.
+            let current = try await SupabaseManager.shared.client.auth.session.accessToken
+            guard current == sessionToken else { throw SpatterClientError.notAuthenticated }
+            return try await SpatterDirectProviderClient().complete(messages: apiMessages, credential: ownKey)
+        }
         let client = SpatterBackendClient(sessionToken: {
             // Refuse an account/session change while optional knowledge was loading.
             let current = try await SupabaseManager.shared.client.auth.session.accessToken
             guard current == sessionToken else { throw SpatterClientError.notAuthenticated }
             return current
         })
-        return try await client.completeReply(messages: apiMessages)
+        return try await client.completeReply(messages: apiMessages, suggestedPromptID: suggestedPromptID)
+    }
+
+    /// Device-only own-key storage (Keychain, this device only, never synced).
+    static let ownKeyStore: SpatterOwnKeyStore = KeychainSpatterOwnKeyStore()
+
+    /// The signed-in account's Spatter allowance as the server reports it
+    /// (`public.sdi_spatter_my_usage`). The device never counts prompts itself.
+    func myUsage() async throws -> SpatterAllowance {
+        guard AppConfig.backendURL != nil else { throw SpatterClientError.notConfigured }
+        let supabase = try SupabaseManager.shared.client
+        guard let token = try? await supabase.auth.session.accessToken, !token.isEmpty else {
+            throw SpatterClientError.notAuthenticated
+        }
+        let response = try await supabase.rpc("sdi_spatter_my_usage").execute()
+        return try SpatterAllowance.decodeUsage(response.data)
     }
 
     // MARK: - Quick Knowledge Lookup
@@ -152,9 +182,10 @@ private struct SupabaseKnowledgeEntry: Codable {
 // actual production behavior can be tested without an SDK or network substitute.
 extension SpatterAIViewModel {
     convenience init() {
-        self.init(richResponder: { messages, context in
+        self.init(promptResponder: { request in
             try await SpatterService.shared.chatReply(
-                messages: messages.map { (role: $0.role.rawValue, content: $0.content) }, context: context)
-        })
+                messages: request.messages.map { (role: $0.role.rawValue, content: $0.content) }, context: request.context,
+                suggestedPromptID: request.suggestedPromptID, ownKeyEligible: request.ownKeyEligible)
+        }, usageLoader: { try await SpatterService.shared.myUsage() })
     }
 }

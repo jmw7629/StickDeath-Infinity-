@@ -3,7 +3,7 @@
 This is the server side of the versioned, provider-neutral contract that
 ``StickDeathInfinity/App/SpatterBackendClient.swift`` speaks:
 
-    request  {schemaVersion: 1, messages: [{role, content}], max_tokens?, temperature?}
+    request  {schemaVersion: 1, messages: [{role, content}], suggestedPromptId?, max_tokens?, temperature?}
     response {schemaVersion: 1, reply, usage: {units}, budget: {remaining, resetsAt}}
 
 The handler is framework-free and standard-library only. Deployment wires it to
@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Tuple
 
 from .metering import Decision, Meter
+from . import suggested_prompts
 from .providers import ProviderRouter, ProviderUnavailable  # noqa: F401  (ProviderRouter is the deployment provider)
 
 SCHEMA_VERSION = 1
@@ -113,7 +114,7 @@ def _bearer(headers: Mapping[str, str]) -> str:
     return token
 
 
-def _parse_request(raw: bytes) -> list:
+def _parse_request(raw: bytes) -> Tuple[list, Optional[str]]:
     if len(raw) > MAX_BODY_BYTES:
         raise HandlerError(413, "request too large")
     try:
@@ -140,7 +141,11 @@ def _parse_request(raw: bytes) -> list:
         cleaned.append({"role": role, "content": content})
     if cleaned[-1]["role"] != "user":
         raise HandlerError(400, "last message must be from the user")
-    return cleaned
+    try:
+        suggested = suggested_prompts.validate_id(body.get("suggestedPromptId"))
+    except ValueError:
+        raise HandlerError(400, "unknown suggested prompt", code="unknown_suggested_prompt") from None
+    return cleaned, suggested
 
 
 def _user_id(claims: Mapping[str, Any]) -> str:
@@ -172,13 +177,13 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *,
         exp = claims.get("exp")
         if not isinstance(exp, (int, float)) or exp <= now().timestamp():
             raise HandlerError(401, "token expired")
-        messages = _parse_request(raw_body)
+        messages, suggested = _parse_request(raw_body)
         # Provider readiness is checked before a unit is consumed: an unconfigured
         # deployment must not drain anyone's daily budget.
         if isinstance(provider, NullProvider) or getattr(provider, "configured", True) is False:
             raise HandlerError(503, "not configured")
         if meter is not None:
-            return _metered(user_id, messages, meter, provider)
+            return _metered(user_id, messages, suggested, meter, provider)
         if budget is None:
             raise HandlerError(503, "not configured")
         reservation = budget.reserve(user_id)
@@ -224,13 +229,17 @@ _REFUSALS = {
     "rate_limited": (429, "too many requests"),
     "daily_safety_limit": (429, "daily safety limit reached"),
     "plan_allowance_exhausted": (429, "plan allowance used"),
+    # Free accepts only the app's suggested prompts (owner decision 2026-10-14).
+    "suggested_prompt_required": (403, "free plan accepts suggested prompts only"),
+    "unknown_suggested_prompt": (400, "unknown suggested prompt"),
     "unavailable": (503, "metering unavailable"),
 }
 
 
 def _allowance(decision: Decision) -> dict:
     """Plan allowance for the client. ``remaining`` is null for an unlimited
-    plan and ``resetsAt`` null for a one-time allowance; never a guess."""
+    plan; ``resetsAt`` is the next calendar month (Free) or the renewal date
+    (Creator); never a guess."""
     return {
         "plan": decision.plan,
         "period": decision.period,
@@ -239,9 +248,9 @@ def _allowance(decision: Decision) -> dict:
     }
 
 
-def _metered(user_id: str, messages: list, meter: Meter, provider: Provider) -> Response:
+def _metered(user_id: str, messages: list, suggested: Optional[str], meter: Meter, provider: Provider) -> Response:
     try:
-        decision = meter.reserve(user_id)
+        decision = meter.reserve(user_id) if suggested is None else meter.reserve(user_id, suggested_prompt=suggested)
     except Exception:
         raise HandlerError(503, "metering unavailable", code="unavailable") from None
     if not decision.allowed or not decision.reservation:
@@ -262,6 +271,12 @@ def _metered(user_id: str, messages: list, meter: Meter, provider: Provider) -> 
         except Exception:
             pass  # An unsettled reservation stays counted; the SQL sweep never refunds silently.
 
+    if decision.plan == "free":
+        if suggested is None:  # The meter must have refused; never send free text on Free.
+            release()
+            raise HandlerError(403, "free plan accepts suggested prompts only", code="suggested_prompt_required", upgrade="creator_or_pro")
+        # Free requests carry no client text to the provider: only the canonical prompt.
+        messages = suggested_prompts.free_messages(suggested)
     try:
         reply, units = provider.complete(messages)
     except HandlerError:

@@ -50,21 +50,34 @@ the single source for plans, periods, purchase state and plan copy. Both views a
 
 | Plan | Product | Owner-stated entitlements (2026-10-07, #250/#259) | Enforced today |
 | --- | --- | --- | --- |
-| Free | none | Full Studio on device; no video upload/download; 5 Spatter prompts to try (one-time until the owner says otherwise) | Studio only |
-| Creator | USD 4.99 monthly | No watermark; upload/download; 15 Spatter prompts per month (server-counted, reset at renewal) | none (pending) |
-| Pro | USD 9.99 monthly | Everything in Creator; unlimited Spatter prompts | none (pending) |
+| Free | none | Full Studio on device; no video upload/download; **5 suggested Spatter prompts per month** (the app's suggested prompts only, no free text; server-counted per UTC calendar month) | Studio only |
+| Creator | USD 4.99 monthly | No watermark; upload/download; **15 Spatter prompts per month** (server-counted, reset at renewal); **own AI key** (prompts sent with it are not counted) | none (pending) |
+| Pro | USD 9.99 monthly | Everything in Creator; **unlimited Spatter prompts**; **own AI key** | none (pending) |
+
+Owner decisions 2026-10-14 (#209/#259): Free = 5 suggested prompts per month;
+Creator $4.99 = 15 prompts per month + own AI key; Pro $9.99 = unlimited + own AI
+key; **the free trial applies to both paid plans** (Creator and Pro). Details and
+evidence: `docs/SPATTER_BILLING_DECISIONS_2026_10_14.md`.
 
 - Every paid entitlement carries `isLive = false` and is shown with a pending marker
   and the note that it turns on when the server applies the plan from Apple's
   verified purchase. No server enforcement is claimed.
 - Remaining prompts: `BillingCopy.prompts` shows a count only when the server
-  reports one; nothing reports one yet, so the screens say so. At zero on Creator it
-  shows the upgrade-to-Pro prompt.
-- Trial: shown only when the loaded `Product` has a free-trial introductory offer
-  and `isEligibleForIntroOffer` is true. The 3-day trial is App Store Connect
-  configuration; no trial is hard-coded.
-- Bring-your-own AI key (#209) is not listed: it is not built, so it is not an
-  entitlement yet.
+  reports one (`sdi_spatter_my_usage` or a metered reply's `allowance`); the
+  plan screens show the plan line without a count. At zero on Free it offers
+  Creator or Pro; on Creator, Pro.
+- Trial: applies to both paid plans (`BillingPlanDefinition.offersTrial` is
+  true for Creator and Pro, false for Free). Copy is shown only when the loaded
+  `Product` has a free-trial introductory offer and `isEligibleForIntroOffer` is
+  true (`BillingCopy.trial(for:days:eligible:)`). Trial length is App Store
+  Connect configuration; no trial is hard-coded. Server side, a `trialing`
+  subscription maps to its own tier (`backend/billing/contract.py`
+  `TRIAL_TIERS`, `sdi_private.entitlements`).
+- Bring-your-own AI key (#209): listed as a pending entitlement on Creator and
+  Pro. The key is stored only in the device Keychain
+  (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, not synchronizable), is sent
+  only from the device to the chosen provider's fixed endpoint, and never to the
+  StickDeath backend.
 - Prices: `BillingCopy.price(Product.displayPrice, period:)`, or "Price shown when
   configured". No amount, sale or "popular" claim exists in source.
 
@@ -224,11 +237,12 @@ Apple proceeds (App Store Connect financial reports) have no parser yet.
    configuration.
 2. Decide annual amounts and entitlements, if any. Nothing annual ships until
    then.
-3. Confirm the open entitlement questions (free prompts one-time or monthly; BYO
-   key scope; whether the 3-day trial applies to both plans), configure the trial
-   as an App Store introductory offer, then bind the native client to
-   `sdi_my_entitlement`, enforce the prompt allowance server-side and replace the
-   throwing stub.
+3. Entitlement questions answered 2026-10-14 (free prompts monthly and
+   suggested-only; own AI key on Creator and Pro; trial on both paid plans).
+   Remaining: configure the trial as an App Store introductory offer on **both**
+   subscriptions (and, if web checkout is used, the Stripe trial settings for
+   both prices), deploy the Spatter metering SQL and handler, then bind the
+   native client to `sdi_my_entitlement` and replace the throwing stub.
 4. Verify the existing Stripe account before any reuse. Stripe has no
    client-side role in the current contract; any server-side use (web
    payments) must be verified separately and must not be a new paid service.

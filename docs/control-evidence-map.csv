@@ -268,13 +268,13 @@ spatter.memory.inspect,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterP
 spatter.memory.notice,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterPersonalMemorySheet,text,no,#203,deferred
 spatter.memory.reset,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterPersonalMemorySheet,button 'Reset saved preferences',no,#203,deferred
 spatter.memory.save,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterPersonalMemorySheet,"button 'Save preferences' -> vm.savePersonalPreferences, binds draft.guidance, binds 0.rawValue.capitalized",no,#203,deferred
-spatter.messages.budget,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Sends your message and earlier cloud messages fr',n-a,#203 #207,deferred
-spatter.messages.cancel,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,button 'Cancel request' -> cancel,n-a,#203 #207,deferred
-spatter.messages.cloud,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,toggle 'Cloud advice' -> binds spatterVM.useCloud,n-a,#203 #207,deferred
-spatter.messages.input,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text field 'Ask Spatter for advice...' -> binds input,n-a,#203 #207,deferred
-spatter.messages.notice,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text,n-a,#203 #207,deferred
-spatter.messages.send,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,image -> submit,n-a,#203 #207,deferred
-spatter.messages.status,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Spatter 💀',n-a,#203 #207,deferred
+spatter.messages.budget,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Sends your message and earlier cloud messages fr',no,#203 #207,deferred
+spatter.messages.cancel,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,button 'Cancel request' -> cancel,no,#203 #207,deferred
+spatter.messages.cloud,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,toggle 'Cloud advice' -> binds spatterVM.useCloud,no,#203 #207,deferred
+spatter.messages.input,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,"text field -> binds 0, binds input",no,#203 #207,deferred
+spatter.messages.notice,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text,no,#203 #207,deferred
+spatter.messages.send,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,image -> submit,no,#203 #207,deferred
+spatter.messages.status,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Spatter 💀',no,#203 #207,deferred
 spatter.motion.apply,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Apply local edit' -> session.submit,no,#203,testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.motion.back,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"button 'Back to advice' -> session.saveState, session.close, vm.document.id",no,#203,testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.motion.brief-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use a two-action brief',no,#203,deferred
@@ -302,10 +302,22 @@ spatter.motion.undo,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePa
 spatter.motion.undo-unavailable,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text -> vm.document.id,no,#203,deferred
 spatter.navigation.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Select layer 1',no,#203,deferred
 spatter.onion.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Configure onion skin',no,#203,deferred
+spatter.own-key.key,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,secure field 'API key' -> binds key (Keychain only on save),no,#209 #259,deferred
+spatter.own-key.message,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,text -> save/remove/load outcome message,no,#209 #259,deferred
+spatter.own-key.model,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,text field 'Model name' -> binds model,no,#209 #259,deferred
+spatter.own-key.provider,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,"picker 'Provider' -> binds provider (OpenAI, Anthropic)",no,#209 #259,deferred
+spatter.own-key.remove,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,button 'Remove key' -> confirmRemove -> store.remove,no,#209 #259,deferred
+spatter.own-key.save,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,button 'Save key on this device' / 'Replace saved key' -> save,no,#209 #259,deferred
+spatter.own-key.saved,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,text -> saved provider and model (never the key),no,#209 #259,deferred
 spatter.picture.apply,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Open Add Picture…',no,#203,testLicensedImageLibraryUndoAndColdReopen
+spatter.plan.free-text-locked,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,text -> vm.freeTextLockReason,no,#209 #259,deferred
+spatter.plan.lockout,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,text -> vm.allowanceLockout (server-reported),no,#209 #259,deferred
+spatter.plan.own-key,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,button 'Own AI key…' -> SpatterOwnKeySettingsView,no,#209 #259,deferred
 spatter.plan.preview,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Preview plan' -> binds draftFocused,no,#203,deferred
+spatter.plan.retry,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,button 'Check plan again' -> vm.refreshUsage,no,#209 #259,deferred
 spatter.plan.stale,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text stale-preview warning (SpatterContextSnapshot.isStale),no,#203 #205,deferred
 spatter.plan.text,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text,no,#203,deferred
+spatter.plan.upgrade,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,button 'See Creator and Pro plans' -> SubscriptionView,no,#209 #259,deferred
 spatter.project.rename-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use project rename example',no,#203,deferred
 spatter.registry.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Project size and frame rate',no,#203,deferred
 spatter.selection.duplicate-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use duplicate selected drawings example',no,#207,deferred
@@ -318,7 +330,7 @@ spatter.studio.close,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAIS
 spatter.studio.cloud,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,toggle 'Cloud advice' -> binds spatterVM.useCloud,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
 spatter.studio.cloud.budget,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text,no,#203 #207,deferred
 spatter.studio.cloud.share-names,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,toggle 'Include project and layer names' -> binds spatterVM.shareProjectNames,no,#203 #207,deferred
-spatter.studio.input,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text field 'Ask Spatter for advice...' -> binds prompt,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
+spatter.studio.input,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,"text field -> binds 0, binds prompt",no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
 spatter.studio.local-motion,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,button 'Local Studio edits…',no,#203 #207,testLicensedImageLibraryUndoAndColdReopen testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.studio.memory,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,button 'Local memory preferences…',no,#203 #207,deferred
 spatter.studio.notice,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud

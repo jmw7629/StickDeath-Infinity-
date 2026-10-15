@@ -23,6 +23,10 @@ enum SpatterEndpoint {
     }
 }
 
+/// An error whose own description is safe and specific enough to show the member
+/// (for example own-key failures, which never carry the key).
+protocol SpatterUserFacingError: LocalizedError {}
+
 enum SpatterClientError: Error, LocalizedError, Equatable {
     case notConfigured, notAuthenticated, invalidEndpoint, invalidRequest
     case invalidResponse, emptyResponse, responseTooLarge, networkUnavailable
@@ -54,14 +58,137 @@ struct SpatterBudget: Equatable {
     var displayText: String { "Remaining today: \(remaining)" }
 }
 
+/// The app's suggested Spatter prompts (owner decision 2026-10-14). Free
+/// accounts may send only these, five per calendar month; the server keeps the
+/// same id allowlist (backend/spatter/suggested_prompts.py and
+/// sdi_private.spatter_suggested_prompt_ids) and, on Free, replaces any client
+/// text with its own canonical prompt for the id. Ids must never change
+/// without changing both server lists; backend/spatter/test_suggested_prompts.py
+/// checks all three stay identical.
+struct SpatterSuggestedPrompt: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let symbol: String
+
+    static let all: [SpatterSuggestedPrompt] = [
+        .init(id: "animation_tips", label: "Animation tips", symbol: "💡"),
+        .init(id: "scene_ideas", label: "Scene ideas", symbol: "🎬"),
+        .init(id: "fight_choreography", label: "Fight choreography", symbol: "🔥"),
+        .init(id: "style_advice", label: "Style advice", symbol: "🎨"),
+    ]
+
+    static func find(_ id: String?) -> SpatterSuggestedPrompt? {
+        guard let id else { return nil }
+        return all.first { $0.id == id }
+    }
+    var chipTitle: String { "\(symbol) \(label)" }
+}
+
+/// Spatter plan as reported by the server. Never derived on the device.
+enum SpatterPlanTier: String, Equatable {
+    case free, creator, pro
+    /// Bring-your-own AI key is available on the paid plans (owner decision 2026-10-14).
+    var allowsOwnKey: Bool { self != .free }
+}
+
+/// Server-reported Spatter allowance from `sdi_spatter_my_usage` or a metered
+/// reply's `allowance`. Display data only: the server decides every prompt.
+struct SpatterAllowance: Equatable {
+    let plan: SpatterPlanTier
+    /// Nil for Pro (unlimited by plan) or when the server did not send it.
+    let remaining: Int?
+    let limit: Int?
+    let resetsAt: Date?
+
+    var suggestedPromptsOnly: Bool { plan == .free }
+    var isExhausted: Bool { plan != .pro && remaining == 0 }
+
+    private static func day(_ date: Date?) -> String? {
+        guard let date else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+
+    var displayText: String {
+        switch plan {
+        case .pro:
+            return "Pro: unlimited Spatter prompts."
+        case .creator:
+            guard let remaining else { return "Creator: remaining prompts appear once the server reports them." }
+            let of = limit.map { " of \($0)" } ?? ""
+            return "Creator: \(remaining)\(of) Spatter prompts left this billing period."
+        case .free:
+            guard let remaining else { return "Free: remaining suggested prompts appear once the server reports them." }
+            let of = limit.map { " of \($0)" } ?? ""
+            return "Free: \(remaining)\(of) suggested prompts left this month."
+        }
+    }
+
+    /// Shown when the allowance is used up; nil while prompts remain.
+    var lockoutText: String? {
+        guard isExhausted else { return nil }
+        let reset = Self.day(resetsAt)
+        switch plan {
+        case .free:
+            return "You've used this month's suggested Spatter prompts. They reset"
+                + (reset.map { " on \($0)" } ?? " next month")
+                + ". Upgrade to Creator or Pro to keep asking Spatter now."
+        case .creator:
+            return "You've used this billing period's 15 Spatter prompts. They reset"
+                + (reset.map { " on \($0)" } ?? " at renewal")
+                + ". Upgrade to Pro for unlimited prompts, or add your own AI key."
+        case .pro:
+            return nil
+        }
+    }
+
+    /// Strict decode of `public.sdi_spatter_my_usage()`. An error object or an
+    /// unknown plan is not an allowance; a count is never invented.
+    static func decodeUsage(_ data: Data) throws -> SpatterAllowance {
+        struct Usage: Decodable {
+            let plan: String?
+            let unlimited: Bool?
+            let limit: Int?
+            let remaining: Int?
+            let resets_at: String?
+            let error: String?
+        }
+        guard data.count <= 16_384, let usage = try? JSONDecoder().decode(Usage.self, from: data),
+              usage.error == nil, let raw = usage.plan, let plan = SpatterPlanTier(rawValue: raw) else {
+            throw SpatterClientError.invalidResponse
+        }
+        return make(plan: plan, remaining: usage.remaining, limit: usage.limit, resetsAt: usage.resets_at)
+    }
+
+    static func make(plan: SpatterPlanTier, remaining: Int?, limit: Int?, resetsAt: String?) -> SpatterAllowance {
+        func sane(_ value: Int?) -> Int? { value.flatMap { (0...1_000_000).contains($0) ? $0 : nil } }
+        let date = resetsAt.flatMap { value -> Date? in
+            let plain = ISO8601DateFormatter()
+            if let parsed = plain.date(from: value) { return parsed }
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return fractional.date(from: value)
+        }
+        if plan == .pro { return SpatterAllowance(plan: .pro, remaining: nil, limit: nil, resetsAt: nil) }
+        return SpatterAllowance(plan: plan, remaining: sane(remaining), limit: sane(limit), resetsAt: date)
+    }
+}
+
 /// One decoded provider-neutral reply. `schemaVersion` 0 marks the legacy
 /// choices-shaped response; `units` is the backend's own usage count, if sent.
+/// `allowance` is the metered plan allowance the server reported, and
+/// `viaOwnKey` marks a reply that went device-to-provider with the member's own
+/// AI key and was not counted against the plan.
 struct SpatterCloudReply: Equatable {
     static let currentSchemaVersion = 1
     let schemaVersion: Int
     let reply: String
     let usageUnits: Int?
     let budget: SpatterBudget?
+    var allowance: SpatterAllowance? = nil
+    var viaOwnKey: Bool = false
 }
 
 struct SpatterChatMessage: Codable, Equatable {
@@ -100,8 +227,11 @@ struct SpatterBackendClient {
     /// Response contract: {schemaVersion, reply, usage:{units}, budget:{remaining, resetsAt}}
     /// or the legacy {choices:[{message:{content}}]} shape. Unknown fields are ignored;
     /// an unsupported future schemaVersion is an invalid response, never a guess.
-    func completeReply(messages: [SpatterChatMessage]) async throws -> SpatterCloudReply {
+    func completeReply(messages: [SpatterChatMessage], suggestedPromptID: String? = nil) async throws -> SpatterCloudReply {
         try Task.checkCancellation()
+        if let suggestedPromptID, SpatterSuggestedPrompt.find(suggestedPromptID) == nil {
+            throw SpatterClientError.invalidRequest
+        }
         guard let endpoint = endpoint() else { throw SpatterClientError.notConfigured }
         guard SpatterEndpoint.url(from: endpoint.absoluteString) != nil else {
             throw SpatterClientError.invalidEndpoint
@@ -120,12 +250,13 @@ struct SpatterBackendClient {
         struct Payload: Encodable {
             let schemaVersion = SpatterCloudReply.currentSchemaVersion
             let messages: [SpatterChatMessage]
+            let suggestedPromptId: String?
             let max_tokens = 500
             let temperature = 0.8
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let body = try encoder.encode(Payload(messages: messages))
+        let body = try encoder.encode(Payload(messages: messages, suggestedPromptId: suggestedPromptID))
         guard body.count <= Self.requestLimit else { throw SpatterClientError.invalidRequest }
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.httpMethod = "POST"
@@ -157,10 +288,12 @@ struct SpatterBackendClient {
         struct Versioned: Decodable {
             struct Usage: Decodable { let units: Int? }
             struct Budget: Decodable { let remaining: Int?; let resetsAt: String? }
+            struct Allowance: Decodable { let plan: String?; let remaining: Int?; let resetsAt: String? }
             let schemaVersion: Int
             let reply: String?
             let usage: Usage?
             let budget: Budget?
+            let allowance: Allowance?
         }
         struct Legacy: Decodable {
             struct Choice: Decodable {
@@ -191,7 +324,14 @@ struct SpatterBackendClient {
                 }
             }
             let units = versioned.usage?.units.flatMap { (0...1_000_000_000).contains($0) ? $0 : nil }
-            return SpatterCloudReply(schemaVersion: versioned.schemaVersion, reply: reply, usageUnits: units, budget: budget)
+            // A metered allowance with an unknown plan is dropped, not guessed.
+            let allowance = versioned.allowance.flatMap { raw in
+                raw.plan.flatMap(SpatterPlanTier.init(rawValue:)).map {
+                    SpatterAllowance.make(plan: $0, remaining: raw.remaining, limit: nil, resetsAt: raw.resetsAt)
+                }
+            }
+            return SpatterCloudReply(schemaVersion: versioned.schemaVersion, reply: reply, usageUnits: units, budget: budget,
+                                     allowance: allowance)
         }
         guard let legacy = try? decoder.decode(Legacy.self, from: data) else {
             throw SpatterClientError.invalidResponse

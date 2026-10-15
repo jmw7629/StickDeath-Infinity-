@@ -384,6 +384,13 @@ class StripeWebhookTests(unittest.TestCase):
         self.assertIsNone(executor.only["provider_subscription_id"])
         self.assertEqual(executor.only["payload"]["reason"], "subscription not payable or lacks a period end")
 
+    def test_trial_applies_to_both_paid_plans(self):
+        from backend.billing.contract import TIERS, TRIAL_TIERS
+        self.assertEqual(TRIAL_TIERS, TIERS)
+        for price, product in (("price_creator", "sdi.creator.monthly.web"), ("price_pro", "sdi.pro.monthly.web")):
+            _, executor = stripe_handle(stripe_event("customer.subscription.created", subscription_object(status="trialing", price=price)))
+            self.assertEqual((executor.only["status"], executor.only["product_id"]), ("trialing", product))
+
     def test_cancel_at_period_end_downgrade_and_deletion(self):
         _, executor = stripe_handle(stripe_event("customer.subscription.updated", subscription_object(cancel_at_period_end=True)))
         self.assertTrue(executor.only["cancel_at_period_end"])
