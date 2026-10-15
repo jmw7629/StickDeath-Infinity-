@@ -347,6 +347,11 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                     try unexpected.cleanup(); throw TestError.failed("different valid AAC adopted at callback")
                 } catch StudioAudioVideoMuxService.MuxError.verificationFailed {
                     try require(replaced, "actual valid-media replacement callback ran")
+                } catch StudioAudioVideoMuxService.MuxError.audioLoudness(let clip, let source, let decoded) {
+                    // The verifying decode measures the substituted quieter AAC
+                    // against the source mix before the digest recheck runs.
+                    try require(replaced && phase == .verifying && clip == 0 && decoded < source,
+                                "loudness rejection only for the verifying-phase substitution")
                 }
                 try empty(p); try inputsIntact()
             }

@@ -186,7 +186,7 @@ struct HomeFeedView: View {
         let revision = epoch
         var confirmed = false
         do { confirmed = try await CommunityServices.feed.like(post.id, enabled: !post.liked) }
-        catch { if revision == epoch { error = CommunityGateway.normalize(error).errorDescription } }
+        catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
         guard revision == epoch else { return }
         timeline.finish(post.id, confirmed: confirmed, snapshot: snapshot)
         if !confirmed && error == nil { error = "The like was not confirmed. The count shows the server's last value." }
@@ -196,7 +196,7 @@ struct HomeFeedView: View {
         let revision = epoch
         var confirmed = false
         do { confirmed = try await CommunityServices.feed.follow(post.creator, enabled: !post.following) }
-        catch { if revision == epoch { error = CommunityGateway.normalize(error).errorDescription } }
+        catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
         guard revision == epoch else { return }
         timeline.finish(post.creator, confirmed: confirmed, snapshot: snapshot)
         if confirmed { notice = post.following ? "Unfollowed \(post.creator_name)." : "Following \(post.creator_name)." }
@@ -210,7 +210,7 @@ struct HomeFeedView: View {
                 guard revision == epoch else { return }
                 timeline.removeCreator(post.creator); notice = "Blocked \(post.creator_name)."
             } else if revision == epoch { error = "The block was not confirmed." }
-        } catch { if revision == epoch { error = CommunityGateway.normalize(error).errorDescription } }
+        } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
     }
     @MainActor private func report(_ post: FeedPost, _ reason: FeedReportReason) async {
         guard auth.isAuthenticated else { return }
@@ -219,7 +219,7 @@ struct HomeFeedView: View {
             if try await CommunityServices.feed.report(post.id, reason: reason) {
                 if revision == epoch { notice = "Report recorded for moderation. Reporters are not identified to creators." }
             } else if revision == epoch { error = "The report was not confirmed." }
-        } catch { if revision == epoch { error = CommunityGateway.normalize(error).errorDescription } }
+        } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
     }
     /// Creator-permitted export: explicit tap, bounded download to a temporary
     /// file, then the system share sheet. Removed when the sheet closes.

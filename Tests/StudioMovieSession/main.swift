@@ -238,7 +238,9 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         try reopened.editSelectedAudioClip(clip.id, expectedRevision: reopened.document.revision, edit: .mute(true))
         try await idle(session!); listener.cancel()
         guard let output = session!.output else { throw Failure(message: session!.errorMessage ?? "No actual mixed output") }
-        try require(output.manifest.audioIncluded && output.manifest.documentRevision == revision && session!.notice?.contains("stereo AAC") == true && phases.count == 3, "Mixed readiness/progress not backed by output")
+        try require(output.manifest.audioIncluded && output.manifest.documentRevision == revision && session!.notice?.contains("stereo AAC") == true
+                    && phases == ["Resolving sound credits…", "Mixing project audio…", "Encoding audio into MP4…", "Checking picture and audio timing…"],
+                    "Mixed readiness/progress not backed by output")
         let movie = try await decode(output.movieURL, includesAudio: true)
         try require(movie.frames.count == 12, "Mixed file lost animation frames")
         for frame in movie.frames { try pixel(frame.pixel(32,16), [255,0,0,255]) }
