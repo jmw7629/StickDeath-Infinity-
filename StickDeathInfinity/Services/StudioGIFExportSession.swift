@@ -46,10 +46,15 @@ final class StudioGIFExportSession: ObservableObject {
     init(outputParent: URL = FileManager.default.temporaryDirectory) { self.outputParent = outputParent }
 
     @discardableResult
-    func start(from vm: StudioViewModel, scope: Scope, maximumDimension: Int? = nil) -> Bool {
+    func start(from vm: StudioViewModel, scope: Scope, maximumDimension requestedDimension: Int? = nil) -> Bool {
         guard !isClosed, !isRunning, !isSharing, !isStarting, !isBeginningShare, !isCleaning else { return false }
         isStarting = true
         defer { isStarting = false }
+        // Plan limits: a capped plan exports the largest allowed size no bigger
+        // than the request, with the SDI mark. Unrestricted plans change nothing.
+        let gate = vm.planLimits
+        let maximumDimension = gate.gifMaximumDimension(requestedDimension,
+            canvasWidth: vm.document.width, canvasHeight: vm.document.height)
         guard scope.isStudioVisible, scope.isForeground, vm.isEditing else {
             errorMessage = "Open the current Studio project before exporting GIF."; return false
         }
@@ -84,7 +89,8 @@ final class StudioGIFExportSession: ObservableObject {
             errorMessage = error.localizedDescription; notice = nil
             return false
         }
-        let snapshot = StudioGIFEncoder.Snapshot(document: document, rasterDataByID: rasters, maximumDimension: maximumDimension, imageCredits: imageCredits)
+        let snapshot = StudioGIFEncoder.Snapshot(document: document, rasterDataByID: rasters, maximumDimension: maximumDimension,
+            imageCredits: imageCredits, watermark: gate.exportWatermark)
         // Preflight (#202): free space and thermal state before any rendering.
         do {
             let size = try StudioGIFEncoder.outputSize(document: document, maximumDimension: maximumDimension)

@@ -954,7 +954,7 @@ struct SpatterAISheet: View {
                     Text(SpatterAIViewModel.capabilityNotice).font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
                     Button("Local Studio edits…") { showLocalRecipe = true }
                         .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
-                        .disabled(spatterVM.isThinking)
+                        .disabled(spatterVM.isThinking || spatterVM.previewOnly)
                         .accessibilityIdentifier("spatter.studio.local-motion")
                     Button("Local memory preferences…") { showingPersonalMemory = true }
                         .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red).disabled(spatterVM.isThinking || authVM.state == .loading)

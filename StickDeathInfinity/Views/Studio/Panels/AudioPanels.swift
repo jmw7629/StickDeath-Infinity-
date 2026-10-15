@@ -20,6 +20,8 @@ private struct StudioAudioWorkspace: View {
     @AppStorage("studio.audio.audible-scrub") private var audibleScrub = true
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingLibrary = false
+    private var canOpenLibrary: Bool { vm.planLimits.soundLibrary || vm.planLimits.audioImport }
+    private func openLibrary() { if vm.requirePlan(canOpenLibrary) { showingLibrary = true } }
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     @State private var category: String?
@@ -89,7 +91,9 @@ private struct StudioAudioWorkspace: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(background)
         .onAppear {
-            showingLibrary = opensLibrary
+            // The library holds the sound catalogue and audio import; a plan
+            // that locks both shows the upgrade note instead of opening it.
+            showingLibrary = opensLibrary && vm.requirePlan(canOpenLibrary)
             restoreProjectAudioState()
         }
         .task(id: catalogueLoadID) {
@@ -175,7 +179,7 @@ private struct StudioAudioWorkspace: View {
                 HStack {
                     Text("Drag clips to move · Drag edges to trim").foregroundColor(.sdStudioSecondaryText)
                     Spacer()
-                    Button("+ Add Sound") { showingLibrary = true }.foregroundColor(.sdStudioActionText)
+                    Button("+ Add Sound") { openLibrary() }.foregroundColor(.sdStudioActionText)
                 }.font(.specialElite(10)).padding(12)
             }
             .background(background).foregroundColor(.white)
@@ -227,7 +231,12 @@ private struct StudioAudioWorkspace: View {
                 .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
                 .accessibilityIdentifier("studio.audio.snap")
                 .accessibilityHint("Snap to frames, the playhead and other clip edges while dragging or trimming.")
-            Button("+ Add") { showingLibrary = true }
+            Button { openLibrary() } label: {
+                HStack(spacing: 4) {
+                    if !canOpenLibrary { Image(systemName: "lock.fill").font(.system(size: 9)).accessibilityHidden(true) }
+                    Text("+ Add")
+                }
+            }
                 .font(.specialElite(12)).padding(.horizontal, 12).padding(.vertical, 9)
                 .background(Color.sdRed).clipShape(Capsule())
                 .accessibilityIdentifier("studio.audio.library.open")
@@ -455,6 +464,7 @@ private struct StudioAudioWorkspace: View {
                     }
                     Spacer(minLength: 0)
                     Button {
+                        guard vm.requirePlan(vm.planLimits.soundLibrary) else { return }
                         timeline.stop(); audio.stop(); vm.stopPlayback()
                         let target = AudioImportLease(projectID: vm.document.id, revision: vm.document.revision,
                             frameID: vm.document.activeFrameID, track: libraryTrack, playhead: vm.audioPlayheadTime)
@@ -464,7 +474,7 @@ private struct StudioAudioWorkspace: View {
                                     expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track, atPlayhead: target.playhead)
                             })
                     } label: {
-                        Image(systemName: "plus").foregroundColor(.sdStudioActionText).frame(width: 44, height: 44)
+                        Image(systemName: vm.planLimits.soundLibrary ? "plus" : "lock.fill").foregroundColor(.sdStudioActionText).frame(width: 44, height: 44)
                             .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.sdRed.opacity(0.35)))
                     }.disabled(audio.isBusy || timeline.isPreparing || vm.isSaving)
                         .accessibilityLabel("Add " + sound.title)
@@ -1338,7 +1348,8 @@ private struct AudioFilesImportControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Button("Import from Files") {
+                Button {
+                    guard vm.requirePlan(vm.planLimits.audioImport) else { return }
                     stopPlayback()
                     lease = .init(projectID: vm.document.id, revision: vm.document.revision,
                                   frameID: vm.document.activeFrameID, track: track, playhead: vm.audioPlayheadTime)
@@ -1347,6 +1358,11 @@ private struct AudioFilesImportControls: View {
                         projectStartSeconds: vm.audioPlayheadTime,
                         speed: movieSpeed) : nil
                     showingFiles = true
+                } label: {
+                    HStack(spacing: 4) {
+                        if !vm.planLimits.audioImport { Image(systemName: "lock.fill").accessibilityHidden(true) }
+                        Text("Import from Files")
+                    }
                 }
                 .disabled(audio.isBusy || !vm.isEditing || vm.isSaving || (movieAudio && sourceEnd <= sourceStart))
                 .accessibilityIdentifier("studio.audio.import")

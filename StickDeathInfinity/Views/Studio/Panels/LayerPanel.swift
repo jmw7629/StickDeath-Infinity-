@@ -86,11 +86,18 @@ struct LayerPanel: View {
                             Divider().background(Color.white.opacity(0.06))
                         }
                         
-                        // Add layer button
+                        // Add layer button. At the plan's layer cap it stays
+                        // tappable and shows the upgrade note (via addLayer).
                         Button(action: { vm.addLayer() }) {
-                            Text("+")
-                                .font(.specialElite(20)).fontWeight(.bold)
-                                .foregroundColor(.red)
+                            HStack(spacing: 6) {
+                                if !vm.planAllowsNewLayer {
+                                    Image(systemName: "lock.fill").font(.system(size: 12))
+                                        .foregroundColor(.white.opacity(0.5)).accessibilityHidden(true)
+                                }
+                                Text("+")
+                                    .font(.specialElite(20)).fontWeight(.bold)
+                                    .foregroundColor(.red)
+                            }
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
                         }

@@ -105,6 +105,10 @@ struct ExportPanel: View {
                             .pickerStyle(.segmented)
                             .disabled(session.isRunning || session.isSharing)
                             .accessibilityIdentifier("studio.export.background")
+                            if supportedFormat == .pngSequence, !vm.planLimits.pngSequenceExport {
+                                Label("Transparent PNG sequences: " + vm.planLimits.upgradeNote, systemImage: "lock.fill")
+                                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -229,7 +233,7 @@ struct ExportPanel: View {
                             .accessibilityIdentifier("studio.export.share-explanation")
                         quickShareSection(proxy: proxy)
                     }
-                    Text("No watermark is added. Files are named after the project (ASCII letters, digits, '-' and '_'; otherwise \"animation\"). PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC with library sound credits in its manifest. GIF uses reduced colors, a white background and no audio. Video reference layers are never exported.")
+                    Text((vm.planLimits.exportWatermark ? "A small SDI mark is added at the bottom right of exported images and videos; your project is unchanged. " : "No watermark is added. ") + "Files are named after the project (ASCII letters, digits, '-' and '_'; otherwise \"animation\"). PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC with library sound credits in its manifest. GIF uses reduced colors, a white background and no audio. Video reference layers are never exported.")
                         .font(.specialElite(10))
                         .foregroundColor(.white.opacity(0.5))
                 }
@@ -388,6 +392,11 @@ struct ExportPanel: View {
 
     private func startExport() {
         guard vm.isEditing, let format = supportedFormat else { return }
+        // Transparent PNG image sequences are a paid-plan export.
+        if format == .pngSequence, background == .transparent, !vm.planLimits.pngSequenceExport {
+            session.preparationFailed(StudioDocumentError.unavailable("Transparent PNG sequences: " + vm.planLimits.upgradeNote))
+            return
+        }
         let document = vm.document
         // Capture value-type document and immutable original bytes together on
         // MainActor before export yields. Later edits cannot change this export.
@@ -421,7 +430,8 @@ struct ExportPanel: View {
         session.start(document: document, format: format, background: background, rasters: rasters, imageCredits: imageCredits,
             sheetColumns: format == .spritesheet && sheetColumns > 0 ? min(sheetColumns, selectedFrames.count) : nil,
             cellPadding: format == .spritesheet ? cellPadding : 0, frameIDs: frameIDs,
-            scale: scale, separateLayers: format == .pngSequence && separateLayers)
+            scale: scale, separateLayers: format == .pngSequence && separateLayers,
+            watermark: vm.planLimits.exportWatermark)
     }
 
     private func shareExport() {
@@ -479,7 +489,8 @@ final class StudioExportSession: ObservableObject {
                background: StudioExportService.Background, rasters: [String: Data],
                imageCredits: [String: StudioExportService.ImageCredit] = [:],
                sheetColumns: Int? = nil, cellPadding: Int = 0, frameIDs: Set<String>? = nil,
-               scale: StudioExportService.Scale = .original, separateLayers: Bool = false) {
+               scale: StudioExportService.Scale = .original, separateLayers: Bool = false,
+               watermark: Bool = false) {
         guard !isRunning, !isSharing, !isClosed else { return }
         errorMessage = nil; notice = nil
         guard removeOutput() else { return }
@@ -503,6 +514,7 @@ final class StudioExportSession: ObservableObject {
                     outputParent: outputParent, background: background,
                     sheetColumns: sheetColumns, cellPadding: cellPadding, frameIDs: frameIDs, imageCredits: imageCredits,
                     filenameBase: filenameBase, scale: scale, separateLayers: separateLayers,
+                    watermark: watermark,
                     rasterData: { rasters[$0] }, progress: { [self] completed, total in
                         completedFrames = completed; totalFrames = total
                     })

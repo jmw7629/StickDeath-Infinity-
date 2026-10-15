@@ -196,7 +196,15 @@ final class StudioViewModel: ObservableObject {
     @Published var fillAntiAlias = true { didSet { rememberDrawingToolPreferences() } }
     @Published var fillSampleAll = false { didSet { rememberDrawingToolPreferences() } }
     @Published var activePanel: StudioPanelType = .none {
-        didSet { if activePanel != .none { cancelMenuHandoff() } }
+        didSet {
+            // Magic Cut (background cut) is an advanced tool on limited plans.
+            if activePanel == .magicCut, oldValue != .magicCut, !planLimits.advancedTools {
+                message = planLimits.upgradeNote
+                activePanel = oldValue
+                return
+            }
+            if activePanel != .none { cancelMenuHandoff() }
+        }
     }
     struct MenuHandoff: Equatable {
         let id: UUID
@@ -256,15 +264,31 @@ final class StudioViewModel: ObservableObject {
         get { (document.gridSettings ?? .init()).tint }
         set { var value = document.gridSettings ?? .init(); value.tint = newValue; changeViewSettings { $0.gridSettings = value } }
     }
-    var visibleOnionGhosts: [StudioOnionGhost] { isPlaying ? [] : document.onionGhosts }
+    var visibleOnionGhosts: [StudioOnionGhost] {
+        guard !isPlaying else { return [] }
+        let ghosts = document.onionGhosts
+        // A limited plan shows only the frames it allows; the saved setting is kept.
+        let back = planLimits.maxOnionSkinBack, forward = planLimits.maxOnionSkinForward
+        guard back != nil || forward != nil,
+              let index = document.frames.firstIndex(where: { $0.id == document.activeFrameID }) else { return ghosts }
+        return ghosts.filter { ghost in
+            guard let position = document.frames.firstIndex(where: { $0.id == ghost.frame.id }) else { return false }
+            let distance = abs(position - index)
+            return distance <= ((ghost.previous ? back : forward) ?? distance)
+        }
+    }
+    /// Highest onion-skin counts the settings steppers offer (2 when unlimited).
+    var onionPreviousLimit: Int { min(2, planLimits.maxOnionSkinBack ?? 2) }
+    var onionNextLimit: Int { min(2, planLimits.maxOnionSkinForward ?? 2) }
     var onionPreviousCount: Int {
-        get { (document.onionSettings ?? .init()).previousCount }
-        set { var value = document.onionSettings ?? .init(); value.previousCount = newValue; changeViewSettings { $0.onionSettings = value } }
+        get { planClamped((document.onionSettings ?? .init()).previousCount, to: planLimits.maxOnionSkinBack) }
+        set { var value = document.onionSettings ?? .init(); value.previousCount = planClamped(newValue, to: planLimits.maxOnionSkinBack); changeViewSettings { $0.onionSettings = value } }
     }
     var onionNextCount: Int {
-        get { (document.onionSettings ?? .init()).nextCount }
-        set { var value = document.onionSettings ?? .init(); value.nextCount = newValue; changeViewSettings { $0.onionSettings = value } }
+        get { planClamped((document.onionSettings ?? .init()).nextCount, to: planLimits.maxOnionSkinForward) }
+        set { var value = document.onionSettings ?? .init(); value.nextCount = planClamped(newValue, to: planLimits.maxOnionSkinForward); changeViewSettings { $0.onionSettings = value } }
     }
+    private func planClamped(_ value: Int, to limit: Int?) -> Int { limit.map { min(value, $0) } ?? value }
     var onionOpacity: Double {
         get { (document.onionSettings ?? .init()).opacity }
         set { var value = document.onionSettings ?? .init(); value.opacity = newValue; changeViewSettings { $0.onionSettings = value } }
@@ -462,7 +486,13 @@ final class StudioViewModel: ObservableObject {
         _ = try value.settings(width: strokeWidth, opacity: capturedStrokeOpacity)
         return value
     }
-    func selectDrawingTool(_ tool: DrawingTool) { selectedTool = tool }
+    /// Plan-locked tools show the upgrade note and keep the current tool.
+    @discardableResult
+    func selectDrawingTool(_ tool: DrawingTool) -> Bool {
+        guard requirePlan(planAllowsTool(tool)) else { return false }
+        selectedTool = tool
+        return true
+    }
 
     // Tool preferences are device settings, separate from the editable project,
     // its revision/history, and an in-flight stroke's immutable capture.
@@ -505,7 +535,8 @@ final class StudioViewModel: ObservableObject {
         strokeWidth = value.width; strokeOpacity = value.opacity; smoothing = value.smoothing
         pressureSensitivity = value.pressureSensitivity ?? false
         pencilTiltEnabled = value.pencilTiltEnabled ?? false
-        brushFamily = value.family; brushTipAngle = value.tipAngle
+        // A remembered extra brush falls back to Round while the plan locks it.
+        brushFamily = planAllowsBrush(value.family) ? value.family : .round; brushTipAngle = value.tipAngle
         brushTexture = value.texture; brushGrain = value.grain
         brushBuildup = value.brushBuildup ?? 0; brushBleed = value.brushBleed ?? 0
         brushAdditiveGlow = value.brushAdditiveGlow ?? false
@@ -686,6 +717,7 @@ final class StudioViewModel: ObservableObject {
         if containsTween && isPlaying { throw StudioDocumentError.unavailable("Stop playback before tweening frames.") }
         var candidate = editor
         let receipt = try StudioCommandExecutor.execute(request, editor: &candidate, checkCancellation: checkCancellation)
+        try requirePlanLayerCapacity(candidate.document)
         for clip in candidate.document.audioClips where clip.assetID != nil && document.audioClips.first(where: { $0.id == clip.id }) != clip {
             guard let assetID = clip.assetID, let asset = audioTrack(forAssetID: assetID), asset.audioData != nil else {
                 throw StudioDocumentError.invalid("The audio edit needs its original managed source. Nothing changed.")
@@ -1363,6 +1395,7 @@ final class StudioViewModel: ObservableObject {
         do {
             var candidate = editor
             try operation(&candidate)
+            try requirePlanLayerCapacity(candidate.document)
             try preflightRasterDocument(candidate.document)
             clearMissingImageMoveTarget(in: candidate.document)
             editor = candidate; pruneManagedAudio(); scheduleSave()
@@ -2984,6 +3017,30 @@ final class StudioViewModel: ObservableObject {
     func moveLayerUp(_ id: String) { command { try $0.moveLayer(id, offset: -1) } }
     func moveLayerDown(_ id: String) { command { try $0.moveLayer(id, offset: 1) } }
     func addLayer() { command { try $0.addLayer() } }
+
+    // MARK: Plan limits
+    // Every Studio plan check reads `StudioPlanGate.current`, which mirrors
+    // `StudioPlanLimits.current` and stays unrestricted until real plans are
+    // sold; then each check below is a no-op and behaviour is unchanged.
+    var planLimits: StudioPlanGate { StudioPlanGate.current }
+    /// False only when the plan caps layers and the project is already at the cap.
+    var planAllowsNewLayer: Bool { planLimits.maxLayers.map { layers.count < $0 } ?? true }
+    /// Shows the upgrade note when `allowed` is false; returns `allowed`.
+    @discardableResult
+    func requirePlan(_ allowed: Bool) -> Bool {
+        if !allowed { message = planLimits.upgradeNote }
+        return allowed
+    }
+    /// Refuses an edit that grows the layer count past the plan cap. Projects
+    /// already above the cap still open and edit; they just gain no layers.
+    private func requirePlanLayerCapacity(_ candidate: StudioDocument) throws {
+        guard let limit = planLimits.maxLayers, candidate.layers.count > limit,
+              candidate.layers.count > document.layers.count else { return }
+        throw StudioDocumentError.unavailable(planLimits.upgradeNote)
+    }
+    func planAllowsTool(_ tool: DrawingTool) -> Bool { planLimits.allows(tool) }
+    func planAllowsBrush(_ family: StudioBrushFamily) -> Bool { planLimits.allows(family) }
+
     func zoomIn() { canvasScale = min(canvasScale * 1.25, 5) }
     func zoomOut() { canvasScale = max(canvasScale / 1.25, 0.25) }
     func zoomFit() { canvasScale = 1; canvasOffset = .zero }
@@ -3481,6 +3538,7 @@ final class StudioViewModel: ObservableObject {
             value.layers.append(imageLayer) // Behind drawings; active drawing layer stays selected.
             try value.frames[index].appendRasterInstance(.init(layerID: imageLayer.id, placement: placement), assetID: assetID)
         }
+        try requirePlanLayerCapacity(candidate.document)
         let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.referencedRasterAssetIDs ?? [])
         var next = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
         next[assetID] = record
@@ -3556,6 +3614,7 @@ final class StudioViewModel: ObservableObject {
             value.frames.insert(contentsOf: frames, at: index + 1)
             value.activeFrameID = frames[0].id
         }
+        try requirePlanLayerCapacity(candidate.document)
         let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.referencedRasterAssetIDs ?? [])
         var next = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
         next.merge(records) { _, new in new }
@@ -3582,6 +3641,7 @@ final class StudioViewModel: ObservableObject {
         let activeLayerID: String
     }
     func prepareImageCut(allFrames: Bool) throws -> ImageCutCapture {
+        guard planLimits.advancedTools else { throw StudioDocumentError.unavailable(planLimits.upgradeNote) }
         guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil,
               pendingBrushStroke == nil, textDraft == nil else {
             throw StudioDocumentError.unavailable("Finish the current edit before cutting an image background.")
@@ -3790,6 +3850,7 @@ final class StudioViewModel: ObservableObject {
                 }
                 value.activeLayerID = imageLayer
             }
+            try requirePlanLayerCapacity(candidate.document)
             try preflightRasterDocument(candidate.document)
             try checkCancellation()
             guard document == before, editor.clipboardVersion == version, imageClipboard == copied,
@@ -3948,6 +4009,7 @@ final class StudioViewModel: ObservableObject {
                     rotationDegrees: copied.rasterRotationDegrees, regionMask: copied.rasterRegionMask), assetID: assetID)
                 if copied.rasterRegionMask != nil { value.schemaVersion = max(value.schemaVersion, 32) }
             }
+            try requirePlanLayerCapacity(candidate.document)
             guard let projected = candidate.document.frames[index].projectedRasterFrame(on: layer.id) else {
                 throw StudioRasterImage.Failure.missing
             }
@@ -4859,5 +4921,47 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         let value = try JSONDecoder().decode(Self.self, from: data)
         try value.validate()
         return value
+    }
+}
+
+/// The Studio's copy of the plan limits as plain values. The billing type
+/// `StudioPlanLimits` lives with the store catalog, which the Foundation-only
+/// Studio test builds do not compile, so the app installs `provider` once at
+/// launch (`StickDeathInfinityApp.init`) to read `StudioPlanLimits.current`
+/// live. Until then, and in every test build, the Studio is unrestricted.
+struct StudioPlanGate: Equatable {
+    var maxLayers: Int? = nil
+    var maxOnionSkinBack: Int? = nil
+    var maxOnionSkinForward: Int? = nil
+    var customCanvasSize = true
+    var maxExportLongEdge: Int? = nil
+    var exportWatermark = false
+    var audioImport = true
+    var soundLibrary = true
+    var advancedTools = true
+    var pngSequenceExport = true
+    var upgradeNote = "This is part of Creator and Pro. Upgrade in Profile, Plans to unlock it."
+
+    static let unrestricted = StudioPlanGate()
+    static var provider: () -> StudioPlanGate = { .unrestricted }
+    static var current: StudioPlanGate { provider() }
+
+    /// Retouch tools and the extra brush tools that need `advancedTools`.
+    static let advancedToolSet: Set<DrawingTool> = [.blur, .smudge, .sharpen, .dodge, .burn, .airbrush, .watercolor, .neon]
+    /// The basic brush families stay free; the rest are the extra brushes.
+    static let basicBrushFamilies: Set<StudioBrushFamily> = [.round, .stipple, .grain, .roughPen, .calligraphy, .dipPen]
+
+    func allows(_ tool: DrawingTool) -> Bool { advancedTools || !Self.advancedToolSet.contains(tool) }
+    func allows(_ family: StudioBrushFamily) -> Bool { advancedTools || Self.basicBrushFamilies.contains(family) }
+    /// Whether an exported video/GIF of this pixel size is within the plan.
+    func allowsExport(width: Int, height: Int) -> Bool { maxExportLongEdge.map { max(width, height) <= $0 } ?? true }
+    /// The largest GIF longest-edge choice the plan allows: `requested` when
+    /// it fits, else the biggest smaller preset (nil means original size).
+    func gifMaximumDimension(_ requested: Int?, canvasWidth: Int, canvasHeight: Int) -> Int? {
+        guard let limit = maxExportLongEdge else { return requested }
+        let longEdge = max(canvasWidth, canvasHeight)
+        let fallback = [960, 640, 320].first { $0 <= limit } ?? 320
+        if let requested { return min(requested, longEdge) <= limit ? requested : fallback }
+        return longEdge <= limit ? nil : fallback
     }
 }

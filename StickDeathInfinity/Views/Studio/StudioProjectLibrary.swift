@@ -942,6 +942,8 @@ struct StudioProjectConfigurationCard: View {
     var busy = false
     var canSubmit = true
     var chooseExistingBackground: (() -> Void)? = nil
+    /// The project's current size, kept even when the plan allows presets only.
+    var keepsCustomSize: (width: Int, height: Int)? = nil
     let onSubmit: () -> Void
     @State private var showingCustom = false
     @State private var showingCustomFPS = false
@@ -963,11 +965,17 @@ struct StudioProjectConfigurationCard: View {
             return "Enter a whole-number width and height from 16 to 4096 pixels."
         }
         guard (1...60).contains(fps) else { return "Enter a whole-number frame rate from 1 to 60 FPS." }
+        // A limited plan offers the presets only; an existing custom size stays.
+        if !customSizeAllowed, !presets.contains(where: { $0.1 == width && $0.2 == height }),
+           !(keepsCustomSize.map { $0.width == width && $0.height == height } ?? false) {
+            return "Custom canvas sizes: " + StudioPlanGate.current.upgradeNote
+        }
         do { _ = try StudioDocument.validatedProjectName(name) }
         catch { return error.localizedDescription }
         return nil
     }
     private var valid: Bool { validationNotice == nil }
+    private var customSizeAllowed: Bool { StudioPlanGate.current.customCanvasSize }
     private var backgroundName: String {
         StudioImageImportService.BackgroundPreset.all.first(where: { $0.id == backgroundID })?.name ?? "Choose background…"
     }
@@ -1005,8 +1013,13 @@ struct StudioProjectConfigurationCard: View {
                     dimension("Height", value: $height, identifier: "studio.project-height")
                     Button { let previous = width; width = height; height = previous } label: { Image(systemName: "arrow.left.arrow.right").frame(width: 44, height: 44) }
                         .accessibilityLabel("Swap width and height")
-                }.padding(.top, 10)
-                Text("16–4096 pixels per side").font(.specialElite(11)).foregroundStyle(.gray)
+                }.padding(.top, 10).disabled(!customSizeAllowed)
+                if customSizeAllowed {
+                    Text("16–4096 pixels per side").font(.specialElite(11)).foregroundStyle(.gray)
+                } else {
+                    Label("Custom sizes: " + StudioPlanGate.current.upgradeNote, systemImage: "lock.fill")
+                        .font(.specialElite(11)).foregroundStyle(.gray)
+                }
             }.font(.specialElite(12)).tint(.red).foregroundStyle(.gray)
             heading("FRAME RATE")
             ViewThatFits(in: .horizontal) {

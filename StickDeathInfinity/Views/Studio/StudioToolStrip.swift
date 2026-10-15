@@ -128,7 +128,8 @@ struct StudioToolStrip: View {
                         if isSelected && hasSettings(def.tool) {
                             vm.activePanel = vm.activePanel == .toolSettings ? .none : .toolSettings
                         } else {
-                            vm.selectDrawingTool(def.tool)
+                            // A plan-locked tool shows the upgrade note instead.
+                            guard vm.selectDrawingTool(def.tool) else { return }
                             if hasSettings(def.tool) {
                                 vm.activePanel = .toolSettings
                             } else {
@@ -147,6 +148,15 @@ struct StudioToolStrip: View {
                                 .foregroundColor(isSelected ? .white.opacity(0.85) : Color(hex: "888888"))
                         }
                         .frame(width: 52, height: 52)
+                        .overlay(alignment: .topTrailing) {
+                            if !vm.planAllowsTool(def.tool) {
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(Color(hex: "888888"))
+                                    .padding(4)
+                                    .accessibilityHidden(true)
+                            }
+                        }
                         .background(
                             RoundedRectangle(cornerRadius: 10)
                                 .fill(
@@ -179,6 +189,7 @@ struct StudioToolStrip: View {
                         }
                     }
                     .accessibilityLabel(def.label)
+                    .accessibilityHint(vm.planAllowsTool(def.tool) ? "" : "Locked. " + vm.planLimits.upgradeNote)
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
                     .accessibilityIdentifier("studio.tool.\(def.tool.rawValue)")
                 }

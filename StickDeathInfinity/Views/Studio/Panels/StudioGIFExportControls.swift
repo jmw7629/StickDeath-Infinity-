@@ -40,10 +40,15 @@ struct StudioGIFExportControls: View {
         (try? StudioGIFEncoder.frameCapacity(document: vm.document,
             maximumDimension: gif.maximumDimension == 0 ? nil : gif.maximumDimension)) ?? 0
     }
+    /// Original size stays available unless it exceeds the plan's export cap.
+    private var originalSizeAllowed: Bool {
+        vm.planLimits.allowsExport(width: vm.document.width, height: vm.document.height)
+    }
     private var fitsFrameBudget: Bool { (1...50).contains(vm.document.fps) && vm.document.frames.count <= frameCapacity }
     private var suggestedSize: Int? {
         guard (1...50).contains(vm.document.fps) else { return nil }
         return [0, 960, 640, 320].first { dimension in
+            guard dimension != 0 || originalSizeAllowed else { return false }
             let capacity = (try? StudioGIFEncoder.frameCapacity(document: vm.document,
                 maximumDimension: dimension == 0 ? nil : dimension)) ?? 0
             return vm.document.frames.count <= capacity
@@ -54,12 +59,18 @@ struct StudioGIFExportControls: View {
             Text("ANIMATED GIF").font(.specialElite(9))
                 .foregroundColor(.white.opacity(0.4)).tracking(1)
             Picker("GIF longest edge", selection: $gif.maximumDimension) {
-                Text("Original").tag(0)
+                if originalSizeAllowed { Text("Original").tag(0) }
                 Text("320 px").tag(320)
                 Text("640 px").tag(640)
                 Text("960 px").tag(960)
             }.disabled(gif.isBusy || session.needsCleanup)
                 .accessibilityIdentifier("studio.export.gif.size")
+            if !originalSizeAllowed || vm.planLimits.exportWatermark {
+                Label((originalSizeAllowed ? "" : "Original size is above this plan's export limit. ")
+                      + (vm.planLimits.exportWatermark ? "GIFs carry the SDI mark. " : "") + vm.planLimits.upgradeNote,
+                      systemImage: "lock.fill")
+                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
+            }
             if let size = try? StudioGIFEncoder.outputSize(document: vm.document,
                 maximumDimension: gif.maximumDimension == 0 ? nil : gif.maximumDimension) {
                 Text("Output: \(size.width) × \(size.height) · project canvas unchanged")
@@ -219,6 +230,10 @@ struct StudioGIFExportControls: View {
         }
         .onAppear {
             isVisible = true; refreshScope()
+            if gif.maximumDimension == 0, !originalSizeAllowed {
+                gif.maximumDimension = vm.planLimits.gifMaximumDimension(nil, canvasWidth: vm.document.width,
+                    canvasHeight: vm.document.height) ?? 0
+            }
             if let request = directRequest {
                 _ = gif.start(request, from: vm, scope: scope)
                 onDirectRequestConsumed()
