@@ -706,16 +706,30 @@ final class AuthService: ObservableObject {
         let address = email.trimmingCharacters(in: .whitespacesAndNewlines)
         guard address.contains("@"), address.count <= 254 else { throw AuthError.invalidEmail }
         try await supabase.auth.resetPasswordForEmail(address, redirectTo: Self.passwordResetRedirect)
+        defaults.set(Date().timeIntervalSince1970, forKey: Self.recoveryRequestedKey)
+    }
+    /// Device-local proof that this device asked for a reset link. A recovery link is
+    /// accepted only while it is fresh (recovery links expire within an hour), so an
+    /// unsolicited or forwarded link cannot sign anyone in even if the SDK would
+    /// exchange its code.
+    static let recoveryRequestedKey = "sdi.auth.recoveryRequestedAt"
+    static let recoveryRequestLifetime: TimeInterval = 3600
+    private func takeRecoveryRequest(now: Date = Date()) -> Bool {
+        let requested = defaults.double(forKey: Self.recoveryRequestedKey)
+        defaults.removeObject(forKey: Self.recoveryRequestedKey)
+        let age = now.timeIntervalSince1970 - requested
+        return requested > 0 && age >= 0 && age <= Self.recoveryRequestLifetime
     }
     /// Set after a recovery link established a session; cleared once the password changes.
     @Published private(set) var passwordRecoveryPending = false
     func completePasswordRecovery(url: URL) async throws {
         guard DeepLinkRouter.route(url) == .passwordReset else { throw AuthError.invalidCallback }
+        guard takeRecoveryRequest() else { throw AuthError.invalidCallback }
         try beginAuthentication()
         defer { authenticationInProgress = false }
         let client = try supabase
-        // Without the verifier stored by this device's reset request the SDK
-        // rejects the code; an unsolicited or replayed link cannot sign in.
+        // The SDK's PKCE verifier is a second check; the recovery-request marker
+        // above already refuses links this device did not ask for.
         let session = try await client.auth.session(from: url)
         passwordRecoveryPending = true
         try await finishAuthentication(session.user)

@@ -387,6 +387,7 @@ import Supabase
 
     func testAppleUsernameFallsBackForPrivateRelayAndDisplayNameIsBounded() async throws {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
         let relay = try decoder.decode(User.self, from: Data("""
         {"id":"\(AuthFixtureTransport.first)","aud":"authenticated","role":"authenticated","email":"abc123@privaterelay.appleid.com","app_metadata":{},"user_metadata":{},"identities":[],"is_anonymous":false,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}
         """.utf8))
@@ -488,7 +489,9 @@ import Supabase
         defer { session.invalidateAndCancel() }
         let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
             options: .init(auth: .init(storage: AuthFixtureStorage(), flowType: .pkce, autoRefreshToken: false), global: .init(session: session)))
-        let service = AuthService(client: client)
+        let isolated = UserDefaults(suiteName: "sdi-auth-\(UUID().uuidString)")!
+        // An isolated store: no reset request was made on this "device".
+        let service = AuthService(client: client, defaults: isolated)
         let model = AuthViewModel(auth: service, initializeOnStart: false)
         await service.initialize()
         await model.handleDeepLink(URL(string: "stickdeath://messages/thread/1")!)
