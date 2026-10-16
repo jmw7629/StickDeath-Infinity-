@@ -219,6 +219,8 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *,
         return Response(error.status, body)
 
 
+UPGRADE_MESSAGE = "Spatter is part of Creator and Pro, or buy Spatter credits to pay as you go."
+
 # Metered refusals: HTTP status, public reason. 429 keeps the existing client's
 # "try later / allowance used" message; 503 keeps its "unavailable" message.
 _REFUSALS = {
@@ -229,22 +231,25 @@ _REFUSALS = {
     "rate_limited": (429, "too many requests"),
     "daily_safety_limit": (429, "daily safety limit reached"),
     "plan_allowance_exhausted": (429, "plan allowance used"),
-    # Free accepts only the app's suggested prompts (owner decision 2026-10-14).
-    "suggested_prompt_required": (403, "free plan accepts suggested prompts only"),
+    # Free without Spatter credits (owner decisions 2026-10-15). 402 is distinct
+    # from the 403 the client reads as "not authorized".
+    "upgrade_required": (402, UPGRADE_MESSAGE),
     "unknown_suggested_prompt": (400, "unknown suggested prompt"),
     "unavailable": (503, "metering unavailable"),
 }
 
 
 def _allowance(decision: Decision) -> dict:
-    """Plan allowance for the client. ``remaining`` is null for an unlimited
-    plan; ``resetsAt`` is the next calendar month (Free) or the renewal date
-    (Creator); never a guess."""
+    """Plan allowance and credit balance for the client. ``remaining`` is null
+    for an unlimited plan; ``resetsAt`` is the renewal date (Creator); never a
+    guess. ``funding`` says whether this prompt used the plan or one credit."""
     return {
         "plan": decision.plan,
         "period": decision.period,
         "remaining": decision.remaining,
         "resetsAt": _iso(decision.resets_at) if decision.resets_at else None,
+        "credits": decision.credits,
+        "funding": decision.funding,
     }
 
 
@@ -263,6 +268,11 @@ def _metered(user_id: str, messages: list, suggested: Optional[str], meter: Mete
                                   "resetsAt": _iso(decision.resets_at) if decision.resets_at else None}
         if decision.upgrade:
             extra["upgrade"] = decision.upgrade
+        if decision.code == "upgrade_required":
+            extra["plan"] = "free"
+        if decision.buy_credits:
+            extra["buyCredits"] = True
+            extra["credits"] = decision.credits or 0
         raise HandlerError(status, reason, **extra)
 
     def release() -> None:
@@ -271,12 +281,11 @@ def _metered(user_id: str, messages: list, suggested: Optional[str], meter: Mete
         except Exception:
             pass  # An unsettled reservation stays counted; the SQL sweep never refunds silently.
 
-    if decision.plan == "free":
-        if suggested is None:  # The meter must have refused; never send free text on Free.
-            release()
-            raise HandlerError(403, "free plan accepts suggested prompts only", code="suggested_prompt_required", upgrade="creator_or_pro")
-        # Free requests carry no client text to the provider: only the canonical prompt.
-        messages = suggested_prompts.free_messages(suggested)
+    if decision.plan not in ("creator", "pro") and decision.funding != "credit":
+        # The meter must have refused: Free is sent to the provider only on a credit.
+        release()
+        raise HandlerError(402, UPGRADE_MESSAGE, code="upgrade_required", plan="free", upgrade="creator_or_pro",
+                           buyCredits=True, credits=0)
     try:
         reply, units = provider.complete(messages)
     except HandlerError:

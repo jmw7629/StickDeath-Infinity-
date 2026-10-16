@@ -15,23 +15,28 @@ import java.io.File
 import java.nio.ByteBuffer
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import com.stickdeath.studio.billing.ExportRendition
 
 /** Canonical H.264, with bounded AAC soundtrack mixing when the project owns audio clips. */
 object MovieExporter {
-    suspend fun prepare(context: Context, document: Document, progress: (Int, Int) -> Unit): ExportArtifact {
+    /** [rendition] is the output size (the canvas, or scaled down to even dimensions for the Free
+     * plan) and whether the SDI watermark is burned in. */
+    suspend fun prepare(context: Context, document: Document, progress: (Int, Int) -> Unit,
+                        rendition: ExportRendition = ExportRendition(document.width, document.height, 1f, false)): ExportArtifact {
         val d = document.validated()
         val total = d.frames.sumOf { it.hold }
-        require(d.width % 2 == 0 && d.height % 2 == 0) { "MP4 requires even canvas dimensions. Change project dimensions or use PNG sequence; no resizing was performed." }
-        require(d.width.toLong()*d.height <= 4_194_304 && total <= d.fps*120) { "MP4 export supports up to 4 megapixels and 120 seconds." }
+        val outW = rendition.width; val outH = rendition.height
+        require(outW % 2 == 0 && outH % 2 == 0) { "MP4 requires even canvas dimensions. Change project dimensions or use PNG sequence; no resizing was performed." }
+        require(outW.toLong()*outH <= 4_194_304 && total <= d.fps*120) { "MP4 export supports up to 4 megapixels and 120 seconds." }
         val scope = currentCoroutineContext()
         val began = SystemClock.elapsedRealtime()
         val check = {
             scope.ensureActive()
             require(SystemClock.elapsedRealtime()-began < 600_000) { "MP4 encoding exceeded its ten-minute limit." }
         }
-        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, d.width, d.height).apply {
+        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, outW, outH).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-            setInteger(MediaFormat.KEY_BIT_RATE, (d.width.toLong()*d.height*d.fps/5).coerceIn(1_000_000,20_000_000).toInt())
+            setInteger(MediaFormat.KEY_BIT_RATE, (outW.toLong()*outH*d.fps/5).coerceIn(1_000_000,20_000_000).toInt())
             setInteger(MediaFormat.KEY_FRAME_RATE, d.fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT601_NTSC)
@@ -103,16 +108,16 @@ object MovieExporter {
             var tick = 0
             for (frame in d.frames) {
                 check()
-                val bitmap = Bitmap.createBitmap(d.width,d.height,Bitmap.Config.ARGB_8888)
+                val bitmap = Bitmap.createBitmap(outW,outH,Bitmap.Config.ARGB_8888)
                 val yuv = try {
-                    FrameRenderer.draw(Canvas(bitmap),d,frame,checkCancellation=check)
+                    ExportWatermark.renderFrame(Canvas(bitmap),d,frame,rendition,check)
                     convert(bitmap, check)
                 } finally { bitmap.recycle() }
                 repeat(frame.hold) {
                     check()
                     val index = inputIndex()
                     val image = encoder.getInputImage(index) ?: error("Encoder does not expose writable YUV image planes on this device.")
-                    image.use { writePlanes(it,yuv,d.width,d.height,check) }
+                    image.use { writePlanes(it,yuv,outW,outH,check) }
                     encoder.queueInputBuffer(index,0,yuv.size,tick.toLong()*1_000_000/d.fps,0)
                     lastActivity = SystemClock.elapsedRealtime()
                     tick++; progress(tick,total); drain()
@@ -135,7 +140,7 @@ object MovieExporter {
                 require(extractor.trackCount == 1) { "MP4 track is missing." }
                 val result = extractor.getTrackFormat(0)
                 require(result.getString(MediaFormat.KEY_MIME) == MediaFormat.MIMETYPE_VIDEO_AVC &&
-                    result.getInteger(MediaFormat.KEY_WIDTH) == d.width && result.getInteger(MediaFormat.KEY_HEIGHT) == d.height) { "MP4 dimensions or codec changed." }
+                    result.getInteger(MediaFormat.KEY_WIDTH) == outW && result.getInteger(MediaFormat.KEY_HEIGHT) == outH) { "MP4 dimensions or codec changed." }
                 // Inspect the completed container, not only encoder callbacks.
                 // MP4 timescale conversion may round timestamps by up to 1 ms.
                 val toleranceUS = 1_000L
@@ -171,7 +176,7 @@ object MovieExporter {
             } finally { extractor.release() }
             // Same ASCII base as iOS StudioExportFilename (#185); the manifest keeps the project identity.
             val stem = ExportManifests.filenameBase(d)
-            val result = if (d.audioClips.isEmpty()) file else AudioMovieMuxer.add(context, file, d)
+            val result = if (d.audioClips.isEmpty()) file else AudioMovieMuxer.add(context, file, d, outW, outH)
             if (result !== file) file.delete()
             complete = true
             return ExportArtifact(result,ExportKind.MP4,"$stem.mp4")

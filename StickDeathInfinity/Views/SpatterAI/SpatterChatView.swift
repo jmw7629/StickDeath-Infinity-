@@ -102,6 +102,8 @@ struct SpatterChatView: View {
         }
         .onDisappear { spatterVM.endSession() }
         .onChange(of: authVM.userId) { _ in spatterVM.endSession(); input = "" }
+        // Free plan: any Spatter send opens the plans (owner decision 2026-10-15).
+        .sheet(isPresented: $spatterVM.upgradeRequested) { SubscriptionView() }
     }
 
     private var adviceControls: some View {

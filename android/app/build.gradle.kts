@@ -15,6 +15,15 @@ val sdiSupabaseUrl = sdiValue("sdi.supabaseUrl", "SDI_SUPABASE_URL")
 val sdiPublishableKey = sdiValue("sdi.supabasePublishableKey", "SDI_SUPABASE_PUBLISHABLE_KEY")
 val sdiSpatterUrl = sdiValue("sdi.spatterBackendUrl", "SDI_SPATTER_BACKEND_URL")
 val sdiOAuthProviders = sdiValue("sdi.oauthProviders", "SDI_OAUTH_PROVIDERS")
+// Google Play product ids (public, never secrets). Unset values keep the placeholders below, which the
+// plan catalogue treats as "not configured": no purchase is offered and no Studio limit is enforced.
+val sdiPlayCreator = sdiValue("sdi.playCreatorMonthlyProductId", "SDI_PLAY_CREATOR_MONTHLY_PRODUCT_ID")
+    .ifEmpty { "com.stickdeath.studio.creator.monthly.placeholder" }
+val sdiPlayPro = sdiValue("sdi.playProMonthlyProductId", "SDI_PLAY_PRO_MONTHLY_PRODUCT_ID")
+    .ifEmpty { "com.stickdeath.studio.pro.monthly.placeholder" }
+// Comma-separated consumable Spatter credit packs.
+val sdiPlayCredits = sdiValue("sdi.playCreditPackProductIds", "SDI_PLAY_CREDIT_PACK_PRODUCT_IDS")
+    .ifEmpty { "com.stickdeath.studio.spatter.credits.placeholder" }
 val sdiConnected = sdiSupabaseUrl.isNotEmpty() && sdiPublishableKey.isNotEmpty()
 val generatedStudioAssets = layout.buildDirectory.dir("generated/studioAssets")
 val stageStudioImages by tasks.registering(Sync::class) {
@@ -36,6 +45,9 @@ android {
         buildConfigField("String", "SDI_SPATTER_BACKEND_URL", "\"$sdiSpatterUrl\"")
         buildConfigField("String", "SDI_OAUTH_PROVIDERS", "\"$sdiOAuthProviders\"")
         buildConfigField("boolean", "SDI_NETWORK_DECLARED", sdiConnected.toString())
+        buildConfigField("String", "SDI_PLAY_CREATOR_MONTHLY_PRODUCT_ID", "\"$sdiPlayCreator\"")
+        buildConfigField("String", "SDI_PLAY_PRO_MONTHLY_PRODUCT_ID", "\"$sdiPlayPro\"")
+        buildConfigField("String", "SDI_PLAY_CREDIT_PACK_PRODUCT_IDS", "\"$sdiPlayCredits\"")
     }
     if (sdiConnected) {
         sourceSets.getByName("debug").manifest.srcFile("src/connected/AndroidManifest.xml")
@@ -71,6 +83,8 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // Google Play Billing (free Google library). Purchases stay disabled until the server can verify them.
+    implementation("com.android.billingclient:billing-ktx:8.0.0")
 }
 
 tasks.named("preBuild").configure { dependsOn(stageStudioImages) }

@@ -356,7 +356,9 @@ struct StudioBottomBar: View {
                         .clipShape(Circle())
                         .offset(x: 8, y: -4)
                 }
-                .frame(maxWidth: .infinity)
+                // Same 44-point minimum tap target as the other bottom-bar buttons.
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
             }
             .accessibilityIdentifier("studio.layers.open")
             .accessibilityLabel("Layers")
@@ -954,7 +956,7 @@ struct SpatterAISheet: View {
                     Text(SpatterAIViewModel.capabilityNotice).font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
                     Button("Local Studio edits…") { showLocalRecipe = true }
                         .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
-                        .disabled(spatterVM.isThinking)
+                        .disabled(spatterVM.isThinking || spatterVM.previewOnly)
                         .accessibilityIdentifier("spatter.studio.local-motion")
                     Button("Local memory preferences…") { showingPersonalMemory = true }
                         .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red).disabled(spatterVM.isThinking || authVM.state == .loading)
@@ -1041,6 +1043,8 @@ struct SpatterAISheet: View {
             if state == .loading { spatterVM.suspendPersonalMemory() }
             else { spatterVM.configurePersonalMemory(accountID: authVM.userId) }
         }
+        // Free plan: any Spatter send opens the plans (owner decision 2026-10-15).
+        .sheet(isPresented: $spatterVM.upgradeRequested) { SubscriptionView() }
     }
 
     private func sendMessage() {

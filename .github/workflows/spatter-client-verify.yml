@@ -1646,6 +1646,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             StickDeathInfinity/ViewModels/SpatterAIViewModel.swift \
+            StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
             Tests/SpatterConversation/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-conversation-tests"
           "$RUNNER_TEMP/sdi-spatter-conversation-tests"
@@ -1685,6 +1686,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             StickDeathInfinity/ViewModels/SpatterAIViewModel.swift \
+            StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
             Tests/SpatterPersonalMemory/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-memory-tests"
           "$RUNNER_TEMP/sdi-spatter-memory-tests"
@@ -1870,6 +1872,7 @@ jobs:
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             StickDeathInfinity/ViewModels/SpatterAIViewModel.swift \
+            StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
             Tests/SpatterEval/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-eval-tests"
           "$RUNNER_TEMP/sdi-spatter-eval-tests"

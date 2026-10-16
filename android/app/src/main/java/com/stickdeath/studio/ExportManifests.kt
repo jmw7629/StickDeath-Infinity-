@@ -1,5 +1,6 @@
 package com.stickdeath.studio
 
+import com.stickdeath.studio.billing.ExportRendition
 import java.util.Locale
 
 /** Manifests with the same keys as the iOS export services (`StudioExportService.Manifest`,
@@ -57,15 +58,18 @@ object ExportManifests {
 
     /** MP4: Android encodes the canvas 1:1 (even dimensions required), so the render rule is the
      * identity rule in the iOS wording. */
-    fun movie(document: Document, encodedBytes: Long, movieFilename: String, audioIncluded: Boolean): String {
+    fun movie(document: Document, encodedBytes: Long, movieFilename: String, audioIncluded: Boolean,
+              rendition: ExportRendition = ExportRendition(document.width, document.height, 1f, false)): String {
         val totalTicks = document.frames.sumOf { it.hold }
+        val outW = rendition.width; val outH = rendition.height
+        val scale = if (rendition.resized) String.format(Locale.ROOT, "%.6f (Plan limit)", outW.toDouble() / document.width) else "1.0 (Original)"
         val manifest = linkedMapOf<String, Any?>(
             "version" to 1,
             "projectID" to document.id.uppercase(Locale.ROOT),
             "documentRevision" to document.revision,
             "frameIDs" to document.frames.map { it.id },
             "fps" to document.fps,
-            "width" to document.width, "height" to document.height,
+            "width" to outW, "height" to outH,
             "durationNumerator" to totalTicks, "durationDenominator" to document.fps,
             "codec" to "h264",
             "background" to background(document, false),
@@ -73,24 +77,28 @@ object ExportManifests {
             "editorGuidesIncluded" to false,
             "encodedBytes" to encodedBytes,
             "canvasWidth" to document.width, "canvasHeight" to document.height,
-            "renderRule" to "scale=1.0 (Original); content ${document.width}x${document.height} at top-left; white padding right=0 bottom=0; output ${document.width}x${document.height}",
+            "renderRule" to "scale=$scale; content ${outW}x${outH} at top-left; white padding right=0 bottom=0; output ${outW}x${outH}",
             "movieFilename" to movieFilename)
+        // Android extension, present only when the Free plan burned in the SDI mark.
+        if (rendition.watermark) manifest["watermark"] = "sdi-bottom-right"
         return SdiJson.encode(manifest)
     }
 
-    fun gif(document: Document, encodedBytes: Long): String {
+    fun gif(document: Document, encodedBytes: Long,
+            rendition: ExportRendition = ExportRendition(document.width, document.height, 1f, false)): String {
         val manifest = linkedMapOf<String, Any?>(
             "version" to 1,
             "projectID" to document.id.uppercase(Locale.ROOT),
             "revision" to document.revision,
             "frameIDs" to document.frames.map { it.id },
-            "width" to document.width, "height" to document.height,
+            "width" to rendition.width, "height" to rendition.height,
             "sourceFPS" to document.fps,
             "delaysCentiseconds" to GifTiming.delaysCentiseconds(document.frames.map { it.hold }, document.fps),
             "encodedBytes" to encodedBytes,
             "background" to background(document, false),
             "audioIncluded" to false,
             "editorGuidesIncluded" to false)
+        if (rendition.watermark) manifest["watermark"] = "sdi-bottom-right"
         return SdiJson.encode(manifest)
     }
 }

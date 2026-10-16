@@ -11,5 +11,10 @@ class StudioApplication : Application() {
         LocalCrashReporter(this).install()
         // Opt-in, count-only diagnostics (#291): records nothing unless the member switched it on.
         DiagnosticsStore(this).apply { installBreadcrumbs(); record(DiagnosticsCounter.AppLaunch) }
+        // Plan catalogue: contacts Google Play only when the build names real product ids, so the
+        // Studio limits are known before the first project opens. Placeholder builds stay offline.
+        if (!com.stickdeath.studio.billing.PlanRuntime.catalog.usesPlaceholderIdentifiers || !com.stickdeath.studio.billing.PlanRuntime.catalog.creditPacksUsePlaceholders) {
+            com.stickdeath.studio.billing.BillingRuntime.repository(this).start()
+        }
     }
 }

@@ -8,11 +8,16 @@ import java.io.File
 import java.io.OutputStream
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import com.stickdeath.studio.billing.ExportRendition
 
 /** One canonical bitmap at a time; project validation guarantees an opaque background. */
 object GifExporter {
-    suspend fun prepare(context: Context, document: Document, progress: (Int, Int) -> Unit): ExportArtifact {
+    /** [rendition] is the output size (the canvas, or scaled down for the Free plan) and whether the
+     * SDI watermark is burned in. */
+    suspend fun prepare(context: Context, document: Document, progress: (Int, Int) -> Unit,
+                        rendition: ExportRendition = ExportRendition(document.width, document.height, 1f, false)): ExportArtifact {
         val d = document.validated()
+        val outW = rendition.width; val outH = rendition.height
         val totalTicks = d.frames.sumOf { it.hold.toLong() }
         require(d.width.toLong() * d.height <= 4_194_304 && totalTicks <= d.fps * 120L) {
             "GIF export supports up to 4 megapixels and 120 seconds. No frames were omitted or resized."
@@ -40,16 +45,16 @@ object GifExporter {
                     }
                     override fun flush() = raw.flush()
                 }
-                val encoder = GifEncoder(bounded, d.width, d.height, check)
+                val encoder = GifEncoder(bounded, outW, outH, check)
                 encoder.begin()
                 // Centisecond boundaries shared with the GIF receipt manifest (GifTiming).
                 val delays = GifTiming.delaysCentiseconds(d.frames.map { it.hold }, d.fps)
                 d.frames.forEachIndexed { index, frame ->
                     check()
-                    val bitmap = Bitmap.createBitmap(d.width, d.height, Bitmap.Config.ARGB_8888)
+                    val bitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
                     try {
-                        FrameRenderer.draw(Canvas(bitmap), d, frame, checkCancellation = check)
-                        encoder.frame(delays[index]) { y, row -> bitmap.getPixels(row, 0, d.width, 0, y, d.width, 1) }
+                        ExportWatermark.renderFrame(Canvas(bitmap), d, frame, rendition, check)
+                        encoder.frame(delays[index]) { y, row -> bitmap.getPixels(row, 0, outW, 0, y, outW, 1) }
                     } finally { bitmap.recycle() }
                     progress(index + 1, d.frames.size)
                 }

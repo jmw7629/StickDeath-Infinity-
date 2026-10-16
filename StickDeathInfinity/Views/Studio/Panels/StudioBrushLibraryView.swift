@@ -29,13 +29,20 @@ struct StudioBrushLibraryView: View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
             ForEach(StudioBrushFamily.allCases, id: \.self) { family in
                 Button {
+                    // Extra brushes on a limited plan show the upgrade note.
+                    guard vm.requirePlan(vm.planAllowsBrush(family)) else { return }
                     vm.brushFamily = family
                     didSelect()
                 } label: {
                     VStack(spacing: 3) {
                         StudioBrushSwatch(family: family).frame(height: 25)
-                        Text(family.title).font(.specialElite(10))
-                            .foregroundColor(vm.brushFamily == family ? .red : .white.opacity(0.8))
+                        HStack(spacing: 3) {
+                            if !vm.planAllowsBrush(family) {
+                                Image(systemName: "lock.fill").font(.system(size: 8)).accessibilityHidden(true)
+                            }
+                            Text(family.title).font(.specialElite(10))
+                        }
+                        .foregroundColor(vm.brushFamily == family ? .red : .white.opacity(0.8))
                     }
                     .frame(maxWidth: .infinity).padding(6)
                     .background(Color.white.opacity(vm.brushFamily == family ? 0.12 : 0.04))

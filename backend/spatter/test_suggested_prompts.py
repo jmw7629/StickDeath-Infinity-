@@ -1,5 +1,5 @@
-"""The Free-plan suggested-prompt allowlist must be identical in the handler,
-the SQL meter and the iOS chips (#209, owner decision 2026-10-14). Source-only
+"""The suggested-prompt allowlist must be identical in the handler,
+the SQL meter and the iOS chips (#209). Source-only
 check: reads the three files, runs nothing else."""
 import re
 import unittest
@@ -25,11 +25,11 @@ class SuggestedPromptAllowlistTests(unittest.TestCase):
         self.assertEqual(tuple(i for i, _ in entries), suggested_prompts.SUGGESTED_PROMPT_IDS)
         self.assertEqual([label for _, label in entries], [v[0] for v in suggested_prompts.SUGGESTED_PROMPTS.values()])
 
-    def test_free_messages_are_fixed_server_text(self):
-        for prompt_id, (_label, text) in suggested_prompts.SUGGESTED_PROMPTS.items():
-            messages = suggested_prompts.free_messages(prompt_id)
-            self.assertEqual(messages, [{"role": "system", "content": suggested_prompts.FREE_SYSTEM},
-                                        {"role": "user", "content": text}])
+    def test_ids_are_validated_and_the_free_only_path_is_gone(self):
+        # Owner decision 2026-10-15: Free is never served, so no Free-only message path exists.
+        self.assertFalse(hasattr(suggested_prompts, "free_messages"))
+        for prompt_id in suggested_prompts.SUGGESTED_PROMPT_IDS:
+            self.assertEqual(suggested_prompts.validate_id(prompt_id), prompt_id)
         self.assertIsNone(suggested_prompts.validate_id(None))
         for bad in ("", "Animation tips", 7, "animation_tips "):
             with self.assertRaises(ValueError):

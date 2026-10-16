@@ -313,6 +313,38 @@ refusal) and shows that an expired window admits the member again. The 20-per-mi
 publishing-admin cap counts real audit rows and is covered by the publishing tests
 rather than a burst loop.
 
+## October 15: merch interest poll (website store "coming soon")
+
+`merch-interest.sql` backs the coming-soon store page after the owner chose not to start
+Shopify (it bills from the start). It counts a store poll ("should we open the SDI merch
+store?"), a thumbs up/down per gallery concept and a thumbs up/down per approved design
+idea, and takes design ideas into a moderation queue. Only approved ideas are public.
+
+* Voter: an active signed-in account votes as its user id; a browser without a session
+  sends a random UUID from its own localStorage, stored only as HMAC-SHA256 under a
+  32-byte salt generated at install (`sdi_private.merch_settings`). One vote per voter per
+  target, changeable or cleared with value 0. Keys are free to mint, so totals report
+  anonymous and member (`member_*`) counts apart and the page says anonymous votes are a
+  signal, not verified people.
+* Limits: 30 actions per minute per voter, 600 anonymous votes per minute globally,
+  30 ideas per hour globally, 3 ideas per voter per day and at most 300 pending ideas;
+  all are rows in `merch_settings`. No IP, email or device data is stored; the optional
+  public handle is the only free-text personal datum. Ideas reject links, email
+  addresses, angle brackets and control characters.
+* Surface: `sdi_merch_totals`, `sdi_merch_vote` and `sdi_merch_suggest` are the first
+  wrappers the anon role may execute (the publishable key); `tests/080_rls_review.sql`
+  pins that list. Installing grants anon usage on `sdi_private`, and the candidate moves
+  any earlier PUBLIC execute grant on `sdi_private` functions to `authenticated`;
+  `tests/140_merch_interest.sql` asserts anon can run exactly the three bodies.
+* Moderation: `sdi_merch_moderate` (`queue`, `results`, `decide`, `settings`) uses
+  `admin_gate` with the moderation capability; `decide` and `settings` need step-up.
+  Rejection deletes that idea's votes. `sdi_merch_retention` (service role) sweeps
+  day-old budget rows and rejected ideas 30 days after the decision.
+
+Not applied to the live project. Before enabling the website poll: install it, confirm
+the anon grants with `tests/080_rls_review.sql` assertions against the project, and add
+gateway-level rate limiting if traffic warrants (the database cannot see client IPs).
+
 ## Local harness
 
 `scripts/backend/run_sql_tests.sh` starts a throwaway PostgreSQL 16 cluster
@@ -386,6 +418,7 @@ repository root. Service sweeps are run by an operator or host timer through
 44. security-credentials.sql
 45. security-retire-communications.sql
 46. security-audit-integrity.sql
+47. merch-interest.sql
 <!-- /apply-order -->
 
 `rate-limits.sql` (#263): daily per-account quotas the per-minute budgets do not cover: render intake registrations and bytes, publication jobs (a duplicate request uses no quota) and room invitation codes, enforced by BEFORE INSERT triggers on every insert path and configurable in `sdi_private.resource_quotas`; members read their own usage with `sdi_quota_status`. Defaults are candidate values, not measured capacity. Tested by `tests/130_security_lifecycle.sql`.
@@ -402,4 +435,4 @@ repository root. Service sweeps are run by an operator or host timer through
 
 `worker-configuration.sql` (#248): masked provider-configuration health. A service worker reports which of its named settings are present as booleans only (`sdi_worker_configuration`; any other value type is refused so no secret can be stored), and administrators read presence, the missing names and staleness through `sdi_admin_configuration`. `backend.ops.sweeps` reports its own settings after every run. Tested by `tests/120_worker_configuration.sql`.
 
-`spatter-draft-jobs.sql` (#212/#214): one job per UTC day behind the `spatter_daily_video` agent gate, at most three attempts, 15-minute leases, missed days recorded; adds `render_reviews.storyboard` and `source_project_digest` and extends `invalidate_render_approval`. Unapplied; no capacity or schedule is created. Its #209 metering block applies the owner's 2026-10-14 plan rules: Free = 5 suggested prompts per UTC calendar month (`month:` bucket; free text refused with `suggested_prompt_required` via `p_suggested_prompt` and the `spatter_suggested_prompt_ids()` allowlist), Creator = 15 per billing period, Pro unlimited, trialing subscriptions metered as their own tier.
+`spatter-draft-jobs.sql` (#212/#214): one job per UTC day behind the `spatter_daily_video` agent gate, at most three attempts, 15-minute leases, missed days recorded; adds `render_reviews.storyboard` and `source_project_digest` and extends `invalidate_render_approval`. Unapplied; no capacity or schedule is created. Its #209 metering block applies the owner's plan rules as revised 2026-10-15: Free is never served (every Free request is refused with `upgrade_required`, upgrade `creator_or_pro`, before any counter or reservation; the former `free_prompts` column and `month:`/`free` buckets were removed because the file was never applied), Creator = `floor(creator_period_budget_microusd / prompt_cost_estimate_microusd)` server-funded prompts per billing period (defaults 3490000 / 20000 = 174; budget capped at the 4990000 gross price; both owner-editable via `sdi_spatter_usage_admin`, which also reports `creator_period_limit`), Creator's own-AI-key prompts never reach the server, Pro unlimited, trialing subscriptions metered as their own tier. Actual provider cost is not recorded: the commit path carries provider usage units only. Spatter credits (owner decision 2026-10-15, later): owner-approved consumable packs in `spatter_credit_packs` (no prices; `sdi_spatter_credit_admin` lists packs for finance, and only the owner with a recent step-up approves packs or makes a signed adjustment, audited in `finance_audit`), an append-only `spatter_credit_ledger` (balance = sum, never negative; purchases/refunds unique per provider transaction) fed only by the service-only `sdi_spatter_credits_grant` (approved packs, idempotent, sandbox flagged `livemode=false`, never a finance row) and `sdi_spatter_credits_refund` (claws back up to the balance, records the shortfall). Reservations spend caps first, then the plan allowance, then one credit (Pro never spends credits; Free with credits pays as it goes); a release refunds the credit; usage reports add `credits` and `available`.

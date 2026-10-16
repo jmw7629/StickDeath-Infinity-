@@ -42,7 +42,8 @@ struct ProjectSettingsPanel: View {
                         submitIdentifier: "studio.settings.rename", nameIdentifier: "studio.settings.name",
                         notice: settingsNotice, busy: vm.isSaving,
                         canSubmit: capturedProjectID != nil && settingsAreCurrent && scenePhase == .active && !vm.isPlaying,
-                        chooseExistingBackground: chooseBackground, onSubmit: apply)
+                        chooseExistingBackground: chooseBackground,
+                        keepsCustomSize: (width: vm.canvasWidth, height: vm.canvasHeight), onSubmit: apply)
                     if width != vm.canvasWidth || height != vm.canvasHeight {
                         StudioCanvasAnchorPicker(anchor: $anchor, fromWidth: vm.canvasWidth, fromHeight: vm.canvasHeight,
                                                  toWidth: width, toHeight: height)
@@ -164,7 +165,7 @@ struct ProjectSettingsPanel: View {
             
             if showingGridSettings { StudioGridSettingsControls(vm: vm) }
 
-            PanelSettingsRow(icon: "✨", label: "Magic Cut") { vm.activePanel = .magicCut }
+            PanelSettingsRow(icon: "✨", label: "Magic Cut", locked: !vm.planLimits.advancedTools) { vm.activePanel = .magicCut }
             PanelSettingsRow(icon: "🖼", label: "Background Library") { chooseBackground() }
             PanelSettingsRow(icon: "🎬", label: "Rotoscope / Video") { vm.activePanel = .rotoscope }
             
@@ -239,6 +240,8 @@ struct StudioCanvasAnchorPicker: View {
 struct PanelSettingsRow: View {
     let icon: String
     let label: String
+    /// Plan-locked rows show a lock; the action then shows the upgrade note.
+    var locked = false
     let action: () -> Void
     
     var body: some View {
@@ -250,7 +253,7 @@ struct PanelSettingsRow: View {
                     .font(.specialElite(12))
                     .foregroundColor(.white)
                 Spacer()
-                Image(systemName: "chevron.right")
+                Image(systemName: locked ? "lock.fill" : "chevron.right")
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.2))
             }
@@ -268,9 +271,9 @@ struct StudioOnionSettingsControls: View {
     @ObservedObject var vm: StudioViewModel
     var body: some View {
                 VStack(alignment: .leading, spacing: 10) {
-                    Stepper("Previous: \(vm.onionPreviousCount)", value: $vm.onionPreviousCount, in: 0...2)
+                    Stepper("Previous: \(vm.onionPreviousCount)", value: $vm.onionPreviousCount, in: 0...vm.onionPreviousLimit)
                         .accessibilityIdentifier("studio.onion.previous")
-                    Stepper("Next: \(vm.onionNextCount)", value: $vm.onionNextCount, in: 0...2)
+                    Stepper("Next: \(vm.onionNextCount)", value: $vm.onionNextCount, in: 0...vm.onionNextLimit)
                         .accessibilityIdentifier("studio.onion.next")
                     Text("Opacity: \(Int((vm.onionOpacity * 100).rounded()))%")
                     Slider(value: $vm.onionOpacity, in: 0.05...0.8)
@@ -279,6 +282,10 @@ struct StudioOnionSettingsControls: View {
                         .accessibilityIdentifier("studio.onion.tint")
                     Text("Farther frames fade. Ghosts are hidden during playback and never included in export.")
                         .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.secondary)
+                    if vm.planLimits.maxOnionSkinBack != nil || vm.planLimits.maxOnionSkinForward != nil {
+                        Label("More onion-skin frames: " + vm.planLimits.upgradeNote, systemImage: "lock.fill")
+                            .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.secondary)
+                    }
                 }.font(.specialElite(11)).padding(.horizontal, 14).padding(.vertical, 8)
     }
 }

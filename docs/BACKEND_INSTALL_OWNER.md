@@ -41,6 +41,19 @@ the owner's own Supabase dashboard; nothing here needs a secret in source contro
    `sdi_provision_owner`, `sdi_feed_action` and the others. Dashboard → **Advisors**
    should report no missing-RLS findings for `sdi_private` or `public.users`.
 
+## 1b. Open Spatter spending and the merch vote (SQL editor, ten seconds)
+
+Owner decision 2026-10-15 ("go"): open the global Spatter ceiling at 100 prompts per UTC
+day (about USD 2 at the USD 0.02 per-prompt estimate). Change it later in the command
+center's Spatter limits.
+
+```sql
+update sdi_private.spatter_usage_controls set global_daily_cap = 100, revision = revision + 1;
+```
+
+Then set `enabled: true` in `website/store-config.js` so the store page's merch votes and
+design suggestions go live.
+
 ## 2. Owner account (already created 2026-10-13)
 
 1. The owner account exists in the project: email `joewillisny@gmail.com`, handle

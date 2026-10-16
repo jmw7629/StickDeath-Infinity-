@@ -44,13 +44,23 @@ struct StudioMovieExportControls: View {
             Text("Original canvas · \(vm.document.width) × \(vm.document.height)")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
             Picker("MP4 resolution", selection: $preset) {
-                Text("Original").tag(StudioMovieExportService.RenderPreset.original)
-                ForEach(ExportQuality.allCases, id: \.rawValue) { quality in
+                if presetAllowed(.original) {
+                    Text("Original").tag(StudioMovieExportService.RenderPreset.original)
+                }
+                ForEach(ExportQuality.allCases.filter { presetAllowed(.init(quality: $0)) }, id: \.rawValue) { quality in
                     Text(quality.resolution).tag(StudioMovieExportService.RenderPreset(quality: quality))
                 }
             }
             .pickerStyle(.segmented).disabled(movie.isBusy)
             .accessibilityIdentifier("studio.export.movie.resolution")
+            if let limit = vm.planLimits.maxExportLongEdge {
+                Label("Up to \(limit) px on the longest edge" + (vm.planLimits.exportWatermark ? ", with the SDI mark" : "") + ". " + vm.planLimits.upgradeNote,
+                      systemImage: "lock.fill")
+                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
+            } else if vm.planLimits.exportWatermark {
+                Label("Exports carry the SDI mark. " + vm.planLimits.upgradeNote, systemImage: "lock.fill")
+                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
+            }
             if let plan = try? StudioMovieExportService.RenderPlan.make(canvasWidth: vm.document.width, canvasHeight: vm.document.height, preset: preset) {
                 Text("Output \(plan.outputWidth) × \(plan.outputHeight)" + (plan.paddingRight + plan.paddingBottom > 0 ? " · 1 white pixel added on the \(plan.paddingRight > 0 ? "right" : "")\(plan.paddingRight > 0 && plan.paddingBottom > 0 ? " and " : "")\(plan.paddingBottom > 0 ? "bottom" : "") so the encoder gets even dimensions" : "") + (plan.scale != 1 ? String(format: " · scaled ×%.3f", plan.scale) : ""))
                     .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
@@ -292,6 +302,7 @@ struct StudioMovieExportControls: View {
         }
         .onAppear {
             isVisible = true; refreshScope()
+            clampPresetToPlan()
             if let request = directRequest {
                 _ = movie.start(request, from: vm, scope: scope)
                 onDirectRequestConsumed()
@@ -319,6 +330,17 @@ struct StudioMovieExportControls: View {
         }
         .onChange(of: session.isRunning) { _, _ in refreshPreview() }
         .onChange(of: session.isSharing) { _, _ in refreshPreview() }
+    }
+    /// A size the plan allows (always true without a size cap).
+    private func presetAllowed(_ candidate: StudioMovieExportService.RenderPreset) -> Bool {
+        guard vm.planLimits.maxExportLongEdge != nil else { return true }
+        guard let plan = try? StudioMovieExportService.RenderPlan.make(canvasWidth: vm.document.width,
+            canvasHeight: vm.document.height, preset: candidate) else { return false }
+        return vm.planLimits.allowsExport(width: plan.contentWidth, height: plan.contentHeight)
+    }
+    private func clampPresetToPlan() {
+        guard !presetAllowed(preset) else { return }
+        if let allowed = [StudioMovieExportService.RenderPreset.p1080, .p720, .p480].first(where: presetAllowed) { preset = allowed }
     }
     private func refreshPreview() {
         guard scope.isStudioVisible, scope.isForeground, !session.isClosed,

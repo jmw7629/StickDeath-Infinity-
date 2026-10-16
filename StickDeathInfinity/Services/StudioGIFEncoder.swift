@@ -12,6 +12,8 @@ final class StudioGIFEncoder {
         let rasterDataByID: [String: Data]
         var maximumDimension: Int? = nil
         var imageCredits: [String: StudioExportService.ImageCredit] = [:]
+        /// Free-plan SDI mark on every frame; the project is never changed.
+        var watermark = false
     }
     static func outputSize(document: StudioDocument, maximumDimension: Int?) throws -> (width: Int, height: Int) {
         guard (1...4096).contains(document.width), (1...4096).contains(document.height) else { throw Failure.limit }
@@ -121,8 +123,9 @@ final class StudioGIFEncoder {
         for (index, frame) in document.frames.enumerated() {
             try Task.checkCancellation()
             try autoreleasepool {
-                let image = try renderer.render(frame, document: document, background: .white, raster: nil,
+                let rendered = try renderer.render(frame, document: document, background: .white, raster: nil,
                     rasterDataByID: snapshot.rasterDataByID, maximumDimension: snapshot.maximumDimension)
+                let image = try snapshot.watermark ? StudioExportService.watermarked(rendered) : rendered
                 let delay = Double(delays[index]) / 100
                 CGImageDestinationAddImage(destination, image,
                     [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: delay,

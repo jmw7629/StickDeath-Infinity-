@@ -3,7 +3,8 @@
 --  * every sdi_private table has row level security and no grant to a client role;
 --  * every sdi_private function and every public sdi_* wrapper pins an empty search_path;
 --  * public wrappers are security invoker; the definer bodies live in sdi_private;
---  * no public sdi_* function is executable by anon or PUBLIC;
+--  * no public sdi_* function is executable by PUBLIC, and anon may execute exactly the
+--    explicit list below (the merch interest poll: read totals, vote, suggest an idea);
 --  * each public sdi_* function is executable by exactly one of authenticated and
 --    service_role, and the service-only set is the explicit list below (adding a
 --    worker function means reviewing it here);
@@ -17,12 +18,13 @@ declare bad text; service_expected text[]:=array[
  'sdi_award_achievements','sdi_billing_apply_event','sdi_billing_reconcile','sdi_challenge_finalize','sdi_consent_retention_sweep',
  'sdi_consent_verify','sdi_credential_load','sdi_credential_record_state','sdi_credential_revoke','sdi_credential_store','sdi_diagnostics_retention',
  'sdi_email_recipients','sdi_email_suppress','sdi_feed_publish_claim','sdi_feed_publish_finish','sdi_feed_removal_claim','sdi_feed_removal_finish',
- 'sdi_legacy_communication_exposure','sdi_marketing_cadence_due','sdi_marketing_claim','sdi_marketing_finish','sdi_ops_report','sdi_preview_renew',
+ 'sdi_legacy_communication_exposure','sdi_marketing_cadence_due','sdi_marketing_claim','sdi_marketing_finish','sdi_merch_retention','sdi_ops_report','sdi_preview_renew',
  'sdi_provision_owner','sdi_publication_release_candidates','sdi_publish_claim','sdi_publish_finish','sdi_publish_progress',
  'sdi_publish_removal_claim','sdi_publish_removal_finish','sdi_publish_removal_renew','sdi_publish_renew','sdi_publish_uncertain',
- 'sdi_register_upload','sdi_release_published_upload','sdi_retire_upload','sdi_room_asset_sweep','sdi_spatter_draft_claim',
+ 'sdi_register_upload','sdi_release_published_upload','sdi_retire_upload','sdi_room_asset_sweep','sdi_spatter_credits_grant','sdi_spatter_credits_refund','sdi_spatter_draft_claim',
  'sdi_spatter_draft_progress','sdi_spatter_usage_meter','sdi_support_retention','sdi_upload_preview','sdi_war_expire_proposals','sdi_war_finalize',
  'sdi_worker_configuration','sdi_worker_heartbeat'];
+ anon_expected text[]:=array['sdi_merch_suggest','sdi_merch_totals','sdi_merch_vote']; anon_actual text[];
  service_actual text[]; client_count integer;
 begin
  select string_agg(c.relname,', ') into bad from pg_class c join pg_namespace n on n.oid=c.relnamespace
@@ -41,9 +43,12 @@ begin
  select string_agg(p.proname,', ') into bad from pg_proc p join pg_namespace n on n.oid=p.pronamespace
   where n.nspname='public' and p.proname like 'sdi\_%' and p.prosecdef;
  perform sdi_test.check(bad is null,'public wrappers must be security invoker: '||coalesce(bad,''));
- select string_agg(p.proname,', ') into bad from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+ select coalesce(array_agg(p.proname order by p.proname),'{}') into anon_actual from pg_proc p join pg_namespace n on n.oid=p.pronamespace
   where n.nspname='public' and p.proname like 'sdi\_%' and has_function_privilege('anon',p.oid,'execute');
- perform sdi_test.check(bad is null,'public functions executable by anon: '||coalesce(bad,''));
+ perform sdi_test.check(anon_actual=anon_expected,'anon surface changed; review and update the list: '||array_to_string(anon_actual,','));
+ select string_agg(p.proname,', ') into bad from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+  where n.nspname='public' and p.proname like 'sdi\_%' and has_function_privilege('public',p.oid,'execute');
+ perform sdi_test.check(bad is null,'public functions executable by PUBLIC: '||coalesce(bad,''));
  select string_agg(p.proname,', ') into bad from pg_proc p join pg_namespace n on n.oid=p.pronamespace
   where n.nspname='public' and p.proname like 'sdi\_%'
   and has_function_privilege('authenticated',p.oid,'execute')=has_function_privilege('service_role',p.oid,'execute');

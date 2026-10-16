@@ -78,6 +78,13 @@ struct StickDeathInfinityApp: App {
     @StateObject private var themeVM = ThemeViewModel()
     @StateObject private var spatterVM = SpatterAIViewModel()
 
+    init() {
+        // The Studio reads the live plan limits through this provider, so each
+        // check sees what `StripeService` last published (unrestricted until
+        // real plans are sold).
+        StudioPlanGate.provider = { StudioPlanGate(StudioPlanLimits.current) }
+    }
+
     var body: some Scene {
         WindowGroup {
             AppFlowView()
@@ -90,5 +97,17 @@ struct StickDeathInfinityApp: App {
                     Task { await authVM.handleDeepLink(url) }
                 }
         }
+    }
+}
+
+extension StudioPlanGate {
+    /// Copies the billing catalog's Studio limits into the Studio's own type.
+    init(_ limits: StudioPlanLimits) {
+        self.init(maxLayers: limits.maxLayers, maxOnionSkinBack: limits.maxOnionSkinBack,
+                  maxOnionSkinForward: limits.maxOnionSkinForward, customCanvasSize: limits.customCanvasSize,
+                  maxExportLongEdge: limits.maxExportLongEdge, exportWatermark: limits.exportWatermark,
+                  audioImport: limits.audioImport, soundLibrary: limits.soundLibrary,
+                  advancedTools: limits.advancedTools, pngSequenceExport: limits.pngSequenceExport,
+                  upgradeNote: StudioPlanLimits.upgradeNote)
     }
 }

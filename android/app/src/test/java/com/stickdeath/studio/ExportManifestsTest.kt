@@ -57,6 +57,18 @@ class ExportManifestsTest {
         assertEquals(12L, manifest["sourceFPS"]); assertEquals(999L, manifest["encodedBytes"]); assertEquals(false, manifest["audioIncluded"])
     }
 
+    @Test fun freePlanRenditionIsRecordedInBothManifests() {
+        val big = Document.create("Plan", 1080, 1920, 12)
+        val movieRendition = com.stickdeath.studio.billing.StudioPlanLimits.Free.exportRendition(1080, 1920, evenDimensions = true)
+        val movie = TestJson.obj(TestJson.parse(ExportManifests.movie(big, 10L, "Plan.mp4", false, movieRendition)))
+        assertEquals(720L, movie["width"]); assertEquals(1280L, movie["height"])
+        assertEquals(1080L, movie["canvasWidth"]); assertEquals(1920L, movie["canvasHeight"])
+        assertEquals("sdi-bottom-right", movie["watermark"])
+        assertTrue((movie["renderRule"] as String).endsWith("output 720x1280"))
+        val gif = TestJson.obj(TestJson.parse(ExportManifests.gif(big, 10L, com.stickdeath.studio.billing.StudioPlanLimits.Free.exportRendition(1080, 1920, evenDimensions = false))))
+        assertEquals(720L, gif["width"]); assertEquals("sdi-bottom-right", gif["watermark"])
+    }
+
     @Test fun jsonWriterIsDeterministicAndStrict() {
         assertEquals("""{"a":1,"b":[true,null,"x\"y"],"c":0.5,"d":1}""", SdiJson.encode(mapOf("c" to 0.5, "a" to 1, "d" to 1.0, "b" to listOf(true, null, "x\"y")), pretty = false))
         assertEquals("0.00001", SdiJson.encode(0.00001, pretty = false))

@@ -1,5 +1,8 @@
 package com.stickdeath.studio.connect
 
+import com.stickdeath.studio.billing.PlanCopy
+import com.stickdeath.studio.billing.PlanTier
+import com.stickdeath.studio.billing.SpatterUsage
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -13,6 +16,10 @@ sealed class SpatterException(message: String) : Exception(message) {
     class EmptyResponse : SpatterException("Spatter's backend returned no answer.")
     class ResponseTooLarge : SpatterException("Spatter's backend response exceeded the size limit.")
     class NetworkUnavailable : SpatterException("Spatter's backend could not be reached. Try again later.")
+    /** HTTP 402 `upgrade_required`: Free without credits. Nothing was counted or sent to a provider. */
+    class UpgradeRequired : SpatterException(PlanCopy.SPATTER_UPGRADE_NOTE)
+    /** Any other HTTP 402 (for example credits used up); the server's own text is not shown. */
+    class PaymentRequired(val code: String?) : SpatterException("Spatter needs Creator, Pro or Spatter credits for this request. Buy credits or upgrade in Account, Plans.")
     class HttpStatus(val status: Int) : SpatterException(when (status) {
         401, 403 -> "Spatter's backend did not authorize this request."
         429 -> "Spatter's backend is rate-limited or your daily Spatter budget is used up. Try again later."
@@ -47,6 +54,10 @@ class SpatterClient(private val endpoint: String?, private val session: SessionS
         val response = try { transport.send(HttpRequest("POST", url, headers, body), RESPONSE_LIMIT) }
             catch (e: ResponseTooLargeException) { throw SpatterException.ResponseTooLarge() }
             catch (e: IOException) { throw SpatterException.NetworkUnavailable() }
+        if (response.status == 402) {
+            val code = runCatching { JSONObject(response.text).optString("code").takeIf { it.isNotEmpty() } }.getOrNull()
+            throw if (code == "upgrade_required") SpatterException.UpgradeRequired() else SpatterException.PaymentRequired(code)
+        }
         if (response.status !in 200..299) throw SpatterException.HttpStatus(response.status)
         if (response.body.size > RESPONSE_LIMIT) throw SpatterException.ResponseTooLarge()
         if (response.contentType?.substringBefore(';')?.trim()?.lowercase() != "application/json") throw SpatterException.InvalidResponse()
@@ -77,4 +88,30 @@ class SpatterClient(private val endpoint: String?, private val session: SessionS
             return SpatterReply(0, content, null, null)
         }
     }
+}
+
+/** Reads the signed-in account's Spatter plan, allowance and credits from `public.sdi_spatter_my_usage`.
+ * The device never counts prompts itself. */
+class SpatterUsageClient(private val gateway: CommunityGateway) {
+    fun myUsage(): SpatterUsage = SpatterUsageDecoder.decode(gateway.call("sdi_spatter_my_usage"))
+}
+
+object SpatterUsageDecoder {
+    /** Strict on the plan (an unknown plan is not an allowance), tolerant on everything else:
+     * an absent, null or out-of-range count is reported as unknown, never invented. */
+    fun decode(o: JSONObject): SpatterUsage {
+        if (!o.isNull("error") && o.optString("error").isNotEmpty()) throw SpatterException.InvalidResponse()
+        val plan = PlanTier.fromWire(if (o.isNull("plan")) null else o.optString("plan")) ?: throw SpatterException.InvalidResponse()
+        fun count(key: String): Int? = if (!o.has(key) || o.isNull(key)) null
+            else (o.opt(key) as? Number)?.takeIf { it.toDouble() == Math.floor(it.toDouble()) }?.toLong()?.takeIf { it in 0..1_000_000 }?.toInt()
+        fun flag(key: String): Boolean? = if (!o.has(key) || o.isNull(key)) null else o.opt(key) as? Boolean
+        val resets = if (o.isNull("resets_at")) null else o.optString("resets_at").takeIf { it.isNotEmpty() && it.length <= 64 }
+        val unlimited = plan == PlanTier.Pro || flag("unlimited") == true
+        return SpatterUsage(plan, unlimited,
+            limit = if (plan == PlanTier.Pro) null else count("limit"),
+            remaining = if (plan == PlanTier.Pro) null else count("remaining"),
+            credits = count("credits"), available = flag("available"), resetsAt = resets,
+            paused = !o.isNull("service") && o.optString("service") == "paused")
+    }
+    fun decode(text: String): SpatterUsage = decode(runCatching { JSONObject(text) }.getOrElse { throw SpatterException.InvalidResponse() })
 }

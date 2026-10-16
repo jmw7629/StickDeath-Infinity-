@@ -50,22 +50,89 @@ the single source for plans, periods, purchase state and plan copy. Both views a
 
 | Plan | Product | Owner-stated entitlements (2026-10-07, #250/#259) | Enforced today |
 | --- | --- | --- | --- |
-| Free | none | Full Studio on device; no video upload/download; **5 suggested Spatter prompts per month** (the app's suggested prompts only, no free text; server-counted per UTC calendar month) | Studio only |
-| Creator | USD 4.99 monthly | No watermark; upload/download; **15 Spatter prompts per month** (server-counted, reset at renewal); **own AI key** (prompts sent with it are not counted) | none (pending) |
+| Free | none | Full Studio on device; no video upload/download; **Spatter visible with its suggested prompts; works only on purchased Spatter credits** (pay as you go; with no credits every request is refused with `upgrade_required`; the server funds nothing) | Studio only |
+| Creator | USD 4.99 monthly | No watermark; upload/download; **own AI key** (prompts sent with it are not counted) plus a **server-funded Spatter allowance per billing period within break-even** (default 174, reset at renewal) | none (pending) |
 | Pro | USD 9.99 monthly | Everything in Creator; **unlimited Spatter prompts**; **own AI key** | none (pending) |
 
-Owner decisions 2026-10-14 (#209/#259): Free = 5 suggested prompts per month;
-Creator $4.99 = 15 prompts per month + own AI key; Pro $9.99 = unlimited + own AI
-key; **the free trial applies to both paid plans** (Creator and Pro). Details and
-evidence: `docs/SPATTER_BILLING_DECISIONS_2026_10_14.md`.
+Owner decisions 2026-10-14 (#209/#259), Spatter metering revised 2026-10-15:
+Free = Spatter visible but not active (no server-funded prompts; requests are
+refused with `upgrade_required`, upgrade `creator_or_pro`, before anything is
+counted; the former 5-per-month Free allowance is retired); Creator $4.99 = own
+AI key + server-funded prompts per billing period of
+`floor(creator_period_budget_microusd / prompt_cost_estimate_microusd)`, defaults
+3 490 000 (USD 4.99 net of a 30% store commission, rounded down; the budget can
+never exceed the 4 990 000 gross price) / 20 000 (USD 0.02, an owner-editable
+conservative estimate per prompt) = 174; Pro $9.99 = unlimited (still under the
+safety, rate and global caps and the emergency stop) + own AI key; **the free
+trial applies to both paid plans** (Creator and Pro). Actual provider cost is not
+recorded (the provider contract returns usage units only). Background:
+`docs/SPATTER_BILLING_DECISIONS_2026_10_14.md`.
+
+### Spatter credits (owner decision 2026-10-15, later)
+
+"You can purchase more credits to keep going and in free you can pay as you go
+if you want." Implemented server side (unapplied candidates, tested locally):
+
+- **Packs** are consumable store products in
+  `sdi_private.spatter_credit_packs(product_id, provider apple|stripe|google,
+  credits 1..100000, approved)`. No price is stored; the stores own prices.
+  Finance administrators list packs; only the owner with a recent MFA step-up
+  approves them (`public.sdi_spatter_credit_admin('set_pack', …)`, audited in
+  `finance_audit`). The owner may also make a signed goodwill/correction grant
+  (`'grant'`, never below zero, audited) and read a member's history
+  (`'balance'`).
+- **Ledger**: append-only `sdi_private.spatter_credit_ledger` (`purchase`,
+  `spend`, `release`, `refund`, `admin_grant`); balance = `sum(delta)`, never
+  negative; purchases and refunds are unique per (provider, transaction), so
+  every grant and claw-back happens once. Sandbox / Stripe test-mode grants are
+  allowed and flagged `livemode = false`; credit grants never write
+  `finance_ledger` rows (live Stripe pack charges are recorded by the webhook's
+  normal ledger path; sandbox never).
+- **Metering**: caps first (emergency stop, global, per-minute, daily safety),
+  then the plan allowance (Pro unlimited never spends credits; Creator's period
+  allowance), then one credit per prompt. Free with credits pays as it goes;
+  Free with none gets `upgrade_required` ("Spatter is part of Creator and Pro,
+  or buy Spatter credits to pay as you go."); Creator with neither allowance nor
+  credits gets `plan_allowance_exhausted` with `upgrade: pro` and `buyCredits`.
+  A released (failed) prompt refunds its credit.
+- **Purchases**: Apple consumables are not announced by App Store Server
+  Notifications at purchase, so the app posts the StoreKit 2 signed transaction
+  to `backend/billing/appstore_credits.py` (member JWT + the same pinned-root
+  JWS verifier; `appAccountToken` must equal the member). Apple `REFUND`
+  notifications for packs claw back; a `ONE_TIME_CHARGE` notification also
+  grants (idempotent). Stripe: `stripe_checkout` `action: "credits"` builds a
+  one-time `mode=payment` session for an approved pack; `stripe_webhook` grants
+  on a paid `checkout.session.completed` (or `async_payment_succeeded`) keyed
+  by the PaymentIntent, and a fully refunded `charge.refunded` claws back.
+  Partial Stripe refunds do not claw back automatically (owner adjusts with
+  `'grant'`). **Google Play: not implemented** — no Play purchase verification
+  path exists in this repository; `google` packs can be configured but nothing
+  grants them.
+- **Refund clawback** takes back up to the remaining balance; credits already
+  spent are recorded as the refund row's `shortfall`.
+- **Usage JSON** (`public.sdi_spatter_my_usage()`; the reserve result and the
+  handler's `allowance` carry the same `credits`):
+
+  ```json
+  {"plan": "free", "unlimited": false, "limit": 0, "used": 0, "remaining": 0, "period": "none",
+   "resets_at": null, "credits": 12, "available": true, "upgrade": "creator_or_pro", "service": "metered"}
+  {"plan": "creator", "unlimited": false, "limit": 174, "used": 174, "remaining": 0, "period": "billing_period",
+   "resets_at": "2026-11-01T00:00:00+00:00", "credits": 5, "available": true, "service": "metered"}
+  {"plan": "pro", "unlimited": true, "limit": null, "used": null, "remaining": null, "period": "none",
+   "resets_at": null, "credits": 0, "available": true, "service": "metered"}
+  ```
+
+  `available` is true when the plan allowance or credits remain (always for
+  Pro); `service` is `paused` under the emergency stop.
 
 - Every paid entitlement carries `isLive = false` and is shown with a pending marker
   and the note that it turns on when the server applies the plan from Apple's
   verified purchase. No server enforcement is claimed.
 - Remaining prompts: `BillingCopy.prompts` shows a count only when the server
   reports one (`sdi_spatter_my_usage` or a metered reply's `allowance`); the
-  plan screens show the plan line without a count. At zero on Free it offers
-  Creator or Pro; on Creator, Pro.
+  plan screens show the plan line without a count. Free shows its credit
+  balance and offers Creator, Pro or credits; Creator at zero offers Pro or
+  credits.
 - Trial: applies to both paid plans (`BillingPlanDefinition.offersTrial` is
   true for Creator and Pro, false for Free). Copy is shown only when the loaded
   `Product` has a free-trial introductory offer and `isEligibleForIntroOffer` is

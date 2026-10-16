@@ -35,7 +35,12 @@ final class StudioMovieExportService {
     struct RenderOptions: Codable, Equatable {
         var codec: Codec = .h264
         var preset: RenderPreset = .original
-        init(codec: Codec = .h264, preset: RenderPreset = .original) { self.codec = codec; self.preset = preset }
+        /// Free-plan SDI mark burned into every rendered frame. Nil (absent from
+        /// older encodings and proofs) means no mark.
+        var watermark: Bool? = nil
+        init(codec: Codec = .h264, preset: RenderPreset = .original, watermark: Bool = false) {
+            self.codec = codec; self.preset = preset; self.watermark = watermark ? true : nil
+        }
     }
     /// The exact scaling rule recorded in every MP4 manifest (#182/#185):
     /// `scale` = targetShortSide / min(canvasWidth, canvasHeight), or 1 for
@@ -692,7 +697,8 @@ final class StudioMovieExportService {
                 try confirmOwnership()
                 try autoreleasepool {
                     try checkpoint(started)
-                    let image = try render(frame, document: document, plan: plan, rasterDataByID: snapshot.rasterDataByID)
+                    let image = try render(frame, document: document, plan: plan, rasterDataByID: snapshot.rasterDataByID,
+                                           watermark: snapshot.render.watermark == true)
                     try draw(image, into: buffer)
                     if formatDescription == nil {
                         guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: buffer,
@@ -882,7 +888,8 @@ final class StudioMovieExportService {
     /// Renders one frame at the plan's output size: the whole output is white,
     /// the canvas is drawn scaled into the top-left content rectangle and any
     /// one-pixel padding stays white (see `RenderPlan`).
-    private func render(_ frame: AnimationFrame, document: StudioDocument, plan: RenderPlan, rasterDataByID: [String: Data]) throws -> CGImage {
+    private func render(_ frame: AnimationFrame, document: StudioDocument, plan: RenderPlan, rasterDataByID: [String: Data],
+                        watermark: Bool = false) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
         let content = CGSize(width: plan.contentWidth, height: plan.contentHeight)
         let output = CGSize(width: plan.outputWidth, height: plan.outputHeight)
@@ -900,7 +907,10 @@ final class StudioMovieExportService {
         let renderer = ImageRenderer(content: canvas); renderer.scale = 1; renderer.isOpaque = true
         guard let image = renderer.cgImage, image.width == plan.outputWidth, image.height == plan.outputHeight else { throw ExportError.renderFailed }
         if let failure { throw failure }
-        return image
+        guard watermark else { return image }
+        let marked = try StudioExportService.watermarked(image)
+        guard marked.width == plan.outputWidth, marked.height == plan.outputHeight else { throw ExportError.renderFailed }
+        return marked
     }
 
     private func draw(_ image: CGImage, into buffer: CVPixelBuffer) throws {

@@ -11,7 +11,12 @@ Event handling:
 
 * ``checkout.session.completed`` – recorded with the account link; it is not
   proof of payment, so no subscription fields are sent. Entitlement follows the
-  signed subscription/invoice events.
+  signed subscription/invoice events. Exception: a one-time ``mode=payment``
+  session for an approved Spatter credit pack (``metadata.sdi_credit_pack``)
+  with ``payment_status == "paid"`` grants the pack through
+  ``public.sdi_spatter_credits_grant`` keyed by its PaymentIntent id (also on
+  ``checkout.session.async_payment_succeeded``), plus a ``charge`` ledger row
+  from ``amount_total`` in live mode only.
 * ``customer.subscription.created|updated|deleted`` – status, period end,
   ``cancel_at_period_end`` and the configured price id → approved product.
 * ``invoice.paid`` – active through the paid line period, plus a ``charge``
@@ -19,7 +24,10 @@ Event handling:
 * ``invoice.payment_failed`` – recorded only; Stripe's subsequent
   ``customer.subscription.updated`` carries the ``past_due`` status.
 * ``charge.refunded`` – ``refund`` ledger rows per refund (live mode only); the
-  subscription status is left to the subscription events.
+  subscription status is left to the subscription events. A fully refunded
+  charge also claws back Spatter credits bought with its PaymentIntent
+  (``public.sdi_spatter_credits_refund``; a non-credit charge is ignored there).
+  Partial refunds do not claw back credits; the owner adjusts by hand.
 * ``payout.paid`` – ``payout`` ledger row (live mode only).
 
 Any other type is recorded without subscription fields. Replays are safe: the
@@ -35,14 +43,16 @@ import hmac
 from dataclasses import dataclass
 from typing import Any, Callable, List, Mapping, Optional, Tuple
 
-from .contract import (ApplyEventCall, ContractError, LedgerEntry, ProductCatalog, Response, SQLExecutor, as_uuid,
-                       execute_and_respond, from_epoch, header, ledger_from, parse_json_object, redact)
+from .contract import (ApplyEventCall, ContractError, CreditPackCatalog, LedgerEntry, ProductCatalog, Response, SQLExecutor,
+                       apply_event, as_uuid, from_epoch, grant_credits, header, ledger_from, parse_json_object, redact,
+                       refund_credits)
 
 MAX_BODY_BYTES = 512 * 1024
 DEFAULT_TOLERANCE_SECONDS = 300
 SUBSCRIPTION_EVENTS = ("customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted")
-HANDLED_EVENTS = SUBSCRIPTION_EVENTS + ("checkout.session.completed", "invoice.paid", "invoice.payment_failed",
-                                        "charge.refunded", "payout.paid")
+CREDIT_CHECKOUT_EVENTS = ("checkout.session.completed", "checkout.session.async_payment_succeeded")
+HANDLED_EVENTS = SUBSCRIPTION_EVENTS + CREDIT_CHECKOUT_EVENTS + ("invoice.paid", "invoice.payment_failed",
+                                                                 "charge.refunded", "payout.paid")
 
 # Stripe subscription status -> canonical status. ``incomplete`` is unpaid and grants nothing.
 _STATUS = {"active": "active", "trialing": "trialing", "past_due": "past_due", "canceled": "cancelled",
@@ -148,7 +158,39 @@ def _invoice_subscription(invoice: Mapping[str, Any]) -> Tuple[Optional[str], Ma
     return sub, details
 
 
-def map_event(event: Mapping[str, Any], catalog: ProductCatalog, config: StripeConfig) -> ApplyEventCall:
+def _credit_purchase(obj: Mapping[str, Any], credit_packs: Optional[CreditPackCatalog]):
+    """(user, pack, payment_intent) for a paid one-time credit-pack session, else None."""
+    if credit_packs is None or obj.get("mode") != "payment" or obj.get("payment_status") != "paid":
+        return None
+    meta = obj.get("metadata") if isinstance(obj.get("metadata"), Mapping) else {}
+    pack = credit_packs.get("stripe", meta.get("sdi_credit_pack"))
+    user = as_uuid(obj.get("client_reference_id")) or _metadata_user(obj)
+    intent = _id(obj.get("payment_intent"))
+    if pack is None or user is None or intent is None:
+        return None
+    return user, pack, intent
+
+
+def credit_action(event: Mapping[str, Any], credit_packs: Optional[CreditPackCatalog], executor: SQLExecutor) -> Optional[dict]:
+    """Grant or claw back Spatter credits for a verified event; None when unrelated."""
+    data = event.get("data")
+    obj = data.get("object") if isinstance(data, Mapping) else None
+    if credit_packs is None or not isinstance(obj, Mapping):
+        return None
+    if event.get("type") in CREDIT_CHECKOUT_EVENTS:
+        purchase = _credit_purchase(obj, credit_packs)
+        if purchase is None:
+            return None
+        user, pack, intent = purchase
+        return grant_credits(executor, user, "stripe", pack.product_id, intent, livemode=bool(event.get("livemode")))
+    if event.get("type") == "charge.refunded" and obj.get("refunded") is True:
+        intent = _id(obj.get("payment_intent"))
+        return refund_credits(executor, "stripe", intent) if intent else None
+    return None
+
+
+def map_event(event: Mapping[str, Any], catalog: ProductCatalog, config: StripeConfig,
+              credit_packs: Optional[CreditPackCatalog] = None) -> ApplyEventCall:
     event_id = event.get("id")
     event_type = event.get("type")
     created = from_epoch(event.get("created"), millis=False)
@@ -163,9 +205,17 @@ def map_event(event: Mapping[str, Any], catalog: ProductCatalog, config: StripeC
     base = dict(provider="stripe", event_id=event_id, event_type=event_type, occurred_at=created, payload=payload)
     ledger: List[LedgerEntry] = []
 
-    if event_type == "checkout.session.completed":
+    if event_type in CREDIT_CHECKOUT_EVENTS:
         user = as_uuid(obj.get("client_reference_id")) or _metadata_user(obj)
         payload["sdi_user_id"] = user
+        purchase = _credit_purchase(obj, credit_packs)
+        if purchase is not None:
+            _user, pack, intent = purchase
+            payload["credit_pack"] = pack.product_id
+            payload["reason"] = "paid Spatter credit pack"
+            if livemode:
+                ledger = ledger_from([(intent, "charge", obj.get("amount_total"), obj.get("currency"))])
+            return ApplyEventCall(**base, user_id=user, ledger=ledger)
         payload["subscription"] = _id(obj.get("subscription"))
         payload["reason"] = "checkout completion is not payment evidence"
         return ApplyEventCall(**base, user_id=user)
@@ -222,7 +272,7 @@ def map_event(event: Mapping[str, Any], catalog: ProductCatalog, config: StripeC
 
 
 def handle(headers: Mapping[str, str], raw_body: bytes, *, executor: SQLExecutor, catalog: ProductCatalog, secret: bytes,
-           config: StripeConfig = StripeConfig(),
+           config: StripeConfig = StripeConfig(), credit_packs: Optional[CreditPackCatalog] = None,
            now: Callable[[], _dt.datetime] = lambda: _dt.datetime.now(_dt.timezone.utc)) -> Response:
     """Process one Stripe webhook POST. The signature is checked before the body is read."""
     try:
@@ -230,7 +280,13 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *, executor: SQLExecutor
             raise ContractError(413, "request too large")
         verify_signature(raw_body, header(headers, "Stripe-Signature"), secret, now(), config.tolerance_seconds)
         event = parse_json_object(raw_body, MAX_BODY_BYTES)
-        call = map_event(event, catalog, config)
-        return execute_and_respond(executor, call)
+        call = map_event(event, catalog, config, credit_packs)
+        body = apply_event(executor, call)
+        # Also on a duplicate event: credit grants/refunds are idempotent per
+        # PaymentIntent, so a retry completes a grant whose first attempt failed.
+        credits = credit_action(event, credit_packs, executor)
+        if credits is not None:
+            body["credits"] = credits
+        return Response(200, body)
     except ContractError as error:
         return Response(error.status, {"error": error.reason})

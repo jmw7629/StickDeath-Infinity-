@@ -8504,12 +8504,13 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertNotNil(source.range(of: "^[0-9a-f]{40}$", options: .regularExpression))
         XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication(bundleIdentifier: "com.willisnmb.stickdeathinfinity")
-        // Only locale pins, the caller's accessibility arguments and a
-        // launch-scoped "no remembered guest" pin, so every launch (including
-        // a cold reopen) starts at Welcome on the shared CI simulator. No
-        // backend, fixture or feature switch is injected through launch arguments.
+        // Only locale pins, the caller's accessibility arguments and
+        // launch-scoped "no remembered guest" and "tutorial not completed"
+        // pins, so every launch (including a cold reopen) starts at Welcome
+        // and shows the tutorial on the shared CI simulator. No backend,
+        // fixture or feature switch is injected through launch arguments.
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
-                               "-sdi.guest.chosen.v1", "NO"] + extraLaunchArguments
+                               "-sdi.guest.chosen.v1", "NO", "-tutorial_completed", "NO"] + extraLaunchArguments
         app.launch()
         capture(app, name: "launch-\(source.prefix(12))")
         XCTAssertTrue(app.buttons["welcome.guest"].waitForExistence(timeout: 20))

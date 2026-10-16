@@ -155,12 +155,25 @@ final class StudioMovieExportSession: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription; return false
         }
+        // Plan limits: the SDI mark and, when capped, the largest allowed size
+        // no bigger than the request. Unrestricted plans change nothing.
+        let gate = vm.planLimits
+        var planned = options
+        if gate.exportWatermark { planned.render.watermark = true }
+        if gate.maxExportLongEdge != nil {
+            let fitting = [planned.render.preset, .p1080, .p720, .p480].first { preset in
+                guard let plan = try? Service.RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: preset) else { return false }
+                return gate.allowsExport(width: plan.contentWidth, height: plan.contentHeight)
+            }
+            guard let fitting else { errorMessage = gate.upgradeNote; return false }
+            planned.render.preset = fitting
+        }
         let snapshot = Service.Snapshot(document: document,
-            retainedAudioTracks: vm.projectAudioTracks, rasterDataByID: rasters, imageCredits: credits, render: options.render)
+            retainedAudioTracks: vm.projectAudioTracks, rasterDataByID: rasters, imageCredits: credits, render: planned.render)
         // Preflight (#202): refuse before rendering when the device is critically
         // hot or the destination volume lacks twice the estimated output.
         do {
-            let plan = try Service.RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: options.render.preset)
+            let plan = try Service.RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: planned.render.preset)
             let estimate = StudioExportPreflight.estimatedMovieBytes(width: plan.outputWidth, height: plan.outputHeight,
                 fps: document.fps, durationSeconds: document.durationSeconds, includesAudio: !document.audioClips.isEmpty)
             try StudioExportPreflight.check(estimatedOutputBytes: estimate, destination: outputParent)

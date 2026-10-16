@@ -69,7 +69,7 @@ import kotlinx.coroutines.withContext
         Text("${sound.category} · ${"%.2f".format(sound.duration)}s · ${sound.author} · CC0")
         Row {
             TextButton({ vm.previewBundledSound(doc, sound) }, enabled = enabled && !vm.previewingAudio && !vm.importingAudio) { Text("Preview") }
-            TextButton({ vm.addBundledSound(doc, sound) }, enabled = enabled && !vm.importingAudio && doc.audioClips.size < 16) { Text("Add to project") }
+            TextButton({ vm.addBundledSound(doc, sound) }, enabled = enabled && !vm.importingAudio && doc.audioClips.size < 16) { Text(if (vm.planLimits.soundLibrary) "Add to project" else "Add to project (Creator and Pro)") }
         }
         var credits by remember { mutableStateOf(false) }
         TextButton({ collections.toggle(sound.id) }, enabled = collections.ready && !collections.busy) {

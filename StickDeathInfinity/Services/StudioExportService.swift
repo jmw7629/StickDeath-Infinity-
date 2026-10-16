@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import ImageIO
 import UniformTypeIdentifiers
+import CoreText
 
 /// Image export of the same canonical document/compositor as the live Studio.
 /// PNG has no audio; FPS and frame order are recorded in the adjacent manifest.
@@ -172,6 +173,7 @@ final class StudioExportService {
                 sheetColumns: Int? = nil, cellPadding: Int = 0, frameIDs: Set<String>? = nil,
                 imageCredits: [String: ImageCredit] = [:], filenameBase: String? = nil,
                 scale: Scale = .original, separateLayers: Bool = false,
+                watermark: Bool = false,
                 rasterData: (String) throws -> Data? = { _ in nil },
                 progress: (Int, Int) -> Void = { _, _ in }) async throws -> Output {
         try Task.checkCancellation()
@@ -273,7 +275,9 @@ final class StudioExportService {
                     for position in passDocument.layers.indices { passDocument.layers[position].visible = passDocument.layers[position].id == layer.id }
                 }
                 try autoreleasepool {
-                    let image = try render(frame, document: passDocument, background: background, raster: nil, rasterDataByID: sources, outputSize: outputSize)
+                    let rendered = try render(frame, document: passDocument, background: background, raster: nil, rasterDataByID: sources, outputSize: outputSize)
+                    // Free-plan mark on each exported frame (never on the project).
+                    let image = try watermark ? Self.watermarked(rendered) : rendered
                     if let sheet {
                         sheet.draw(image, in: CGRect(x: x, y: height - y - frameHeight,
                             width: frameWidth, height: frameHeight))
@@ -618,5 +622,52 @@ enum StudioExportPreflight {
         let video = Int((Double(bitrate) / 8 * duration).rounded(.up))
         let audio = includesAudio ? Int((48_000 * 8 * duration).rounded(.up)) + Int((24_000.0 * duration).rounded(.up)) : 0
         return (includesAudio ? video * 2 : video) + audio + 1_048_576
+    }
+}
+
+extension StudioExportService {
+    /// Free-plan export mark: a small, semi-transparent "SDI" plate drawn at the
+    /// bottom-right of one exported frame. It is drawn on a new bitmap copy, so
+    /// the editable project, its originals and the source image never change.
+    /// The output keeps the input's pixel size; margins keep it off the edge.
+    nonisolated static func watermarked(_ image: CGImage) throws -> CGImage {
+        let width = image.width, height = image.height
+        guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            throw ExportError.renderFailed
+        }
+        let full = CGRect(x: 0, y: 0, width: width, height: height)
+        context.draw(image, in: full)
+        // Small: about 4% of the shorter edge, never below 7 px or above 40 px.
+        let shortEdge = CGFloat(min(width, height))
+        let fontSize = max(7, min(40, shortEdge * 0.04))
+        let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
+        let attributes: [NSAttributedString.Key: Any] = [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.85)
+        ]
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: "SDI", attributes: attributes))
+        var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+        let textWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+        let padding = fontSize * 0.35, margin = max(3, fontSize * 0.5)
+        let plate = CGRect(x: CGFloat(width) - margin - textWidth - padding * 2, y: margin,
+                           width: textWidth + padding * 2, height: ascent + descent + padding * 2)
+        // A tiny canvas cannot hold the mark legibly; it is skipped there
+        // rather than covering the artwork.
+        guard plate.minX >= 0, plate.maxY <= CGFloat(height) else {
+            guard let copy = context.makeImage() else { throw ExportError.renderFailed }
+            return copy
+        }
+        context.saveGState()
+        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.35))
+        context.addPath(CGPath(roundedRect: plate, cornerWidth: padding, cornerHeight: padding, transform: nil))
+        context.fillPath()
+        context.textMatrix = .identity
+        context.textPosition = CGPoint(x: plate.minX + padding, y: plate.minY + padding + descent)
+        CTLineDraw(line, context)
+        context.restoreGState()
+        guard let marked = context.makeImage() else { throw ExportError.renderFailed }
+        return marked
     }
 }

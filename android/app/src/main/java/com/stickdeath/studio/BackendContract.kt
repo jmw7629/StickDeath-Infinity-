@@ -35,6 +35,7 @@ object BackendContract {
         BackendRpc("sdi_calendar_range", BackendArea.Challenges, "challenges.sql", BackendAccess.Member, "Calendar entries for a range of at most 62 days."),
         BackendRpc("sdi_achievement_catalog", BackendArea.Achievements, "achievements.sql", BackendAccess.Member, "The caller's earned and locked badges."),
         BackendRpc("sdi_profile_records", BackendArea.Profile, "profile-records.sql", BackendAccess.Member, "Optional win/loss and statistics preferences."),
+        BackendRpc("sdi_spatter_my_usage", BackendArea.Billing, "spatter-draft-jobs.sql", BackendAccess.Member, "Server-counted Spatter plan, allowance and credits; display only, the server decides every prompt."),
         BackendRpc("sdi_my_entitlement", BackendArea.Billing, "billing.sql", BackendAccess.Member, "Read-only entitlement from verified provider events; clients write nothing."),
         BackendRpc("sdi_support_action", BackendArea.Support, "support-requests.sql", BackendAccess.Member, "Create, list, withdraw and delete support requests (five per day)."),
         BackendRpc("sdi_account_lifecycle", BackendArea.Account, "account-lifecycle.sql", BackendAccess.Member, "Data export and deletion requests with a seven-day cooling-off."),
