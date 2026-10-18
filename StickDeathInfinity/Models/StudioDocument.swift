@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...35
+    static let supportedSchemaVersions = 1...36
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -30,6 +30,8 @@ struct StudioDocument: Codable, Equatable {
     var onionSettings: StudioOnionSettings?
     /// Optional reference-source record for Spatter briefs (#279); never footage.
     var spatterSource: SpatterSourceReference? = nil
+    /// Movies retained as managed project media (#199); nil in older projects.
+    var videoReferences: [StudioVideoReference]? = nil
     var createdAt: Date
     var modifiedAt: Date
     var revision = 0
@@ -52,7 +54,8 @@ struct StudioDocument: Codable, Equatable {
             activeFrameID: activeFrameID, activeLayerID: activeLayerID,
             audioClips: audioClips, mutedAudioTracks: mutedAudioTracks, audioTrackVolumes: audioTrackVolumes,
             audioTrackPans: audioTrackPans, soloedAudioTracks: soloedAudioTracks, gridEnabled: gridEnabled, gridSettings: gridSettings, onionEnabled: onionEnabled,
-            onionSettings: onionSettings, spatterSource: spatterSource, createdAt: date, modifiedAt: date, revision: 0)
+            onionSettings: onionSettings, spatterSource: spatterSource, videoReferences: videoReferences,
+            createdAt: date, modifiedAt: date, revision: 0)
         try copy.validate()
         return copy
     }
@@ -84,6 +87,7 @@ struct StudioDocument: Codable, Equatable {
     }
 
     var referencedAudioAssetIDs: Set<UUID> { Set(audioClips.compactMap(\.assetID)) }
+    var referencedVideoSourceIDs: Set<UUID> { Set((videoReferences ?? []).map(\.id)) }
     func isAudioTrackMuted(_ track: Int) -> Bool { mutedAudioTracks?.contains(track) == true }
     func audioTrackVolume(_ track: Int) -> Double {
         guard (1...4).contains(track), let audioTrackVolumes, audioTrackVolumes.count == 4 else { return 1 }
@@ -134,6 +138,13 @@ struct StudioDocument: Codable, Equatable {
                     throw StudioDocumentError.invalid("This layer blend mode needs project version 34.")
                 }
             }
+        }
+        if let references = videoReferences {
+            guard references.count <= StudioVideoReference.maximumReferences,
+                  Set(references.map(\.id)).count == references.count else {
+                throw StudioDocumentError.invalid("This project exceeds its eight retained video references.")
+            }
+            for reference in references { try reference.validate() }
         }
         var elementIDs = Set<String>(); var pointCount = 0
         var fillSpanCount = 0
@@ -256,8 +267,19 @@ struct StudioDocument: Codable, Equatable {
                 if element.tool == .dodge || element.tool == .burn {
                     guard element.dodgeBurn != nil else { throw StudioDodgeBurn.Failure.invalidSettings }
                 }
+                if let mask = element.selectionMask {
+                    guard element.hasPixelEffect, element.gradient == nil, mask.width == width, mask.height == height else {
+                        throw StudioFillMask.Failure.invalid
+                    }
+                    try mask.validate()
+                    guard mask.spans.count <= StudioFillMask.maximumDocumentSpans - fillSpanCount else {
+                        throw StudioFillMask.Failure.invalid
+                    }
+                    fillSpanCount += mask.spans.count
+                }
                 if element.hasPixelEffect {
-                    let required = element.dodgeBurn != nil ? 20 : (element.sharpen != nil ? 19 : (element.blur != nil ? 18 : 17))
+                    let required = (element.gradient != nil || element.selectionMask != nil) ? StudioGradientDescriptor.schemaVersion
+                        : element.dodgeBurn != nil ? 20 : (element.sharpen != nil ? 19 : (element.blur != nil ? 18 : 17))
                     guard schemaVersion >= required else { throw StudioDocumentError.invalid("This editable effect requires project version \(required).") }
                     effectCount += 1; effectSamples += element.points.count
                     guard effectCount <= 256, effectSamples <= 65_536 else { throw StudioSmudge.Failure.workLimit }
@@ -545,6 +567,9 @@ struct StudioDocumentEditor {
     var referencedAudioAssetIDsIncludingHistory: Set<UUID> {
         (undoDocuments + redoDocuments).reduce(into: document.referencedAudioAssetIDs) { $0.formUnion($1.referencedAudioAssetIDs) }
     }
+    var referencedVideoSourceIDsIncludingHistory: Set<UUID> {
+        (undoDocuments + redoDocuments).reduce(into: document.referencedVideoSourceIDs) { $0.formUnion($1.referencedVideoSourceIDs) }
+    }
     var referencedRasterAssetIDsIncludingHistoryAndClipboard: Set<String> {
         var ids = (undoDocuments + redoDocuments).reduce(into: document.referencedRasterAssetIDs) { $0.formUnion($1.referencedRasterAssetIDs) }
         if case .frame(let frame) = clipboard { ids.formUnion(frame.referencedRasterAssetIDs) }
@@ -567,6 +592,13 @@ struct StudioDocumentEditor {
                     try next.frames[index].reconcileRasterStackPositions(afterDeletingElementsFrom: old)
                 }
             }
+        }
+        // A retained movie lives exactly as long as a frame decoded from it.
+        // Dropping its record here keeps the removal in this same Undo step.
+        if let references = next.videoReferences, !references.isEmpty {
+            let live = next.referencedRasterAssetIDs
+            let kept = references.filter { $0.frameAssetIDs.contains(where: live.contains) }
+            if kept.count != references.count { next.videoReferences = kept.isEmpty ? nil : kept }
         }
         guard next != previous else { return }
         next.revision = previous.revision + 1; next.modifiedAt = Date()
@@ -732,7 +764,7 @@ struct StudioDocumentEditor {
         let right = AudioClip(id: newClipID, soundName: original.soundName, track: original.track,
             startTime: timing.boundary, duration: original.duration - left.duration, volume: original.volume,
             assetID: original.assetID, sourceOffset: timing.rightSourceOffset,
-            isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope)
+            isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope, videoMapping: original.videoMapping)
         try change { value in
             value.schemaVersion = max(value.schemaVersion, 4)
             value.audioClips[index] = left; value.audioClips.insert(right, at: index + 1)
@@ -759,7 +791,8 @@ struct StudioDocumentEditor {
         let duplicate = AudioClip(id: newClipID, soundName: original.soundName,
             track: original.track, startTime: original.startTime + original.duration,
             duration: original.duration, volume: original.volume, assetID: original.assetID,
-            sourceOffset: original.sourceOffset, isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope)
+            sourceOffset: original.sourceOffset, isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope,
+            videoMapping: original.videoMapping)
         try change { $0.audioClips.append(duplicate) }
         return duplicate
     }
@@ -884,28 +917,35 @@ struct StudioDocumentEditor {
             element.preservesLayerAlpha = true
         }
         if element.tool == .smudge {
-            guard element.smudge != nil, selectedElementIDs.isEmpty,
+            guard element.smudge != nil, selectedElementIDs.isEmpty || element.selectionMask != nil,
                   frameID == document.activeFrameID, element.layerID == document.activeLayerID else {
-                throw StudioDocumentError.unavailable("Smudge requires the active unselected layer and a validated color-drag operation. Nothing changed.")
+                throw StudioDocumentError.unavailable("Smudge requires the active layer, a validated color-drag operation and, with a selection, its coverage mask. Nothing changed.")
             }
         }
         if element.tool == .blur {
-            guard element.blur != nil, selectedElementIDs.isEmpty,
+            guard element.blur != nil, selectedElementIDs.isEmpty || element.selectionMask != nil,
                   frameID == document.activeFrameID, element.layerID == document.activeLayerID else {
-                throw StudioDocumentError.unavailable("Blur requires the active unselected layer and a validated operation. Nothing changed.")
+                throw StudioDocumentError.unavailable("Blur requires the active layer, a validated operation and, with a selection, its coverage mask. Nothing changed.")
             }
         }
         if element.tool == .sharpen {
-            guard element.sharpen != nil, selectedElementIDs.isEmpty,
+            guard element.sharpen != nil, selectedElementIDs.isEmpty || element.selectionMask != nil,
                   frameID == document.activeFrameID, element.layerID == document.activeLayerID else {
-                throw StudioDocumentError.unavailable("Sharpen requires the active unselected layer and a validated operation. Nothing changed.")
+                throw StudioDocumentError.unavailable("Sharpen requires the active layer, a validated operation and, with a selection, its coverage mask. Nothing changed.")
             }
         }
         if element.tool == .dodge || element.tool == .burn {
-            guard element.dodgeBurn != nil, selectedElementIDs.isEmpty,
+            guard element.dodgeBurn != nil, selectedElementIDs.isEmpty || element.selectionMask != nil,
                   frameID == document.activeFrameID, element.layerID == document.activeLayerID else {
-                throw StudioDocumentError.unavailable("Dodge and Burn require the active unselected layer and a validated exposure operation. Nothing changed.")
+                throw StudioDocumentError.unavailable("Dodge and Burn require the active layer, a validated exposure operation and, with a selection, its coverage mask. Nothing changed.")
             }
+        }
+        if element.gradient != nil {
+            // Selection-limited gradients carry the selection in fillMask itself.
+            guard frameID == document.activeFrameID, element.layerID == document.activeLayerID else {
+                throw StudioDocumentError.unavailable("Gradient requires the active frame and layer and a validated fill region. Nothing changed.")
+            }
+            try element.gradient!.validate(element: element, width: document.width, height: document.height)
         }
         if element.tool == .eraser, !selectedElementIDs.isEmpty {
             throw StudioDocumentError.unavailable("Erasing within a selection is unfinished. Deselect before erasing the active layer; nothing changed.")
@@ -940,6 +980,7 @@ struct StudioDocumentEditor {
             if element.blur != nil { value.schemaVersion = max(value.schemaVersion, 18) }
             if element.sharpen != nil { value.schemaVersion = max(value.schemaVersion, 19) }
             if element.dodgeBurn != nil { value.schemaVersion = max(value.schemaVersion, 20) }
+            if element.gradient != nil || element.selectionMask != nil { value.schemaVersion = max(value.schemaVersion, StudioGradientDescriptor.schemaVersion) }
         }
     }
     /// Preview and commit share the same immutable projection and full-document
@@ -1172,7 +1213,7 @@ struct StudioDocumentEditor {
                 value.frames[index].elements.append(DrawnElement(id: id, tool: element.tool, points: element.points,
                     color: element.color, width: element.width, opacity: element.opacity, fillColor: element.fillColor,
                     layerID: layerID, brush: element.brush, shape: element.shape, fillMask: element.fillMask,
-                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures))
+                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures, gradient: element.gradient, selectionMask: element.selectionMask))
                 ids.insert(id)
                 if element.selectionErasures != nil { value.schemaVersion = max(value.schemaVersion, 29) }
             if element.preservesLayerAlpha == true { value.schemaVersion = max(value.schemaVersion, 24) }
@@ -1193,6 +1234,7 @@ struct StudioDocumentEditor {
             if element.blur != nil { value.schemaVersion = max(value.schemaVersion, 18) }
             if element.sharpen != nil { value.schemaVersion = max(value.schemaVersion, 19) }
             if element.dodgeBurn != nil { value.schemaVersion = max(value.schemaVersion, 20) }
+            if element.gradient != nil || element.selectionMask != nil { value.schemaVersion = max(value.schemaVersion, StudioGradientDescriptor.schemaVersion) }
             }
             try checkCancellation()
         }
@@ -1206,7 +1248,7 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures, gradient: element.gradient, selectionMask: element.selectionMask)
             }
             return AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns, rasterRotationDegrees: source.rasterRotationDegrees, holdTicks: source.holdTicks, rasterCrop: source.rasterCrop, rasterAliases: source.rasterAliases, rasterRegionMask: source.rasterRegionMask, rasterStackPosition: source.rasterStackPosition)
     }
@@ -1257,6 +1299,7 @@ struct StudioDocumentEditor {
             if elements.contains(where: { $0.blur != nil }) { value.schemaVersion = max(value.schemaVersion, 18) }
             if elements.contains(where: { $0.sharpen != nil }) { value.schemaVersion = max(value.schemaVersion, 19) }
             if elements.contains(where: { $0.dodgeBurn != nil }) { value.schemaVersion = max(value.schemaVersion, 20) }
+            if elements.contains(where: { $0.gradient != nil || $0.selectionMask != nil }) { value.schemaVersion = max(value.schemaVersion, StudioGradientDescriptor.schemaVersion) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
             if source.rasterReflection != nil { value.schemaVersion = max(value.schemaVersion, 15) }
             if source.rasterQuarterTurns != nil { value.schemaVersion = max(value.schemaVersion, 16) }
@@ -1856,7 +1899,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures, gradient: element.gradient, selectionMask: element.selectionMask)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
                 if var instance = value.frames[frameIndex].rasterInstance(on: id) {

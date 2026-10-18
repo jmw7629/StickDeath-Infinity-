@@ -160,8 +160,14 @@ enum StudioSmudgeReplay {
                             path: element.points.map { .init(x: $0.x, y: $0.y) },
                             settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
                         changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
+                    } else if element.gradient != nil {
+                        changed = try applyGradient(element, to: original, checkCancellation: checkCancellation)
                     } else { throw Failure.unprepared }
-                    let image = try cgImage(changed)
+                    // A selection-limited effect keeps every unselected pixel exact (#149).
+                    let clipped = try element.selectionMask == nil ? changed : StudioSmudge.Pixels(width: changed.width, height: changed.height,
+                        rgba: clipRGBA(original: original.rgba, effected: changed.rgba, mask: element.selectionMask,
+                                       width: changed.width, height: changed.height, checkCancellation: checkCancellation))
+                    let image = try cgImage(clipped)
                     images[element.id] = image; base = image; prefix.elements.removeAll()
                     // An image before this effect is now part of base. An image
                     // after it remains eligible at its absolute later stack slot.
@@ -172,6 +178,49 @@ enum StudioSmudgeReplay {
         try checkCancellation()
         return Prepared(frame: frame, layers: layers, canvasSize: canvasSize,
                         rasterData: rasterData, rasterDataByID: rasterDataByID, liveElement: liveElement, images: images)
+    }
+
+    /// Pixel-engine settings for an editable gradient (#149). Raw values are
+    /// shared, so the persisted descriptor maps one-to-one.
+    static func gradientSettings(for element: DrawnElement) throws -> StudioGradientFill.Settings {
+        guard let descriptor = element.gradient, element.points.count == 2,
+              let shape = StudioGradientFill.Shape(rawValue: descriptor.shape.rawValue),
+              let interpolation = StudioGradientFill.Interpolation(rawValue: descriptor.interpolation.rawValue) else {
+            throw StudioGradientFill.Failure.invalidSettings
+        }
+        return .init(shape: shape,
+            start: .init(x: Double(element.points[0].x), y: Double(element.points[0].y)),
+            end: .init(x: Double(element.points[1].x), y: Double(element.points[1].y)),
+            stops: descriptor.stops.map { .init(location: $0.location,
+                color: .init(red: $0.color.red, green: $0.color.green, blue: $0.color.blue, alpha: $0.color.alpha)) },
+            opacity: element.opacity, interpolation: interpolation, dither: descriptor.dither,
+            preserveTransparency: false)
+    }
+    /// Paints the gradient into its fill-mask coverage over the preceding
+    /// premultiplied layer pixels. A gradient that changes no pixel (for
+    /// example, a transparent stop over the covered area) replays unchanged.
+    static func applyGradient(_ element: DrawnElement, to original: StudioSmudge.Pixels,
+                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioSmudge.Pixels {
+        guard let mask = element.fillMask, mask.width == original.width, mask.height == original.height else {
+            throw StudioGradientFill.Failure.invalidImage
+        }
+        var rgba = original.rgba
+        do {
+            try StudioGradientFill.apply(to: &rgba, width: original.width, height: original.height,
+                coverage: try mask.denseCoverage(), settings: try gradientSettings(for: element),
+                checkCancellation: checkCancellation)
+        } catch StudioGradientFill.Failure.emptyCoverage { return original }
+        return try .init(width: original.width, height: original.height, rgba: rgba)
+    }
+    /// Limits an effect to its selection (#149) with StudioSelectionMask.clip:
+    /// unselected pixels stay byte-identical, feathered edges blend. Nil keeps
+    /// the historical whole-layer result.
+    static func clipRGBA(original: [UInt8], effected: [UInt8], mask: StudioFillMask?, width: Int, height: Int,
+                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [UInt8] {
+        guard let mask else { return effected }
+        guard mask.width == width, mask.height == height else { throw StudioSelectionMask.Failure.invalidMask }
+        return try StudioSelectionMask.clip(original: original, effected: effected, coverage: try mask.denseCoverage(),
+                                            width: width, height: height, checkCancellation: checkCancellation)
     }
 
     @MainActor

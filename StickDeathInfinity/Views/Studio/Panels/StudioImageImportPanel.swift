@@ -220,7 +220,7 @@ struct StudioImageImportPanel: View {
                     }
                     Divider().overlay(Color.white.opacity(0.2))
                     if videoFrameMode {
-                        Text("Available here: still reference frames decoded from a video at the times you choose, and the video's soundtrack imported as a project sound from the Audio panel. The movie itself is not copied into the project, there is no live video layer, and camera recording is not offered.")
+                        Text("Available here: still reference frames decoded from a video at the times you choose, and the video's soundtrack imported as a project sound from the Audio panel. Adding frames keeps a copy of the movie (up to 16 MB) with this project, together with its measured size, rotation, frame rate and your trim and speed, so the project reopens after the original file is removed. The copy is deleted with the project and left out of later saves once its frames and their undo history are gone. There is no live video layer, and camera recording is not offered.")
                             .font(.caption).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("studio.video.availability")
                     } else {
