@@ -58,8 +58,16 @@ FAKE = textwrap.dedent('''\
         "storyboard": {{"schema": "spatter_storyboard", "version": 1, "seed": int(job["seed"]), "brief": job["brief"].lower()}},
         "decoded_frame_count": frames - (1 if MODE == "short" else 0), "expected_frame_count": frames,
         "decoded_duration_seconds": seconds, "expected_duration_seconds": seconds,
-        "quality": {{"passes": passes, "failures": [] if passes else ["1 blank frame(s); limit 0."], "findings": []}},
+        "quality": {{"schema": "spatter_quality_report", "version": 1, "passes": passes,
+                    "failures": [] if passes else ["1 blank frame(s); limit 0."], "findings": [], "unmeasured": ["audioOffsetSeconds"],
+                    "frameCount": frames, "fps": job["fps"], "actualTicks": frames, "requestedTicks": frames, "note": "n",
+                    "movie": {{"decodedFrameCount": frames - (1 if MODE == "short" else 0), "decodedDurationSeconds": seconds,
+                              "expectedFrameCount": frames, "expectedDurationSeconds": seconds, "audioOffsetSeconds": None}}}},
     }}
+    if MODE == "unmeasured":
+        del receipt["quality"]["movie"]
+    if MODE == "mismatch":
+        receipt["quality"]["movie"]["decodedFrameCount"] += 5
     if MODE == "tampered":
         receipt["movie"]["sha256"] = "0" * 64
     if MODE == "outside":
@@ -109,7 +117,8 @@ class CLIRendererTests(unittest.TestCase):
         result = self.renderer().render(self.plan, self.heartbeat)
         self.assertRegex(result.sha256, r"^[a-f0-9]{64}$")
         self.assertTrue(result.quality["passes"])
-        self.assertEqual(result.quality["decoded_frame_count"], int(self.plan.seconds * 24))
+        self.assertEqual(result.quality["movie"]["decodedFrameCount"], int(self.plan.seconds * 24))
+        self.assertIsNone(dq.quality_record_problem(result.quality))
         self.assertEqual(result.storyboard["seed"], self.plan.seed)
         self.assertTrue(result.preview_url.startswith("https://"))
         self.assertEqual(len(self.previews.calls), 1)
@@ -156,7 +165,8 @@ class CLIRendererTests(unittest.TestCase):
 
     def test_untrustworthy_receipts_are_rejected(self):
         for mode, needle in [("tampered", "digest does not match"), ("outside", "outside this render"), ("published", "unpublished private draft"),
-                             ("wrong_seed", "brief or seed"), ("garbage", "without a valid JSON receipt")]:
+                             ("wrong_seed", "brief or seed"), ("garbage", "without a valid JSON receipt"),
+                             ("unmeasured", "decoded movie frame and duration counts are missing"), ("mismatch", "measurements differ")]:
             with self.subTest(mode=mode):
                 with self.assertRaises(rc.RendererError) as caught:
                     self.renderer(mode).render(self.plan, self.heartbeat)

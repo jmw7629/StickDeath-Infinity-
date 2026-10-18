@@ -2127,6 +2127,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -2148,6 +2150,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2161,6 +2164,7 @@ jobs:
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift \
             Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift \
             Tools/SpatterDraftRenderer/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-draft-renderer"

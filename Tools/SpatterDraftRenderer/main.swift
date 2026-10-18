@@ -137,9 +137,15 @@ import Darwin
             let expectedFrames = manifest.frameIDs.count
             let expectedDuration = Double(manifest.durationNumerator) / Double(max(1, manifest.durationDenominator))
             let measured = try await measure(output.movieURL)
-            let report = planned.quality(movie: .init(decodedFrameCount: measured.frames, decodedDurationSeconds: measured.duration,
-                                                      audioOffsetSeconds: nil, expectedFrameCount: expectedFrames,
-                                                      expectedDurationSeconds: expectedDuration))
+            let movieMeasurement = SpatterQualityReport.MovieMeasurement(decodedFrameCount: measured.frames, decodedDurationSeconds: measured.duration,
+                                                                         audioOffsetSeconds: nil, expectedFrameCount: expectedFrames,
+                                                                         expectedDurationSeconds: expectedDuration)
+            let report = planned.quality(movie: movieMeasurement)
+            // The exporter's manifest binds the movie to the canonical project bytes
+            // and records its own decode; both must agree with this run.
+            let projectDigest = hex(projectData)
+            guard manifest.projectDigest == projectDigest else { throw StudioMovieExportService.ExportError.verificationFailed }
+            guard manifest.decodedFrameCount == measured.frames else { throw StudioMovieExportService.ExportError.verificationFailed }
             let movie = try sha256(output.movieURL), manifestFile = try sha256(output.manifestURL)
             let storyboardObject = try JSONSerialization.jsonObject(with: storyboardData)
             let receipt: [String: Any] = [
@@ -152,15 +158,15 @@ import Darwin
                 "movie": ["path": output.movieURL.path, "sha256": movie.digest, "bytes": movie.bytes,
                           "codec": manifest.codec, "width": measured.width, "height": measured.height],
                 "manifest": ["path": output.manifestURL.path, "sha256": manifestFile.digest],
-                "project": ["path": projectURL.path, "sha256": hex(projectData), "revision": planned.document.revision,
+                "project": ["path": projectURL.path, "sha256": projectDigest, "revision": planned.document.revision,
                             "frame_count": planned.document.frames.count, "schema_version": planned.document.schemaVersion],
-                "project_digest": hex(projectData),
+                "project_digest": projectDigest,
                 "storyboard_path": storyboardURL.path,
                 "storyboard_sha256": hex(storyboardData),
                 "storyboard": storyboardObject,
                 "decoded_frame_count": measured.frames, "decoded_duration_seconds": measured.duration,
                 "expected_frame_count": expectedFrames, "expected_duration_seconds": expectedDuration,
-                "quality": SpatterDraftReceipt.quality(report),
+                "quality": try SpatterDraftReceipt.quality(report, movie: movieMeasurement),
             ]
             emit(receipt, code: 0)
         } catch {

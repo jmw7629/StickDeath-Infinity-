@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
-from .draft_queue import Plan, RenderResult
+from .draft_queue import Plan, RenderResult, quality_record_problem
 
 ENV_CLI = "SDI_DRAFT_RENDERER_CLI"
 ENV_OUTPUT = "SDI_DRAFT_RENDER_DIR"
@@ -185,12 +185,15 @@ class CLIRenderer:
         if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not math.isfinite(duration):
             fail("decoded duration is missing.")
         quality = receipt.get("quality")
-        if not isinstance(quality, Mapping) or not isinstance(quality.get("passes"), bool) or not isinstance(quality.get("failures"), list):
-            fail("quality report is missing.")
+        # The production review record (`SpatterQualityReport.ReviewRecord`) the queue accepts.
+        problem = quality_record_problem(quality) if isinstance(quality, Mapping) else "missing."
+        if problem:
+            fail("quality report " + problem)
         quality = dict(quality)
-        # Measurements are re-stated next to the verdict so the review shows what was decoded.
-        quality.update(decoded_frame_count=decoded, expected_frame_count=expected, decoded_duration_seconds=duration,
-                       expected_duration_seconds=receipt.get("expected_duration_seconds"), planned_seconds=plan.seconds)
+        movie = quality["movie"]
+        if (movie["decodedFrameCount"], movie["expectedFrameCount"]) != (decoded, expected) \
+                or abs(float(movie["decodedDurationSeconds"]) - float(duration)) > 0.0005:
+            fail("quality record measurements differ from the receipt's decoded counts.")
         failures = list(quality["failures"])
         # Independent cross-checks: a passing verdict must agree with the decoded movie and the plan.
         if decoded != expected:

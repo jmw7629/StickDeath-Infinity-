@@ -4,7 +4,7 @@ import Foundation
 // and bounds a render job, plans the brief with the production deterministic
 // planner (`SpatterMultiClauseBrief`) on a fresh Studio document, executes the
 // typed request through the production `StudioCommandExecutor` and measures the
-// document with `SpatterQualityReport`. Nothing here renders, uploads or
+// document with `SpatterQualityReport` (review record from SpatterReviewEvidence.swift). Nothing here renders, uploads or
 // publishes; `main.swift` performs the macOS export and decode measurement.
 
 struct SpatterDraftRenderJob: Equatable {
@@ -162,17 +162,10 @@ enum SpatterDraftReceipt {
     static let schema = "sdi_spatter_draft_render_receipt"
     static let version = 1
 
-    static func quality(_ report: SpatterQualityReport) -> [String: Any] {
-        let verdict = report.verdict()
-        return ["passes": verdict.passes, "failures": verdict.failures, "note": SpatterQualityReport.Verdict.note,
-                "frame_count": report.frameCount, "fps": report.fps, "actual_ticks": report.actualTicks,
-                "requested_ticks": report.requestedTicks.map { $0 as Any } ?? NSNull(),
-                "duration_seconds": report.durationSeconds,
-                "blank_frame_count": report.blankFrameCount, "frozen_frame_count": report.frozenFrameCount,
-                "out_of_canvas_count": report.outOfCanvasCount, "unmeasured": report.unmeasured,
-                "findings": report.findings.map { finding -> [String: Any] in
-                    ["kind": finding.kind.rawValue, "frame_index": finding.frameIndex.map { $0 as Any } ?? NSNull(), "detail": finding.detail]
-                }]
+    /// The production review record (`SpatterQualityReport.ReviewRecord`, schema
+    /// `spatter_quality_report` v1) that `draft_queue.quality_record_problem` accepts.
+    static func quality(_ report: SpatterQualityReport, movie: SpatterQualityReport.MovieMeasurement?) throws -> Any {
+        try JSONSerialization.jsonObject(with: report.reviewRecord(movie: movie).json())
     }
 
     static func failure(_ message: String, jobID: String?) -> [String: Any] {

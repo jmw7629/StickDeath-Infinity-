@@ -51,11 +51,13 @@ def main(cli: Path, work: Path) -> None:
     job = store.jobs[DAY]
     quality = job["quality"]
     expected_frames = int(round(plan.seconds * 24))
+    assert dq.quality_record_problem(quality) is None, quality
     assert quality["passes"] is True and quality["failures"] == [], quality
-    assert quality["decoded_frame_count"] == quality["expected_frame_count"] == expected_frames, quality
-    assert abs(quality["decoded_duration_seconds"] - plan.seconds) < 0.001, quality
-    assert quality["blank_frame_count"] == quality["frozen_frame_count"] == quality["out_of_canvas_count"] == 0, quality
-    assert "decodedMovieFrameCount" not in quality["unmeasured"], quality
+    movie_counts = quality["movie"]
+    assert movie_counts["decodedFrameCount"] == movie_counts["expectedFrameCount"] == quality["frameCount"], quality
+    assert quality["actualTicks"] == quality["requestedTicks"] == expected_frames, quality
+    assert abs(movie_counts["decodedDurationSeconds"] - plan.seconds) < 0.001, quality
+    assert not any(f["kind"] in ("blankFrame", "frozenFrame", "outOfCanvas") for f in quality["findings"]), quality
     assert len(previews) == 1 and previews[0][1] == job["sha256"]
     movie = Path(previews[0][0])
     assert movie.stat().st_size > 1000 and movie.suffix == ".mp4"
@@ -64,7 +66,7 @@ def main(cli: Path, work: Path) -> None:
     project = next(movie.parents[1].glob("project.json"))
     assert hashlib.sha256(project.read_bytes()).hexdigest() == review["source_project_digest"]
     assert json.loads(project.read_text())["fps"] == 24
-    print("PASS rendered", expected_frames, "decoded frames,", plan.seconds, "s, sha256", job["sha256"], "-> owner review queue only")
+    print("PASS rendered", expected_frames, "ticks,", quality["movie"]["decodedFrameCount"], "decoded frames,", plan.seconds, "s, sha256", job["sha256"], "-> owner review queue only")
 
     over = {"brief": "A red stick figure walks left to right, then explodes; a blue stick figure runs right to left, then explodes; "
                      "a green stick figure jumps, then falls; 8 seconds; seed 3.", "fps": 24, "width": 640, "height": 360}

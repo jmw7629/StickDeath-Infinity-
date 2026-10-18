@@ -72,6 +72,7 @@ DEPENDENCIES = {
     },
     "Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift": {
         "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
         "StickDeathInfinity/Models/StudioCommands.swift",
         "StickDeathInfinity/Models/StudioDocument.swift",
     },
