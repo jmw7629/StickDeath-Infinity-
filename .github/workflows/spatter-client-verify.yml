@@ -86,6 +86,7 @@ jobs:
             StickDeathInfinity/Services/Social/CommunityTransport.swift \
             StickDeathInfinity/Services/Rooms/RoomsClient.swift \
             StickDeathInfinity/Services/Rooms/RoomSessionCoordinator.swift \
+            StickDeathInfinity/Services/Rooms/RoomProjectHandoff.swift \
             Tests/CommunityRooms/main.swift \
             -o /tmp/sdi-community-rooms-tests
           timeout 60s /tmp/sdi-community-rooms-tests

@@ -106,6 +106,17 @@ confirmed by the owner before any adapter is enabled; the module notes what each
 Tests: `backend/tests/test_workers.py` (fake RPC clients, fake hosting, fake transports).
 No upload, post or deployment has run.
 
+`marketing_scheduler.py` (#283) is the cadence job: it calls `sdi_marketing_cadence_due`
+(queues only drafts the owner already approved for the exact render, re-checking
+consent), and in live mode claims leased drafts: social ones go through
+`MarketingWorker.process`, an `email` draft becomes a blast queued with
+`EmailQueue.enqueue_blast` (seven-day per-address cadence, recipient cap) to
+`sdi_email_recipients('marketing')` (opted in, active, unsuppressed) under the draft id
+as campaign key, finished as `email-queue:<campaign count>`
+(`marketing_finish` accepts that only for email drafts and never a zero count). Dry run
+is the default; live needs `--live` plus `SDI_MARKETING_LIVE=1`. Tests:
+`backend/tests/test_marketing_scheduler.py`. No post or email has been sent.
+
 ## Post-publication release, creator status and failure hygiene (2026-10-14)
 
 `cleanup.py` (`python3 -m backend.publishing.cleanup --execute [--limit N]`) removes
