@@ -16,7 +16,7 @@ grant usage on schema extensions to public;
 create schema auth;
 create table auth.users (
  id uuid primary key default gen_random_uuid(), email text, is_anonymous boolean not null default false,
- raw_user_meta_data jsonb not null default '{}', created_at timestamptz not null default clock_timestamp(),
+ raw_user_meta_data jsonb not null default '{}', raw_app_meta_data jsonb not null default '{}', created_at timestamptz not null default clock_timestamp(),
  last_sign_in_at timestamptz, email_confirmed_at timestamptz
 );
 create table auth.sessions (

@@ -574,7 +574,7 @@ revoke all on function public.sdi_review_history(integer) from public,anon;
 grant execute on function public.sdi_review_history(integer) to authenticated;
 commit;
 
--- ===== admin-users.sql (sha256 03d8663e934810c6) =====
+-- ===== admin-users.sql (sha256 a8797dfd7e8b4e15) =====
 -- Unapplied candidate. Requires admin-approval.sql and current feature candidates.
 begin;
 create table sdi_private.account_controls (
@@ -600,12 +600,12 @@ revoke all on function sdi_private.account_active() from public;
 grant execute on function sdi_private.account_active() to authenticated;
 create function sdi_private.users_action(action text,subject uuid default null,query text default '',page integer default 0,reason text default '')
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare result jsonb; before_state text; denial jsonb;
+declare result jsonb; before_state text; denial jsonb; flagged integer:=0;
 begin
  if not sdi_private.admin_can('users') or not sdi_private.account_active() then return jsonb_build_object('error','Administrator MFA authorization required.'); end if;
  -- Account-state changes need a recent second factor and are rate limited; every
  -- refusal is recorded (admin_gate in admin-hardening.sql, resolved at run time).
- if action in('suspend','ban','restore','signout','note') then
+ if action in('suspend','ban','restore','signout','note','reset_flags') then
   denial:=sdi_private.admin_gate('users_action.'||action,'users',action<>'note',30);
   if denial is not null then return denial; end if;
  end if;
@@ -632,6 +632,13 @@ begin
     case when sdi_private.admin_can('moderation') then
      (select count(*) from sdi_private.feed_reports r join sdi_private.feed_posts p on p.id=r.post where p.creator=u.id)
      else null end as feed_report_count,
+    -- Open (pending) reports only; reset_flags dismisses these (#285).
+    case when sdi_private.admin_can('moderation') then
+     (select count(*) from sdi_private.feed_reports r join sdi_private.feed_posts p on p.id=r.post where p.creator=u.id and r.state='pending')
+     else null end as open_report_count,
+    -- Sign-up source: the provider name Supabase Auth records at first sign-in
+    -- (apple, google, github, azure, email). A name only, never an identifier.
+    nullif(u.raw_app_meta_data->>'provider','') as signup_source,
     -- Plan is billing data: shown only with the finance capability (billing.sql
     -- installs later; entitlements come only from signed provider events).
     case when sdi_private.admin_can('finance') then
@@ -655,9 +662,28 @@ begin
   insert into sdi_private.account_controls(user_id,state,reason) values(subject,
    case action when 'suspend' then 'suspended' when 'ban' then 'banned' else 'active' end,trim(reason))
   on conflict(user_id) do update set state=excluded.state,reason=excluded.reason,updated_at=clock_timestamp();
+ elsif action='reset_flags' then
+  -- Dismiss every open report against the member's posts in one audited step,
+  -- e.g. after a coordinated false-report campaign. Needs the moderation
+  -- capability too; reports filed by the acting administrator stay for another
+  -- reviewer (same rule as moderation_action). Each dismissal is recorded in
+  -- moderation_audit; a reporter who changes their reason reopens the report.
+  if not sdi_private.admin_can('moderation') then
+   return jsonb_build_object('error','Resetting flags also needs the moderation capability.'); end if;
+  with dismissed as (
+   update sdi_private.feed_reports r set state='dismissed' from sdi_private.feed_posts p
+   where p.id=r.post and p.creator=users_action.subject and r.state='pending' and r.actor<>auth.uid()
+   returning r.id as report_id,p.media_id)
+  insert into sdi_private.moderation_audit(report_id,actor,action,reason,media_id,render_digest)
+  select d.report_id,auth.uid(),'dismiss','Account flags reset: '||left(trim(users_action.reason),1970),d.media_id,m.render_digest
+  from dismissed d join public.sdi_watch_media m on m.id=d.media_id;
+  get diagnostics flagged=row_count;
+  -- Nothing open: nothing changed, so nothing is audited or notified.
+  if flagged=0 then return jsonb_build_object('status','unchanged','dismissed',0); end if;
  elsif action not in('signout','note') then return jsonb_build_object('error','Unsupported account action.'); end if;
  if action in('suspend','ban','signout') then delete from auth.sessions where user_id=subject; end if;
  insert into sdi_private.admin_user_audit(actor,subject,action,reason,previous_state) values(auth.uid(),subject,action,trim(reason),coalesce(before_state,'active'));
+ if action='reset_flags' then return jsonb_build_object('status','confirmed','dismissed',flagged); end if;
  return jsonb_build_object('status','confirmed');
 end $$;
 revoke all on function sdi_private.users_action(text,uuid,text,integer,text) from public;
@@ -5056,7 +5082,7 @@ revoke all on function public.sdi_consent_verify(uuid,text) from public,anon,aut
 grant execute on function public.sdi_consent_verify(uuid,text) to service_role;
 commit;
 
--- ===== notifications.sql (sha256 4cc2ee009f32999b) =====
+-- ===== notifications.sql (sha256 41c0fa6e2b923288) =====
 -- Unapplied candidate. Install after consent-versions.sql (needs admin-hardening.sql,
 -- billing.sql for the subscriber audience and pgcrypto in extensions).
 -- Notification preferences, device registrations, admin-composed announcements and
@@ -5330,6 +5356,73 @@ create function public.sdi_email_suppress(address_hash text,reason text) returns
 create function public.sdi_email_recipients(category text,batch integer default 500,page integer default 0) returns jsonb language sql security invoker set search_path='' as $$select sdi_private.email_recipients(category,batch,page)$$;
 revoke all on function public.sdi_announcement_claim(integer),public.sdi_announcement_finish(jsonb),public.sdi_email_suppress(text,text),public.sdi_email_recipients(text,integer,integer) from public,anon,authenticated;
 grant execute on function public.sdi_announcement_claim(integer),public.sdi_announcement_finish(jsonb),public.sdi_email_suppress(text,text),public.sdi_email_recipients(text,integer,integer) to service_role;
+
+-- Account notices (#285): when an administrator changes a member's account
+-- (suspend, ban, restore, sign out, reset flags) or rejects an appeal, the member
+-- gets a fixed-text transactional notice. The text never repeats the
+-- administrator's internal reason; it says what changed and where to appeal.
+-- Notes are internal and produce no notice. Restricted members cannot pass
+-- account_active(), so the notices have their own reader that needs only a
+-- current signed-in session (as account_appeal_action does). The newest 50 per
+-- member are kept; account deletion cascades.
+create table sdi_private.account_notices (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null references auth.users(id) on delete cascade,
+ kind text not null check(kind in('suspended','banned','restored','signed_out','flags_reset','appeal_rejected')),
+ title text not null check(length(title) between 1 and 120), body text not null check(length(body) between 1 and 1000),
+ created_at timestamptz not null default clock_timestamp(), read_at timestamptz
+);
+alter table sdi_private.account_notices enable row level security;
+revoke all on sdi_private.account_notices from public,anon,authenticated;
+create index account_notices_member on sdi_private.account_notices(user_id,created_at desc,id desc);
+create function sdi_private.account_notice_from_audit() returns trigger language plpgsql security definer set search_path='' as $$
+declare kind text; title text; body text;
+begin
+ case new.action
+  when 'suspend' then kind:='suspended'; title:='Your account is suspended';
+   body:='An administrator suspended your account and ended your sessions. Sign in to read the restriction and appeal it.';
+  when 'ban' then kind:='banned'; title:='Your account is banned';
+   body:='An administrator banned your account and ended your sessions. Sign in to read the restriction and appeal it.';
+  when 'restore' then kind:='restored'; title:='Your account is active again';
+   body:='An administrator lifted the restriction on your account. Everything you can normally do is available again.';
+  when 'signout' then kind:='signed_out'; title:='You were signed out';
+   body:='An administrator ended your sessions on every device. Sign in again to continue.';
+  when 'reset_flags' then kind:='flags_reset'; title:='Reports about your posts were reviewed';
+   body:='An administrator reviewed the open reports about your posts and dismissed them. Nothing was removed.';
+  when 'appeal_rejected' then kind:='appeal_rejected'; title:='Your appeal was decided';
+   body:='An administrator reviewed your appeal and kept the restriction. Sign in to read the decision.';
+  else return new;
+ end case;
+ insert into sdi_private.account_notices(user_id,kind,title,body) values(new.subject,kind,title,body);
+ delete from sdi_private.account_notices n where n.user_id=new.subject and n.id not in(
+  select k.id from sdi_private.account_notices k where k.user_id=new.subject order by k.created_at desc,k.id desc limit 50);
+ return new;
+end $$;
+revoke all on function sdi_private.account_notice_from_audit() from public,anon,authenticated;
+create trigger account_notice_from_audit after insert on sdi_private.admin_user_audit
+ for each row execute function sdi_private.account_notice_from_audit();
+create function sdi_private.account_notices_action(action text,notice uuid default null) returns jsonb language plpgsql security definer set search_path='' as $$
+declare actor uuid:=auth.uid(); items jsonb;
+begin
+ if actor is null or not exists(select 1 from auth.users where id=actor and not is_anonymous)
+ or not exists(select 1 from auth.sessions where user_id=actor and id::text=auth.jwt()->>'session_id') then
+  return jsonb_build_object('error','A current signed-in account is required.'); end if;
+ if action='list' then
+  select coalesce(jsonb_agg(jsonb_build_object('id',n.id,'kind',n.kind,'title',n.title,'body',n.body,'created_at',n.created_at,'read',n.read_at is not null)
+   order by n.created_at desc,n.id desc),'[]'::jsonb) into items
+  from (select * from sdi_private.account_notices where user_id=actor order by created_at desc,id desc limit 50) n;
+  return jsonb_build_object('notices',items,'unread',(select count(*) from sdi_private.account_notices where user_id=actor and read_at is null));
+ elsif action='mark_read' then
+  update sdi_private.account_notices set read_at=clock_timestamp() where id=notice and user_id=actor and read_at is null;
+  return jsonb_build_object('status',case when found then 'confirmed' else 'unchanged' end);
+ end if;
+ return jsonb_build_object('error','Unsupported notice operation.');
+end $$;
+revoke all on function sdi_private.account_notices_action(text,uuid) from public,anon;
+grant execute on function sdi_private.account_notices_action(text,uuid) to authenticated;
+create function public.sdi_account_notices(action text,notice uuid default null) returns jsonb language sql security invoker set search_path='' as $$
+ select sdi_private.account_notices_action(action,notice)$$;
+revoke all on function public.sdi_account_notices(text,uuid) from public,anon;
+grant execute on function public.sdi_account_notices(text,uuid) to authenticated;
 commit;
 
 -- ===== marketing-workspace.sql (sha256 d3badbef1f9a859f) =====
