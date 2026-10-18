@@ -446,6 +446,9 @@ private enum Golden {
                         try require(SpatterInstructionRouter.Kind(rawValue: name) != nil, "\(control.id) names \(name), which the router cannot dispatch")
                     }
                 }
+                try require(SpatterStudioControlRegistry.control(for: .fill)?.grammars == ["fill"]
+                    && SpatterStudioControlRegistry.control(for: .move)?.grammars.contains("selectByID") == true
+                    && SpatterStudioControlRegistry.control(forPanel: "spatterAI")?.grammars.contains("sourceReference") == true, "New grammars unreachable")
                 try require(SpatterStudioControlRegistry.control(for: .brush)?.grammars == ["brushStroke"]
                     && SpatterStudioControlRegistry.control(for: .pencil)?.grammars.isEmpty == true
                     && SpatterStudioControlRegistry.control(for: .hand)?.grammars.isEmpty == true, "Tool routes overclaim or underclaim")
@@ -518,7 +521,8 @@ private enum Golden {
                     "drawingDuplicate": .drawingDuplicate, "artworkOrder": .artworkOrder, "selectionTranslate": .selectionTranslate, "selectionTransform": .selectionTransform,
                     "selectionReflect": .selectionReflect, "imageReflection": .imageReflection, "imageRotation": .imageRotation, "imageCrop": .imageCrop,
                     "imagePlacement": .imagePlacement, "textUpdate": .textUpdate, "audioClip": .audioClip, "audioTrack": .audioTrack,
-                    "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "batch": .batch]
+                    "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "batch": .batch,
+                    "fill": .fill, "selectByID": .selectByID, "sourceReference": .sourceReference]
                 for grammar in SpatterInstructionCatalog.grammars {
                     guard let kind = names[grammar.name] else { throw Failure(message: "Catalog grammar \(grammar.name) has no router kind") }
                     for example in grammar.examples {
@@ -574,7 +578,8 @@ private enum Golden {
                 try require(SpatterSourceVideoBounds.check(seconds: 19.9) == .tooShort && SpatterSourceVideoBounds.check(seconds: 20) == .inRange
                     && SpatterSourceVideoBounds.check(seconds: 60) == .inRange && SpatterSourceVideoBounds.check(seconds: 60.1) == .tooLong, "Bounds check wrong")
                 let note = SpatterSourceVideoBounds.frameCapNote(fps: 24)
-                try require(note.contains("240-frame cap") && note.contains("10.0 s") && note.contains("2–6 ticks") && note.contains("not promised"), "Frame cap note wrong: \(note)")
+                try require(note.contains("1,440-frame cap") && note.contains("1,000-frame project limit") && note.contains("41.7 s")
+                    && note.contains("480–1440 ticks") && note.contains("1–2 ticks") && note.contains("not promised"), "Frame cap note wrong: \(note)")
             }
             try test("project digest input changes with any edit and quality verdict applies thresholds including movie measurements") {
                 let doc = try document()
@@ -597,6 +602,191 @@ private enum Golden {
                 try require(!blankReport.verdict().passes && blankReport.verdict(.init(maximumBlankFrames: 1)).passes
                     && blankReport.unmeasured == ["decodedMovieFrameCount", "decodedMovieDuration", "audioOffsetSeconds"], "Threshold override or unmeasured list wrong")
                 try require(SpatterQualityReport.Verdict.note.contains("owner approval"), "Verdict note must keep the human gate")
+            }
+            try test("source grammar records and clears the reference, gates generation and enforces the 20–60 s receipt bound") {
+                let now = Date()
+                var editor = try StudioDocumentEditor(document: try document(fps: 12))
+                try require(SpatterInstructionRouter.classify(SpatterSourceInstruction.example) == .sourceReference
+                    && SpatterInstructionRouter.classify(SpatterSourceInstruction.clearExample) == .sourceReference, "Source grammar not routed")
+                for bad in ["Record source http://example.com/clip as licensed reference.", "Record source https://user:pw@example.com/x as licensed reference.",
+                            "Record source https://example.com/clip as stolen reference.", "Record source https://example.com/clip as licensed reference. Upload it",
+                            "Record source https://example.com/clip as licensed reference with note \"" + String(repeating: "n", count: 501) + "\"."] {
+                    try rejects(bad) { _ = try SpatterSourceInstruction.parse(bad) }
+                }
+                let noted = try SpatterSourceInstruction.parse(SpatterSourceInstruction.noteExample)
+                try require(noted.reference(at: now)?.note == "Permission email 2026-10-07" && noted.reference(at: now)?.rightsBasis == .creatorConfirmed, "Note or basis lost")
+                // Record an unknown basis: stored truthfully, generation refused before any command.
+                let unknown = try SpatterSourceInstruction.parse("Record source https://example.com/clip as unknown reference.")
+                _ = try execute(try unknown.prepare(in: StudioCommandContext(document: editor.document), now: now, checkCancellation: {}), on: &editor)
+                try require(editor.document.spatterSource?.rightsBasis == .unknown && editor.document.spatterSource?.url.absoluteString == "https://example.com/clip", "Source not recorded")
+                let brief20 = try SpatterMultiClauseBrief.parse("A red stick figure walks left to right; 20 seconds.")
+                let blocked = editor.document
+                try rejects("unknown basis brief") { _ = try brief20.prepare(in: StudioCommandContext(document: editor.document), checkCancellation: {}) }
+                do { _ = try brief20.prepare(in: StudioCommandContext(document: editor.document), checkCancellation: {}) }
+                catch { try require((error as? SpatterSourceRightsGate.Failure).map { if case .refused = $0 { return true }; return false } == true, "Gate failure not explicit: \(error)") }
+                try require(editor.document == blocked, "Refused generation changed the project")
+                // A licensed basis permits 20–60 s briefs only, with an explicit length receipt.
+                let licensed = try SpatterSourceInstruction.parse(SpatterSourceInstruction.example)
+                _ = try execute(try licensed.prepare(in: StudioCommandContext(document: editor.document), now: now, checkCancellation: {}), on: &editor)
+                try require(editor.document.spatterSource?.rightsBasis == .licensed, "Licensed basis not stored")
+                let short = try SpatterMultiClauseBrief.parse("A red stick figure walks left to right; 3 seconds.")
+                do { _ = try short.prepare(in: StudioCommandContext(document: editor.document), checkCancellation: {}); throw Failure(message: "Short sourced brief accepted") }
+                catch let error as SpatterSourceRightsGate.Failure { try require(error == .length(3) && error.localizedDescription.contains("20–60"), "Length refusal unclear") }
+                try rejects("circle recipe with a source") {
+                    _ = try SpatterMotionRecipe.parse("Append 8 frames of a red outlined circle moving from (20%, 50%) to (80%, 50%), radius 8%, line width 3 px.")
+                        .prepare(in: StudioCommandContext(document: editor.document), checkCancellation: {})
+                }
+                let plan = try brief20.prepare(in: StudioCommandContext(document: editor.document), checkCancellation: {})
+                _ = try execute(plan.prepared.request, on: &editor)
+                try require(plan.storyboard.durationSeconds == 20 && editor.document.totalTimelineTicks == 1 + 240, "20 s brief did not generate 240 ticks")
+                let receipt = SpatterSourceVideoBounds.receipt(seconds: plan.storyboard.durationSeconds, fps: 12, reference: editor.document.spatterSource!)
+                try require(receipt.contains("20.00 s") && receipt.contains("licensed") && receipt.contains("https://example.com/reference-clip") && receipt.contains("nothing was fetched"), "Receipt wrong: \(receipt)")
+                // The reference survives a save round trip, and Undo/clear restore earlier states.
+                let saved = try JSONDecoder().decode(StudioDocument.self, from: JSONEncoder().encode(editor.document))
+                try require(saved.spatterSource == editor.document.spatterSource, "Source lost in persistence")
+                _ = try execute(try SpatterSourceInstruction.parse(SpatterSourceInstruction.clearExample).prepare(in: StudioCommandContext(document: editor.document), checkCancellation: {}), on: &editor)
+                try require(editor.document.spatterSource == nil, "Clear failed")
+                try require(SpatterInstructionPreview.plan(SpatterSourceInstruction.example, context: StudioCommandContext(document: editor.document)).contains("no download"), "Source preview wrong")
+                // Hostile wire input for the command is rejected before execution.
+                let hostile = "{\"schemaVersion\":1,\"requestID\":\"\(UUID().uuidString)\",\"projectID\":\"\(editor.document.id.uuidString)\",\"expectedRevision\":\(editor.document.revision),\"action\":{\"apply\":[{\"setSourceReference\":{\"reference\":{\"url\":\"https://example.com\",\"rightsBasis\":\"licensed\",\"recordedAt\":0,\"fetch\":true}}}]}}"
+                try rejects("unknown source field") { _ = try StudioCommandExecutor.decode(Data(hostile.utf8)) }
+            }
+            try test("select-by-ID grammar selects exact drawings under canvas rules and fill commands require a prepared region") {
+                var editor = try StudioDocumentEditor(document: try document())
+                let frame = editor.document.activeFrameID, layer = editor.document.activeLayerID
+                try require(SpatterInstructionRouter.classify(SpatterSelectByIDInstruction.example) == .selectByID
+                    && SpatterInstructionRouter.classify(SpatterSelectByIDInstruction.clearExample) == .selectByID
+                    && SpatterInstructionRouter.classify("Select frame 1.") == .navigation, "Select routing wrong")
+                try require(try SpatterSelectByIDInstruction.parse("select drawing \"seed-0\" .").elementIDs == ["seed-0"], "Single ID not parsed")
+                for bad in ["Select drawings \"a\", \"a\".", "Select drawings \"a b\".", "Select drawings seed-0.", "Select drawings \"seed-0\". Delete active layer."] {
+                    try rejects(bad) { _ = try SpatterSelectByIDInstruction.parse(bad) }
+                }
+                let select = try SpatterSelectByIDInstruction.parse("Select drawings \"seed-0\".").prepare(in: StudioCommandContext(document: editor.document), checkCancellation: {})
+                let before = editor.document
+                let receipt = try execute(select, on: &editor)
+                try require(editor.selectedElementIDs == ["seed-0"] && receipt.outcome == .unchanged && editor.document == before, "Selection changed the document or failed")
+                _ = try execute(try SpatterSelectByIDInstruction.parse(SpatterSelectByIDInstruction.clearExample).prepare(in: StudioCommandContext(document: editor.document), checkCancellation: {}), on: &editor)
+                try require(editor.selectedElementIDs.isEmpty, "Clear selection failed")
+                func request(_ commands: [StudioCommand], fills: [String: StudioPreparedFill] = [:]) -> StudioCommandRequest {
+                    .init(requestID: UUID(), projectID: editor.document.id, expectedRevision: editor.document.revision, action: .apply(commands), preparedFills: fills)
+                }
+                for ids in [["ghost"], ["seed-0", "seed-0"]] {
+                    var copy = editor
+                    try rejects("select \(ids)") { _ = try StudioCommandExecutor.execute(request([.selectElements(.init(frame: .id(frame), elementIDs: ids))]), editor: &copy, checkCancellation: {}) }
+                }
+                var hidden = editor
+                _ = try execute(request([.updateLayer(.init(layer: .id(layer), settings: .init(visible: false)))]), on: &hidden)
+                try rejects("hidden layer selection") {
+                    _ = try StudioCommandExecutor.execute(.init(requestID: UUID(), projectID: hidden.document.id, expectedRevision: hidden.document.revision,
+                        action: .apply([.selectElements(.init(frame: .id(frame), elementIDs: ["seed-0"]))])), editor: &hidden, checkCancellation: {})
+                }
+                // Fill: grammar → typed command; the executor refuses without, or with a mismatched, prepared region.
+                let fill = try SpatterFillInstruction.parse(SpatterFillInstruction.optionsExample)
+                try require(fill.color == "#00FF00" && fill.opacityPercent == 80 && fill.tolerance == 16 && fill.sampleAllLayers
+                    && SpatterInstructionRouter.classify(SpatterFillInstruction.example) == .fill, "Fill grammar wrong")
+                for bad in ["Fill at (100%, 50%) with #FF0000.", "Fill at (50%, 50%) with red.", "Fill at (50%, 50%) with #FF0000, tolerance 200.", "Fill at (50%, 50%) with #FF0000. rm -rf /"] {
+                    try rejects(bad) { _ = try SpatterFillInstruction.parse(bad) }
+                }
+                let command = try SpatterFillInstruction.parse(SpatterFillInstruction.example).command(in: StudioCommandContext(document: editor.document), elementID: "fill-1")
+                try require(command.x == 128 && command.y == 96 && command.opacity == 1 && command.tolerance == 32 && !command.sampleAllLayers, "Fill point wrong")
+                var copy = editor
+                do { _ = try StudioCommandExecutor.execute(request([.fillAtPoint(command)]), editor: &copy, checkCancellation: {}); throw Failure(message: "Unprepared fill accepted") }
+                catch let error as StudioCommandError { try require(error == .unsupportedCapability, "Unprepared fill error \(error)") }
+                let mask = StudioFillMask(width: 256, height: 192, spans: [.init(row: 96, start: 100, end: 160, alpha: 255)])
+                let element = DrawnElement(id: "fill-1", tool: .fill, points: [.init(x: 100, y: 96), .init(x: 160, y: 97)], color: "#FF0000",
+                                           width: 1, opacity: 1, layerID: layer, fillMask: mask)
+                let prepared = StudioPreparedFill(projectID: editor.document.id, revision: editor.document.revision, command: command, element: element)
+                var stale = StudioPreparedFill(projectID: editor.document.id, revision: editor.document.revision + 1, command: command, element: element)
+                try rejects("stale prepared fill") { var c = editor; _ = try StudioCommandExecutor.execute(request([.fillAtPoint(command)], fills: ["fill-1": stale]), editor: &c, checkCancellation: {}) }
+                stale = StudioPreparedFill(projectID: editor.document.id, revision: editor.document.revision, command: command,
+                    element: DrawnElement(id: "fill-1", tool: .fill, points: element.points, color: "#0000FF", width: 1, opacity: 1, layerID: layer, fillMask: mask))
+                try rejects("recolored prepared fill") { var c = editor; _ = try StudioCommandExecutor.execute(request([.fillAtPoint(command)], fills: ["fill-1": stale]), editor: &c, checkCancellation: {}) }
+                try rejects("fill inside a batch") { var c = editor; _ = try StudioCommandExecutor.execute(request([.fillAtPoint(command), .renameProject(.init(name: "X"))], fills: ["fill-1": prepared]), editor: &c, checkCancellation: {}) }
+                let original = editor.document
+                let filled = try StudioCommandExecutor.execute(request([.fillAtPoint(command)], fills: ["fill-1": prepared]), editor: &editor, checkCancellation: {})
+                try require(filled.createdElementIDs == ["fill-1"] && editor.document.frames[0].elements.last == element && editor.canUndo, "Prepared fill not committed")
+                editor.undo()
+                try require(content(editor.document) == content(original), "Fill is not one Undo step")
+                // The wire form keeps the region local: prepared fills are never encoded.
+                let wire = String(decoding: try JSONEncoder().encode(request([.fillAtPoint(command)], fills: ["fill-1": prepared])), as: UTF8.self)
+                try require(!wire.contains("fillMask") && !wire.contains("preparedFills"), "Prepared fill leaked into the wire form")
+            }
+            try test("shared room edits replay with the author's identities, refuse divergence and share only faithful touch commits") {
+                let seed = try document(frames: 2)
+                var author = try StudioDocumentEditor(document: seed), peer = try StudioDocumentEditor(document: seed)
+                _ = try execute(.init(requestID: UUID(), projectID: seed.id, expectedRevision: seed.revision, action: .apply([.selectFrame(.id("frame-1"))])), on: &peer)
+                let commands: [StudioCommand] = [.addFrame(.init(after: .id(seed.frames[0].id), result: "new")), .addLayer(.init(name: "Ink", result: "ink")),
+                    .draw(.init(frame: .created("new"), layer: .created("ink"), strokes: [.init(id: "s-1", tool: .line, points: [.init(x: 1, y: 1), .init(x: 20, y: 20)], color: "#000000", width: 2, opacity: 1)])),
+                    .selectFrame(.id(seed.frames[0].id))]
+                let receipt = try execute(.init(requestID: UUID(), projectID: seed.id, expectedRevision: seed.revision, action: .apply(commands)), on: &author)
+                guard case .replay(let shared) = StudioSharedEdit.share(commands) else { throw Failure(message: "Batch not shareable") }
+                try require(shared.count == 3 && StudioSharedEdit.target(of: shared) == nil, "View-only command shared or structural target narrowed")
+                let payload = try StudioSharedEdit.payload(shared, receipt: receipt)
+                try require(payload.createdFrameIDs.count == 1 && payload.createdLayerIDs.count == 1 && payload.createdElementIDs == ["s-1"], "Created identities missing")
+                let wire = try JSONDecoder().decode(StudioSharedEdit.Payload.self, from: JSONEncoder().encode(payload))
+                let replay = try StudioSharedEdit.request(from: wire, projectID: peer.document.id, revision: peer.document.revision)
+                let peerActive = peer.document.activeFrameID
+                _ = try StudioCommandExecutor.execute(replay, editor: &peer, checkCancellation: {})
+                var expected = content(author.document); expected.activeFrameID = peerActive
+                var actual = content(peer.document); actual.activeLayerID = expected.activeLayerID
+                try require(actual == expected && peer.document.activeFrameID == peerActive, "Replay did not reproduce the author's identities")
+                try require(peer.document.layers.contains { $0.id == receipt.createdLayerIDs[0] } && peer.document.frames.contains { $0.id == receipt.createdFrameIDs[0] }, "Stable IDs differ")
+                // Replaying again on the same copy is refused (identities already present): never duplicated.
+                try rejects("double replay") {
+                    var again = peer
+                    _ = try StudioCommandExecutor.execute(try StudioSharedEdit.request(from: wire, projectID: again.document.id, revision: again.document.revision), editor: &again, checkCancellation: {})
+                }
+                // A copy that diverged (different creation count) refuses instead of guessing.
+                var mismatched = wire; mismatched.createdFrameIDs = []
+                try rejects("identity count mismatch") {
+                    var copy = try StudioDocumentEditor(document: seed)
+                    _ = try StudioCommandExecutor.execute(try StudioSharedEdit.request(from: mismatched, projectID: seed.id, revision: seed.revision), editor: &copy, checkCancellation: {})
+                }
+                // Hostile payloads: non-replayable commands, envelope break-outs, target drift.
+                for text in ["[{\"pasteFrame\":{\"after\":{\"id\":\"x\"}}}]", "[]}},\"projectID\":\"\(UUID().uuidString)\",\"x\":{\"a\":[", "{\"apply\":[]}", "[{\"selectFrame\":{\"id\":\"frame-1\"}}]"] {
+                    try rejects("hostile payload \(text)") { _ = try StudioSharedEdit.request(from: .init(commands: text), projectID: seed.id, revision: seed.revision) }
+                }
+                var drifted = wire; drifted.target = "frame:other"
+                try rejects("target drift") { _ = try StudioSharedEdit.request(from: drifted, projectID: seed.id, revision: seed.revision) }
+                // Share rules and entity targets.
+                let frameID = seed.frames[0].id
+                if case .replay(let cut) = StudioSharedEdit.share([.cutElements(.init(frame: .id(frameID), elementIDs: ["seed-0"]))]) {
+                    try require(String(describing: cut) == String(describing: [StudioCommand.deleteElements(.init(frame: .id(frameID), elementIDs: ["seed-0"]))]), "Cut not shared as deletion")
+                } else { throw Failure(message: "Cut not shareable") }
+                if case .viewOnly = StudioSharedEdit.share([.selectLayer(.id("x")), .canvasOptions(.init(grid: true))]) {} else { throw Failure(message: "View-only edit shared") }
+                if case .unsupported = StudioSharedEdit.share([.pasteFrame(.init(after: .id(frameID)))]) {} else { throw Failure(message: "Clipboard paste claimed shareable") }
+                try require(StudioSharedEdit.target(of: [.setFrameHold(.init(frame: .id(frameID), ticks: 2)), .translateElements(.init(frame: .id(frameID), elementIDs: ["seed-0"], dx: 1, dy: 1))]) == "frame:" + frameID
+                    && StudioSharedEdit.target(of: [.updateLayer(.init(layer: .id("L"), settings: .init(opacity: 0.5)))]) == "layer:L"
+                    && StudioSharedEdit.target(of: [.updateAudioTrack(.init(track: 2, volume: 0.5))]) == "audio:track-2"
+                    && StudioSharedEdit.target(of: [.deleteAudioClip(.init(clipID: "c1"))]) == "audio:c1"
+                    && StudioSharedEdit.target(of: [.setFrameHold(.init(frame: .id(frameID), ticks: 2)), .setFrameHold(.init(frame: .id("frame-1"), ticks: 2))]) == nil, "Targets wrong")
+                // Touch commits are shared only when a draw replay reproduces them exactly.
+                var touch = try StudioDocumentEditor(document: seed)
+                let stroke = DrawnElement(id: "touch-1", tool: .pencil, points: [.init(x: 5, y: 5), .init(x: 9, y: 12), .init(x: 30, y: 40)], color: "#112233", width: 3, opacity: 0.9, layerID: seed.activeLayerID)
+                try touch.commit(stroke, frameID: frameID)
+                guard let draws = StudioSharedEdit.drawCommands(before: seed, after: touch.document, frameID: frameID) else { throw Failure(message: "Faithful touch commit not shareable") }
+                var replayed = try StudioDocumentEditor(document: seed)
+                let touchPayload = try StudioSharedEdit.payload(draws.commands, created: draws.created)
+                try require(touchPayload.target == "frame:" + frameID && touchPayload.createdElementIDs == ["touch-1"], "Touch payload wrong")
+                _ = try StudioCommandExecutor.execute(try StudioSharedEdit.request(from: touchPayload, projectID: seed.id, revision: seed.revision), editor: &replayed, checkCancellation: {})
+                try require(content(replayed.document) == content(touch.document), "Touch replay differs")
+                var translated = stroke; translated.translation = .init(x: 4, y: 0)
+                var moved = seed; moved.frames[0].elements.append(.init(id: "touch-2", tool: .pencil, points: stroke.points, color: "#112233", width: 3, opacity: 0.9, layerID: seed.activeLayerID, translation: translated.translation))
+                moved.schemaVersion = 35
+                try require(StudioSharedEdit.drawCommands(before: seed, after: moved, frameID: frameID) == nil, "Unrepresentable touch commit claimed shareable")
+            }
+            try test("append and export bounds are reconciled with the 1,440-frame exporter and 1,000-frame project limits") {
+                try require(StudioCommandExecutor.maximumAppendedFrames == 1000 && SpatterSourceVideoBounds.exporterFrameCap == 1440
+                    && SpatterSourceVideoBounds.distinctFrameCap == 1000, "Caps not reconciled")
+                let doc = try document(fps: 24)
+                var editor = try StudioDocumentEditor(document: doc)
+                let frames = (0..<300).map { index in
+                    StudioCommand.AppendFrames.Frame(result: "f\(index)", holdTicks: 1, drawings: [.init(layer: .id(doc.activeLayerID),
+                        strokes: [.init(id: "a\(index)", tool: .line, points: [.init(x: 1, y: 1), .init(x: 10, y: CGFloat(1 + index % 100))], color: "#000000", width: 1, opacity: 1)])])
+                }
+                let receipt = try execute(.init(requestID: UUID(), projectID: doc.id, expectedRevision: doc.revision,
+                    action: .apply([.appendFrames(.init(after: .id(doc.activeFrameID), frames: frames))])), on: &editor)
+                try require(receipt.createdFrameIDs.count == 300 && editor.document.frames.count == 301, "More than 240 appended frames still refused")
             }
             print("SPATTER_PLANNER_TESTS=PASS \(passed) production parser-command-editor cases")
         } catch {

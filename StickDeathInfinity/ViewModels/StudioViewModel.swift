@@ -785,6 +785,7 @@ final class StudioViewModel: ObservableObject {
             pruneManagedAudio()
             scheduleSave()
         }
+        StudioEditObservers.commandsCommitted?(request, receipt)
         return receipt
     }
 
@@ -1633,7 +1634,9 @@ final class StudioViewModel: ObservableObject {
                 try candidate.commitMirroredStroke(mirror.elements(from: element), frameID: target)
             } else { try candidate.commit(element, frameID: target) }
             try preflightRasterDocument(candidate.document)
+            let committedFrom = editor.document
             editor = candidate
+            StudioEditObservers.elementsCommitted?(committedFrom, editor.document, target)
             if pendingBrushStroke?.element.id == element.id { pendingBrushStroke = nil }
             pruneManagedAudio(); scheduleSave()
             return true

@@ -83,6 +83,7 @@ struct SpatterMotionRecipe: Equatable {
     func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Prepared {
         try checkCancellation()
+        try SpatterSourceRightsGate.require(context, seconds: nil)
         guard (16...4096).contains(context.width), (16...4096).contains(context.height),
               (1...60).contains(context.fps), context.revision >= 0,
               !context.frames.isEmpty, !context.layers.isEmpty,
@@ -565,6 +566,7 @@ struct SpatterStickFigureRecipe: Equatable {
     func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> SpatterMotionRecipe.Prepared {
         try checkCancellation()
+        try SpatterSourceRightsGate.require(context, seconds: nil)
         guard (16...4096).contains(context.width), (16...4096).contains(context.height), (1...60).contains(context.fps),
               context.revision >= 0, context.supportedTools.contains(.line), context.supportedTools.contains(.circle),
               context.frames.count <= 1000 - frameCount, context.layers.count < 128,
@@ -692,6 +694,7 @@ struct SpatterSceneBrief: Equatable {
     func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> SpatterMotionRecipe.Prepared {
         try checkCancellation()
+        try SpatterSourceRightsGate.require(context, seconds: seconds)
         guard (1...60).contains(context.fps), seconds.isFinite, (0.5...10).contains(seconds),
               actions.count == 2, actions.contains(where: { $0 != .waving }) else { throw Failure.timing }
         let ticks = Int((seconds * Double(context.fps)).rounded())
@@ -775,6 +778,7 @@ struct SpatterTwoActorBrief: Equatable {
     func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> SpatterMotionRecipe.Prepared {
         try checkCancellation()
+        try SpatterSourceRightsGate.require(context, seconds: seconds)
         guard actors.count == 2, (12...60).contains(context.fps), seconds.isFinite, seconds > 0, seconds <= 2 else { throw Failure.timing }
         let count = Int((seconds * Double(context.fps)).rounded())
         guard (8...24).contains(count) else { throw Failure.timing }
@@ -2415,6 +2419,7 @@ struct SpatterMultiClauseBrief: Equatable {
     func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Plan {
         try checkCancellation()
+        try SpatterSourceRightsGate.require(context, seconds: seconds)
         guard (16...4096).contains(context.width), (16...4096).contains(context.height), (1...60).contains(context.fps),
               context.revision >= 0, context.supportedTools.contains(.line), context.supportedTools.contains(.circle),
               context.layers.count + actors.count <= 128, context.frames.contains(where: { $0.id == context.activeFrameID }),
@@ -2859,6 +2864,152 @@ struct SpatterBrushStrokeInstruction: Equatable {
 /// Classification shared by the batch grammar, the plan preview and tests. The
 /// order mirrors SpatterStudioEditSession's dispatch so an instruction is owned
 /// by exactly one grammar.
+// MARK: - Fill, select-by-ID and source-reference grammars (#204, #279)
+
+/// "Fill at (50%, 50%) with #FF0000, opacity 80%, tolerance 16, all layers."
+/// Parsing and the typed command are pure; the region itself is computed by
+/// StudioFillService from the rendered artwork and attached as a prepared fill.
+struct SpatterFillInstruction: Equatable {
+    let xPercent: Double
+    let yPercent: Double
+    let color: String
+    let opacityPercent: Double
+    let tolerance: Int
+    let sampleAllLayers: Bool
+    static let example = "Fill at (50%, 50%) with #FF0000."
+    static let optionsExample = "Fill at (25%, 75%) with #00FF00, opacity 80%, tolerance 16, all layers."
+    enum Failure: LocalizedError, Equatable {
+        case syntax, outside
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use: \(SpatterFillInstruction.example) Optional: opacity 0–100%, tolerance 0–128, all layers or active layer. Nothing changed."
+            case .outside: return "The fill point must be inside the canvas (0–99.99% on each axis). Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*fill\s+at\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && !CharacterSet.whitespaces.contains($0) }) else { throw Failure.syntax }
+        let pattern = #"\A\s*fill\s+at\s+\(\s*([0-9]{1,3}(?:\.[0-9]{1,4})?)\s*%\s*,\s*([0-9]{1,3}(?:\.[0-9]{1,4})?)\s*%\s*\)\s+with\s+(#[0-9A-Fa-f]{6})(?:\s*,\s*opacity\s+([0-9]{1,3}(?:\.[0-9]{1,4})?)\s*%)?(?:\s*,\s*tolerance\s+([0-9]{1,3}))?(?:\s*,\s*(all\s+layers|active\s+layer))?\s*\.\s*\z"#
+        let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { throw Failure.syntax }
+        func group(_ index: Int) -> String? { Range(match.range(at: index), in: text).map { String(text[$0]) } }
+        guard let x = group(1).flatMap(Double.init), let y = group(2).flatMap(Double.init), let color = group(3) else { throw Failure.syntax }
+        guard x >= 0, x < 100, y >= 0, y < 100 else { throw Failure.outside }
+        let opacity = try group(4).map { value -> Double in
+            guard let number = Double(value), (0...100).contains(number) else { throw Failure.syntax }
+            return number
+        } ?? 100
+        let tolerance = try group(5).map { value -> Int in
+            guard let number = Int(value), (0...128).contains(number) else { throw Failure.syntax }
+            return number
+        } ?? 32
+        let scope = group(6)?.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return .init(xPercent: x, yPercent: y, color: color.uppercased(), opacityPercent: opacity, tolerance: tolerance,
+                     sampleAllLayers: scope == "all layers")
+    }
+    /// The typed command for the captured active frame and layer. Contiguous
+    /// region, no expand or gap closing, anti-aliased edge: the Fill tool defaults.
+    func command(in context: StudioCommandContext, elementID: String) throws -> StudioCommand.FillAtPoint {
+        let x = Double(context.width) * xPercent / 100, y = Double(context.height) * yPercent / 100
+        guard x >= 0, y >= 0, x < Double(context.width), y < Double(context.height) else { throw Failure.outside }
+        return .init(frame: .id(context.activeFrameID), layer: .id(context.activeLayerID), x: x, y: y, color: color,
+                     opacity: opacityPercent / 100, tolerance: tolerance, contiguous: true, sampleAllLayers: sampleAllLayers,
+                     elementID: elementID)
+    }
+}
+
+/// "Select drawings "id-1", "id-2"." or "Clear drawing selection." Explicit
+/// stable IDs on the active frame; the executor applies the canvas selection rules.
+struct SpatterSelectByIDInstruction: Equatable {
+    let elementIDs: [String]
+    static let example = "Select drawings \"stroke-1\", \"stroke-2\"."
+    static let clearExample = "Clear drawing selection."
+    static let maximumIDs = 64
+    enum Failure: LocalizedError, Equatable {
+        case syntax
+        var errorDescription: String? {
+            "Use: \(SpatterSelectByIDInstruction.example) with 1–64 quoted drawing IDs from the active frame, or \(SpatterSelectByIDInstruction.clearExample) Nothing changed."
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*(?:select\s+drawings?\s+"|clear\s+drawing\s+selection\b)"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.syntax }
+        if text.range(of: #"\A\s*clear\s+drawing\s+selection\s*\.\s*\z"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .init(elementIDs: [])
+        }
+        let whole = #"\A\s*select\s+drawings?\s+("[A-Za-z0-9_.:\-]{1,160}"(?:\s*,\s*"[A-Za-z0-9_.:\-]{1,160}")*)\s*\.\s*\z"#
+        let expression = try NSRegularExpression(pattern: whole, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { throw Failure.syntax }
+        let ids = text[range].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
+        guard (1...Self.maximumIDs).contains(ids.count), Set(ids).count == ids.count else { throw Failure.syntax }
+        return .init(elementIDs: ids)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+                     action: .apply([.selectElements(.init(frame: .id(context.activeFrameID), elementIDs: elementIDs))]))
+    }
+}
+
+/// "Record source https://… as licensed reference [with note "…"]." or "Clear
+/// source reference." Stores only the URL text, the stated rights basis, the
+/// time and an optional note on the project. Nothing is fetched.
+struct SpatterSourceInstruction: Equatable {
+    enum Action: Equatable { case record(URL, SpatterSourceReference.RightsBasis, String?), clear }
+    let action: Action
+    static let example = "Record source https://example.com/reference-clip as licensed reference."
+    static let noteExample = "Record source https://example.com/reference-clip as creator-confirmed reference with note \"Permission email 2026-10-07\"."
+    static let clearExample = "Clear source reference."
+    private static let bases: [String: SpatterSourceReference.RightsBasis] = [
+        "licensed": .licensed, "owner-authorized": .ownerAuthorized, "creator-confirmed": .creatorConfirmed, "unknown": .unknown]
+    enum Failure: LocalizedError, Equatable {
+        case syntax
+        var errorDescription: String? {
+            "Use: \(SpatterSourceInstruction.example) Rights basis: licensed, owner-authorized, creator-confirmed or unknown. Only https links; nothing is downloaded. Nothing changed."
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*(?:record\s+source\b|clear\s+source\s+reference\b)"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.syntax }
+        if text.range(of: #"\A\s*clear\s+source\s+reference\s*\.\s*\z"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .init(action: .clear)
+        }
+        let pattern = #"\A\s*record\s+source\s+(https://[^\s"]{1,2040}?)\s+as\s+(licensed|owner-authorized|creator-confirmed|unknown)\s+reference(?:\s+with\s+note\s+"([^"]{1,500})")?\s*\.\s*\z"#
+        let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let urlRange = Range(match.range(at: 1), in: text), let basisRange = Range(match.range(at: 2), in: text),
+              let url = URL(string: String(text[urlRange])), let basis = bases[text[basisRange].lowercased()] else { throw Failure.syntax }
+        let note = Range(match.range(at: 3), in: text).map { String(text[$0]) }
+        let probe = SpatterSourceReference(url: url, rightsBasis: basis, recordedAt: Date(timeIntervalSince1970: 0), note: note)
+        try probe.validate()
+        return .init(action: .record(url, basis, note))
+    }
+    func reference(at now: Date) -> SpatterSourceReference? {
+        guard case .record(let url, let basis, let note) = action else { return nil }
+        return SpatterSourceReference(url: url, rightsBasis: basis, recordedAt: now, note: note)
+    }
+    func prepare(in context: StudioCommandContext, now: Date = Date(), requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        let reference = reference(at: now)
+        try reference?.validate()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+                     action: .apply([.setSourceReference(.init(reference: reference))]))
+    }
+}
+
 enum SpatterInstructionRouter {
     enum Kind: String, CaseIterable {
         case batch, frameDuplicateRange, frameReverse, navigation, layerStructure, grid, onionSkin, frameAction, layerOrder, audioTrack
@@ -2866,6 +3017,7 @@ enum SpatterInstructionRouter {
         case imageRotation, imageCrop, imagePlacement, textUpdate, tween, frameClipboard, projectSettings, brushStroke
         case selectedErasure, projectRename, frameExposure, layerUpdate, layerDuplicate, layerGlow, audioClip
         case multiClauseBrief, twoActorBrief, sceneBrief, stickFigure, circleMotion
+        case fill, selectByID, sourceReference
         /// Grammars whose preparation needs only the captured document, not a selection.
         var isContextOnly: Bool {
             switch self {
@@ -2878,6 +3030,9 @@ enum SpatterInstructionRouter {
     }
     static func classify(_ draft: String) -> Kind? {
         if SpatterInstructionBatch.isBatch(draft) { return .batch }
+        if SpatterSourceInstruction.isInstruction(draft) { return .sourceReference }
+        if SpatterSelectByIDInstruction.isInstruction(draft) { return .selectByID }
+        if SpatterFillInstruction.isInstruction(draft) { return .fill }
         if SpatterFrameDuplicateRangeInstruction.isInstruction(draft) { return .frameDuplicateRange }
         if SpatterFrameReverseInstruction.isInstruction(draft) { return .frameReverse }
         if SpatterNavigationInstruction.isInstruction(draft) { return .navigation }
@@ -3103,6 +3258,13 @@ enum SpatterInstructionPreview {
                 guard let context else { return "Stick-figure recipe (\(recipe.action.rawValue), \(recipe.frameCount) frames). Open the project to preview." }
                 let plan = try recipe.prepare(in: context, requestID: probe, checkCancellation: {})
                 return "Plan: \(plan.framesToAdd) \(recipe.action.rawValue) frames over \(String(format: "%.2f", plan.durationSeconds)) s on one new layer → \(describe(plan.request)). Nothing has changed yet."
+            case .sourceReference:
+                let instruction = try SpatterSourceInstruction.parse(text)
+                guard let reference = instruction.reference(at: Date()) else {
+                    return "Plan: clear the recorded reference source; later briefs are treated as original text. One Undo step. Nothing has changed yet."
+                }
+                let decision = SpatterSourceRightsGate.evaluate(reference)
+                return "Plan: record \(reference.url.absoluteString) as a \(reference.rightsBasis.label) reference on this project (no download). Generation would then be \(decision.allowed ? "allowed for 20–60 s briefs" : "refused"): \(decision.reason) One Undo step. Nothing has changed yet."
             case .circleMotion:
                 let recipe = try SpatterMotionRecipe.parse(text)
                 guard let context else { return "Outlined-circle motion (\(recipe.frameCount) frames). Open the project to preview." }
@@ -3140,13 +3302,38 @@ enum SpatterSourceRightsGate {
             return .init(allowed: true, reason: "Reference allowed on a \(reference.rightsBasis.label) basis recorded \(ISO8601DateFormatter().string(from: reference.recordedAt)). Output must stay independently generated; no footage, frames or audio are copied.")
         }
     }
+
+    enum Failure: LocalizedError, Equatable {
+        case refused(String), length(Double), unmeasured
+        var errorDescription: String? {
+            switch self {
+            case .refused(let reason): return "Spatter will not generate from the recorded reference: \(reason) Nothing changed."
+            case .length(let seconds): return "Source-referenced videos must be 20–60 seconds; this request is \(String(format: "%.2f", seconds)) s. Nothing changed."
+            case .unmeasured: return "With a reference source recorded, only a 20–60 second multi-clause brief can generate. Clear the source reference for short clips. Nothing changed."
+            }
+        }
+    }
+    /// Every generative grammar calls this before preparing commands. Without a
+    /// recorded source it passes; with one, the rights gate and the 20–60 s
+    /// bound must both hold.
+    static func require(_ context: StudioCommandContext, seconds: Double?, now: Date = Date()) throws {
+        let decision = evaluate(context.spatterSource, now: now)
+        guard decision.allowed else { throw Failure.refused(decision.reason) }
+        guard context.spatterSource != nil else { return }
+        guard let seconds else { throw Failure.unmeasured }
+        guard SpatterSourceVideoBounds.check(seconds: seconds) == .inRange else { throw Failure.length(seconds) }
+    }
 }
 
 /// Target length and the current exporter limits for source-referenced videos.
 enum SpatterSourceVideoBounds {
     static let minimumSeconds = 20.0, maximumSeconds = 60.0
-    /// StudioMovieExportService's current cap (#182, #202); distinct frames, not ticks.
-    static let exporterFrameCap = 240
+    /// StudioMovieExportService.Limits.maximumFrames (#182, #202): distinct
+    /// document frames per MP4, each held for its own ticks.
+    static let exporterFrameCap = 1440
+    /// StudioDocument.validate's frame limit, which binds before the exporter's cap.
+    static let documentFrameLimit = 1000
+    static var distinctFrameCap: Int { min(exporterFrameCap, documentFrameLimit) }
     enum Check: Equatable { case inRange, tooShort, tooLong }
     static func check(seconds: Double) -> Check {
         guard seconds.isFinite else { return .tooShort }
@@ -3154,14 +3341,18 @@ enum SpatterSourceVideoBounds {
         if seconds > maximumSeconds { return .tooLong }
         return .inRange
     }
-    /// How many distinct frames the exporter allows at this FPS and what that
-    /// means for a 20–60 second target: holds carry the remaining ticks.
+    /// How many distinct frames a project and the exporter allow at this FPS and
+    /// what that means for a 20–60 second target: holds carry the remaining ticks.
     static func frameCapNote(fps: Int) -> String {
         let fps = max(1, min(60, fps))
-        let distinctSeconds = Double(exporterFrameCap) / Double(fps)
-        let minimumHold = Int((minimumSeconds * Double(fps) / Double(exporterFrameCap)).rounded(.up))
-        let maximumHold = Int((maximumSeconds * Double(fps) / Double(exporterFrameCap)).rounded(.up))
-        return "At \(fps) FPS the MP4 exporter's \(exporterFrameCap)-frame cap covers \(String(format: "%.1f", distinctSeconds)) s of distinct frames; a 20–60 s video therefore needs each pose held \(minimumHold)–\(maximumHold) ticks, or the cap raised under #182/#202. Measured, not promised."
+        let distinctSeconds = Double(distinctFrameCap) / Double(fps)
+        let minimumHold = Int((minimumSeconds * Double(fps) / Double(distinctFrameCap)).rounded(.up))
+        let maximumHold = Int((maximumSeconds * Double(fps) / Double(distinctFrameCap)).rounded(.up))
+        return "At \(fps) FPS a 20–60 s video is \(Int(minimumSeconds) * fps)–\(Int(maximumSeconds) * fps) ticks. The MP4 exporter's 1,440-frame cap and the 1,000-frame project limit allow \(String(format: "%.1f", distinctSeconds)) s of distinct frames, so each pose is held \(minimumHold)–\(maximumHold) ticks. Measured limits, not promised output."
+    }
+    /// The explicit length receipt for a source-referenced generation.
+    static func receipt(seconds: Double, fps: Int, reference: SpatterSourceReference) -> String {
+        "Source-referenced video length \(String(format: "%.2f", seconds)) s at \(fps) FPS, within the 20–60 s bound. Reference \(reference.url.absoluteString) recorded as \(reference.rightsBasis.label) on \(ISO8601DateFormatter().string(from: reference.recordedAt)). The stick figures were generated locally; nothing was fetched from or copied out of the source."
     }
 }
 

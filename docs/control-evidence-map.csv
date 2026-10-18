@@ -203,6 +203,9 @@ rooms.room.back,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailV
 rooms.room.conflict,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,-> binds 0,no,#232 #234,deferred
 rooms.room.conflict-discard,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Discard mine',no,#232 #234,deferred
 rooms.room.conflict-keep,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Keep mine on top',no,#232 #234,deferred
+rooms.room.blocked,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text 'Shared edit #N is waiting: reason',no,#232,deferred
+rooms.room.blocked-skip,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Skip this edit (my copy will differ)',no,#232,deferred
+rooms.room.studio-sync,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text 'In Studio this session: applied/queued/unsent/skipped/not shared counts',no,#232,deferred
 rooms.room.copy-code,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,label 'Copy',no,#228 #234,deferred
 rooms.room.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text,no,#228 #234,deferred
 rooms.room.invite,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Create 24-hour invite',no,#228 #234,deferred

@@ -2,9 +2,10 @@
 // RoomSessionCoordinator — the one active shared-project session. Owns the
 // RoomCommandSync for the room whose project is open, drains queued local
 // edits through RoomsClient and hands remote commands to whichever editor
-// hook is registered. The Studio editor registers its hook (deferred to the
-// Studio owner); until then remote commands stay queued and the Rooms screen
-// shows them truthfully as "not applied in Studio".
+// hook is registered. StudioRoomBridge (ViewModels/StudioViewModel+Rooms.swift)
+// registers the Studio hook while the room's project is open in Studio; a
+// remote command the editor cannot apply stays queued, with its reason, until
+// it applies or the creator explicitly skips it.
 //
 // It also records the active-project handoff: which room's project was opened
 // in Studio, so returning to Rooms lands on that room and leaving the room
@@ -42,6 +43,19 @@ final class RoomSessionCoordinator {
     /// deliberately skipped); false keeps it queued for a later attempt.
     var applyRemote: ((RoomCommandRecord) -> Bool)?
 
+    /// The oldest remote command the editor could not apply, and why. Later
+    /// remote commands wait behind it so their order is never changed.
+    struct BlockedRemote: Equatable { let opID: UUID; let revision: Int; let reason: String }
+    private(set) var blockedRemote: BlockedRemote?
+    /// Remote commands the creator chose to skip; their device copy differs from the room's.
+    private(set) var skippedRemote: [UUID] = []
+    private(set) var appliedRemoteCount = 0
+    private(set) var publishedLocalCount = 0
+    /// Local changes that could not be sent (unsupported edit, view-only role,
+    /// size bound). They stay on this device; the reason is shown, never hidden.
+    private(set) var unsharedLocalCount = 0
+    private(set) var lastUnsharedReason: String?
+
     init(client: RoomsClient?) { self.client = client }
     func attachClient(_ client: RoomsClient) { self.client = client }
 
@@ -54,11 +68,17 @@ final class RoomSessionCoordinator {
         session = Session(room: room, projectID: projectID, canEdit: canEdit, account: account)
         sync = RoomCommandSync(room: room, head: head)
         endReason = nil
+        resetCounters()
         if let handoff, handoff.room != room { self.handoff = nil }
     }
     func end(reason: String? = nil) {
         session = nil; sync = nil; handoff = nil
+        resetCounters()
         if let reason { endReason = reason }
+    }
+    private func resetCounters() {
+        blockedRemote = nil; skippedRemote = []; appliedRemoteCount = 0; publishedLocalCount = 0
+        unsharedLocalCount = 0; lastUnsharedReason = nil
     }
 
     // MARK: Handoff (#234)
@@ -79,8 +99,35 @@ final class RoomSessionCoordinator {
     /// A local edit from the editor. Refused when the member can only view.
     @discardableResult
     func publishLocalEdit(kind: String, payload: CommunityJSONValue) -> Bool {
-        guard let session, session.canEdit, let sync else { return false }
-        return sync.enqueue(kind: kind, payload: payload)
+        guard let session, session.canEdit, let sync, sync.enqueue(kind: kind, payload: payload) else { return false }
+        publishedLocalCount += 1
+        return true
+    }
+    /// A local change the editor could not share; it stays on this device.
+    func noteUnsharedLocalEdit(_ reason: String) {
+        guard session != nil else { return }
+        unsharedLocalCount += 1; lastUnsharedReason = reason
+    }
+    /// The editor could not apply this remote command yet (it stays queued).
+    func noteRemoteBlocked(_ record: RoomCommandRecord, reason: String) {
+        guard sync?.inbox.first?.op_id == record.op_id else { return }
+        blockedRemote = BlockedRemote(opID: record.op_id, revision: record.revision, reason: reason)
+    }
+    /// The creator explicitly skips the blocked remote command after reading
+    /// why it could not be applied. Their copy then differs from the room's;
+    /// the skip is recorded and shown, and later commands continue in order.
+    @discardableResult
+    func skipBlockedRemote() -> Bool {
+        guard let blocked = blockedRemote, let sync, let first = sync.nextRemoteToApply(), first.op_id == blocked.opID else { return false }
+        sync.acknowledgeRemote(first)
+        skippedRemote.append(first.op_id); blockedRemote = nil
+        applyQueued()
+        return true
+    }
+    /// Whether this room's shared project is the one open in the editor.
+    func isSharing(projectID: UUID) -> Bool {
+        guard let session, let handoff else { return false }
+        return handoff.room == session.room && handoff.projectID == projectID
     }
     /// Undo one of this creator's own acknowledged edits.
     @discardableResult
@@ -135,8 +182,21 @@ final class RoomSessionCoordinator {
         guard let sync else { return }
         while let record = sync.nextRemoteToApply() {
             guard let apply = applyRemote, apply(record) else { break }
+            // The hook may end the session (for example on a revoked project).
+            guard self.sync === sync else { return }
             sync.acknowledgeRemote(record)
+            appliedRemoteCount += 1
+            if blockedRemote?.opID == record.op_id { blockedRemote = nil }
         }
+    }
+    /// One synchronisation pass: fetch and apply newer commands, then send
+    /// queued local edits fenced on the resulting head.
+    func synchronise() async -> (catchUp: RoomCommandSync.CatchUpOutcome, drain: DrainOutcome) {
+        let received = await catchUp()
+        guard session != nil else { return (received, .idle) }
+        // Remote edits that arrived with a conflict reply are applied first.
+        applyQueued()
+        return (received, await drain())
     }
     var pendingRemoteCount: Int { sync?.inbox.count ?? 0 }
     var pendingLocalCount: Int { sync?.pending.count ?? 0 }

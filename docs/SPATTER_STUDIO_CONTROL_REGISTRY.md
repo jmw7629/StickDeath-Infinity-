@@ -49,10 +49,36 @@ reachable from no control, unmapped `DrawingTool` cases, unknown panel keys and
 empty reasons. The SwiftUI panel maps `StudioPanelType` with an exhaustive
 `switch`, so a new panel cannot compile without a registry decision.
 
-Pixel tools (Fill, Smudge, Sharpen, Dodge, Burn, Blur), selection tools (Lasso,
-Wand), freehand tools other than Brush, and view tools (Hand, Zoom) are
-`manual`: no grammar exists for them, and the registry says so rather than
+Pixel tools other than Fill (Smudge, Sharpen, Dodge, Burn, Blur), selection
+tools (Lasso, Wand), freehand tools other than Brush, and view tools (Hand, Zoom)
+are `manual`: no grammar exists for them, and the registry says so rather than
 implying coverage.
+
+### Fill, select-by-ID and source reference (catalog v4, 2026-10-18)
+
+| Grammar | Control | Typed command | Path |
+| --- | --- | --- | --- |
+| `fill` — "Fill at (50%, 50%) with #FF0000[, opacity 80%][, tolerance 16][, all layers]." | `tool.fill` | `fillAtPoint` | The edit session captures the active frame/layer with `StudioFillService.capture` and computes the region with `StudioFillService.element` (the Fill tool's own path, off the main thread, cancellable). The request carries that result as `preparedFills`; the executor refuses `fillAtPoint` without it (`unsupportedCapability`), with a mismatched project/revision/arguments/color (`staleRevision`), inside a multi-command batch, or on a hidden/locked layer. Contiguous, no expand/gap closing, anti-aliased (the tool defaults). A selection-clipped fill stays with the Fill tool. The prepared region never enters the wire form. |
+| `selectByID` — `Select drawings "id-1", "id-2".` / `Clear drawing selection.` | `tool.move` | `selectElements` | Explicit stable IDs on the active frame; drawings on visible, non-fully-locked layers only, never erasers or invisible strokes. Selection is editor state: no revision, no Undo step. |
+| `sourceReference` — `Record source https://… as licensed reference [with note "…"].` / `Clear source reference.` | `panel.spatterAI` | `setSourceReference` | Stores URL text, rights basis and time on `StudioDocument.spatterSource` (one Undo step, saved with the project). Nothing is fetched. See #279 below. |
+
+### Source references and video length (#279)
+
+Every generative grammar (circle motion, stick figure, scene, two-actor and
+multi-clause briefs) calls `SpatterSourceRightsGate.require` before preparing
+commands. Without a recorded source it passes. With one, the rights gate must
+allow the recorded basis (`unknown` and future-dated records are refused) and
+the request must be 20–60 seconds; only the multi-clause brief (0.5–60 s) can
+reach that range, so the others refuse with an explicit reason. A successful
+source-referenced brief appends a length receipt (seconds, FPS, URL, basis,
+recording time, "nothing was fetched") to the Spatter summary.
+
+The stale 240-frame caps are reconciled with the exporter:
+`SpatterSourceVideoBounds.exporterFrameCap` is 1,440
+(`StudioMovieExportService.Limits.maximumFrames`) and
+`StudioCommandExecutor.maximumAppendedFrames` is 1,000, the project frame limit
+that binds first. At 24 FPS a 60 s video (1,440 ticks) therefore needs poses held
+for 1–2 ticks. No 60 s MP4 has been rendered on a device yet (deferred).
 
 ## Atomic batches (#205)
 
@@ -80,3 +106,7 @@ clipboard untouched. This work adds:
 | `scripts/verify_native_compile_sources.py` | passed on Linux |
 | `scripts/verify_control_index.py` | passed on Linux |
 | `scripts/sync_pbxproj_sources.py` | new file registered; in sync |
+| 2026-10-18 `Tests/SpatterPlanner` (4 new cases: source gate/receipt, select-by-ID + prepared fill, shared-edit replay, reconciled caps) | 18/18 passed on Linux (Swift 6.0.3, stub SwiftUI/UIKit/CoreGraphics modules) |
+| 2026-10-18 `Tests/StudioCommands` | 70/70 passed on Linux with the same stubs |
+| Spatter session fill/select/source branches, `Tests/SpatterMotionRecipe` (catalog 40 / v4), `Tests/SpatterStudioEditSession` | deferred to macOS CI (need ImageIO / the view model) |
+| Native Spatter fill on a device, real StudioFillService region | deferred (native) |
