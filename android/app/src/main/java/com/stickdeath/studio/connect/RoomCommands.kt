@@ -245,4 +245,3 @@ class RoomCommandSync(val room: String, head: Int) {
         return RoomCommandTarget.of(record.payload)
     }
 }
-
