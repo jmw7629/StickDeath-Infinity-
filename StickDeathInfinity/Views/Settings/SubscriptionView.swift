@@ -6,12 +6,16 @@
 //   BillingPlanCatalog.swift) through `BillingCopy`: plan, renewal or
 //   cancellation date, grace/billing retry, pending, revoked, server
 //   verification state and Spatter prompt allowance.
-// - Prices are Apple's `Product.displayPrice`; trial copy appears only when
-//   the App Store reports an eligible free-trial offer. Annual plans appear
-//   only when the build configuration enables them.
+// - Prices are Apple's `Product.displayPrice`. No free trial is offered
+//   (owner decision 2026-10-15), so no trial copy is shown. Annual plans
+//   appear only when the build configuration enables them.
 // - Manage/cancel opens Apple's subscription sheet; restore runs AppStore.sync.
+// - The server's own record (`sdi_my_entitlement`) is read when the screen
+//   opens and shown beside Apple's; a plan billed elsewhere (the website)
+//   appears as the server reports it.
 // - No simulated purchase, no invented renewal date, no hard-coded price.
-// - This view is compiled but not mounted anywhere yet.
+// - Presented from Profile → Subscription, Settings → Current Plan and the
+//   Spatter upgrade prompts.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
@@ -67,6 +71,7 @@ struct SubscriptionView: View {
                 await store.loadProducts()
             }
             await store.refreshEntitlements()
+            await store.refreshServerEntitlement()
         }
     }
 
@@ -79,6 +84,10 @@ struct SubscriptionView: View {
     private var currentPlan: BillingPlanDefinition? {
         if let entitlement = store.billing.activeEntitlement {
             return store.catalog.plan(forProductID: entitlement.productID)
+        }
+        if let server = store.currentServerEntitlement, server.tier != .free,
+           let plan = store.catalog.plans.first(where: { $0.tier == server.tier }) {
+            return plan
         }
         return store.catalog.plans.first { $0.tier == .free }
     }
@@ -93,6 +102,14 @@ struct SubscriptionView: View {
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
+                }
+
+                if let notice = store.reconciliationNotice {
+                    Text(notice)
+                        .font(.system(size: 11))
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.center)
+                        .accessibilityIdentifier("subscription.server-notice")
                 }
 
                 if let error = store.lastError {
@@ -226,6 +243,14 @@ struct SubscriptionView: View {
                 Text("Transaction \(entitlement.transactionID)")
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(.secondary)
+            } else if let server = store.currentServerEntitlement, server.tier != .free {
+                // A plan the server applied from a verified provider event that this
+                // device's Apple account does not hold (for example a website plan).
+                Text(serverPlanLine(server))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("subscription.server-plan")
             }
         }
         .frame(maxWidth: .infinity)
@@ -234,6 +259,24 @@ struct SubscriptionView: View {
         .cornerRadius(12)
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
         .accessibilityElement(children: .combine)
+    }
+
+    private func serverPlanLine(_ server: ServerEntitlement) -> String {
+        let source: String
+        switch server.provider {
+        case "stripe": source = "billed through the StickDeath website"
+        case "apple": source = "billed by Apple to another Apple account or device"
+        default: source = "billed by a provider the server verified"
+        }
+        var line = "The StickDeath server reports the \(server.tier.rawValue.capitalized) plan, \(source)."
+        if let end = server.paidThrough {
+            let day = BillingCopy.date(end, locale: locale, timeZone: .current)
+            line += server.cancelAtPeriodEnd ? " Access ends on \(day)." : " Paid through \(day)."
+        }
+        if server.status == "grace" || server.status == "past_due" {
+            line += " The provider is retrying a payment."
+        }
+        return line
     }
 
     private func entitlementList(_ plan: BillingPlanDefinition) -> some View {
@@ -374,11 +417,6 @@ struct SubscriptionView: View {
                     Text(BillingCopy.price(product.displayPrice, period: period))
                         .font(.system(size: 15, weight: .heavy))
                         .foregroundColor(.white)
-                }
-                if let trial = store.trialCopy(for: product) {
-                    Text(trial)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.green)
                 }
                 if let plan {
                     ForEach(plan.entitlements, id: \.text) { entitlementRow($0) }

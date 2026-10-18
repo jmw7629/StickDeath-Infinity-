@@ -13,7 +13,15 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var authVM: AuthViewModel
+    @Environment(\.locale) private var locale
+    @ObservedObject private var stripe = StripeService.shared
     @State private var showDeleteConfirm = false
+    @State private var sheet: SettingsSheet?
+
+    private enum SettingsSheet: String, Identifiable {
+        case plans, support, notifications, privacy
+        var id: String { rawValue }
+    }
     var onBack: (() -> Void)? = nil
 
     private var appVersion: String {
@@ -38,8 +46,26 @@ struct SettingsView: View {
                                     value: authVM.user?.username ?? "Not available")
                         SettingsRow(icon: "envelope.fill", title: "Email",
                                     value: authVM.user?.email ?? "Not available")
-                        SettingsRow(icon: "creditcard.fill", title: "Current Plan",
-                                    value: authVM.user?.subscriptionTier ?? "Free")
+                        // Apple's state machine, not the profile column: opens Plans.
+                        Button { sheet = .plans } label: {
+                            SettingsRow(icon: "creditcard.fill", title: "Current Plan",
+                                        value: BillingCopy.status(stripe.billing, catalog: stripe.catalog, locale: locale, timeZone: .current).title)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("settings.current-plan")
+                    }
+
+                    SettingsSection(title: "HELP AND PRIVACY") {
+                        Button { sheet = .support } label: { SettingsRow(icon: "questionmark.bubble.fill", title: "Contact Support") }
+                            .buttonStyle(.plain).accessibilityIdentifier("settings.support")
+                        Button { sheet = .notifications } label: { SettingsRow(icon: "bell.fill", title: "Notifications") }
+                            .buttonStyle(.plain).accessibilityIdentifier("settings.notifications")
+                        Button { sheet = .privacy } label: { SettingsRow(icon: "hand.raised.fill", title: "Privacy and Marketing Permission") }
+                            .buttonStyle(.plain).accessibilityIdentifier("settings.privacy")
+                        Link(destination: PolicyLinks.terms) { SettingsRow(icon: "doc.text.fill", title: "Terms of Service") }
+                            .accessibilityIdentifier("settings.policy.terms")
+                        Link(destination: PolicyLinks.privacy) { SettingsRow(icon: "lock.doc.fill", title: "Privacy Policy") }
+                            .accessibilityIdentifier("settings.policy.privacy")
                     }
 
                     if authVM.isAuthenticated {
@@ -129,6 +155,20 @@ struct SettingsView: View {
             Text("Server records are deleted after a seven-day cooling-off period; cancel from Profile until then. Projects on this device are not affected. Subscriptions must be cancelled through the App Store or billing portal.")
         }
         .task(id: authVM.userId) { await authVM.refreshAccountDeletion() }
+        .sheet(item: $sheet) { page in
+            NavigationStack {
+                switch page {
+                case .plans: SubscriptionView()
+                case .support: SupportRequestsView().toolbar { doneButton }
+                case .notifications: NotificationCenterView().toolbar { doneButton }
+                case .privacy: PrivacyChoicesView().toolbar { doneButton }
+                }
+            }
+        }
+    }
+
+    private var doneButton: some ToolbarContent {
+        ToolbarItem(placement: .confirmationAction) { Button("Done") { sheet = nil } }
     }
 }
 
