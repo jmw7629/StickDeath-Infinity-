@@ -196,6 +196,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		4CC1DAF2ED4054F712711D06 /* SpatterOwnKeyKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */; };
 		C7953DD7BA410182ACCC25AD /* SpatterPlanControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C24E7F66CB174D3CD9A63A2 /* SpatterPlanControls.swift */; };
 		5BB8A5D3E7CBD3B7909E46AE /* SpatterReviewEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */; };
+		2298AB48D5EB9FF466B6A6CB /* StudioChannelRendition.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8638C7E7BCFFEAEC08ECA0D /* StudioChannelRendition.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -401,6 +402,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterOwnKeyKeychain.swift"; sourceTree = SOURCE_ROOT; };
 		7C24E7F66CB174D3CD9A63A2 /* SpatterPlanControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift"; sourceTree = SOURCE_ROOT; };
 		DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift"; sourceTree = SOURCE_ROOT; };
+		E8638C7E7BCFFEAEC08ECA0D /* StudioChannelRendition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioChannelRendition.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -543,6 +545,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		444FE51936F2829A8267B473 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				E8638C7E7BCFFEAEC08ECA0D /* StudioChannelRendition.swift */,
 				F03A889DE68197E328E36C3C /* Diagnostics */,
 				073BADE86CF10AA441768DD6 /* StudioSelectionMask.swift */,
 				5FF8974972A03216F4C7544A /* StudioGradientFill.swift */,
@@ -1040,6 +1043,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2298AB48D5EB9FF466B6A6CB /* StudioChannelRendition.swift in Sources */,
 				5BB8A5D3E7CBD3B7909E46AE /* SpatterReviewEvidence.swift in Sources */,
 				C7953DD7BA410182ACCC25AD /* SpatterPlanControls.swift in Sources */,
 				4CC1DAF2ED4054F712711D06 /* SpatterOwnKeyKeychain.swift in Sources */,

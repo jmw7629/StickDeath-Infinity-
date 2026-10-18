@@ -101,6 +101,15 @@ jobs:
             Tests/CommunityContests/main.swift \
             -o /tmp/sdi-community-contests-tests
           timeout 60s /tmp/sdi-community-contests-tests
+      - name: Verify official-channel mark placement, contrast and refusal rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
+            Tests/StudioChannelRendition/main.swift \
+            -o /tmp/sdi-channel-rendition-tests
+          timeout 60s /tmp/sdi-channel-rendition-tests
       - name: Verify admin step-up policy, health, agents, finance and moderation queues
         shell: bash
         run: |
@@ -315,6 +324,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -370,6 +380,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -413,6 +424,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -456,6 +468,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -499,6 +512,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -542,6 +556,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -585,6 +600,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -628,6 +644,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -671,6 +688,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -714,6 +732,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -757,6 +776,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -799,6 +819,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -900,6 +921,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
             -o "$RUNNER_TEMP/sdi-studio-brush-integration-tests"
           "$RUNNER_TEMP/sdi-studio-brush-integration-tests"
@@ -976,6 +998,7 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             Tests/StudioExport/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-export-tests"
           "$RUNNER_TEMP/sdi-studio-export-tests"
@@ -1391,6 +1414,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -1429,6 +1453,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -1467,6 +1492,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -1563,6 +1589,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             Tests/StudioImageLibrary/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-image-library-tests"
           "$RUNNER_TEMP/sdi-studio-image-library-tests" StickDeathInfinity/Resources/StudioImages
@@ -1607,6 +1634,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             Tests/StudioImageSequence/main.swift \
             -o "$RUNNER_TEMP/sdi-image-sequence-tests"
           "$RUNNER_TEMP/sdi-image-sequence-tests"
@@ -1902,6 +1930,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1945,6 +1974,7 @@ jobs:
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -1986,6 +2016,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2030,6 +2061,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
@@ -2076,6 +2108,7 @@ jobs:
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
@@ -2120,6 +2153,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2167,6 +2201,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2213,6 +2248,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2264,6 +2300,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2318,6 +2355,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2368,6 +2406,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
@@ -2414,6 +2453,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
@@ -2461,6 +2501,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \

@@ -31,6 +31,8 @@ DEPENDENCIES = {
         # Brief-scope quality report and its draft-submission record (#213).
         "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
     },
+    # The official-channel mark compositor uses the placement/contrast rules (#241).
+    "StickDeathInfinity/Services/StudioExportService.swift": {"StickDeathInfinity/Services/StudioChannelRendition.swift"},
     "StickDeathInfinity/Services/StudioAudioPreviewSession.swift": {
         "StickDeathInfinity/Services/StudioSoundCatalogue.swift",
         "StickDeathInfinity/Services/StudioAudioImportService.swift",
