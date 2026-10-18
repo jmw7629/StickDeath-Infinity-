@@ -51,7 +51,13 @@ object ShareExports {
         artifact.file.delete()
         if (artifact.share) artifact.file.parentFile?.delete() // only an empty owned directory
     }
-    fun chooser(context: Context, artifact: ExportArtifact): Intent {
+    /** The plain send intent addressed to one installed app (quick share); startActivity throws
+     * ActivityNotFoundException when that app is missing or refuses the type. */
+    fun direct(context: Context, artifact: ExportArtifact, packageName: String): Intent =
+        send(context, artifact).apply { setPackage(packageName) }
+    fun chooser(context: Context, artifact: ExportArtifact): Intent =
+        Intent.createChooser(send(context, artifact), "Share rendered export").apply { addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+    private fun send(context: Context, artifact: ExportArtifact): Intent {
         require(artifact.share && artifact.file.isFile && artifact.file.length() > 0) { "Shared export is no longer available; render it again." }
         val uri = FileProvider.getUriForFile(context, context.packageName + ".exports", artifact.file)
         val mime = when (artifact.kind) {
@@ -62,12 +68,11 @@ object ShareExports {
             ExportKind.SDI -> "application/octet-stream"
             ExportKind.SEQUENCE, ExportKind.SPRITESHEET -> "application/zip"
         }
-        val send = Intent(Intent.ACTION_SEND).apply {
+        return Intent(Intent.ACTION_SEND).apply {
             type = mime
             putExtra(Intent.EXTRA_STREAM, uri)
             clipData = ClipData.newUri(context.contentResolver, artifact.name, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        return Intent.createChooser(send, "Share rendered export").apply { addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
 }

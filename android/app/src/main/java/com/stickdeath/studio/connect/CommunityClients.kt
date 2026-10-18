@@ -8,12 +8,12 @@ import org.json.JSONObject
 // room-invitations.sql, rooms-v2.sql). Values are shown only when a server reply supplies them:
 // nothing here invents counts, matches, viewers, badges or balances. No messaging or calls exist.
 
-private fun JSONObject.str(key: String): String? = if (isNull(key)) null else optString(key).takeIf { has(key) }
-private fun JSONObject.int(key: String): Int? = if (!has(key) || isNull(key)) null else (opt(key) as? Number)?.toInt()
-private fun JSONObject.bool(key: String): Boolean? = if (!has(key) || isNull(key)) null else opt(key) as? Boolean
-private fun JSONObject.need(key: String): String = str(key)?.takeIf { it.isNotEmpty() } ?: throw CommunityException.InvalidResponse("The reply did not match the expected contract.")
-private fun JSONArray.objects(): List<JSONObject> = (0 until length()).map { optJSONObject(it) ?: throw CommunityException.InvalidResponse("The reply did not match the expected contract.") }
-private val UUID_PATTERN = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+internal fun JSONObject.str(key: String): String? = if (isNull(key)) null else optString(key).takeIf { has(key) }
+internal fun JSONObject.int(key: String): Int? = if (!has(key) || isNull(key)) null else (opt(key) as? Number)?.toInt()
+internal fun JSONObject.bool(key: String): Boolean? = if (!has(key) || isNull(key)) null else opt(key) as? Boolean
+internal fun JSONObject.need(key: String): String = str(key)?.takeIf { it.isNotEmpty() } ?: throw CommunityException.InvalidResponse("The reply did not match the expected contract.")
+internal fun JSONArray.objects(): List<JSONObject> = (0 until length()).map { optJSONObject(it) ?: throw CommunityException.InvalidResponse("The reply did not match the expected contract.") }
+internal val UUID_PATTERN = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 internal fun requireUuid(value: String): String { require(UUID_PATTERN.matches(value)) { "Not a UUID" }; return value.lowercase() }
 
 // MARK: Feed
@@ -41,7 +41,7 @@ data class FeedPost(
         }
     }
 }
-private fun requireUuidOr(value: String) = if (UUID_PATTERN.matches(value)) value.lowercase() else throw CommunityException.InvalidResponse("The reply carried an invalid identifier.")
+internal fun requireUuidOr(value: String) = if (UUID_PATTERN.matches(value)) value.lowercase() else throw CommunityException.InvalidResponse("The reply carried an invalid identifier.")
 
 data class FeedPage(val posts: List<FeedPost>, val hasMore: Boolean, val asOf: String?)
 
@@ -132,7 +132,7 @@ object RoomInvitationPolicy {
         "StickDeath Infinity room invitation for \"$roomTitle\". Open Rooms, choose Review invitation and paste: $code — the owner still approves every request. Expires after 24 hours or 20 uses."
 }
 
-data class RoomSummary(val id: String, val ownerId: String, val title: String, val projectTitle: String?, val permissions: List<String>?) {
+data class RoomSummary(val id: String, val ownerId: String, val title: String, val projectTitle: String?, val permissions: List<String>?, val commandRevision: Int = 0) {
     val sharesEdit get() = permissions?.contains("edit") ?: false
 }
 data class InvitationPreview(val room: String, val title: String)
@@ -147,7 +147,7 @@ class RoomsClient(private val gateway: CommunityGateway) {
     fun myRooms(): List<RoomSummary> = gateway.rows("sdi_rooms", "*", emptyList(), 100).objects()
         .filter { it.bool("closed") != true }
         .map { o -> RoomSummary(o.need("id"), o.need("owner_id"), o.str("title").orEmpty(), o.str("project_title"),
-            o.optJSONArray("permissions")?.let { arr -> (0 until arr.length()).map { arr.getString(it) } }) }
+            o.optJSONArray("permissions")?.let { arr -> (0 until arr.length()).map { arr.getString(it) } }, o.int("command_revision")?.coerceAtLeast(0) ?: 0) }
 
     fun pendingRequests(): List<PendingRequest> {
         val requests = gateway.call("sdi_room_manage", JSONObject().put("action", "my_requests")).optJSONArray("requests")
