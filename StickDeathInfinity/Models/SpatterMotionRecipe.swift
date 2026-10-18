@@ -2353,7 +2353,9 @@ struct SpatterMultiClauseBrief: Equatable {
         var seconds: Double?
         var seed: UInt64?
         let durationPattern = try NSRegularExpression(pattern: #"\A([0-9]+(?:\.[0-9]+)?)\s+seconds?\z"#, options: [.caseInsensitive])
-        let seedPattern = try NSRegularExpression(pattern: #"\Aseed\s+([0-9]{1,18})\z"#, options: [.caseInsensitive])
+        // Up to 20 digits: the backend daily planner emits 63-bit seeds (often 19
+        // digits). A value above UInt64.max fails the conversion and is refused.
+        let seedPattern = try NSRegularExpression(pattern: #"\Aseed\s+([0-9]{1,20})\z"#, options: [.caseInsensitive])
         while let last = segments.last {
             let range = NSRange(last.startIndex..., in: last)
             if seconds == nil, let match = durationPattern.firstMatch(in: last, range: range), let captured = Range(match.range(at: 1), in: last) {

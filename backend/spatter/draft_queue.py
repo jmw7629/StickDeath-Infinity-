@@ -8,7 +8,9 @@ claims the day's job through the SQL contract in `backend/sql/spatter-draft-jobs
 for the private draft and either submits it to the owner's review queue or records
 the failure. Nothing here renders, publishes, schedules itself, buys capacity or
 contacts a provider; without a renderer every job is marked failed with an
-explicit OWNER-GATED capacity message.
+explicit OWNER-GATED capacity message. `configured_renderer` selects the headless
+macOS CLI renderer (`renderer_cli`, `Tools/SpatterDraftRenderer`) when
+`SDI_DRAFT_RENDERER_CLI` is set.
 """
 from __future__ import annotations
 
@@ -152,6 +154,17 @@ class RunOutcome:
     def as_dict(self) -> dict:
         return {"date": self.target_date.isoformat(), "claimed": self.claimed, "state": self.state, "reason": self.reason,
                 "job": self.job, "review": self.review, "attempt": self.attempt}
+
+
+def configured_renderer(environ: Optional[Mapping[str, str]] = None,
+                        publish_preview: Optional[Callable[..., str]] = None) -> Optional[Renderer]:
+    """The headless draft renderer selected by `SDI_DRAFT_RENDERER_CLI`, or None.
+
+    None keeps `run_once` on the honest CAPACITY_NOT_CONFIGURED failure path.
+    `publish_preview(movie_path, sha256, plan) -> https URL` stores the private
+    preview for the owner's review queue; see `renderer_cli`."""
+    from .renderer_cli import renderer_from_env
+    return renderer_from_env(environ, publish_preview)
 
 
 def run_once(store: Store, *, owner: str, reviewer: str, now: Callable[[], _dt.datetime],

@@ -79,6 +79,10 @@ private enum Golden {
                 try require(try SpatterMultiClauseBrief.parse(SpatterMultiClauseBrief.example).seed == brief.seed, "Seed is not deterministic for the same brief")
                 let seeded = try SpatterMultiClauseBrief.parse(SpatterMultiClauseBrief.explosionExample)
                 try require(seeded.seed == 7 && seeded.seconds == 2 && seeded.actors[0].clauses.last?.action == .explode, "Explicit seed or default actions lost")
+                // The backend daily planner (backend/spatter/draft_queue.py) emits 63-bit seeds.
+                let daily = try SpatterMultiClauseBrief.parse("A blue stick figure throws, then walks left to right, then waves; 3 seconds; seed 5653618261817729103.")
+                try require(daily.seed == 5_653_618_261_817_729_103 && daily.seconds == 3, "Backend daily-planner 19-digit seed refused")
+                try rejects("seed above UInt64.max") { _ = try SpatterMultiClauseBrief.parse("A red stick figure sits; 2 seconds; seed 18446744073709551616.") }
                 let two = try SpatterMultiClauseBrief.parse(SpatterMultiClauseBrief.twoActorExample)
                 try require(two.actors.count == 2 && two.actors[1].color == "#0000FF" && two.actors[1].clauses.map(\.action) == [.duck, .jump] && two.seconds == 2.5, "Two-actor brief lost an actor")
                 // Historical brief forms remain parseable (superset) but are routed to their own grammars.

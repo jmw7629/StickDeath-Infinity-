@@ -131,6 +131,30 @@ exception text is never propagated (it can contain key material). An empty
 router reports `configured == False` and the handler answers 503 without
 touching any allowance.
 
+## Daily-draft renderer (#212): headless macOS CLI
+
+`draft_queue.run_once` renders through `draft_queue.configured_renderer()`,
+which returns `renderer_cli.CLIRenderer` only when `SDI_DRAFT_RENDERER_CLI` is
+the absolute path of the compiled `Tools/SpatterDraftRenderer` binary (macOS;
+built from the production planner, command executor, movie exporter and quality
+report). Unset, every job still fails with the OWNER-GATED capacity message.
+Optional: `SDI_DRAFT_RENDER_DIR` (private output root), `SDI_DRAFT_RENDER_FPS`/
+`_WIDTH`/`_HEIGHT` (default 24 FPS, 640×360) and
+`SDI_DRAFT_RENDER_TIMEOUT_SECONDS` (default 600, at most 840 so a render ends
+inside the 15-minute lease; the lease is renewed every 60 s while it runs).
+
+The adapter re-hashes the movie, manifest and editable project named by the
+receipt, requires `private_draft: true` / `published: false`, matches brief,
+seed and size to the job, and fails a passing verdict whose decoded frame count
+or duration disagrees with the plan. A `publish_preview(movie, sha256, plan)`
+callable must return the private HTTPS preview URL for the owner's review row;
+without one the render fails before running. Drafts stay in the output root for
+review; failed runs are deleted. Nothing is uploaded, released or scheduled:
+release still needs the owner's approval of the exact render digest.
+`test_renderer_cli.py` drives fake executables; the macOS CI step
+"Render one daily brief with the headless draft renderer" runs the real binary
+through `scripts/backend/verify_draft_renderer_cli.py`.
+
 ## Tests
 
 `python3 -I -m pytest backend/spatter -q` (or `python3 -m unittest
