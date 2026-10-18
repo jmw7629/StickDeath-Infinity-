@@ -8,7 +8,44 @@ import SwiftUI
 struct StudioHeaderBar: View {
     @ObservedObject var vm: StudioViewModel
     var onDismiss: () -> Void = {}
-    
+    @ObservedObject private var room = StudioRoomBridge.shared
+
+    private func roomStatus(_ status: RoomSessionCoordinator.StudioSyncStatus) -> some View {
+        let dot: Color
+        switch status.level {
+        case .synced: dot = .green
+        case .syncing: dot = .white.opacity(0.6)
+        case .waiting, .paused: dot = .orange
+        case .conflict: dot = .red
+        }
+        return Menu {
+            Text(status.detail)
+            if status.level == .conflict {
+                Button("Keep mine on top") { room.resolveConflict(keepMine: true) }
+                    .accessibilityIdentifier("studio.room-sync.keep")
+                Button("Discard mine", role: .destructive) { room.resolveConflict(keepMine: false) }
+                    .accessibilityIdentifier("studio.room-sync.discard")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Circle().fill(dot).frame(width: 6, height: 6)
+                Text(status.label)
+                    .font(.specialElite(9))
+                    .lineLimit(1)
+            }
+            .foregroundColor(.white.opacity(0.7))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(Color(hex: "1A1A24"))
+            .cornerRadius(6)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel(status.label)
+        .accessibilityHint(status.detail)
+        .accessibilityIdentifier("studio.room-sync")
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             // Back
@@ -30,7 +67,14 @@ struct StudioHeaderBar: View {
             Text("\(vm.fps) FPS · \(vm.frames.count) frames · \(vm.studioLayers.count) layers")
                 .font(.specialElite(9))
                 .foregroundColor(.white.opacity(0.35))
-            
+
+            // Shared-room status (#232): shown only while a room's project is
+            // open. Tapping shows the counts and any held-conflict decision;
+            // it never blocks the canvas.
+            if let status = room.status {
+                roomStatus(status)
+            }
+
             Spacer()
             
             // HIDE

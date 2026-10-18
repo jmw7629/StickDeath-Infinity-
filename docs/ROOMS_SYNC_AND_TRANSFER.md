@@ -55,8 +55,13 @@ shared project in Studio* records the handoff and runs while the handoff lasts:
   objects, or whose IDs already exist, is refused (the copies diverged) instead
   of guessed. The creator's own active frame, layer and valid selection are kept.
 - **Conflicts.** Appends stay fenced on the head; overlapping edits are held for
-  *Keep mine on top* / *Discard mine* (discarding stops sending; the device copy
-  keeps the edit until the creator undoes it). A remote record that cannot be
+  *Keep mine on top* / *Discard mine*. While the held local edit is still the
+  latest change in Studio's history (the document is at the revision that edit
+  produced), the other creator's edit waits for the decision, and *Discard mine*
+  reverts it through Studio's own Undo (`RoomSessionCoordinator.discardHeldConflict`
+  → `StudioRoomBridge.revertLocalEdit`) before their edit applies. Otherwise
+  discarding only stops sending, and Studio and Rooms say plainly that the edit
+  could not be reverted automatically and stays in the device copy. A remote record that cannot be
   applied yet (playback, a touch in progress, a room undo, a malformed or
   diverged edit) blocks later remote records in order and is shown with its
   reason; the creator may explicitly skip it, which is recorded.
@@ -65,6 +70,12 @@ shared project in Studio* records the handoff and runs while the handoff lasts:
   shared command are reported as "not shared" in Studio and counted in the room.
 - `drain()`/`catchUp()` run every 3 seconds (`RoomSessionCoordinator.synchronise`)
   and a push follows each published edit.
+- **Status in Studio.** While the handoff lasts, the Studio top bar shows a small
+  room indicator (`studio.room-sync`: in sync, N to sync, waiting, paused, view
+  only, decide) from `RoomSessionCoordinator.studioSyncStatus`. Tapping it lists
+  the counts and reason; a held conflict offers *Keep mine on top* / *Discard mine*
+  there too. It sits beside the project info, adds no toolbar and never blocks
+  the canvas.
 
 Verification: `Tests/CommunityRooms` (blocked/skip/counter coordinator case) and
 `Tests/SpatterPlanner` (identity-preserving replay, divergence refusal, hostile

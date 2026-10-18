@@ -431,12 +431,23 @@ private struct RoomDetailView: View {
             Text("Shared edit stream").communitySubheading()
             Text(syncStatus).communityCaption().accessibilityIdentifier("rooms.room.sync-status")
             if let held = RoomSessionCoordinator.shared.heldConflict {
-                CommunityMessage(text: "Your edit\(held.target.map { " to \($0)" } ?? "") overlaps \(held.overlapping.count) edit\(held.overlapping.count == 1 ? "" : "s") by another creator. Nothing was overwritten. Decide after reviewing their change. Discarding stops sending your edit; it stays in your device copy until you undo it there.", kind: .info)
+                CommunityMessage(text: "Your edit\(held.target.map { " to \($0)" } ?? "") overlaps \(held.overlapping.count) edit\(held.overlapping.count == 1 ? "" : "s") by another creator. Nothing was overwritten. Review their change in the stream below, then decide; while your edit is still your latest change in Studio, their edit waits so that discarding can undo yours there first. Otherwise discarding only stops sending your edit and it stays in your device copy.", kind: .info)
                     .accessibilityIdentifier("rooms.room.conflict")
                 HStack(spacing: 8) {
-                    Button("Keep mine on top") { RoomSessionCoordinator.shared.resolveHeldConflict(keepMine: true); Task { await pollActivity() } }
+                    Button("Keep mine on top") {
+                        RoomSessionCoordinator.shared.resolveHeldConflict(keepMine: true); StudioRoomBridge.shared.refreshStatus()
+                        Task { await pollActivity() }
+                    }
                         .buttonStyle(CommunitySecondaryButtonStyle()).accessibilityIdentifier("rooms.room.conflict-keep")
-                    Button("Discard mine") { RoomSessionCoordinator.shared.resolveHeldConflict(keepMine: false); Task { await pollActivity() } }
+                    Button("Discard mine") {
+                        switch RoomSessionCoordinator.shared.discardHeldConflict() {
+                        case .reverted: notice = "Your edit was discarded and undone in Studio. The other creator's edit is applied next."
+                        case .notReverted(let reason): notice = "Your edit will not be sent to the room. " + reason
+                        case .noConflict: break
+                        }
+                        StudioRoomBridge.shared.refreshStatus()
+                        Task { await pollActivity() }
+                    }
                         .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).accessibilityIdentifier("rooms.room.conflict-discard")
                 }
             }
