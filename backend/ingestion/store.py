@@ -19,6 +19,8 @@ import time
 import uuid
 from typing import Callable
 
+from ..spatter.content_rules import check_submission
+
 CHUNK_BYTES = 4 * 1024 * 1024
 MAX_BYTES = 2 * 1024 * 1024 * 1024
 DIGEST = re.compile(r"^[a-f0-9]{64}$")
@@ -143,6 +145,11 @@ class UploadStore:
                 any(not isinstance(x, str) or x not in ("feed", "youtube", "social") for x in destinations) or
                 len(destinations) != len(set(destinations))):
             raise IntakeError("Choose supported destinations explicitly.")
+        # Deterministic content rules (#261) on the text metadata; a refusal names the
+        # category, never repeats the text. Passing is not approval: review still decides.
+        verdict = check_submission(metadata)
+        if not verdict.allowed:
+            raise IntakeError("Submission %s refused by content rules (%s). %s" % (verdict.field, verdict.code, verdict.explanation), 422)
         encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")

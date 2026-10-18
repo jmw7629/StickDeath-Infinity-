@@ -22,6 +22,10 @@ an HTTPS edge/function runtime and injects three collaborators:
   deployment it is a ``providers.ProviderRouter`` (model switch, per-attempt
   timeout, bounded retries). No paid provider is referenced here; the owner
   selects and configures one privately.
+* ``rules``       – ``content_rules.ContentRules``; the deterministic content-rule
+  check (#261) runs on every non-assistant message before any budget or provider
+  step and refuses with 422 ``content_rule`` plus the category. It is conservative
+  and is not a compliance decision; human review still gates every release.
 * ``meter``       – optional ``metering.Meter`` (``SqlMeter`` over
   ``public.sdi_spatter_usage_meter``). When given it replaces ``budget`` and
   enforces plan allowances, rate, daily safety cap, global ceiling and the
@@ -38,6 +42,7 @@ from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Tuple
 
 from .metering import Decision, Meter
 from . import suggested_prompts
+from .content_rules import DEFAULT_RULES, ContentRules
 from .providers import ProviderRouter, ProviderUnavailable  # noqa: F401  (ProviderRouter is the deployment provider)
 
 SCHEMA_VERSION = 1
@@ -163,6 +168,7 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *,
            budget: Optional[Budget] = None,
            meter: Optional[Meter] = None,
            provider: Provider = NullProvider(),
+           rules: ContentRules = DEFAULT_RULES,
            now: Callable[[], _dt.datetime] = lambda: _dt.datetime.now(_dt.timezone.utc)) -> Response:
     """Process one POST. Errors are JSON with the same schemaVersion and a `error` field."""
     try:
@@ -178,6 +184,12 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *,
         if not isinstance(exp, (int, float)) or exp <= now().timestamp():
             raise HandlerError(401, "token expired")
         messages, suggested = _parse_request(raw_body)
+        # Deterministic content rules (#261) run before readiness, budget and any
+        # provider call, so refused text is never sent anywhere and costs no unit.
+        verdict = rules.check_messages(messages)
+        if not verdict.allowed:
+            raise HandlerError(422, "request refused by content rules", code="content_rule",
+                               category=verdict.category, explanation=verdict.explanation)
         # Provider readiness is checked before a unit is consumed: an unconfigured
         # deployment must not drain anyone's daily budget.
         if isinstance(provider, NullProvider) or getattr(provider, "configured", True) is False:
