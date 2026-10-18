@@ -2061,11 +2061,11 @@ enum SpatterInstructionCatalog {
               commands: ["updateAudioClip", "duplicateAudioClip", "splitAudioClip", "deleteAudioClip"], summary: "Selected clip volume, mute, linear fades, placement, trim, duplicate, repeat, split and delete."),
         .init(name: "audioTrack", examples: ["Set audio track 1 volume to 40%.", "Mute audio track 1.", "Unmute audio track 1.", "Pan audio track 2 to L40.", "Pan audio track 2 to center.", "Solo audio track 3.", "Unsolo audio track 3."],
               commands: ["updateAudioTrack"], summary: "Track 1–4 volume, mute, pan L100–R100 and solo."),
-        .init(name: "fill", examples: [SpatterFillInstruction.example, SpatterFillInstruction.optionsExample],
+        .init(name: "fill", examples: ["Fill at (50%, 50%) with #FF0000.", "Fill at (25%, 75%) with #00FF00, opacity 80%, tolerance 16, all layers."],
               commands: ["fillAtPoint"], summary: "Bucket fill on the active frame and layer at a canvas point given in percent, with #RRGGBB color, opacity 0–100%, tolerance 0–128 and active-layer or all-layer sampling. Studio's Fill tool computes the region."),
-        .init(name: "selectByID", examples: [SpatterSelectByIDInstruction.example, SpatterSelectByIDInstruction.clearExample],
+        .init(name: "selectByID", examples: ["Select drawings \"stroke-1\", \"stroke-2\".", "Clear drawing selection."],
               commands: ["selectElements"], summary: "Select 1–64 drawings on the active frame by their quoted IDs, or clear the drawing selection. Selection never changes the project."),
-        .init(name: "sourceReference", examples: [SpatterSourceInstruction.example, SpatterSourceInstruction.noteExample, SpatterSourceInstruction.clearExample],
+        .init(name: "sourceReference", examples: ["Record source https://example.com/reference-clip as licensed reference.", "Record source https://example.com/reference-clip as creator-confirmed reference with note \"Permission email 2026-10-07\".", "Clear source reference."],
               commands: ["setSourceReference"], summary: "Record an https reference source with its rights basis (licensed, owner-authorized, creator-confirmed or unknown) and time, or clear it. Nothing is downloaded; with a source recorded, only 20–60 s briefs on an allowed basis generate.")
     ]
     static var names: [String] { grammars.map(\.name) }
