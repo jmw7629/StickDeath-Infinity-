@@ -804,6 +804,7 @@ studio.video.availability,StickDeathInfinity/Views/Studio/Panels/StudioImageImpo
 studio.video.change-timing,StickDeathInfinity/Views/Studio/Panels/StudioImageImportPanel.swift,StudioImageImportPanel,button 'Change reference timing' -> session.cancel,no,#201,deferred
 studio.video.frame-count,StickDeathInfinity/Views/Studio/Panels/StudioImageImportPanel.swift,StudioImageImportPanel,"stepper 'Reference timing' -> vm.document.startTick, binds videoFrameCount",no,#201,deferred
 studio.video.mapped-time,StickDeathInfinity/Views/Studio/Panels/StudioImageImportPanel.swift,StudioImageImportPanel,text,no,#201,deferred
+studio.video.soundtrack,StickDeathInfinity/Views/Studio/Panels/StudioImageImportPanel.swift,StudioImageImportPanel,toggle 'Also add the movie's soundtrack' -> binds includeSoundtrack (session soundtrack extractor),no,#199 #201,deferred
 studio.video.speed,StickDeathInfinity/Views/Studio/Panels/StudioImageImportPanel.swift,StudioImageImportPanel,"text 'Speed' -> binds sourceEnd, binds projectStart, binds playbackRate",no,#201,deferred
 studio.video.use-end,StickDeathInfinity/Views/Studio/Panels/StudioImageImportPanel.swift,StudioImageImportPanel,"toggle 'Trim source end' -> binds sourceStart, binds usesSourceEnd",no,#201,deferred
 studio.voice.add,StickDeathInfinity/Views/Studio/StudioView.swift,AIVoiceMakerSheet,button 'Add to Timeline',no,#177 #178,deferred

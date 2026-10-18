@@ -54,6 +54,13 @@ private final class Counter: @unchecked Sendable {
 
 /// Complete production VM, storage, provider transfer and ImageIO importer are
 /// compiled together. Fixtures are generated pixels and real NSItemProviders.
+/// Records what the injected soundtrack extractor received.
+actor CallCounter {
+    private(set) var url: URL?
+    private(set) var mapping: StudioVideoFrameImportService.Mapping?
+    func record(url: URL, mapping: StudioVideoFrameImportService.Mapping) { self.url = url; self.mapping = mapping }
+}
+
 @main @MainActor struct StudioImageImportSessionTests {
     static let fm = FileManager.default
     static let scope = StudioImageImportSession.Scope(isStudioVisible: true, isForeground: true, accountID: nil)
@@ -559,6 +566,60 @@ private final class Counter: @unchecked Sendable {
             try require(await reopened.openProject(store.loadAnimation(id: after.id)!.metadata), "Mapped snapshot reopen failed")
             try require(reopened.originalImageSource(assetID)?.originalData == original, "Mapped pixels changed on reopen")
             try require(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "Mapped source leaked staging files")
+        }
+        try await test("opt-in soundtrack shares the movie mapping, attaches after the frames and fails without losing them (#199)") {
+            let (vm, _) = try await fixture("video-soundtrack")
+            let movie = root.appendingPathComponent("soundtrack.mov")
+            try await VideoFrameFixture.makeMovie(movie, rotate: false)
+            for _ in 0..<12 { vm.addFrame() }
+            // A real decoded WAV stands in for the AVFoundation extractor, which
+            // has its own suite; this checks the session's opt-in path and placement.
+            let wav = root.appendingPathComponent("soundtrack-source.wav")
+            var pcm = Data()
+            for index in 0..<44_100 {
+                let sample = Int16(8000 * sin(Double(index) * 2 * Double.pi * 440 / 44_100))
+                for _ in 0..<2 { withUnsafeBytes(of: sample.littleEndian) { pcm.append(contentsOf: $0) } }
+            }
+            var header = Data("RIFF".utf8)
+            func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { header.append(contentsOf: $0) } }
+            func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { header.append(contentsOf: $0) } }
+            u32(UInt32(pcm.count + 36)); header.append(contentsOf: "WAVEfmt ".utf8)
+            u32(16); u16(1); u16(2); u32(44_100); u32(44_100 * 4); u16(4); u16(16)
+            header.append(contentsOf: "data".utf8); u32(UInt32(pcm.count))
+            try (header + pcm).write(to: wav)
+            let mapping = StudioVideoFrameImportService.Mapping(sourceStartSeconds: 0.4, sourceEndSeconds: 1.4, projectStartSeconds: 0.25, speed: 1)
+            let calls = CallCounter()
+            let session = StudioImageImportSession(scratchParent: scratch)
+            let token = session.beginPicker(in: vm, scope: scope, videoMapping: mapping, soundtrack: { url, captured, scratchParent in
+                await calls.record(url: url, mapping: captured)
+                return try await StudioAudioImportService.shared.importAudio(from: wav, name: "soundtrack", scratchParent: scratchParent)
+            })!
+            try require(session.receiveVideoFrame(movie, token: token, currentScope: { scope }), "Soundtrack selection rejected")
+            await session.waitForCompletion()
+            try require(session.status == .preview && session.hasSoundtrack, "Soundtrack preview failed: \(session.notice ?? "")")
+            let seenMapping = await calls.mapping, seenURL = await calls.url
+            try require(seenMapping == mapping && seenURL == movie, "Extractor did not receive the shared mapping and movie")
+            try require(vm.document.audioClips.isEmpty, "Soundtrack attached before Add")
+            let playhead = vm.audioPlayheadTime
+            try require(session.apply(currentScope: scope), "Add failed")
+            let clips = vm.document.audioClips
+            try require(clips.count == 1 && clips[0].startTime == 0.25 && clips[0].track == 1
+                && clips[0].videoMapping == StudioVideoSourceMapping(sourceStartSeconds: 0.4, sourceEndSeconds: 1.4, projectStartSeconds: 0.25, speed: 1),
+                "Soundtrack placement or mapping wrong: \(session.notice ?? "")")
+            try require(vm.audioPlayheadTime == playhead && session.notice?.contains("soundtrack") == true, "Playhead moved or outcome unreported")
+            vm.undo()
+            try require(vm.document.audioClips.isEmpty && !vm.document.referencedRasterAssetIDs.isEmpty, "Undo should remove the soundtrack edit only")
+            // Extraction failure keeps the frame preview and reports the reason.
+            let (fresh, _) = try await fixture("video-soundtrack-failure")
+            for _ in 0..<12 { fresh.addFrame() }
+            let failing = StudioImageImportSession(scratchParent: scratch)
+            let next = failing.beginPicker(in: fresh, scope: scope, videoMapping: mapping, soundtrack: { _, _, _ in
+                throw StudioVideoFrameImportService.Failure.outsideTrim
+            })!
+            try require(failing.receiveVideoFrame(movie, token: next, currentScope: { scope }), "Second selection rejected")
+            await failing.waitForCompletion()
+            try require(failing.status == .preview && !failing.hasSoundtrack && failing.notice?.contains("soundtrack was not extracted") == true, "Failure hid the frame preview or its reason")
+            try require(failing.apply(currentScope: scope) && fresh.document.audioClips.isEmpty, "Frames-only Add failed or claimed audio")
         }
         try await test("video picker result cannot attach after frame change or cancellation") {
             let (vm, _) = try await fixture("video-stale")

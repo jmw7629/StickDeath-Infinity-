@@ -55,6 +55,10 @@ final class StudioImageImportSession: ObservableObject {
     @Published private(set) var appliedImage: AppliedImage?
     @Published private(set) var isClosed = false
 
+    /// Explicit opt-in (#199): decode the movie's soundtrack with the same
+    /// trim/speed mapping as the reference frames. Injected by the panel so the
+    /// session stays independent of the AVFoundation extractor.
+    typealias SoundtrackExtractor = @Sendable (URL, StudioVideoFrameImportService.Mapping, URL) async throws -> StudioAudioImportService.ImportedAudio
     typealias ScopeProvider = @MainActor () -> Scope
     typealias Checkpoint = @MainActor () async throws -> Void
     private struct Capture: Equatable {
@@ -96,6 +100,13 @@ final class StudioImageImportSession: ObservableObject {
     /// The decoded movie and its measured metadata/mapping, retained by Add
     /// as project-managed media (#199, #200). Nil for still images.
     private var importedVideo: StudioViewModel.ImportedVideoSource?
+    /// Opt-in soundtrack for the current selection, and its decoded result or
+    /// the reason it could not be extracted. Nothing is attached before Add.
+    private var soundtrackExtractor: SoundtrackExtractor?
+    private var importedSoundtrack: StudioAudioImportService.ImportedAudio?
+    private var soundtrackFailure: String?
+    /// Whether the last preview extracted a soundtrack that Add will place.
+    @Published private(set) var hasSoundtrack = false
     private let scratchParent: URL
     private let checkpoint: Checkpoint
     private let importer: StudioImageImportService
@@ -118,7 +129,8 @@ final class StudioImageImportSession: ObservableObject {
     /// selection only, and is neither an image result nor a document mutation.
     @discardableResult
     func beginPicker(in studio: StudioViewModel, scope: Scope,
-                     videoMapping: StudioVideoFrameImportService.Mapping = .init(), videoFrameCount: Int = 1) -> UUID? {
+                     videoMapping: StudioVideoFrameImportService.Mapping = .init(), videoFrameCount: Int = 1,
+                     soundtrack: SoundtrackExtractor? = nil) -> UUID? {
         guard !isClosed, !isWorking, status != .picking, (1...24).contains(videoFrameCount) else { return nil }
         if let capture, capture.accountID != scope.accountID {
             close(); notice = SessionError.accountChanged.localizedDescription; return nil
@@ -129,6 +141,7 @@ final class StudioImageImportSession: ObservableObject {
             try Self.requireEligible(studio)
         } catch { fail(error); return nil }
         clearPreview(); appliedImage = nil; notice = nil; progressText = nil
+        soundtrackExtractor = soundtrack
         self.studio = studio
         capture = Capture(accountID: scope.accountID, projectID: studio.document.id,
             revision: studio.document.revision, frameID: studio.document.activeFrameID,
@@ -189,6 +202,7 @@ final class StudioImageImportSession: ObservableObject {
                         projectFrameIndex: captured.frameIndex, fps: captured.fps, frameCount: captured.videoFrameCount, mapping: captured.videoMapping, scratchParent: self.scratchParent,
                         retainMovie: true)
                     url = selected; name = nil
+                    try await self.extractSoundtrack(from: selected, mapping: captured.videoMapping, token: id, currentScope: currentScope)
                 case .photo(let provider):
                     let handle = try await StudioImagePickerTransfer.load(from: provider, scratchParent: self.scratchParent, cleanupFailure: self.cleanupFailure)
                     owned = handle
@@ -206,6 +220,7 @@ final class StudioImageImportSession: ObservableObject {
                     extractedFrames = try await StudioVideoFrameImportService.shared.extractSequence(from: url,
                         projectFrameIndex: captured.frameIndex, fps: captured.fps, frameCount: captured.videoFrameCount, mapping: captured.videoMapping, scratchParent: self.scratchParent,
                         retainMovie: true)
+                    try await self.extractSoundtrack(from: url, mapping: captured.videoMapping, token: id, currentScope: currentScope)
                 case .library(let catalogue, let image):
                     self.librarySelection = (catalogue, image)
                     let verification = Task.detached(priority: .userInitiated) {
@@ -250,12 +265,20 @@ final class StudioImageImportSession: ObservableObject {
                 self.previewImage = thumbnail; self.status = .preview
                 // Measured movie properties (#199) precede the timing summary.
                 let retained = self.importedVideo == nil ? "" : " Add keeps a copy of the movie with this project, so it reopens after the original file is removed."
+                let audio: String
+                if let soundtrack = self.importedSoundtrack, let captured = self.capture {
+                    audio = String(format: " Soundtrack: %.2fs decoded with the same trim and speed; Add also places it at Studio %.2fs on a free audio track as a separate undoable edit.",
+                                   soundtrack.duration, captured.videoMapping.projectStartSeconds)
+                } else if let failure = self.soundtrackFailure {
+                    audio = " The soundtrack was not extracted: \(failure) Add inserts the frames only."
+                } else { audio = "" }
+                self.hasSoundtrack = self.importedSoundtrack != nil
                 if let first = extractedFrames.first, extractedFrames.count > 1 {
-                    self.notice = "Video: \(first.metadata.summary). Preview of the first of \(extractedFrames.count) decoded frames. Add inserts consecutive frames after the selected frame in one undoable edit, with their trim and speed recorded.\(retained) No audio is attached."
+                    self.notice = "Video: \(first.metadata.summary). Preview of the first of \(extractedFrames.count) decoded frames. Add inserts consecutive frames after the selected frame in one undoable edit, with their trim and speed recorded.\(retained)" + (audio.isEmpty ? " No audio is attached." : audio)
                 } else if let extracted = extractedFrames.first {
                     self.notice = "Video: \(extracted.metadata.summary). " + String(format: "Preview only: Studio %.3fs → source %.3fs → decoded %.3fs of %.3fs (%.2f×). Add attaches this single reference frame on a separate layer.",
                         extracted.requestedSeconds, extracted.sourceRequestedSeconds, extracted.actualSeconds, extracted.durationSeconds, extracted.mapping.speed)
-                        + retained + " Its audio is not imported."
+                        + retained + (audio.isEmpty ? " Its audio is not imported." : audio)
                 } else {
                     self.notice = "Preview only. Add to current frame attaches the image on a new layer in one undoable edit."
                 }
@@ -273,6 +296,55 @@ final class StudioImageImportSession: ObservableObject {
             }
         }
         return true
+    }
+
+    /// Opt-in only. A failure keeps the frame preview and is reported; a
+    /// cancellation or stale scope still ends the whole selection.
+    private func extractSoundtrack(from url: URL, mapping: StudioVideoFrameImportService.Mapping,
+                                   token id: UUID, currentScope: ScopeProvider) async throws {
+        guard let extractor = soundtrackExtractor else { return }
+        progressText = "Extracting the movie's soundtrack with the same trim and speed…"
+        do {
+            let audio = try await extractor(url, mapping, scratchParent)
+            try requireCurrent(id, scope: currentScope(), requireForeground: false)
+            importedSoundtrack = audio; soundtrackFailure = nil
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as SessionError {
+            throw error
+        } catch {
+            try requireCurrent(id, scope: currentScope(), requireForeground: false)
+            importedSoundtrack = nil
+            soundtrackFailure = error.localizedDescription
+        }
+    }
+    /// Places the extracted soundtrack where the shared mapping puts the
+    /// source start, keeping that mapping on the clip. Frames already added
+    /// stay; a failure is reported, never hidden.
+    private func attachSoundtrack(_ audio: StudioAudioImportService.ImportedAudio, to studio: StudioViewModel,
+                                  mapping: StudioVideoFrameImportService.Mapping, projectID: UUID) -> String {
+        let persisted = StudioVideoSourceMapping(sourceStartSeconds: mapping.sourceStartSeconds,
+            sourceEndSeconds: mapping.sourceEndSeconds, projectStartSeconds: mapping.projectStartSeconds, speed: mapping.speed)
+        let start = mapping.projectStartSeconds
+        let track = Self.freeAudioTrack(studio.document.audioClips, start: start, duration: audio.duration)
+        let playhead = studio.audioPlayheadTime
+        studio.audioPlayheadTime = start
+        defer { if studio.audioPlayheadTime == start { studio.audioPlayheadTime = playhead } }
+        do {
+            _ = try studio.attachImportedAudio(audio.track, expectedProjectID: projectID,
+                expectedRevision: studio.document.revision, frameID: studio.document.activeFrameID,
+                trackNumber: track, atPlayhead: start, videoMapping: persisted, checkCancellation: {})
+            return String(format: " The movie's soundtrack (%.2fs) was added on audio track %d at Studio %.2fs as a separate undoable edit, with the same trim and speed recorded on the clip.",
+                          audio.duration, track, start)
+        } catch {
+            return " The soundtrack was not added: \(error.localizedDescription) The frames were kept."
+        }
+    }
+    /// Lowest audio track with no clip overlapping the interval; track 1 otherwise.
+    static func freeAudioTrack(_ clips: [AudioClip], start: Double, duration: Double) -> Int {
+        (1...4).first { number in
+            !clips.contains { $0.track == number && $0.startTime < start + duration && start < $0.startTime + $0.duration }
+        } ?? 1
     }
 
     func pickerCancelled(token id: UUID) {
@@ -323,10 +395,13 @@ final class StudioImageImportSession: ObservableObject {
             appliedImage = AppliedImage(assetID: assetID, projectID: captured.projectID,
                 revision: studio.document.revision, frameID: resultFrameID, name: imported.name)
             let keptMovie = importedVideo != nil
+            let soundtrackNote = importedSoundtrack.map { attachSoundtrack($0, to: studio, mapping: captured.videoMapping, projectID: captured.projectID) } ?? ""
             self.imported = nil; importedSequence = []; importedVideo = nil
+            importedSoundtrack = nil; soundtrackFailure = nil; hasSoundtrack = false
             status = .applied
             notice = (count > 1 ? "Added \(count) reference frames in one undoable edit." : "Added \(imported.name) on a new image layer in one undoable edit.")
                 + (keptMovie ? " The movie is kept with this project until those frames and their undo history are gone." : "")
+                + soundtrackNote
             return true
         } catch { fail(error); return false }
     }
@@ -426,7 +501,10 @@ final class StudioImageImportSession: ObservableObject {
         return .init(reference: reference,
                      movie: StoredVideoSource(id: movie.id, name: movie.name, container: movie.container, data: movie.data))
     }
-    private func clearPreview() { librarySelection = nil; imported = nil; importedSequence = []; importedVideo = nil; previewFrameCount = 1; preview = nil; previewImage = nil }
+    private func clearPreview() {
+        librarySelection = nil; imported = nil; importedSequence = []; importedVideo = nil; previewFrameCount = 1; preview = nil; previewImage = nil
+        importedSoundtrack = nil; soundtrackFailure = nil; hasSoundtrack = false
+    }
     private static func thumbnail(_ png: Data) throws -> CGImage {
         guard let source = CGImageSourceCreateWithData(png as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetCount(source) == 1,
