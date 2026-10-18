@@ -7,7 +7,14 @@ suppression re-check at claim time (a bounce recorded after enqueue still wins),
 and bounce reporting through the injected callback so the database suppresses the
 address. Addresses live in the queue only until the message is sent or abandoned,
 then they are blanked; the hash stays for deduplication.
+
+Email blasts (#283) go through ``enqueue_blast``: opt-in categories only, the
+recipient list from ``sdi_email_recipients`` (marketing consent, account state
+and suppressions applied by the database), a second suppression check here, and
+a per-address cadence: no address gets more than one product or marketing email
+per ``BLAST_MIN_INTERVAL_SECONDS`` (default seven days), whatever the campaign.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -17,13 +24,16 @@ import stat
 import time
 import uuid
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional
+from typing import Callable, Dict, Iterable, List, Mapping, Optional
 
-from .templates import Rendered, email_hash, render
+from .templates import TEMPLATES, Rendered, email_hash, render
 
 MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = (60, 600, 3600)
 RETENTION_SECONDS = 30 * 86400
+BLAST_MIN_INTERVAL_SECONDS = 7 * 86400
+BLAST_MAX_RECIPIENTS = 10000
+OPT_IN_CATEGORIES = ("product", "marketing")
 
 
 class EmailQueue:
@@ -41,6 +51,7 @@ class EmailQueue:
                 state TEXT NOT NULL DEFAULT 'queued', attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL,
                 reason TEXT NOT NULL DEFAULT '', created REAL NOT NULL, updated REAL NOT NULL,
                 UNIQUE(address_hash, template, dedup_key))""")
+            db.execute("CREATE INDEX IF NOT EXISTS messages_cadence ON messages(address_hash, category, created)")
         os.chmod(self.path, 0o600)
 
     @contextlib.contextmanager
@@ -111,6 +122,63 @@ class EmailQueue:
             db.execute("UPDATE messages SET state='queued', next_attempt=?, reason=?, updated=? WHERE id=?", (now + delay, reason[:200], now, message_id))
             return "queued"
 
+    def last_opt_in(self, address_hash: str) -> Optional[float]:
+        """Creation time of the newest product/marketing email to this address that
+        was queued, in flight or sent (suppressed, failed and bounced do not count)."""
+        with self._connect() as db:
+            row = db.execute("SELECT MAX(created) AS last FROM messages WHERE address_hash=? AND category IN ('product','marketing')"
+                             " AND state IN ('queued','sending','sent')", (address_hash,)).fetchone()
+        return row["last"] if row and row["last"] is not None else None
+
+    def enqueue_blast(self, recipients: Iterable[Mapping[str, str]], template: str, context: Mapping[str, str],
+                      campaign_key: str, unsubscribe_url_for: Callable[[str, str], str],
+                      suppressed: Optional[Callable[[str], bool]] = None,
+                      min_interval: float = BLAST_MIN_INTERVAL_SECONDS,
+                      max_recipients: int = BLAST_MAX_RECIPIENTS) -> Dict[str, int]:
+        """Queue one opt-in campaign; returns counts only (never addresses).
+
+        ``recipients`` are ``{"email", "email_hash"}`` rows from
+        ``sdi_email_recipients`` for the template's own category. A row whose hash
+        does not match its address is refused; a suppressed address or one that
+        received an opt-in email within ``min_interval`` is skipped; the campaign
+        key deduplicates retries of the same blast.
+        """
+        spec = TEMPLATES.get(template)
+        if spec is None or spec.category not in OPT_IN_CATEGORIES:
+            raise ValueError("blasts use product or marketing templates only")
+        if not campaign_key or len(campaign_key) > 200:
+            raise ValueError("campaign key required")
+        if not 86400 <= min_interval <= RETENTION_SECONDS:
+            raise ValueError("cadence interval must be between one day and the queue retention")
+        if not 1 <= max_recipients <= BLAST_MAX_RECIPIENTS:
+            raise ValueError("recipient cap out of range")
+        summary = {"queued": 0, "duplicate": 0, "suppressed": 0, "cadence": 0, "invalid": 0, "over_cap": 0}
+        seen = 0
+        for row in recipients:
+            address = row.get("email") if isinstance(row, Mapping) else None
+            claimed_hash = row.get("email_hash") if isinstance(row, Mapping) else None
+            if not isinstance(address, str) or not isinstance(claimed_hash, str) or email_hash(address) != claimed_hash:
+                summary["invalid"] += 1
+                continue
+            if seen >= max_recipients:
+                summary["over_cap"] += 1
+                continue
+            seen += 1
+            if suppressed and suppressed(claimed_hash):
+                summary["suppressed"] += 1
+                continue
+            last = self.last_opt_in(claimed_hash)
+            if last is not None and self.clock() - last < min_interval:
+                summary["cadence"] += 1
+                continue
+            try:
+                result = self.enqueue(address, template, context, campaign_key, unsubscribe_url_for(claimed_hash, spec.category))
+            except ValueError:
+                summary["invalid"] += 1
+                continue
+            summary[result["status"]] += 1
+        return summary
+
     def counts(self) -> Dict[str, int]:
         with self._connect() as db:
             return {row["state"]: row["n"] for row in db.execute("SELECT state, COUNT(*) AS n FROM messages GROUP BY state")}
@@ -120,3 +188,21 @@ class EmailQueue:
         with self._connect() as db:
             cursor = db.execute("DELETE FROM messages WHERE state IN ('sent','failed','bounced','suppressed') AND updated<?", (self.clock() - RETENTION_SECONDS,))
             return cursor.rowcount
+
+
+def fetch_recipients(api, category: str, batch: int = 500, max_pages: int = 20) -> List[Dict[str, str]]:
+    """Page through ``sdi_email_recipients`` (service role). The database applies
+    the member's opt-in for ``category``, account state and suppressions."""
+    if category not in OPT_IN_CATEGORIES + ("transactional",):
+        raise ValueError("unknown category")
+    rows: List[Dict[str, str]] = []
+    for page in range(max_pages):
+        answer = api.call("email_recipients", category=category, batch=batch, page=page)
+        if not isinstance(answer, Mapping) or answer.get("error") or answer.get("category") != category:
+            raise RuntimeError("Recipient list unavailable.")
+        for item in answer.get("recipients") or []:
+            if isinstance(item, Mapping) and item.get("email") and item.get("email_hash"):
+                rows.append({"email": item["email"], "email_hash": item["email_hash"]})
+        if not answer.get("has_more"):
+            break
+    return rows
