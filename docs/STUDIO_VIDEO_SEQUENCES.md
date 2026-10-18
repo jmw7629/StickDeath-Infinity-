@@ -6,7 +6,7 @@ Extraction owns one materialized movie and one generator, runs sequentially with
 
 Insertion preserves existing frames and originals. It creates unique managed image assets on one shared reference layer behind drawings, keeps the active drawing layer, and selects the first inserted frame. The new frames and asset references publish together in one Undo/Redo transaction after actual storage preflight. Original videos remain in Photos/Files and are not required to reopen the imported PNG sequence.
 
-This is a bounded editable reference sequence, not a linked movie track. Re-extract another interval to extend it. Soundtrack import remains an explicit separate Audio operation; no microphone, upload, remote API or automatic publication occurs. Native interaction and final mixed-export journeys remain separate acceptance gates.
+This is a bounded editable reference sequence, not a linked movie track. Re-extract another interval to extend it. The soundtrack is imported only by explicit opt-in: either the "Also add the movie's soundtrack" switch in the rotoscope session (#199, 2026-10-18), which decodes it with the same trim/speed mapping and places it at the Studio start on a free audio track as a separate undoable edit with that mapping stored on the clip (`AudioClip.videoMapping`), or the Audio panel; no microphone, upload, remote API or automatic publication occurs. Native interaction and final mixed-export journeys remain separate acceptance gates.
 
 ## Reference layers and exports (wave 3, #199–#201)
 

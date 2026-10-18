@@ -433,6 +433,60 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
             try require(coordinator.unsharedLocalCount == 0, "no session, nothing recorded")
         }
 
+        await test("Discard mine reverts through the editor hook only when it can, and Studio status reflects every state") {
+            let transport = FakeTransport()
+            let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+            try require(coordinator.studioSyncStatus == nil, "no session, no Studio status")
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: member)
+            try require(coordinator.studioSyncStatus == nil, "status appears only while handed off to Studio")
+            coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+            try require(coordinator.studioSyncStatus?.level == .synced && coordinator.studioSyncStatus?.label == "Room: in sync", "idle session is in sync")
+            try require(coordinator.discardHeldConflict() == .noConflict, "nothing to discard")
+            // A held conflict with a hook that reverts.
+            let mine = UUID(), theirs = UUID()
+            try require(coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:a")]), opID: mine), "local edit queued with the editor's op id")
+            try require(coordinator.studioSyncStatus?.level == .syncing && coordinator.studioSyncStatus?.label == "Room: 1 to sync", "queued edit shown as syncing")
+            transport.replies = [.success(#"{"error":"conflict","head":1,"missing":[\#(targeted(1, "frame:a", op: theirs, author: owner))]}"#)]
+            try require(await coordinator.drain() == .held(1) && coordinator.heldConflict?.opID == mine, "overlap held for the creator")
+            try require(coordinator.studioSyncStatus?.level == .conflict && coordinator.studioSyncStatus?.detail.contains("frame:a") == true, "conflict shown in Studio status")
+            var reverted: [UUID] = []
+            coordinator.revertLocalEdit = { op in reverted.append(op); return nil }
+            try require(coordinator.discardHeldConflict() == .reverted && reverted == [mine], "editor asked to revert exactly the held edit")
+            try require(coordinator.heldConflict == nil && coordinator.pendingLocalCount == 0, "discarded edit is never sent")
+            // The other creator's edit then applies and nothing is re-sent.
+            coordinator.applyRemote = { _ in true }
+            coordinator.applyQueued()
+            let afterDiscard = await coordinator.drain()
+            try require(coordinator.head == 1 && afterDiscard == .idle && transport.calls.count == 1, "their edit applied; nothing re-sent")
+            // Not the latest change: the hook says why and the edit stays local.
+            let second = UUID()
+            _ = coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:b")]), opID: second)
+            transport.replies = [.success(#"{"error":"conflict","head":2,"missing":[\#(targeted(2, "frame:b", author: owner))]}"#)]
+            try require(await coordinator.drain() == .held(1), "second overlap held")
+            coordinator.revertLocalEdit = { _ in "Not the most recent change." }
+            try require(coordinator.discardHeldConflict() == .notReverted("Not the most recent change.") && coordinator.pendingLocalCount == 0, "reason returned; edit no longer sent")
+            // No editor hook: a clear reason, never a claimed revert.
+            coordinator.applyQueued()
+            _ = coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:c")]))
+            transport.replies = [.success(#"{"error":"conflict","head":3,"missing":[\#(targeted(3, "frame:c", author: owner))]}"#)]
+            try require(await coordinator.drain() == .held(1), "third overlap held")
+            coordinator.revertLocalEdit = nil
+            if case .notReverted(let reason) = coordinator.discardHeldConflict() { try require(reason.contains("not open"), "no-hook reason") }
+            else { throw Failure(description: "discard without an editor claimed a revert") }
+            // A transport failure pauses with a reason; the next clean pass clears it.
+            coordinator.applyQueued()
+            _ = coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:d")]))
+            transport.replies = [.failure(CommunityError.transport("offline"))]
+            if case .stopped = await coordinator.drain() {} else { throw Failure(description: "offline append not stopped") }
+            try require(coordinator.studioSyncStatus?.level == .paused && coordinator.lastStopReason != nil, "paused status after a failed send")
+            transport.replies = [.success(#"{"status":"applied","revision":4}"#)]
+            try require(await coordinator.drain() == .sent(1) && coordinator.lastStopReason == nil && coordinator.studioSyncStatus?.level == .synced, "clean pass clears the pause")
+            coordinator.begin(room: room, head: 4, projectID: project, canEdit: false, account: member)
+            try require(coordinator.studioSyncStatus?.level == .paused && coordinator.studioSyncStatus?.label == "Room: view only", "view-only shown")
+            coordinator.end()
+            try require(coordinator.studioSyncStatus == nil && coordinator.lastStopReason == nil, "ending clears the status")
+        }
+
         await test("file hashing matches FIPS 180-4 known answers on every platform") {
             try require(RoomAssetPolicy.sha256Hex(Data()) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "empty input digest")
             try require(RoomAssetPolicy.sha256Hex(Data("abc".utf8)) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "abc digest")

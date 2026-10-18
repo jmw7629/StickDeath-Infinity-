@@ -27,6 +27,14 @@ struct StudioImageImportPanel: View {
     @State private var playbackRate = 1.0
     @State private var usesSourceEnd = false
     @State private var videoFrameCount = 1
+    /// Explicit opt-in (#199): also decode the movie's soundtrack with this mapping.
+    @State private var includeSoundtrack = false
+    private static let extractSoundtrack: StudioImageImportSession.SoundtrackExtractor = { url, mapping, scratch in
+        try await StudioVideoAudioImportService.shared.extract(from: url, mapping: mapping, scratchParent: scratch).audio
+    }
+    private var soundtrackRequest: StudioImageImportSession.SoundtrackExtractor? {
+        videoFrameMode && includeSoundtrack ? Self.extractSoundtrack : nil
+    }
 
     private var videoMapping: StudioVideoFrameImportService.Mapping {
         .init(sourceStartSeconds: sourceStart, sourceEndSeconds: usesSourceEnd ? sourceEnd : nil,
@@ -63,6 +71,12 @@ struct StudioImageImportPanel: View {
                     Text(String(format: "%g×", rate)).tag(rate)
                 }
             }.pickerStyle(.segmented).accessibilityIdentifier("studio.video.speed")
+            Toggle("Also add the movie's soundtrack", isOn: $includeSoundtrack).tint(.red)
+                .accessibilityIdentifier("studio.video.soundtrack")
+            if includeSoundtrack {
+                Text("Decodes the movie's audio with the same trim and speed and, when you tap Add, places it at the Studio start on a free audio track as its own undoable edit. Speed changes pitch. Up to 16 MB of decoded audio (about 95 s); if extraction fails, the frames can still be added.")
+                    .font(.caption)
+            }
             if let mappedTime {
                 Text(String(format: videoFrameCount > 1 ? "First inserted frame → source %.3fs" : "Current Studio frame → source %.3fs", mappedTime))
                     .font(.caption).accessibilityIdentifier("studio.video.mapped-time")
@@ -149,13 +163,13 @@ struct StudioImageImportPanel: View {
                         .font(.caption).foregroundColor(.white.opacity(0.7))
                     if videoFrameMode { videoTiming }
                     AddImageOption(icon: "photo.on.rectangle.angled", title: "Photo Library", subtitle: videoFrameMode ? "Choose a video using the system picker" : "Choose a picture using the system picker") {
-                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init(), videoFrameCount: videoFrameMode ? videoFrameCount : 1) else { return }
+                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init(), videoFrameCount: videoFrameMode ? videoFrameCount : 1, soundtrack: soundtrackRequest) else { return }
                         refreshScope(); photosRequest = .init(id: token)
                     }
                     .disabled(session.isClosed || session.isWorking || filesRequest != nil || photosRequest != nil || (videoFrameMode && mappedTime == nil))
                     .accessibilityIdentifier("studio.image.photos")
                     AddImageOption(icon: "folder.fill", title: "Files", subtitle: videoFrameMode ? "Choose a video to extract the current frame" : "Import an image from Files") {
-                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init(), videoFrameCount: videoFrameMode ? videoFrameCount : 1) else { return }
+                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init(), videoFrameCount: videoFrameMode ? videoFrameCount : 1, soundtrack: soundtrackRequest) else { return }
                         refreshScope(); filesRequest = .init(id: token)
                     }
                     .disabled(session.isClosed || session.isWorking || filesRequest != nil || photosRequest != nil || (videoFrameMode && mappedTime == nil))
@@ -193,7 +207,7 @@ struct StudioImageImportPanel: View {
                         Text("\(preview.width) × \(preview.height) pixels · orientation corrected")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                             .accessibilityIdentifier("studio.image.dimensions")
-                        Text(videoFrameMode ? "Decoded SDR reference PNGs are saved inside this project. The source movie stays in Photos or Files. Multiple frames insert after the current frame without replacing originals; no movie track or audio is attached. Import a soundtrack separately in Audio." : "Fits inside the canvas without cropping. Files preserves the selected file bytes. Photos preserves the still image provided by the picker, without paired Live Photo motion or audio. Studio uses an SDR PNG; animated images, depth and HDR effects are not included.")
+                        Text(videoFrameMode ? "Decoded SDR reference PNGs are saved inside this project. The source movie stays in Photos or Files. Multiple frames insert after the current frame without replacing originals; there is no live movie track. The soundtrack is added only when you turned it on above (or import it later in Audio)." : "Fits inside the canvas without cropping. Files preserves the selected file bytes. Photos preserves the still image provided by the picker, without paired Live Photo motion or audio. Studio uses an SDR PNG; animated images, depth and HDR effects are not included.")
                             .font(.caption).foregroundColor(.white.opacity(0.6))
                         Button(session.previewFrameCount > 1 ? "Insert \(session.previewFrameCount) frames" : "Add to current frame") { _ = session.apply(currentScope: scope) }
                             .buttonStyle(.borderedProminent).tint(.red)
@@ -220,7 +234,7 @@ struct StudioImageImportPanel: View {
                     }
                     Divider().overlay(Color.white.opacity(0.2))
                     if videoFrameMode {
-                        Text("Available here: still reference frames decoded from a video at the times you choose, and the video's soundtrack imported as a project sound from the Audio panel. Adding frames keeps a copy of the movie (up to 16 MB) with this project, together with its measured size, rotation, frame rate and your trim and speed, so the project reopens after the original file is removed. The copy is deleted with the project and left out of later saves once its frames and their undo history are gone. There is no live video layer, and camera recording is not offered.")
+                        Text("Available here: still reference frames decoded from a video at the times you choose, and the video's soundtrack imported as a project sound, either here with the soundtrack option or from the Audio panel, cut with the same trim and speed. Adding frames keeps a copy of the movie (up to 16 MB) with this project, together with its measured size, rotation, frame rate and your trim and speed, so the project reopens after the original file is removed. The copy is deleted with the project and left out of later saves once its frames and their undo history are gone. There is no live video layer, and camera recording is not offered.")
                             .font(.caption).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("studio.video.availability")
                     } else {
@@ -319,7 +333,7 @@ struct StudioImageImportPanel: View {
             }
         }
         .sheet(item: $libraryRequest) { request in
-            StudioImageLibraryView { catalogue, image in
+            StudioImageLibraryView(retainedOriginals: vm.catalogueOriginalDigests) { catalogue, image in
                 guard libraryRequest?.id == request.id else { return }
                 libraryRequest = nil
                 let holder = scopeHolder

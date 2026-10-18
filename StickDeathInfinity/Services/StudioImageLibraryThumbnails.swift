@@ -12,7 +12,7 @@ actor StudioImageLibraryThumbnails {
 
     func image(_ item: StudioImageCatalogue.Image, catalogue: StudioImageCatalogue) throws -> CGImage {
         try Task.checkCancellation()
-        guard catalogue.images.contains(item) else { throw StudioImageCatalogue.CatalogueError.invalid }
+        guard catalogue.contains(item) else { throw StudioImageCatalogue.CatalogueError.invalid }
         let key = item.sha256 + ":" + item.pixelSHA256 + ":\(item.width):\(item.height)"
         if let image = cached[key] {
             order.removeAll { $0 == key }; order.append(key)

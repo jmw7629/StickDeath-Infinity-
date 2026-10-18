@@ -55,6 +55,12 @@ final class RoomSessionCoordinator {
     /// size bound). They stay on this device; the reason is shown, never hidden.
     private(set) var unsharedLocalCount = 0
     private(set) var lastUnsharedReason: String?
+    /// Why the last send stopped (offline, refused); cleared by the next clean pass.
+    private(set) var lastStopReason: String?
+    /// Editor hook for "Discard mine": revert this local edit through the
+    /// editor's own undo history. Returns nil when it was reverted, otherwise
+    /// the reason it could not be reverted automatically.
+    var revertLocalEdit: ((UUID) -> String?)?
 
     init(client: RoomsClient?) { self.client = client }
     func attachClient(_ client: RoomsClient) { self.client = client }
@@ -78,7 +84,7 @@ final class RoomSessionCoordinator {
     }
     private func resetCounters() {
         blockedRemote = nil; skippedRemote = []; appliedRemoteCount = 0; publishedLocalCount = 0
-        unsharedLocalCount = 0; lastUnsharedReason = nil
+        unsharedLocalCount = 0; lastUnsharedReason = nil; lastStopReason = nil
     }
 
     // MARK: Handoff (#234)
@@ -98,8 +104,8 @@ final class RoomSessionCoordinator {
 
     /// A local edit from the editor. Refused when the member can only view.
     @discardableResult
-    func publishLocalEdit(kind: String, payload: CommunityJSONValue) -> Bool {
-        guard let session, session.canEdit, let sync, sync.enqueue(kind: kind, payload: payload) else { return false }
+    func publishLocalEdit(kind: String, payload: CommunityJSONValue, opID: UUID = UUID()) -> Bool {
+        guard let session, session.canEdit, let sync, sync.enqueue(kind: kind, payload: payload, opID: opID) else { return false }
         publishedLocalCount += 1
         return true
     }
@@ -140,6 +146,56 @@ final class RoomSessionCoordinator {
     func resolveHeldConflict(keepMine: Bool) -> Bool { sync?.resolveHeld(keepMine: keepMine) ?? false }
     var heldConflict: RoomCommandSync.HeldConflict? { sync?.held }
 
+    enum DiscardOutcome: Equatable {
+        /// The edit is no longer sent and the editor undid it locally.
+        case reverted
+        /// The edit is no longer sent but stays in the device copy, for this reason.
+        case notReverted(String)
+        case noConflict
+    }
+    /// "Discard mine": stop sending the held local edit and ask the editor to
+    /// undo it. Studio reverts it only when it is still the most recent change
+    /// in its history; otherwise the reason is returned and nothing else changes.
+    @discardableResult
+    func discardHeldConflict() -> DiscardOutcome {
+        guard let held = sync?.held else { return .noConflict }
+        let failure: String? = revertLocalEdit.map { $0(held.opID) }
+            ?? "Studio is not open on the shared project, so your edit stays in your device copy. Open it in Studio and use Undo if you no longer want it."
+        // The hook may end the session; the decision applies to the sync it was made for.
+        guard sync?.resolveHeld(keepMine: false) == true else { return .noConflict }
+        return failure.map(DiscardOutcome.notReverted) ?? .reverted
+    }
+
+    /// The compact room status Studio shows in its top bar while the shared
+    /// project is open. Nil when no room session is handed off to Studio.
+    struct StudioSyncStatus: Equatable {
+        enum Level: Equatable { case synced, syncing, waiting, conflict, paused }
+        let level: Level
+        let label: String
+        let detail: String
+    }
+    var studioSyncStatus: StudioSyncStatus? {
+        guard let session, let handoff, handoff.room == session.room, let sync else { return nil }
+        let unshared = unsharedLocalCount == 0 ? "" : " \(unsharedLocalCount) local change\(unsharedLocalCount == 1 ? "" : "s") not shared\(lastUnsharedReason.map { " (latest: \($0))" } ?? "")."
+        let counts = "Head revision \(sync.head). \(appliedRemoteCount) applied, \(publishedLocalCount) sent or queued, \(sync.pending.count) unsent, \(sync.inbox.count) waiting, \(skippedRemote.count) skipped.\(unshared)"
+        if let held = sync.held {
+            return .init(level: .conflict, label: "Room: decide",
+                detail: "Your edit\(held.target.map { " to \($0)" } ?? "") overlaps \(held.overlapping.count) edit\(held.overlapping.count == 1 ? "" : "s") by another creator. Nothing was overwritten. Keep yours on top, or discard yours (Studio undoes it when it is still your latest change). " + counts)
+        }
+        if !session.canEdit {
+            return .init(level: .paused, label: "Room: view only", detail: "You can view this room's project but not edit it. Local changes stay on this device. " + counts)
+        }
+        if let blockedRemote {
+            return .init(level: .waiting, label: "Room: waiting", detail: "Shared edit #\(blockedRemote.revision) is waiting: \(blockedRemote.reason) " + counts)
+        }
+        if let lastStopReason {
+            return .init(level: .paused, label: "Room: paused", detail: "Synchronisation paused: \(lastStopReason) It retries automatically. " + counts)
+        }
+        let busy = sync.pending.count + sync.inbox.count
+        if busy > 0 { return .init(level: .syncing, label: "Room: \(busy) to sync", detail: counts) }
+        return .init(level: .synced, label: "Room: in sync", detail: counts)
+    }
+
     /// Send queued edits in order; stop at the first conflict so the editor
     /// applies the missing remote commands before retrying.
     func drain() async -> DrainOutcome {
@@ -149,7 +205,11 @@ final class RoomSessionCoordinator {
         while let request = sync.nextAppend(), let opID = request.op_id {
             let response: RoomCommandResponse
             do { response = try await client.append(request) }
-            catch { return .stopped(CommunityGateway.normalize(error).errorDescription ?? "Synchronisation failed.") }
+            catch {
+                let reason = CommunityGateway.normalize(error).errorDescription ?? "Synchronisation failed."
+                lastStopReason = reason
+                return .stopped(reason)
+            }
             switch sync.handleAppend(response, for: opID) {
             case .applied, .duplicate: sent += 1
             case .rebased: sent += 1
@@ -159,9 +219,11 @@ final class RoomSessionCoordinator {
             case .refused(let message):
                 if sync.accessEnded { end(reason: "Room access ended. Your device copy of the project is unchanged.") }
                 else if sync.editingRevoked { endReason = "Editing permission was withdrawn. Your local edits stay on this device." }
+                if session != nil { lastStopReason = message }
                 return .stopped(message)
             }
         }
+        lastStopReason = nil
         return sent == 0 ? .idle : .sent(sent)
     }
 
