@@ -5,6 +5,9 @@ import UIKit
 /// returns to its real preview/import session; browsing never edits a project.
 @MainActor
 struct StudioImageLibraryView: View {
+    /// Digests of library originals the open project uses; a manifest revision
+    /// never deletes these cached files (#198).
+    var retainedOriginals: Set<String> = []
     let onSelect: (StudioImageCatalogue, StudioImageCatalogue.Image) -> Void
     let onClose: () -> Void
     @State private var catalogue: StudioImageCatalogue?
@@ -189,8 +192,14 @@ struct StudioImageLibraryView: View {
                 optionalCatalogues = [:]; packsNeedingRemoval = []
                 for item in packs {
                     do {
+                        // The release's manifest revision removes withdrawn cached copies first.
+                        let report = try await StudioImagePackCache.shared.applyRevision(item, retaining: retainedOriginals)
                         let installed = try await StudioImagePackCache.shared.installed(item)
                         try Task.checkCancellation(); optionalCatalogues[item.id] = installed
+                        if report.changed || !report.retainedAssetIDs.isEmpty {
+                            let removed = report.deletedAssetIDs.count, kept = report.retainedAssetIDs.count
+                            packNotice = "Picture library revision \(report.revision): \(removed) withdrawn picture\(removed == 1 ? "" : "s") removed from the download" + (kept == 0 ? "" : ", \(kept) kept because this project uses them") + ". Pictures already in your projects are unchanged."
+                        }
                     }
                     catch is CancellationError { throw CancellationError() }
                     catch {

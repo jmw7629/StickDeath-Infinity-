@@ -9,41 +9,107 @@ import Compression
 struct StudioImageCatalogue: Sendable {
     /// Trusted application-release policy. Never decoded from a downloaded catalogue,
     /// user defaults, project, or provider response. Updates cannot roll back a revision.
+    ///
+    /// Each revision is the complete trusted state for that release (#198): it may
+    /// quarantine assets from new use, remove disposable cached library copies and
+    /// correct display metadata. Stable asset IDs and verified bytes never change,
+    /// so saved projects keep resolving; their own verified originals are never
+    /// touched by a revision.
     final class ReleasePolicy: @unchecked Sendable {
         struct Quarantine: Equatable, Sendable {
             let assetID: String
             let sha256: String
             let reason: String
         }
-        private let lock = NSLock()
-        private var revision: Int
-        private var records: [Quarantine]
-        static let bundled = ReleasePolicy()
-        private init() { revision = 1; records = [] }
-        init(revision: Int, quarantined: [Quarantine]) throws {
-            try Self.validate(revision, quarantined)
-            self.revision = revision; self.records = quarantined
+        /// The cached library copy may be deleted. A removed asset is also
+        /// unavailable for new use; files a project still uses are retained.
+        struct Removal: Equatable, Sendable {
+            let assetID: String
+            let sha256: String
+            let reason: String
         }
-        private static func validate(_ revision: Int, _ records: [Quarantine]) throws {
-            guard (1...1_000_000).contains(revision), records.count <= 5000,
+        /// Display-only corrections. Nil fields keep the manifest value; bytes,
+        /// dimensions, license and category never change through an update.
+        struct MetadataUpdate: Equatable, Sendable {
+            let assetID: String
+            let sha256: String
+            var title: String? = nil
+            var tags: [String]? = nil
+            var contentAdvisory: ContentAdvisory? = nil
+        }
+        /// One versioned pack-manifest update shipped with an application release.
+        struct Revision: Equatable, Sendable {
+            let revision: Int
+            var quarantined: [Quarantine] = []
+            var removed: [Removal] = []
+            var metadata: [MetadataUpdate] = []
+        }
+        private let lock = NSLock()
+        private var state: Revision
+        static let bundled = ReleasePolicy()
+        private init() { state = Revision(revision: 1) }
+        convenience init(revision: Int, quarantined: [Quarantine]) throws {
+            try self.init(Revision(revision: revision, quarantined: quarantined))
+        }
+        init(_ revision: Revision) throws {
+            try Self.validate(revision)
+            state = revision
+        }
+        private static func validRecord(_ assetID: String, _ sha256: String, _ reason: String) -> Bool {
+            StudioImageCatalogue.identifier(assetID) && StudioImageCatalogue.hash(sha256)
+                && StudioImageCatalogue.label(reason, limit: 240) && reason.utf8.count <= 960
+        }
+        private static func validate(_ next: Revision) throws {
+            let records = next.quarantined, removed = next.removed, metadata = next.metadata
+            guard (1...1_000_000).contains(next.revision), records.count <= 5000, removed.count <= 5000, metadata.count <= 5000,
                   Set(records.map { $0.assetID + ":" + $0.sha256 }).count == records.count,
-                  records.allSatisfy({ StudioImageCatalogue.identifier($0.assetID)
-                    && StudioImageCatalogue.hash($0.sha256)
-                    && StudioImageCatalogue.label($0.reason, limit: 240)
-                    && $0.reason.utf8.count <= 960 }) else { throw CatalogueError.invalid }
+                  Set(removed.map { $0.assetID + ":" + $0.sha256 }).count == removed.count,
+                  Set(metadata.map { $0.assetID + ":" + $0.sha256 }).count == metadata.count,
+                  records.allSatisfy({ validRecord($0.assetID, $0.sha256, $0.reason) }),
+                  removed.allSatisfy({ validRecord($0.assetID, $0.sha256, $0.reason) }),
+                  metadata.allSatisfy({ item in
+                      StudioImageCatalogue.identifier(item.assetID) && StudioImageCatalogue.hash(item.sha256)
+                          && (item.title != nil || item.tags != nil || item.contentAdvisory != nil)
+                          && (item.title.map { StudioImageCatalogue.label($0) } ?? true)
+                          && (item.tags.map { tags in
+                              tags.count <= 20 && Set(tags).count == tags.count && tags.allSatisfy { StudioImageCatalogue.label($0, limit: 60) }
+                          } ?? true)
+                  })
+            else { throw CatalogueError.invalid }
         }
         // Updates share the editor's executor. No await occurs between its
         // final availability check and the synchronous document commit.
         @MainActor func advance(revision next: Int, quarantined: [Quarantine]) throws {
-            try Self.validate(next, quarantined)
-            lock.lock(); defer { lock.unlock() }
-            guard next > revision else { throw CatalogueError.invalid }
-            revision = next; records = quarantined
+            try advance(to: Revision(revision: next, quarantined: quarantined))
         }
-        var currentRevision: Int { lock.lock(); defer { lock.unlock() }; return revision }
+        /// Apply a newer trusted manifest revision. Equal or older revisions are
+        /// refused, so a stale release cannot restore a withdrawn asset.
+        @MainActor func advance(to next: Revision) throws {
+            try Self.validate(next)
+            lock.lock(); defer { lock.unlock() }
+            guard next.revision > state.revision else { throw CatalogueError.invalid }
+            state = next
+        }
+        var currentRevision: Int { lock.lock(); defer { lock.unlock() }; return state.revision }
+        var current: Revision { lock.lock(); defer { lock.unlock() }; return state }
         func permits(_ image: Image) -> Bool {
             lock.lock(); defer { lock.unlock() }
-            return !records.contains { $0.assetID == image.id && $0.sha256 == image.sha256 }
+            return !state.quarantined.contains { $0.assetID == image.id && $0.sha256 == image.sha256 }
+                && !state.removed.contains { $0.assetID == image.id && $0.sha256 == image.sha256 }
+        }
+        func isRemoved(_ image: Image) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return state.removed.contains { $0.assetID == image.id && $0.sha256 == image.sha256 }
+        }
+        /// The manifest record with this revision's display corrections applied.
+        func displayed(_ image: Image) -> Image {
+            lock.lock(); defer { lock.unlock() }
+            guard let update = state.metadata.first(where: { $0.assetID == image.id && $0.sha256 == image.sha256 }) else { return image }
+            return Image(id: image.id, title: update.title ?? image.title, category: image.category,
+                         tags: update.tags ?? image.tags, contentAdvisory: update.contentAdvisory ?? image.contentAdvisory,
+                         licenseID: image.licenseID, originalSHA256: image.originalSHA256, sha256: image.sha256,
+                         pixelSHA256: image.pixelSHA256, filename: image.filename, byteCount: image.byteCount,
+                         width: image.width, height: image.height)
         }
     }
     enum Category: String, Codable, CaseIterable, Sendable { case props, scenery, effects }
@@ -85,11 +151,23 @@ struct StudioImageCatalogue: Sendable {
     static let maximumImageBytes = 16 * 1024 * 1024
     let catalogueRevision: Int
     private let releasePolicy: ReleasePolicy
-    var availableImages: [Image] { images.filter { releasePolicy.permits($0) } }
-    func requireAvailable(_ image: Image) throws {
-        guard images.contains(image) else { throw CatalogueError.invalid }
-        guard releasePolicy.permits(image) else { throw CatalogueError.quarantined }
+    /// Available for new use, with the current revision's display corrections.
+    var availableImages: [Image] { images.filter { releasePolicy.permits($0) }.map(releasePolicy.displayed) }
+    /// The verified manifest record for a listed image. A caller may hold the
+    /// manifest record or its displayed form; any other field change is refused.
+    private func canonical(_ image: Image) throws -> Image {
+        guard let stored = images.first(where: { $0.id == image.id && $0.sha256 == image.sha256 }),
+              image == stored || image == releasePolicy.displayed(stored) else { throw CatalogueError.invalid }
+        return stored
     }
+    func contains(_ image: Image) -> Bool { (try? canonical(image)) != nil }
+    func requireAvailable(_ image: Image) throws {
+        let stored = try canonical(image)
+        guard releasePolicy.permits(stored) else { throw CatalogueError.quarantined }
+    }
+    /// Manifest records whose disposable cached copy the current revision removes.
+    var removedImages: [Image] { images.filter { releasePolicy.isRemoved($0) } }
+    var policyRevision: Int { releasePolicy.currentRevision }
     let images: [Image]
     let licenses: [License]
     private let directory: URL
@@ -157,12 +235,12 @@ struct StudioImageCatalogue: Sendable {
     /// compares its copied original bytes with checkedPNG before showing preview.
     func sourceURL(for image: Image) throws -> URL {
         try requireAvailable(image)
-        guard images.contains(image) else { throw CatalogueError.invalid }
-        return directory.appendingPathComponent(image.filename)
+        return directory.appendingPathComponent(try canonical(image).filename)
     }
     func attribution(for image: Image) throws -> [String: String] {
         try requireAvailable(image)
-        guard images.contains(image), let license = licenses.first(where: { $0.id == image.licenseID }) else {
+        let image = try canonical(image)
+        guard let license = licenses.first(where: { $0.id == image.licenseID }) else {
             throw CatalogueError.invalid
         }
         return ["assetID": image.id, "author": license.author, "sourceURL": license.sourceURL,
@@ -196,7 +274,7 @@ struct StudioImageCatalogue: Sendable {
     /// Cache verification must remain possible after quarantine, including removal.
     fileprivate func integrityCheckedPNG(_ item: Image) throws -> Data {
         try Task.checkCancellation()
-        guard images.contains(item) else { throw CatalogueError.invalid }
+        let item = try canonical(item)
         let data=try Self.readFile(directory.appendingPathComponent(item.filename),limit:Self.maximumImageBytes)
         guard data.count==item.byteCount,Self.digest(data)==item.sha256,
               let source=CGImageSourceCreateWithData(data as CFData,nil),CGImageSourceGetType(source) as String? == "public.png",
@@ -449,7 +527,7 @@ actor StudioImagePackCache {
                       item.pixelSHA256 == entry.pixelSHA256, item.originalSHA256 == item.sha256,
                       item.licenseID == descriptor.id + ".cc0",
                       entry.crop != nil || item.sha256 == entry.sourceSHA256 else { throw PackError.invalid }
-                _ = try catalogue.integrityCheckedPNG(item)
+                try verifyCached(catalogue, item, at: directory)
             }
             return catalogue
         }
@@ -466,9 +544,73 @@ actor StudioImagePackCache {
                   item.licenseID == "kenney.1-bit-pack.cc0", item.originalSHA256 == item.sha256,
                   item.category == .scenery, item.contentAdvisory == .none,
                   item.pixelSHA256 == tile.pixelSHA256, item.width == 16, item.height == 16 else { throw PackError.invalid }
-            _ = try catalogue.integrityCheckedPNG(item)
+            try verifyCached(catalogue, item, at: directory)
         }
         return catalogue
+    }
+    /// A manifest revision may have deleted a removed asset's cached copy.
+    /// Every other listed file must verify; a removed file that is still
+    /// present (for example one retained for a project) is verified too.
+    private func verifyCached(_ catalogue: StudioImageCatalogue, _ item: StudioImageCatalogue.Image, at directory: URL) throws {
+        if releasePolicy.isRemoved(item) {
+            var metadata = stat()
+            if lstat(directory.appendingPathComponent(item.filename).path, &metadata) != 0 {
+                guard errno == ENOENT else { throw PackError.invalid }
+                return
+            }
+        }
+        _ = try catalogue.integrityCheckedPNG(item)
+    }
+    /// What applying the current manifest revision did to one installed pack.
+    struct RevisionReport: Equatable, Sendable {
+        let revision: Int
+        /// Cached library copies deleted by this call.
+        let deletedAssetIDs: [String]
+        /// Removed by the revision but kept because a project uses those bytes.
+        let retainedAssetIDs: [String]
+        /// Removed by the revision and already absent from the cache.
+        let absentAssetIDs: [String]
+        var changed: Bool { !deletedAssetIDs.isEmpty }
+    }
+    /// Apply the release policy's current manifest revision to one installed
+    /// pack (#198). Only cached PNGs listed in the verified pack manifest and
+    /// marked removed are deleted. A file whose digest is in `retaining`
+    /// (originals that projects use) is kept, so the user's copy is never the
+    /// one deleted; project documents are never opened or modified here.
+    /// Quarantine and metadata corrections need no file change: they apply
+    /// whenever the catalogue is read with this policy.
+    func applyRevision(_ descriptor: Descriptor, retaining: Set<String> = []) throws -> RevisionReport {
+        try Self.validateDescriptor(descriptor)
+        try Task.checkCancellation()
+        guard !busy else { throw PackError.busy }
+        let revision = releasePolicy.currentRevision
+        guard let ownedRoot = try rootIdentity(create: false),
+              let ownedTarget = try targetIdentity(location(descriptor)) else {
+            return RevisionReport(revision: revision, deletedAssetIDs: [], retainedAssetIDs: [], absentAssetIDs: [])
+        }
+        let target = location(descriptor)
+        try ownedRoot.check(); try ownedTarget.check()
+        let catalogue = try verify(descriptor, at: target)
+        try ownedRoot.check(); try ownedTarget.check()
+        var deleted: [String] = [], retained: [String] = [], absent: [String] = []
+        for item in catalogue.removedImages {
+            try Task.checkCancellation()
+            if retaining.contains(item.sha256) || retaining.contains(item.originalSHA256) {
+                retained.append(item.id); continue
+            }
+            // The verified manifest pins filename == "<sha256>.png" inside this directory.
+            let file = target.appendingPathComponent(item.filename)
+            var metadata = stat()
+            if lstat(file.path, &metadata) != 0 {
+                guard errno == ENOENT else { throw PackError.invalid }
+                absent.append(item.id); continue
+            }
+            guard metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { throw PackError.invalid }
+            try ownedRoot.check(); try ownedTarget.check()
+            try FileManager.default.removeItem(at: file)
+            deleted.append(item.id)
+        }
+        return RevisionReport(revision: revision, deletedAssetIDs: deleted, retainedAssetIDs: retained, absentAssetIDs: absent)
     }
     func installed(_ descriptor: Descriptor) throws -> StudioImageCatalogue? {
         try Self.validateDescriptor(descriptor)

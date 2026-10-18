@@ -76,11 +76,14 @@ private let device = UUID(uuidString: "44444444-4444-4444-8444-444444444444")!
         await test("support create refuses empty or oversized drafts before sending") {
             let (transport, gateway) = fixture([])
             let client = SupportClient(gateway: gateway)
-            for (subject, body) in [("   ", "body"), ("s", ""), (String(repeating: "x", count: 121), "b"), ("s", String(repeating: "y", count: 2001))] {
+            for (subject, body) in [("   ", "body"), ("s", ""), (String(repeating: "x", count: 121), "b"), ("s", String(repeating: "y", count: 2001)),
+                                   // 61 flags are 61 characters to Swift but 122 code points to PostgreSQL's length().
+                                   (String(repeating: "\u{1F1FA}\u{1F1F8}", count: 61), "b")] {
                 do { _ = try await client.create(category: .other, subject: subject, body: body, appVersion: "", idempotency: key); throw Failure(description: "accepted invalid draft") }
                 catch let error as CommunityError { if case .server = error {} else { throw Failure(description: "wrong error \(error)") } }
             }
             try require(transport.calls.isEmpty, "nothing sent")
+            try require(SupportLimits.length("\u{1F1FA}\u{1F1F8}") == 2 && SupportLimits.prefix("ab\u{1F1FA}\u{1F1F8}", 3) == "ab\u{1F1FA}", "code-point counting")
         }
         await test("support create surfaces the server's daily limit and refuses a reply without a valid receipt") {
             let (_, gateway) = fixture([#"{"error":"Daily support request limit reached. Existing requests remain open."}"#,
@@ -146,6 +149,43 @@ private let device = UUID(uuidString: "44444444-4444-4444-8444-444444444444")!
             try await client.withdrawMarketing()
             try require(transport.calls[2].params["action"] as? String == "withdraw" && transport.calls[2].params["policy"] as? String == "marketing", "withdraw params")
             do { try await client.withdrawMarketing(); throw Failure(description: "wrong policy confirmation accepted") } catch CommunityError.invalidResponse {}
+        }
+
+        // MARK: Onboarding acceptance (#273)
+
+        let onboardingPolicies = #"{"policies":[{"policy":"content","version":"c-1","summary":"Content rules","metadata":{"min_age":"13"},"effective_at":"2026-10-01T00:00:00+00:00"},{"policy":"marketing","version":"m-2","summary":"Reuse","metadata":{},"effective_at":"2026-10-01T00:00:00+00:00"},{"policy":"privacy","version":"p-2","summary":"Privacy","metadata":{},"effective_at":"2026-10-01T00:00:00+00:00"},{"policy":"terms","version":"t-1","summary":"Terms","metadata":{},"effective_at":"2026-09-01T00:00:00+00:00"}]}"#
+        await test("onboarding state lists terms, privacy and content only and counts only the server's current acceptances") {
+            let (transport, gateway) = fixture([onboardingPolicies,
+                #"{"consents":[{"policy":"terms","version":"t-1","source":"web","accepted_at":"2026-09-02T00:00:00+00:00","withdrawn_at":null,"current":true},{"policy":"privacy","version":"p-1","source":"ios","accepted_at":"2026-09-02T00:00:00+00:00","withdrawn_at":null,"current":false}],"publishing_current":false,"marketing_current":false}"#])
+            let state = try await PrivacyChoicesClient(gateway: gateway).onboardingState()
+            try require(state.accepted.map(\.policy) == ["terms"], "terms accepted at its current version")
+            try require(state.pending.map(\.policy) == ["privacy", "content"], "older privacy acceptance is not current; marketing never bundled")
+            try require(state.minimumAge == 13 && !state.complete && !state.nothingPublished, "age rule read from metadata")
+            try require(transport.calls.map { $0.params["action"] as? String } == ["current", "mine"], "actions")
+        }
+        await test("onboarding with nothing published says so instead of asking for acceptance") {
+            let (_, gateway) = fixture([#"{"policies":[]}"#, #"{"consents":[],"publishing_current":false,"marketing_current":false}"#])
+            let state = try await PrivacyChoicesClient(gateway: gateway).onboardingState()
+            try require(state.nothingPublished && !state.complete && state.minimumAge == nil, "nothing published")
+        }
+        await test("onboarding acceptance sends each shown version from ios, attests age only for the content policy and stops on refusal") {
+            let (_, gateway0) = fixture([onboardingPolicies, #"{"consents":[],"publishing_current":false,"marketing_current":false}"#])
+            let shown = try await PrivacyChoicesClient(gateway: gateway0).onboardingState().pending
+            let (transport, gateway) = fixture([#"{"status":"accepted","policy":"terms","version":"t-1"}"#,
+                                                #"{"status":"accepted","policy":"privacy","version":"p-2"}"#,
+                                                #"{"status":"accepted","policy":"content","version":"c-1"}"#,
+                                                #"{"error":"Policy version changed. Review the current version before accepting.","current":"t-2"}"#])
+            let client = PrivacyChoicesClient(gateway: gateway)
+            do { try await client.acceptOnboarding(shown, ageConfirmed: false); throw Failure(description: "content accepted without age confirmation") }
+            catch CommunityError.server {}
+            try require(transport.calls.isEmpty, "nothing sent without the age confirmation")
+            try await client.acceptOnboarding(shown, ageConfirmed: true)
+            try require(transport.calls.map { $0.params["policy"] as? String } == ["terms", "privacy", "content"], "order")
+            try require(transport.calls.allSatisfy { $0.params["action"] as? String == "accept" && $0.params["source"] as? String == "ios" }, "accept from ios")
+            try require(transport.calls[0].params["attestation"] == nil && transport.calls[1].params["attestation"] == nil, "no attestation for terms or privacy")
+            try require((transport.calls[2].params["attestation"] as? [String: Any])?["age_ok"] as? Bool == true, "content attestation")
+            do { try await client.acceptOnboarding(Array(shown.prefix(1)), ageConfirmed: false); throw Failure(description: "stale version accepted") }
+            catch CommunityError.server {}
         }
 
         // MARK: Notifications (#290)

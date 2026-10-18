@@ -62,6 +62,8 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
             policy.recordVerification(at: now)
             policy.recordRefusal()
             if case .reverify = policy.decision(for: "users.ban", now: now) {} else { throw Failure(description: "server refusal did not clear the window") }
+            // The server gates reset_flags behind step-up (admin-users.sql), so the client must too.
+            if case .reverify = AdminStepUpPolicy().decision(for: "users.reset_flags", now: now) {} else { throw Failure(description: "reset_flags is not step-up protected") }
         }
 
         await test("admin access parses step-up state and server step-up refusals flip the local policy") {

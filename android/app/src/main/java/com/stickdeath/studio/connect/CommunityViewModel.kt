@@ -23,7 +23,9 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     private val lifecycleClient = AccountLifecycleClient(gateway)
     private val notifications = NotificationsClient(gateway)
     private val rooms = RoomsClient(gateway)
-    val roomSession = RoomSessionCoordinator(RoomCommandClient(gateway))
+    private val calendarClient = CalendarClient(gateway)
+    /** Process-wide, so the Studio editor and this panel see the same shared-room session. */
+    val roomSession = RoomRuntime.coordinator(application)
 
     var notice by mutableStateOf(""); private set
     var busy by mutableStateOf(false); private set
@@ -40,6 +42,18 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     var inbox by mutableStateOf<Load<NotificationInbox>>(Load.Idle); private set
     var myRooms by mutableStateOf<Load<List<RoomSummary>>>(Load.Idle); private set
     var roomStatus by mutableStateOf(""); private set
+    var roomDetails by mutableStateOf<Map<String, Load<RoomDetail>>>(emptyMap()); private set
+    var roomMembers by mutableStateOf<Map<String, Load<List<RoomMember>>>>(emptyMap()); private set
+    /** The newest invitation code, shown only to the owner who minted it; never stored. */
+    var invitation by mutableStateOf<Pair<String, String>?>(null); private set
+    var pendingRequests by mutableStateOf<Load<List<PendingRequest>>>(Load.Idle); private set
+    /** Bumped whenever the room session's counters may have changed, so the panel re-reads them. */
+    var roomSessionVersion by mutableStateOf(0L); private set
+    var calendarMonth by mutableStateOf(java.time.YearMonth.now()); private set
+    var calendar by mutableStateOf<Load<CalendarMonth>>(Load.Idle); private set
+    /** Moderator results, from the server only. */
+    var moderation by mutableStateOf(""); private set
+    private var lastAccount: String? = null
 
     val viewer: String? get() = (manager.state as? AccountState.SignedIn)?.takeIf { !it.isAnonymous }?.userId
 
@@ -65,11 +79,20 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
             if (result.isSuccess) done()
         }
     }
-    /** Clears every member view when the account changes or signs out. */
+    /** Clears every member view when the account actually changes or signs out (not when the panel
+     * merely reopens, so a Studio room session keeps running). */
+    fun accountChanged(account: String?) {
+        if (account == lastAccount) return
+        lastAccount = account
+        reset()
+        val session = roomSession.session
+        if (session != null && session.account != account) roomSession.end("The account changed. Synchronisation stopped; your device copy of the project is unchanged.")
+    }
     fun reset() {
         matches = Load.Idle; votes = emptyMap(); warNotices = Load.Idle; myMedia = Load.Idle; challenges = Load.Idle; entries = emptyMap()
         lifecycle = Load.Idle; pendingExport = null; notificationPreferences = Load.Idle; inbox = Load.Idle; myRooms = Load.Idle
-        roomSession.end(); roomStatus = ""; notice = ""
+        roomDetails = emptyMap(); roomMembers = emptyMap(); invitation = null; pendingRequests = Load.Idle; calendar = Load.Idle; moderation = ""
+        roomStatus = ""; notice = ""
     }
 
     // MARK: War Room
@@ -160,42 +183,108 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     // MARK: Shared rooms (#288)
 
     fun loadRooms() = fetch({ myRooms = it }) { rooms.myRooms() }
-    fun startRoomSync(room: RoomSummary) {
+    fun loadPendingRequests() = fetch({ pendingRequests = it }) { rooms.pendingRequests() }
+    /** Summary and members of one room; the session begins with the server's edit right and project. */
+    fun openRoom(room: RoomSummary) {
         val me = viewer ?: run { notice = "Sign in with a full account to open a shared room."; return }
-        val canEdit = room.ownerId == me || room.sharesEdit
+        fetch<RoomDetail>({ load ->
+            roomDetails = roomDetails + (room.id to load)
+            if (load is Load.Loaded) {
+                val detail = load.value
+                roomSession.begin(room.id, detail.commandRevision ?: room.commandRevision, detail.canEdit == true, me, detail.projectID)
+                roomSessionVersion++
+            }
+        }) { rooms.summary(room.id) }
+        fetch<List<RoomMember>>({ roomMembers = roomMembers + (room.id to it) }) { rooms.members(room.id) }
+    }
+    fun mintInvitation(room: RoomSummary) {
+        if (busy) return
+        val generation = manager.generation
+        busy = true; notice = "Creating an invitation…"
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { roomSession.begin(room.id, room.commandRevision, canEdit, me) }
-            roomStatus = describeRoom("Synchronisation started at revision ${roomSession.head}.")
+            val result = withContext(Dispatchers.IO) { runCatching { rooms.mintInvitation(room.id) } }
+            busy = false
+            if (generation != manager.generation) { notice = CommunityException.Stale().message!!; return@launch }
+            result.onSuccess { invitation = room.id to it; notice = "Invitation created. Pending requests from older codes were revoked."; openRoom(room) }
+                .onFailure { notice = it.message ?: "The invitation was not created." }
         }
     }
+    fun revokeInvitations(room: RoomSummary) = act("Revoking invitations…", "Invitations and pending requests revoked.", { rooms.revokeInvitations(room.id) }) {
+        if (invitation?.first == room.id) invitation = null
+        openRoom(room)
+    }
+    fun approveMember(room: RoomSummary, member: String) = act("Approving…", "Request approved. The member can now open the shared project.", { rooms.approve(room.id, member) }) { openRoom(room) }
+    fun declineMember(room: RoomSummary, member: String) = act("Declining…", "Request declined. The code they used cannot admit them again.", { rooms.decline(room.id, member) }) { openRoom(room) }
+    fun removeMember(room: RoomSummary, member: String) = act("Removing…", "Member removed. Their device copy is theirs; they no longer receive shared edits.", { rooms.remove(room.id, member) }) { openRoom(room) }
+    fun blockMember(room: RoomSummary, member: String) = act("Blocking…", "Member removed and blocked from requesting this room again.", { rooms.block(room.id, member) }) { openRoom(room) }
+    fun setRole(room: RoomSummary, member: String, role: RoomRole) = act("Changing role…", "Role changed to ${role.wire}.", { rooms.setRole(room.id, member, role) }) { openRoom(room) }
+    fun closeOrLeave(room: RoomSummary, owner: Boolean) = act(if (owner) "Closing room…" else "Leaving room…",
+        if (owner) "Room closed. Members lost access; no project was deleted." else "You left the room. Synchronisation stopped.",
+        { if (owner) rooms.close(room.id) else rooms.leave(room.id) }) {
+        if (roomSession.session?.room == room.id) roomSession.end(if (owner) "Room closed. Your device copy of the project is unchanged." else "You left the room. Your device copy of the project is unchanged.")
+        roomDetails = roomDetails - room.id; roomMembers = roomMembers - room.id; roomSessionVersion++
+        loadRooms()
+    }
+
+    /** Pull and push once from the panel; Studio does the same every few seconds while it shares. */
     fun checkRoomEdits() {
         if (roomSession.session == null) return
         val generation = manager.generation
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { roomSession.catchUp() to roomSession.drain() } }
+            val fetched = withContext(Dispatchers.IO) { runCatching { roomSession.fetchRemote() } }
             if (generation != manager.generation) return@launch
-            roomStatus = result.fold({ (catchUp, drain) ->
+            roomSession.applyQueued()
+            val drained = withContext(Dispatchers.IO) { runCatching { roomSession.drain() } }
+            roomSession.applyQueued()
+            roomSessionVersion++
+            roomStatus = fetched.fold({ catchUp ->
                 val received = when (catchUp) {
                     RoomCommandSync.CatchUpOutcome.UpToDate -> "No new shared edits."
                     is RoomCommandSync.CatchUpOutcome.Received -> "${catchUp.count} new shared edit(s) received."
                     is RoomCommandSync.CatchUpOutcome.Gap -> "Some edits are on an older page; check again."
                     RoomCommandSync.CatchUpOutcome.AccessEnded -> roomSession.endReason ?: "Room access ended."
                 }
-                val sent = when (drain) {
+                val sent = when (val drain = drained.getOrNull()) {
                     is RoomSessionCoordinator.DrainOutcome.Sent -> " ${drain.count} local edit(s) sent."
                     is RoomSessionCoordinator.DrainOutcome.Conflict -> " Apply ${drain.missing} remote edit(s) before yours are sent."
                     is RoomSessionCoordinator.DrainOutcome.Held -> " A conflicting edit needs your decision."
                     is RoomSessionCoordinator.DrainOutcome.Stopped -> " ${drain.reason}"
-                    RoomSessionCoordinator.DrainOutcome.Idle -> ""
+                    RoomSessionCoordinator.DrainOutcome.Idle, null -> drained.exceptionOrNull()?.let { " ${it.message ?: "Sending failed."}" } ?: ""
                 }
                 describeRoom(received + sent)
             }, { it.message ?: "Synchronisation failed." })
         }
     }
-    fun leaveRoomSync() { roomSession.end("You stopped synchronising. Your device copy of the project is unchanged."); roomStatus = roomSession.endReason.orEmpty() }
-    private fun describeRoom(prefix: String): String {
+    fun resolveConflict(keepMine: Boolean) { roomSession.resolveHeldConflict(keepMine); roomSessionVersion++; checkRoomEdits() }
+    fun skipBlockedEdit() { roomSession.skipBlockedRemote(); roomSessionVersion++; checkRoomEdits() }
+    fun leaveRoomSync() { roomSession.end("You stopped synchronising. Your device copy of the project is unchanged."); roomStatus = roomSession.endReason.orEmpty(); roomSessionVersion++ }
+    fun noteSessionChanged() { roomSessionVersion++ }
+    fun describeRoom(prefix: String = ""): String {
         val remote = roomSession.pendingRemoteCount
-        val editor = if (roomSession.editorAttached) "" else if (remote > 0) " $remote remote edit(s) are queued and not applied in Studio: the Android editor hookup for shared commands is not built yet." else ""
-        return "$prefix Head revision ${roomSession.head}.$editor"
+        val waiting = when {
+            remote == 0 -> ""
+            roomSession.handoff != null -> " $remote remote edit(s) waiting to apply in Studio."
+            else -> " $remote remote edit(s) waiting until you synchronise the shared project open in Studio."
+        }
+        return "$prefix Head revision ${roomSession.head}.$waiting".trim()
+    }
+
+    // MARK: Challenge moderation (server-gated: moderation permission with MFA)
+
+    private fun moderate(progress: String, success: String, block: () -> Unit) = act(progress, success, block) { moderation = success; loadChallenges() }
+    fun createChallenge(title: String, brief: String, reward: String) =
+        moderate("Creating the draft challenge…", "Draft challenge created. Schedule it to make it visible.") { challengesClient.create(title, brief, reward) }
+    fun scheduleChallenge(challenge: ChallengeSummary, draft: ChallengeScheduleDraft) =
+        moderate("Scheduling…", "Challenge scheduled.") { challengesClient.schedule(challenge.id, challenge.revision, draft) }
+    fun cancelChallenge(challenge: ChallengeSummary, reason: String) =
+        moderate("Cancelling…", "Challenge cancelled.") { challengesClient.cancel(challenge.id, challenge.revision, reason) }
+    fun removeEntry(challenge: ChallengeSummary, entry: String, reason: String) = act("Removing the entry…", "Entry removed and its votes cleared.",
+        { challengesClient.removeEntry(challenge.id, challenge.revision, entry, reason) }) { moderation = "Entry removed."; loadChallenges(); loadEntries(challenge.id) }
+
+    // MARK: Calendar (read-only)
+
+    fun loadCalendar(month: java.time.YearMonth = calendarMonth) {
+        calendarMonth = month
+        fetch({ calendar = it }) { calendarClient.month(month) }
     }
 }

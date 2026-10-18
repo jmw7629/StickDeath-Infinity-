@@ -4536,6 +4536,11 @@ final class StudioViewModel: ObservableObject {
     }
 
     func originalImageSource(_ assetID: String) -> StoredImageSource? { retainedRasterFrames[assetID]?.sourceImage }
+    /// Digests of licensed-library originals this project (including its undo
+    /// history) uses. A catalogue revision keeps these cached files (#198).
+    var catalogueOriginalDigests: Set<String> {
+        Set(retainedRasterFrames.values.compactMap { $0.sourceImage?.catalogueAttribution?["originalSHA256"] })
+    }
     var managedImageByteCount: Int {
         retainedRasterFrames.values.filter { $0.sourceImage != nil }.reduce(0) { $0 + ($1.imageData?.count ?? 0) + ($1.sourceImage?.originalData.count ?? 0) }
     }

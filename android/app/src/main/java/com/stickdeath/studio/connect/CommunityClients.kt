@@ -142,6 +142,43 @@ sealed class AdmissionOutcome { abstract val room: String
 }
 data class PendingRequest(val roomId: String, val title: String, val ownerId: String, val expiresAt: String)
 
+/** Owner-chosen project share reference: a local project's identifier only (iOS `RoomProjectShare`). */
+object RoomProjectShare {
+    const val PREFIX = "device-project:"
+    /** The device project id named by a room's reference, if it is one. */
+    fun projectID(reference: String?): String? =
+        reference?.takeIf { it.startsWith(PREFIX) }?.removePrefix(PREFIX)?.takeIf { UUID_PATTERN.matches(it) }?.lowercase()
+}
+
+enum class RoomRole(val wire: String) { Editor("editor"), Viewer("viewer") }
+
+/** `sdi_room_manage` summary (rooms-v2.sql). Absent fields stay null and are shown as unavailable. */
+data class RoomDetail(val roomId: String, val title: String?, val ownerId: String?, val projectRef: String?, val projectTitle: String?,
+                      val permissions: List<String>?, val projectRevision: Int?, val commandRevision: Int?, val myRole: String?,
+                      val canEdit: Boolean?, val members: Int?) {
+    val projectID get() = RoomProjectShare.projectID(projectRef)
+    companion object {
+        fun parse(o: JSONObject) = RoomDetail(requireUuidOr(o.need("room_id")), o.str("title"), o.str("owner_id")?.let(::requireUuidOr), o.str("project_ref"),
+            o.str("project_title"), o.optJSONArray("permissions")?.let { a -> (0 until a.length()).map { a.getString(it) } },
+            o.int("project_revision"), o.int("command_revision")?.coerceAtLeast(0), o.str("my_role"), o.bool("can_edit"),
+            o.int("members")?.also { if (it < 0) throw CommunityException.InvalidResponse("The server reported a negative member count.") })
+    }
+}
+
+/** `sdi_room_members` row visible under RLS (the owner sees every row; a member sees their own). */
+data class RoomMember(val userId: String, val ownerApproved: Boolean, val memberAccepted: Boolean, val revoked: Boolean, val role: String?, val requestExpiresAt: String?) {
+    val isActive get() = ownerApproved && memberAccepted && !revoked
+    /** A recipient's consented request still waiting for the owner. */
+    val awaitsApproval get() = memberAccepted && !ownerApproved && !revoked
+    val statusText get() = when { revoked -> "Removed"; isActive -> "Accepted"; memberAccepted -> "Awaiting owner approval"; else -> "Pending" }
+    companion object {
+        fun parse(o: JSONObject): RoomMember {
+            fun b(key: String) = o.bool(key) ?: throw CommunityException.InvalidResponse("A membership row was incomplete.")
+            return RoomMember(requireUuidOr(o.need("user_id")), b("owner_approved"), b("member_accepted"), b("revoked"), o.str("role"), o.str("request_expires_at"))
+        }
+    }
+}
+
 class RoomsClient(private val gateway: CommunityGateway) {
     /** Rooms visible under RLS (owned or accepted); closed rooms are filtered out. */
     fun myRooms(): List<RoomSummary> = gateway.rows("sdi_rooms", "*", emptyList(), 100).objects()
@@ -153,6 +190,21 @@ class RoomsClient(private val gateway: CommunityGateway) {
         val requests = gateway.call("sdi_room_manage", JSONObject().put("action", "my_requests")).optJSONArray("requests")
             ?: throw CommunityException.InvalidResponse("Pending requests unavailable.")
         return requests.objects().map { PendingRequest(it.need("room_id"), it.str("title").orEmpty(), it.need("owner_id"), it.need("request_expires_at")) }
+    }
+
+    /** The room's project share, the caller's role and edit right, and its revisions. */
+    fun summary(room: String): RoomDetail {
+        val reply = gateway.call("sdi_room_manage", JSONObject().put("action", "summary").put("room", requireUuid(room)))
+        val detail = RoomDetail.parse(reply)
+        if (detail.roomId != room.lowercase()) throw CommunityException.InvalidResponse("Room summary unavailable.")
+        return detail
+    }
+    fun members(room: String): List<RoomMember> = gateway.rows("sdi_room_members", "*", listOf("room_id" to requireUuid(room)), 100)
+        .objects().map(RoomMember::parse).sortedBy { it.userId }
+    /** Owner only; the server refuses an editor role unless the project is shared with edit permission. */
+    fun setRole(room: String, member: String, role: RoomRole) {
+        val reply = gateway.call("sdi_room_manage", JSONObject().put("action", "set_role").put("room", requireUuid(room)).put("subject", requireUuid(member)).put("role", role.wire))
+        if (reply.str("status") != "updated") throw CommunityException.InvalidResponse("Role change was not confirmed.")
     }
 
     fun previewInvitation(raw: String): InvitationPreview {
@@ -187,6 +239,9 @@ class RoomsClient(private val gateway: CommunityGateway) {
         return code
     }
     fun revokeInvitations(room: String) = expect(JSONObject().put("action", "revoke_invites").put("room", requireUuid(room)), "updated")
+    /** Declining a pending request revokes it (room-invitations.sql `remove`); the requester can ask
+     * again only with a new code. */
+    fun decline(room: String, member: String) = remove(room, member)
     fun approve(room: String, member: String) = expect(JSONObject().put("action", "approve").put("room", requireUuid(room)).put("subject", requireUuid(member)), "updated")
     fun remove(room: String, member: String) = expect(JSONObject().put("action", "remove").put("room", requireUuid(room)).put("subject", requireUuid(member)), "updated")
     fun block(room: String, member: String) = expect(JSONObject().put("action", "block").put("room", requireUuid(room)).put("subject", requireUuid(member)), "updated")

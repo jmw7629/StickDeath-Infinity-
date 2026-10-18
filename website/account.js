@@ -26,6 +26,7 @@
   const PROVIDER_LABEL = { apple: 'Continue with Apple', google: 'Continue with Google', github: 'Continue with GitHub', microsoft: 'Continue with Microsoft' };
   const PROVIDER_ID = { apple: 'apple', google: 'google', github: 'github', microsoft: 'azure' };
   let session = null; let timer = null;
+  let epoch = 0;   // bumped on every sign-in and sign-out; replies from an older epoch are dropped
   async function call(path, { method = 'POST', body, token, query } = {}) {
     const headers = { apikey, 'Content-Type': 'application/json', Accept: 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -45,12 +46,14 @@
     providers.forEach((p) => { const a = document.createElement('a'); a.className = 'button ghost'; a.textContent = PROVIDER_LABEL[p]; const u = new URL('/auth/v1/authorize', base); u.searchParams.set('provider', PROVIDER_ID[p]); u.searchParams.set('redirect_to', location.origin + location.pathname); a.href = u.href; box.append(a); });
   }
   function adopt(data) {
+    epoch += 1;
     session = { access_token: data.access_token, refresh_token: data.refresh_token, expires_at: Date.now() + (Number(data.expires_in) || 3600) * 1000, user: data.user || null };
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { session = null; renderSignedOut('Your session expired. Sign in again.'); }, Math.max(10000, session.expires_at - Date.now() - 5000));
     renderSignedIn();
   }
   function renderSignedOut(message) {
+    epoch += 1;
     show('account-signin', true); show('account-profile', false);
     for (const id of ['account-notices', 'account-consents', 'account-support']) show(id, false);
     for (const id of ['notices-list', 'consents-list', 'support-request-list']) $(id).replaceChildren();
@@ -111,12 +114,21 @@
   // --- signed-in services: notices, policies, support, plans ------------------------
   // Each reads or writes only through the sdi_* RPCs with the member's own session. A
   // refusal or a missing service is shown as the server's answer, never as success.
-  const rpc = (name, body) => call(`/rest/v1/rpc/${name}`, { token: session.access_token, body });
+  // A reply that arrives after sign-out (or after another account signed in) is
+  // discarded: it rejects with error.stale and nothing is rendered from it.
+  const rpc = async (name, body) => {
+    const started = epoch;
+    if (!session) { const error = new Error('Signed out.'); error.stale = true; throw error; }
+    const result = await call(`/rest/v1/rpc/${name}`, { token: session.access_token, body });
+    if (started !== epoch) { const error = new Error('Signed out.'); error.stale = true; throw error; }
+    return result;
+  };
   const para = (text, cls) => { const p = document.createElement('p'); if (cls) p.className = cls; p.textContent = text; return p; };
   const unavailable = (what, error) => para(`${what} unavailable: ${error && error.status === 404 ? 'the service is not installed on the backend yet' : (error && error.message) || 'no answer'}.`, 'quiet');
   const when = (iso) => { const d = iso ? new Date(iso) : null; return d && !Number.isNaN(d.getTime()) ? d.toLocaleString() : ''; };
 
   async function loadNotices() {
+    if (!session) return;
     const box = $('notices-list'); show('account-notices', true); box.replaceChildren(para('Loading notices…', 'quiet'));
     try {
       const result = await rpc('sdi_account_notices', { action: 'list' });
@@ -130,18 +142,19 @@
         li.append(strong, document.createTextNode(` — ${n.body} (${when(n.created_at)})`));
         if (!n.read) {
           const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Mark read';
-          b.addEventListener('click', async () => { b.disabled = true; try { await rpc('sdi_account_notices', { action: 'mark_read', notice: n.id }); } catch (_) { /* list reload shows the server state */ } loadNotices(); });
+          b.addEventListener('click', async () => { b.disabled = true; try { await rpc('sdi_account_notices', { action: 'mark_read', notice: n.id }); } catch (error) { if (error && error.stale) return; } loadNotices(); });
           li.append(' ', b);
         }
         list.append(li);
       }
       box.replaceChildren(list);
-    } catch (error) { box.replaceChildren(unavailable('Account notices', error)); }
+    } catch (error) { if (error && error.stale) return; box.replaceChildren(unavailable('Account notices', error)); }
   }
 
   const POLICY_LABEL = { terms: 'Terms of service', privacy: 'Privacy policy', content: 'Content and age policy', publishing: 'Official-channel publishing permission', marketing: 'Marketing reuse permission' };
   const consentStatus = (t) => { $('consents-status').textContent = t; };
   async function loadConsents() {
+    if (!session) return;
     const box = $('consents-list'); show('account-consents', true); box.replaceChildren(para('Loading policy versions…', 'quiet'));
     try {
       const [current, mine] = await Promise.all([rpc('sdi_consent_action', { action: 'current' }), rpc('sdi_consent_action', { action: 'mine' })]);
@@ -171,7 +184,7 @@
             try {
               const r = await rpc('sdi_consent_action', { action: 'accept', policy: policy.policy, version: policy.version, source: 'web', attestation: ageBox ? { age_ok: true } : {} });
               consentStatus(r && r.status === 'accepted' ? `Accepted ${POLICY_LABEL[policy.policy] || policy.policy} version ${r.version}.` : `Not recorded: ${(r && r.error) || 'no answer'}`);
-            } catch (error) { consentStatus(`Not recorded: ${error.message}`); }
+            } catch (error) { if (error && error.stale) return; consentStatus(`Not recorded: ${error.message}`); }
             loadConsents();
           });
           row.append(b);
@@ -182,7 +195,7 @@
             if (!confirm(`Withdraw ${POLICY_LABEL[policy.policy]}? ${effect}`)) return;
             b.disabled = true;
             try { const r = await rpc('sdi_consent_action', { action: 'withdraw', policy: policy.policy }); consentStatus(r && r.status === 'withdrawn' ? 'Permission withdrawn and recorded.' : `Not withdrawn: ${(r && r.error) || 'no answer'}`); }
-            catch (error) { consentStatus(`Not withdrawn: ${error.message}`); }
+            catch (error) { if (error && error.stale) return; consentStatus(`Not withdrawn: ${error.message}`); }
             loadConsents();
           });
           row.append(b);
@@ -190,13 +203,14 @@
         li.append(row); list.append(li);
       }
       box.replaceChildren(list);
-    } catch (error) { box.replaceChildren(unavailable('Policies', error)); }
+    } catch (error) { if (error && error.stale) return; box.replaceChildren(unavailable('Policies', error)); }
   }
 
   const SUPPORT_STATUS = { open: 'Open', in_progress: 'In progress', waiting_on_member: 'Waiting for you', resolved: 'Resolved', withdrawn: 'Withdrawn' };
   let supportKey = null;   // reused until the server confirms, so a retried send cannot file twice
   const supportStatus = (t) => { $('support-request-status').textContent = t; };
   async function loadSupport() {
+    if (!session) return;
     const box = $('support-request-list'); show('account-support', true); box.replaceChildren(para('Loading your requests…', 'quiet'));
     try {
       const result = await rpc('sdi_support_action', { action: 'list_mine' });
@@ -211,15 +225,15 @@
         const row = document.createElement('div'); row.className = 'row';
         if (['open', 'in_progress', 'waiting_on_member'].includes(r.status)) {
           const w = document.createElement('button'); w.type = 'button'; w.textContent = 'Withdraw';
-          w.addEventListener('click', async () => { w.disabled = true; try { const a = await rpc('sdi_support_action', { action: 'withdraw', request: r.id }); supportStatus(a && a.status === 'confirmed' ? `${r.receipt} withdrawn.` : `Not withdrawn: ${(a && a.error) || 'no answer'}`); } catch (error) { supportStatus(`Not withdrawn: ${error.message}`); } loadSupport(); });
+          w.addEventListener('click', async () => { w.disabled = true; try { const a = await rpc('sdi_support_action', { action: 'withdraw', request: r.id }); supportStatus(a && a.status === 'confirmed' ? `${r.receipt} withdrawn.` : `Not withdrawn: ${(a && a.error) || 'no answer'}`); } catch (error) { if (error && error.stale) return; supportStatus(`Not withdrawn: ${error.message}`); } loadSupport(); });
           row.append(w);
         }
         const d = document.createElement('button'); d.type = 'button'; d.textContent = 'Delete text';
-        d.addEventListener('click', async () => { if (!confirm(`Delete the text of ${r.receipt}? The receipt stays for 30 days.`)) return; d.disabled = true; try { const a = await rpc('sdi_support_action', { action: 'delete', request: r.id }); supportStatus(a && a.status === 'confirmed' ? `${r.receipt} deleted.` : `Not deleted: ${(a && a.error) || 'no answer'}`); } catch (error) { supportStatus(`Not deleted: ${error.message}`); } loadSupport(); });
+        d.addEventListener('click', async () => { if (!confirm(`Delete the text of ${r.receipt}? The receipt stays for 30 days.`)) return; d.disabled = true; try { const a = await rpc('sdi_support_action', { action: 'delete', request: r.id }); supportStatus(a && a.status === 'confirmed' ? `${r.receipt} deleted.` : `Not deleted: ${(a && a.error) || 'no answer'}`); } catch (error) { if (error && error.stale) return; supportStatus(`Not deleted: ${error.message}`); } loadSupport(); });
         row.append(d); li.append(row); list.append(li);
       }
       box.replaceChildren(list);
-    } catch (error) { box.replaceChildren(unavailable('Support requests', error)); }
+    } catch (error) { if (error && error.stale) return; box.replaceChildren(unavailable('Support requests', error)); }
   }
   $('support-request-form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -236,7 +250,7 @@
         supportKey = null; $('support-request-subject').value = ''; $('support-request-body').value = '';
         supportStatus(`Received. Your receipt is ${r.receipt}; quote it if you write again.`);
       } else supportStatus(`Not sent: ${(r && r.error) || 'no answer'}`);
-    } catch (error) { supportStatus(`Not sent: ${error.message}. Retrying sends the same request, never a second one.`); }
+    } catch (error) { if (error && error.stale) return; supportStatus(`Not sent: ${error.message}. Retrying sends the same request, never a second one.`); }
     loadSupport();
   });
   ['support-request-subject', 'support-request-body'].forEach((id) => $(id).addEventListener('input', () => { supportKey = null; }));

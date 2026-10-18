@@ -13,7 +13,7 @@ from test_budget import build_shard_budget, build_test_budget
 SOURCE = (ROOT / 'Tests/NativeUI/StudioSmokeUITests.swift').read_text()
 TREE = json.loads((Path(__file__).parent / 'Fixtures/xcresult-passed-tree.json').read_text())
 BINDING = receipt.identity('1' * 40, '1234', '1')
-DEPENDENCIES = {k: 'success' for k in ('source-security', 'spatter-production-tests', 'native-production-tests', 'native-ios-shards')}
+DEPENDENCIES = {k: 'success' for k in ('source-security', 'spatter-production-tests', 'native-production-tests', 'native-ios-shards', 'native-ios-journeys')}
 
 
 def summary(count):
@@ -128,7 +128,7 @@ class NativeSharding(unittest.TestCase):
         self.assertIn('      fail-fast: false',shards)
         self.assertIn('      max-parallel: 1',shards)
         self.assertEqual(shards.count('          - shard:'),2)
-        self.assertIn('needs: [source-security, spatter-production-tests, native-production-tests, native-ios-shards]',aggregate)
+        self.assertIn('needs: [source-security, spatter-production-tests, native-production-tests, native-ios-shards, native-ios-journeys]',aggregate)
         self.assertIn('if: ${{ always() }}',aggregate)
         self.assertIn('SDI_NATIVE_SHARD_INDEX: ${{ matrix.shard }}',shards)
         for gate in ('native-review-rules','native-review-app','native-review-upload','native-auth'):
