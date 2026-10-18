@@ -34,9 +34,17 @@ throwaway local PostgreSQL 16 with stubbed Supabase pieces
   banner. Contracts and fail-closed validation live in `AdminOperationsClient.swift`
   and are covered by `Tests/CommunityAdmin`.
 - Web (`website/admin.html`): panels for operations status and the agent audit;
-  forms for directory search, account actions (reason and confirmation required)
-  and run/audit history search. Render approvals and moderation decisions remain
-  native-only because the exact render is played before a decision.
+  forms for directory search, account actions including reset flags (reason and
+  confirmation required), run/audit history search, publishing stages and job
+  history (#245), the diagnostics read model (#291), announcement compose, schedule,
+  cancel and delivery results (#290), agent controls (pause, resume, caps,
+  permissions, publish and roll back instructions; #284) and finance records
+  (expense, CSV import, correction, reconciliation) with period summary,
+  reconciliation, agent-cost and ledger export views plus a client-side CSV download
+  with spreadsheet formulas neutralised (#254). Render approvals, moderation decisions
+  and publishing withdrawals remain native-only because the exact render is played
+  before a decision. Verified against a mocked backend in a local browser only; no
+  live administrator session has exercised these forms.
 
 ## Owner gates and remaining work
 
@@ -50,8 +58,9 @@ throwaway local PostgreSQL 16 with stubbed Supabase pieces
   `backend.ops.sweeps`); not wired in this change.
 - Publication hold during an emergency stop is not yet enforced by the publishing
   worker lease; the emergency stop covers agent runs and proposals only.
-- Affected members now get in-app account notices (`sdi_account_notices`); no
-  client reads them yet, and email/push delivery of these notices is not wired.
+- Affected members now get account notices (`sdi_account_notices`), shown on the
+  website account page; the native app does not read them yet, and email/push
+  delivery of these notices is not wired.
   Web parity for render approvals remains open.
 - `backend.ops.sweeps` now reports each run through `sdi_ops_report`
   (`retention_sweep`), and `backend.ops.report` lets host jobs report backups,
