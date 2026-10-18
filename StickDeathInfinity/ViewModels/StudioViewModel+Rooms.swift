@@ -20,6 +20,7 @@ final class StudioRoomBridge {
     private(set) var lastSync: Date?
     private weak var studio: StudioViewModel?
     private var loop: Task<Void, Never>?
+    private var loopToken: UUID?
     /// Document revision after the last change the bridge accounted for
     /// (shared, replayed or view-only). Any other revision change was made by
     /// a path with no shared command (for example Undo) and is reported.
@@ -37,13 +38,18 @@ final class StudioRoomBridge {
         StudioEditObservers.commandsCommitted = { [weak self] request, receipt in self?.committed(request, receipt) }
         StudioEditObservers.elementsCommitted = { [weak self] before, after, frameID in self?.committed(before: before, after: after, frameID: frameID) }
         loop?.cancel()
+        // A replaced loop must not detach the hooks this start installed when it
+        // finally observes its cancellation, so each loop carries its own token.
+        let token = UUID()
+        loopToken = token
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.coordinator.handoff != nil else { break }
                 await self.synchronise()
                 try? await Task.sleep(for: interval)
             }
-            self?.detach()
+            guard let self, self.loopToken == token else { return }
+            self.detach()
         }
     }
 
@@ -54,6 +60,7 @@ final class StudioRoomBridge {
 
     private func detach() {
         loop = nil
+        loopToken = nil
         coordinator.applyRemote = nil
         StudioEditObservers.commandsCommitted = nil
         StudioEditObservers.elementsCommitted = nil
