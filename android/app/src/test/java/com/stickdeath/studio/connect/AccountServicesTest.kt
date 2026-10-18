@@ -29,9 +29,20 @@ class AccountServicesTest {
         val requested = lifecycle("""{"status":"pending","scheduled_for":"2026-10-25T00:00:00+00:00","revision":2}""")
         val status = AccountLifecycleClient(CommunityGateway(FixedSession(), requested)).requestDeletion()
         assertTrue(status.isOpen); assertTrue(status.canCancel); assertEquals(2, status.revision)
-        // An already open request comes back without a revision: it cannot be cancelled until refreshed.
-        val reopened = AccountLifecycleClient(CommunityGateway(FixedSession(), lifecycle("""{"status":"pending","scheduled_for":"2026-10-25T00:00:00+00:00"}"""))).requestDeletion()
-        assertFalse(reopened.canCancel)
+        // An already open request comes back without a revision: the status is re-read so it can be cancelled.
+        val reopenedTransport = ScriptedTransport { request ->
+            if (body(request).getString("action") == "request_deletion") ScriptedTransport.json(200, """{"status":"pending","scheduled_for":"2026-10-25T00:00:00+00:00"}""")
+            else ScriptedTransport.json(200, """{"deletion":{"state":"pending","scheduled_for":"2026-10-25T00:00:00+00:00","revision":3},"exports_remaining_today":3,"note":""}""")
+        }
+        val reopened = AccountLifecycleClient(CommunityGateway(FixedSession(), reopenedTransport)).requestDeletion()
+        assertTrue(reopened.canCancel); assertEquals(3, reopened.revision)
+        assertEquals(listOf("request_deletion", "status"), reopenedTransport.requests.map { body(it).getString("action") })
+        // Without a readable status the reply stands: not cancellable until refreshed.
+        val unreadable = ScriptedTransport { request ->
+            if (body(request).getString("action") == "request_deletion") ScriptedTransport.json(200, """{"status":"processing"}""")
+            else ScriptedTransport.json(200, """{"deletion":null,"note":""}""")
+        }
+        assertFalse(AccountLifecycleClient(CommunityGateway(FixedSession(), unreadable)).requestDeletion().canCancel)
         val unknown = lifecycle("""{"status":"deleted"}""")
         expect<CommunityException.InvalidResponse> { AccountLifecycleClient(CommunityGateway(FixedSession(), unknown)).requestDeletion() }
         val cancel = lifecycle("""{"status":"cancelled"}""")

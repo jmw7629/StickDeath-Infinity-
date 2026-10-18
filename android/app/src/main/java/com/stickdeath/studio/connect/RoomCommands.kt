@@ -12,10 +12,14 @@ import java.util.UUID
 // No chat, calls, camera, microphone or screen sharing exist in this protocol.
 
 object RoomQuotaPolicy {
+    /** The server's bound (`octet_length(payload::text)`, rooms-v2.sql). */
     const val COMMAND_PAYLOAD_BYTES = 65_536
+    /** What a client sends: compact JSON here, but the server measures jsonb's text form, which
+     * adds spaces, so keep the iOS `StudioSharedEdit.maximumPayloadBytes` margin. */
+    const val CLIENT_PAYLOAD_BYTES = 60_000
     const val ROOM_REVISION_LIMIT = 100_000
     fun remainingRevisions(head: Int) = maxOf(0, ROOM_REVISION_LIMIT - maxOf(0, head))
-    fun payloadFits(payload: JSONObject) = payload.toString().toByteArray(Charsets.UTF_8).size <= COMMAND_PAYLOAD_BYTES
+    fun payloadFits(payload: JSONObject) = payload.toString().toByteArray(Charsets.UTF_8).size <= CLIENT_PAYLOAD_BYTES
 }
 
 data class RoomCommandRecord(val revision: Int, val opId: String, val author: String?, val baseRevision: Int, val kind: String, val payload: JSONObject, val createdAt: String) {
