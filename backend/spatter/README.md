@@ -151,7 +151,22 @@ callable must return the private HTTPS preview URL for the owner's review row;
 without one the render fails before running. Drafts stay in the output root for
 review; failed runs are deleted. Nothing is uploaded, released or scheduled:
 release still needs the owner's approval of the exact render digest.
-`test_renderer_cli.py` drives fake executables; the macOS CI step
+Daily plans use `briefs.v3`: `plan_brief` shortens a plan (never below 2 s)
+until it fits the app planner's element budget at 24 FPS (`fits_element_budget`
+mirrors `SpatterMultiClauseBrief.prepare`), so the renderer FPS is capped at 24.
+
+Private previews (`draft_preview.py`): with `SDI_DRAFT_PREVIEW_OWNER_ID`,
+`SDI_INTAKE_ORIGIN`, `SDI_PREVIEW_SIGNING_KEY_FILE` and `SDI_INTAKE_DIRECTORY`
+set, `renderer_from_env` uses `DraftPreviewStore`: it copies the verified MP4
+into the intake directory, records owner, digest, size and retention (default
+7 days, at most 14; `SDI_DRAFT_PREVIEW_RETENTION_SECONDS`) and signs a
+`PreviewLinks` URL (at most 15 minutes). The intake host's `PreviewApplication`
+serves it only to a link signed for that owner while the record is live (the
+same owner variable enables `combined_authority` in `ingestion/application.py`).
+`DraftPreviewStore.link()` re-signs a fresh link; `expire()` deletes expired
+copies. Without the owner id the renderer fails with the OWNER-GATED preview
+message.
+`test_renderer_cli.py` and `test_draft_preview.py` drive fake executables; the macOS CI step
 "Render one daily brief with the headless draft renderer" runs the real binary
 through `scripts/backend/verify_draft_renderer_cli.py`.
 

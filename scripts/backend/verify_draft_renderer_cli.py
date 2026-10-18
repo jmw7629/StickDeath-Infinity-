@@ -11,14 +11,16 @@ macOS only (the CLI uses AVFoundation). Usage:
 2. Re-checks the receipt fields that matter for owner review against the files.
 3. Confirms a brief over the planner's element budget is refused (exit 2).
 
-The preview publisher here only returns a placeholder https URL for the
-in-memory store: nothing is uploaded or published.
+Previews use the real owner-only DraftPreviewStore on a throwaway private
+directory with a random key; nothing is uploaded, fetched or published.
 """
 import datetime as dt
 import hashlib
 import json
+import secrets
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +28,8 @@ sys.path.insert(0, str(ROOT))
 
 from backend.spatter import draft_queue as dq  # noqa: E402
 from backend.spatter import renderer_cli as rc  # noqa: E402
+from backend.ingestion.preview import PreviewLinks  # noqa: E402
+from backend.spatter.draft_preview import DraftPreviewStore, draft_upload_id  # noqa: E402
 
 DAY = dt.date(2026, 10, 18)
 NOW = dt.datetime(2026, 10, 18, 9, 0, tzinfo=dt.timezone.utc)
@@ -37,11 +41,18 @@ def main(cli: Path, work: Path) -> None:
     assert len(str(plan.seed)) == 19, plan.seed
     print("BRIEF", plan.brief)
     previews = []
+    # The real owner-only preview store on a throwaway private intake directory and
+    # a random per-run signing key; the link is checked but never fetched over a network.
+    intake = work.resolve() / "intake"
+    intake.mkdir(mode=0o700)
+    links = PreviewLinks("https://intake.invalid", secrets.token_bytes(32), lifetime=600)
+    owner = str(uuid.uuid4())
+    drafts = DraftPreviewStore(intake, links, owner, retention=3600)
 
-    def preview(path, sha, _plan):
+    def preview(path, sha, plan):
         assert hashlib.sha256(Path(path).read_bytes()).hexdigest() == sha
         previews.append((str(path), sha))
-        return "https://private.invalid/v1/render-previews/" + sha
+        return drafts.publish(Path(path), sha, plan)
 
     renderer = rc.CLIRenderer(cli.resolve(), work.resolve() / "drafts", preview, fps=24, width=640, height=360, timeout=300)
     store = dq.InMemoryStore(now=lambda: NOW)
@@ -59,6 +70,10 @@ def main(cli: Path, work: Path) -> None:
     assert abs(movie_counts["decodedDurationSeconds"] - plan.seconds) < 0.001, quality
     assert not any(f["kind"] in ("blankFrame", "frozenFrame", "outOfCanvas") for f in quality["findings"]), quality
     assert len(previews) == 1 and previews[0][1] == job["sha256"]
+    upload = draft_upload_id(job["sha256"])
+    assert drafts.authority(upload, owner, job["sha256"]) is not None
+    assert drafts.authority(upload, str(uuid.uuid4()), job["sha256"]) is None
+    assert hashlib.sha256((intake / (upload + ".mp4")).read_bytes()).hexdigest() == job["sha256"]
     movie = Path(previews[0][0])
     assert movie.stat().st_size > 1000 and movie.suffix == ".mp4"
     review = store.reviews[0]

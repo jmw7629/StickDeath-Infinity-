@@ -16,6 +16,7 @@ fails with an explicit message instead of inventing a URL.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import json
 import math
@@ -28,7 +29,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
-from .draft_queue import Plan, RenderResult, quality_record_problem
+from .draft_queue import PLAN_FPS, Plan, RenderResult, quality_record_problem
 
 ENV_CLI = "SDI_DRAFT_RENDERER_CLI"
 ENV_OUTPUT = "SDI_DRAFT_RENDER_DIR"
@@ -49,7 +50,7 @@ PREVIEW_NOT_CONFIGURED = ("Private preview storage is not configured (OWNER-GATE
                           "preview publisher before a render can reach the owner's review queue; nothing was uploaded or published.")
 _SHA = re.compile(r"[a-f0-9]{64}")
 
-PreviewPublisher = Callable[[Path, str, Plan], str]
+PreviewPublisher = Callable[[Path, str, Plan], Any]  # URL, or (URL, aware datetime expiry)
 
 
 class RendererError(RuntimeError):
@@ -78,8 +79,9 @@ class CLIRenderer:
         output_root = Path(output_root)
         if not output_root.is_absolute():
             raise ValueError(f"{ENV_OUTPUT} must be an absolute directory path.")
-        if not (1 <= fps <= 60 and 16 <= width <= 1920 and 16 <= height <= 1920):
-            raise ValueError("Render size must be 16–1920 pixels at 1–60 FPS.")
+        # Daily plans are bounded for PLAN_FPS; a higher rate would exceed the app planner budget.
+        if not (1 <= fps <= PLAN_FPS and 16 <= width <= 1920 and 16 <= height <= 1920):
+            raise ValueError(f"Render size must be 16–1920 pixels at 1–{PLAN_FPS} FPS.")
         if not (1 <= timeout <= MAX_TIMEOUT_SECONDS) or not (1 <= heartbeat_interval <= timeout):
             raise ValueError(f"Render timeout must be 1–{MAX_TIMEOUT_SECONDS} seconds with a shorter heartbeat interval.")
         self.executable, self.output_root, self.publish_preview = executable, output_root, publish_preview
@@ -202,13 +204,21 @@ class CLIRenderer:
             failures.append(f"Decoded duration {float(duration):.3f} s differs from the planned {plan.seconds:.3f} s.")
         if failures != quality["failures"]:
             quality.update(passes=False, failures=failures)
-        preview_url = ""
+        preview_url, preview_expires_at = "", None
         if quality["passes"]:
-            preview_url = self.publish_preview(movie_path, movie_sha, plan)
+            published = self.publish_preview(movie_path, movie_sha, plan)
+            # A publisher returns the URL, or (URL, expiry) for a bounded signed link.
+            if isinstance(published, tuple) and len(published) == 2:
+                preview_url, expiry = published
+                if not isinstance(expiry, _dt.datetime) or expiry.tzinfo is None:
+                    raise RendererError("The private preview publisher returned an invalid expiry. No draft was submitted.")
+                preview_expires_at = expiry.astimezone(_dt.timezone.utc).isoformat()
+            else:
+                preview_url = published
             if not isinstance(preview_url, str) or not preview_url.startswith("https://") or len(preview_url) > 4096:
                 raise RendererError("The private preview publisher did not return an HTTPS URL. No draft was submitted.")
         return RenderResult(sha256=movie_sha, storyboard=dict(storyboard), quality=quality,
-                            source_project_digest=project_sha, preview_url=preview_url)
+                            source_project_digest=project_sha, preview_url=preview_url, preview_expires_at=preview_expires_at)
 
 
 def _bounded_int(environ: Mapping[str, str], key: str, default: int) -> int:
@@ -230,6 +240,11 @@ def renderer_from_env(environ: Optional[Mapping[str, str]] = None,
     executable = environ.get(ENV_CLI, "").strip()
     if not executable:
         return None
+    if publish_preview is None:
+        # Signed private links on the intake preview host, when fully configured;
+        # otherwise None and every render fails with PREVIEW_NOT_CONFIGURED.
+        from .draft_preview import draft_previews_from_env
+        publish_preview = draft_previews_from_env(environ)
     output = environ.get(ENV_OUTPUT, "").strip() or str(Path(tempfile.gettempdir()) / "sdi-spatter-drafts")
     return CLIRenderer(Path(executable), Path(output), publish_preview,
                        fps=_bounded_int(environ, ENV_FPS, 24), width=_bounded_int(environ, ENV_WIDTH, 640),

@@ -128,5 +128,12 @@ def create_application(environment=None):
     store = UploadStore(root, total_quota=quota, account_quota=account_quota, licensed_assets=assets)
     registrar = ReviewRegistrar(backend, service_key, store.root, consent, links)
     upload = UploadApplication(store, authorize, validate, registrar, registrar.renew_preview)
-    preview = PreviewApplication(store.root, links, registrar.preview_authority)
+    authority = registrar.preview_authority
+    if env.get("SDI_DRAFT_PREVIEW_OWNER_ID", "").strip():
+        # Spatter daily drafts (#212): the worker places owner-only draft copies in
+        # this directory with the same signing key; see backend/spatter/draft_preview.py.
+        from backend.spatter.draft_preview import DraftPreviewStore, combined_authority
+        drafts = DraftPreviewStore(store.root, links, env["SDI_DRAFT_PREVIEW_OWNER_ID"].strip())
+        authority = combined_authority(drafts, registrar.preview_authority)
+    preview = PreviewApplication(store.root, links, authority)
     return IntakeApplication(origin, upload, preview, concurrency)

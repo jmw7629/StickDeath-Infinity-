@@ -204,7 +204,7 @@ class CLIRendererTests(unittest.TestCase):
         self.assertIsInstance(configured, rc.CLIRenderer)
         self.assertEqual((configured.fps, configured.width, configured.height, configured.timeout), (12, 320, 180, 120.0))
         for bad in [{rc.ENV_CLI: "relative/renderer"}, {rc.ENV_CLI: str(self.root / "missing")},
-                    {rc.ENV_CLI: str(self.fake()), rc.ENV_TIMEOUT: "3600"}, {rc.ENV_CLI: str(self.fake()), rc.ENV_FPS: "x"},
+                    {rc.ENV_CLI: str(self.fake()), rc.ENV_TIMEOUT: "3600"}, {rc.ENV_CLI: str(self.fake()), rc.ENV_FPS: "x"}, {rc.ENV_CLI: str(self.fake()), rc.ENV_FPS: "30"},
                     {rc.ENV_CLI: str(self.fake()), rc.ENV_OUTPUT: "relative"}]:
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 rc.renderer_from_env(bad)
