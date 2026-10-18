@@ -87,6 +87,21 @@ final class StudioMovieExportService {
         /// Library attribution for the retained audio assets, resolved by digest
         /// before capture (#191). Verified against the assets by the mux proof.
         var soundCredits: [StudioSoundCredit] = []
+        /// Set only on an official-channel copy (#241): the owner-approved
+        /// watercolor mark composited bottom-right on every frame. Personal
+        /// exports leave it nil. Use `channelCopy(of:)`; never assign other art.
+        var channelMark: CGImage? = nil
+    }
+    /// The official-channel rendition of an export snapshot (#241): the same
+    /// document and audio, with the installed SDI watercolor mark and without
+    /// the free-plan plate. Throws `StudioChannelRendition.Failure.markUnavailable`
+    /// when the owner's mark asset is not in this build, so no channel copy is
+    /// prepared. The snapshot passed in, the project and personal exports are unchanged.
+    static func channelCopy(of snapshot: Snapshot) throws -> Snapshot {
+        var copy = snapshot
+        copy.channelMark = try StudioExportService.installedChannelMark()
+        copy.render.watermark = nil
+        return copy
     }
     enum Phase { case rendering, finalizing, verifying, publishing }
     struct Progress {
@@ -123,6 +138,26 @@ final class StudioMovieExportService {
         var movieFilename: String? = nil
         /// Library sound attribution carried by a mixed export (#191); nil without audio.
         var soundCredits: [StudioSoundCredit]? = nil
+        /// SHA-256 (lowercase hex) of the editable document's canonical bytes at
+        /// capture (#214): sorted-key JSON with millisecond dates, the same bytes
+        /// as `SpatterProjectDigest.canonicalData`. Binds a submitted render to
+        /// the exact project revision; any later edit changes it. Nil in older manifests.
+        var projectDigest: String? = nil
+        /// True only for an official-channel copy carrying the SDI mark (#241).
+        var channelRendition: Bool? = nil
+        /// Counted by decoding the finished file during verification (#213), not
+        /// copied from the plan. Nil in older manifests.
+        var decodedFrameCount: Int? = nil
+        var decodedDurationSeconds: Double? = nil
+        var expectedDurationSeconds: Double { durationDenominator > 0 ? Double(durationNumerator) / Double(durationDenominator) : 0 }
+    }
+    /// Canonical project bytes -> lowercase SHA-256 hex. Kept byte-identical to
+    /// `SpatterProjectDigest.canonicalData` (checked by the Spatter planner suite);
+    /// this service does not link the Spatter model file.
+    static func projectDigest(_ document: StudioDocument) throws -> String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        return SHA256.hash(data: try encoder.encode(document)).map { String(format: "%02x", $0) }.joined()
     }
     /// The caller retains this handle while a share sheet or decoder consumes
     /// its files. URLs alone do not transfer cleanup ownership. Neither service
@@ -697,8 +732,12 @@ final class StudioMovieExportService {
                 try confirmOwnership()
                 try autoreleasepool {
                     try checkpoint(started)
-                    let image = try render(frame, document: document, plan: plan, rasterDataByID: snapshot.rasterDataByID,
-                                           watermark: snapshot.render.watermark == true)
+                    var image = try render(frame, document: document, plan: plan, rasterDataByID: snapshot.rasterDataByID,
+                                           watermark: snapshot.render.watermark == true && snapshot.channelMark == nil)
+                    if let mark = snapshot.channelMark {
+                        image = try StudioExportService.channelMarked(image, mark: mark)
+                        guard image.width == plan.outputWidth, image.height == plan.outputHeight else { throw ExportError.renderFailed }
+                    }
                     try draw(image, into: buffer)
                     if formatDescription == nil {
                         guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: buffer,
@@ -744,7 +783,7 @@ final class StudioMovieExportService {
             let verifiedBytes = try fingerprint(movie, started: started)
             try progress(Progress(phase: .verifying, completedFrames: document.frames.count, totalFrames: document.frames.count))
             try confirmOwnership()
-            try await verify(movie, document: document, plan: plan, codec: codec, started: started)
+            let measured = try await verify(movie, document: document, plan: plan, codec: codec, started: started)
             try confirmOwnership()
             let bytes = try checkOutputSize(movie, requireNonempty: true)
             var manifest = Manifest(version: imageCredits.isEmpty ? 1 : 2, projectID: document.id, documentRevision: document.revision,
@@ -757,6 +796,11 @@ final class StudioMovieExportService {
             manifest.renderPlan = plan; manifest.renderRule = plan.rule
             manifest.heldLastFrameTicks = snapshot.heldLastFrameTicks > 0 ? snapshot.heldLastFrameTicks : nil
             manifest.movieFilename = movieFilename
+            manifest.channelRendition = snapshot.channelMark != nil ? true : nil
+            manifest.decodedFrameCount = measured.frames
+            manifest.decodedDurationSeconds = measured.seconds
+            // The captured editable project, before reference layers were hidden.
+            manifest.projectDigest = try Self.projectDigest(snapshot.document)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
             let manifestData = try encoder.encode(manifest)
             guard manifestData.count <= 128 * 1024, manifestData.count <= limits.maximumOutputBytes - bytes else {
@@ -813,6 +857,13 @@ final class StudioMovieExportService {
               limits.readinessTimeout.isFinite, limits.readinessTimeout > 0, limits.readinessTimeout <= 30,
               limits.operationTimeout.isFinite, limits.operationTimeout > 0, limits.operationTimeout <= 300 else { throw ExportError.limitExceeded }
         guard background == .white else { throw ExportError.transparentUnsupported }
+        if let mark = snapshot.channelMark {
+            // Refuse before encoding: an unusable mark or an output too small to
+            // carry it legibly never yields an unmarked "channel" copy.
+            try StudioExportService.validateChannelMark(mark)
+            let plan = try RenderPlan.make(canvasWidth: snapshot.document.width, canvasHeight: snapshot.document.height, preset: snapshot.render.preset)
+            _ = try StudioChannelRendition.placement(outputWidth: plan.outputWidth, outputHeight: plan.outputHeight, markWidth: mark.width, markHeight: mark.height)
+        }
         if let componentProof {
             guard try StudioMuxCapture.proofFor(snapshot) == componentProof else { throw ExportError.unsupportedContent }
         } else {
@@ -980,7 +1031,9 @@ final class StudioMovieExportService {
         }
     }
 
-    private func verify(_ movie: URL, document: StudioDocument, plan: RenderPlan, codec: Codec, started: TimeInterval) async throws {
+    /// Decodes the finished movie and returns what was actually counted: decoded
+    /// pictures and the container duration in seconds.
+    private func verify(_ movie: URL, document: StudioDocument, plan: RenderPlan, codec: Codec, started: TimeInterval) async throws -> (frames: Int, seconds: Double) {
         try checkpoint(started)
         let asset = AVURLAsset(url: movie)
         let tracks = try await asset.loadTracks(withMediaType: .video)
@@ -1048,6 +1101,9 @@ final class StudioMovieExportService {
         }
         guard reader.status == .completed, count == document.frames.count else { throw ExportError.verificationFailed }
         try checkpoint(started)
+        let seconds = CMTimeGetSeconds(duration)
+        guard seconds.isFinite, seconds >= 0 else { throw ExportError.verificationFailed }
+        return (count, seconds)
     }
 
     enum ExportError: LocalizedError {

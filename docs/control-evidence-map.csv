@@ -2,6 +2,7 @@ identifier,file,screen,operation,history,issue,uiTest
 admin.agents.cap-cost,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text field 'Monthly cost cap (minor units)' -> binds monthlyMinor,n-a,#210 #285,deferred
 admin.agents.cap-daily,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text field 'Daily runs' -> binds daily,n-a,#210 #285,deferred
 admin.agents.cap-items,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text field 'Items per run' -> binds perRun,n-a,#210 #285,deferred
+admin.agents.cap-run-cost,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,"text field 'Per-run cost cap (minor units, empty for none)' -> binds perRunCost",n-a,#284 #210,deferred
 admin.agents.emergency-stop,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,button,n-a,#210 #285,deferred
 admin.agents.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text,n-a,#210 #285,deferred
 admin.agents.instructions,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminAgentsContent,text field 'New instruction text (publishing creates the nex' -> binds instructionBody,n-a,#210 #285,deferred
@@ -34,6 +35,9 @@ admin.challenges.starts,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,
 admin.challenges.title,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminChallengesContent,text field 'Title (1–100)' -> binds title,n-a,#210 #285,deferred
 admin.configuration.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,"text 'Each service worker reports which named settings' -> binds 0.replacingOccurrences, binds 0",n-a,#248 #210,deferred
 admin.configuration.worker,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,text 'No worker has reported its configuration.',n-a,#248 #210,deferred
+admin.diagnostics.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDiagnosticsContent,text,n-a,#291,deferred
+admin.diagnostics.refresh,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDiagnosticsContent,"button 'Refresh' -> load, binds days",n-a,#291,deferred
+admin.diagnostics.summary,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDiagnosticsContent,text 'No reports in this window.',n-a,#291,deferred
 admin.finance.configure-annual,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,button 'Record owner configuration for this annual produ',n-a,#210 #285,deferred
 admin.finance.error,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,text,n-a,#210 #285,deferred
 admin.finance.product-id,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminFinanceContent,text field 'Provider product id' -> binds productID,n-a,#210 #285,deferred
@@ -57,11 +61,15 @@ admin.operations.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swif
 admin.operations.refresh,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,button 'Refresh' -> load,n-a,#257 #210,deferred
 admin.operations.release,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,"text -> binds 0.label.isEmpty, binds 0.label, binds 0.at.formatted",n-a,#257 #210,deferred
 admin.overview.status,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDashboardContent,text 'Recent activity is not connected.',n-a,#210 #285,deferred
+admin.publishing.stage,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminPublishingContent,text 'Administrator action history',n-a,#245,deferred
+admin.publishing.stages,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminPublishStageView,text,n-a,#245,deferred
 admin.review.history,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text 'Spatter video — owner approval required',n-a,#210 #285,deferred
+admin.review.project-digest,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text,n-a,#214,deferred
+admin.review.quality,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text 'Quality report: not supplied for this render.' -> binds 0.element,n-a,#213 #214,deferred
 admin.review.renew-preview,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,button 'Renew private preview' -> load,n-a,#210 #285,deferred
 admin.review.rights,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,"button 'Decision notes / rights evidence' -> binds acknowledged, binds note",n-a,#210 #285,deferred
 admin.review.select,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,button 'Reject',n-a,#210 #285,deferred
-admin.review.storyboard,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text 'Script and storyboard: not supplied by the revie',n-a,#210 #285,deferred
+admin.review.storyboard,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text 'Script and storyboard: not supplied for this ren' -> binds 0.element,n-a,#214,deferred
 admin.rooms.reports.close,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRoomReportsContent,button 'Close room',n-a,#210 #285,deferred
 admin.rooms.reports.dismiss,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRoomReportsContent,button 'Dismiss',n-a,#210 #285,deferred
 admin.rooms.reports.reason,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminRoomReportsContent,text field 'Required decision reason' -> binds reason,n-a,#210 #285,deferred
@@ -317,6 +325,7 @@ spatter.motion.export-receipt-gif-error,StickDeathInfinity/Views/Studio/Panels/S
 spatter.motion.input,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text editor 'Local Studio instruction' -> binds draft,no,#203,testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.motion.keyboard.done,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Done',no,#203,testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens
 spatter.motion.project-status,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"text 'Each saved edit can hand off one direct export, '",no,#203,deferred
+spatter.motion.quality,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterBriefQualityView,text 'Export this edit as MP4 to add decoded frame and' -> binds 0.element,no,#213,deferred
 spatter.motion.result,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text,no,#203,testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.motion.revert,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"button 'Revert Spatter edit' -> session.revertAppliedEdit, session.canRevertAppliedEdit",no,#203,deferred
 spatter.motion.save,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Save project' -> vm.save,no,#203,testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLocalMotionEditsExportsAndReopens

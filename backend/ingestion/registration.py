@@ -54,7 +54,31 @@ class ReviewRegistrar:
             raise IntakeError("Review registration is unconfirmed. Retry this same upload ID.",503) from None
         if not isinstance(result,dict) or result.get("error") or not result.get("review_id"):
             raise IntakeError("Review registration was not confirmed. Retain the local export and retry this upload.",409)
-        return identifier(result["review_id"])
+        review=identifier(result["review_id"])
+        if metadata.get("source_project_digest") is not None:
+            self._bind_source_digest(upload, review, metadata["source_project_digest"])
+        return review
+
+    def _bind_source_digest(self, upload: str, review: str, digest: str):
+        """Store the editable project's digest on the review (#214). The database
+        accepts only the digest declared in this upload's registered metadata, and a
+        changed digest returns the review to pending. Retrying the same upload ID
+        re-registers idempotently and binds again; nothing is reported as submitted
+        until the binding is confirmed."""
+        if not isinstance(digest,str) or len(digest)!=64 or any(c not in "0123456789abcdef" for c in digest):
+            raise IntakeError("Invalid source project digest.",422)
+        payload={"upload":upload,"review":review,"digest":digest}
+        request=urllib.request.Request(self.base+"/rest/v1/rpc/sdi_review_bind_source_digest",data=json.dumps(payload).encode(),method="POST",
+            headers={"apikey":self.key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
+        try:
+            with urllib.request.build_opener(NoRedirect()).open(request,timeout=10) as response:
+                raw=response.read(4097)
+                if len(raw)>4096: raise ValueError()
+                result=json.loads(raw)
+        except (urllib.error.URLError,TimeoutError,OSError,ValueError):
+            raise IntakeError("Project digest binding is unconfirmed. Retry this same upload ID.",503) from None
+        if not isinstance(result,dict) or result.get("status")!="confirmed":
+            raise IntakeError("Project digest binding was not confirmed. Retain the local export and retry this upload.",409)
 
     def _verify_consent(self, owner: str, version: str):
         """The database is the authority on the member's current publishing and

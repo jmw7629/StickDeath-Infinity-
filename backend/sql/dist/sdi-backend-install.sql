@@ -457,7 +457,7 @@ revoke all on function public.sdi_feed_action(text,uuid,uuid,boolean,text,intege
 grant execute on function public.sdi_feed_action(text,uuid,uuid,boolean,text,integer,text,timestamptz) to authenticated;
 commit;
 
--- ===== admin-approval.sql (sha256 98485dfcaea66cc6) =====
+-- ===== admin-approval.sql (sha256 037fb7d39f352a7f) =====
 -- Unapplied candidate. Provision role records through a protected owner operation,
 -- never from a client-supplied password, profile, username or email.
 begin;
@@ -515,6 +515,17 @@ begin
 end $$;
 revoke all on function sdi_private.invalidate_render_approval() from public;
 create trigger invalidate_render_approval before update on sdi_private.render_reviews for each row execute function sdi_private.invalidate_render_approval();
+-- Measured quality report a Spatter draft job attached to this review, if any
+-- (spatter-draft-jobs.sql installs the table later; absent means null).
+create function sdi_private.review_quality_report(review uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare report jsonb;
+begin
+ if to_regclass('sdi_private.spatter_draft_jobs') is null then return null; end if;
+ execute 'select quality_report from sdi_private.spatter_draft_jobs where review_id=$1 limit 1' into report using review;
+ return report;
+end $$;
+revoke all on function sdi_private.review_quality_report(uuid) from public,anon,authenticated;
 create function sdi_private.review_action(action text,review uuid default null,digest text default null,
  version bigint default null,decision text default null,note text default '') returns jsonb
 language plpgsql security definer set search_path='' as $$
@@ -523,10 +534,15 @@ begin
  if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then return jsonb_build_object('error','Current video-review permission and MFA are required.'); end if;
  select owner into is_owner from sdi_private.admin_roles where user_id=auth.uid();
  if action='list' then
+  -- Storyboard and source-project digest columns are installed by
+  -- spatter-draft-jobs.sql; read them through the row so this list keeps working
+  -- before that candidate and returns null (shown as "not supplied") when absent.
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into result from (
-   select id,title,source_revision,render_digest,preview_url,preview_expires_at,consent_version,rights_summary,
-    rights_cleared,destinations,spatter_generated,state,render_reviews.version
-   from sdi_private.render_reviews where state='pending' order by created_at limit 50
+   select rr.id,rr.title,rr.source_revision,rr.render_digest,rr.preview_url,rr.preview_expires_at,rr.consent_version,rr.rights_summary,
+    rr.rights_cleared,rr.destinations,rr.spatter_generated,rr.state,rr.version,
+    to_jsonb(rr)->'storyboard' as storyboard,to_jsonb(rr)->>'source_project_digest' as source_project_digest,
+    sdi_private.review_quality_report(rr.id) as quality_report
+   from sdi_private.render_reviews rr where rr.state='pending' order by rr.created_at limit 50
   ) item;
   return jsonb_build_object('reviews',result,'owner',is_owner);
  end if;
@@ -572,6 +588,45 @@ create function public.sdi_review_history(page integer default 0) returns jsonb
 language sql security invoker set search_path='' as $$select sdi_private.review_history(page)$$;
 revoke all on function public.sdi_review_history(integer) from public,anon;
 grant execute on function public.sdi_review_history(integer) to authenticated;
+-- Service-only (#214): bind the editable project's canonical digest, declared in
+-- the upload metadata, to the review registered for that upload. Writing it goes
+-- through invalidate_render_approval, so a changed digest returns the review to
+-- pending under a new version; the same retained bytes are carried forward to
+-- that version exactly as review-rights.sql does. Idempotent for the same digest.
+create function sdi_private.review_bind_source_digest(upload uuid,review uuid,digest text) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare r sdi_private.render_reviews; declared text; found_registration boolean; next_version bigint;
+begin
+ if upload is null or review is null or digest is null or digest !~ '^[a-f0-9]{64}$' then
+  return jsonb_build_object('error','Invalid source digest binding.'); end if;
+ if to_regclass('sdi_private.upload_registrations') is null then
+  return jsonb_build_object('error','Upload registration is not installed.'); end if;
+ execute 'select true,metadata->>''source_project_digest'' from sdi_private.upload_registrations where upload_id=$1 and review_id=$2'
+  into found_registration,declared using upload,review;
+ if not coalesce(found_registration,false) then return jsonb_build_object('error','Upload registration not found.'); end if;
+ if declared is distinct from digest then
+  return jsonb_build_object('error','Source digest does not match the registered upload.'); end if;
+ select * into r from sdi_private.render_reviews where id=review for update;
+ if not found then return jsonb_build_object('error','Upload registration not found.'); end if;
+ if not (to_jsonb(r) ? 'source_project_digest') then
+  return jsonb_build_object('error','Source digest storage is not installed.'); end if;
+ if to_jsonb(r)->>'source_project_digest' is not distinct from digest then
+  return jsonb_build_object('status','confirmed','version',r.version,'changed',false); end if;
+ execute 'update sdi_private.render_reviews set source_project_digest=$1 where id=$2 returning version' into next_version using digest,r.id;
+ if next_version<>r.version and to_regclass('sdi_private.render_artifacts') is not null then
+  execute 'insert into sdi_private.render_artifacts(review_id,version,render_digest,object_key,byte_count,title,description,made_for_kids,expires_at)
+   select review_id,$2,render_digest,object_key,byte_count,title,description,made_for_kids,expires_at
+   from sdi_private.render_artifacts where review_id=$1 and version=$3 and render_digest=$4 on conflict do nothing'
+   using r.id,next_version,r.version,r.render_digest;
+ end if;
+ return jsonb_build_object('status','confirmed','version',next_version,'changed',true);
+end $$;
+revoke all on function sdi_private.review_bind_source_digest(uuid,uuid,text) from public,anon,authenticated;
+grant execute on function sdi_private.review_bind_source_digest(uuid,uuid,text) to service_role;
+create function public.sdi_review_bind_source_digest(upload uuid,review uuid,digest text) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.review_bind_source_digest(upload,review,digest)$$;
+revoke all on function public.sdi_review_bind_source_digest(uuid,uuid,text) from public,anon,authenticated;
+grant execute on function public.sdi_review_bind_source_digest(uuid,uuid,text) to service_role;
 commit;
 
 -- ===== admin-users.sql (sha256 a8797dfd7e8b4e15) =====
