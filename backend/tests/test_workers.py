@@ -335,6 +335,24 @@ class SweepTests(unittest.TestCase):
         self.assertTrue(set(sweeps.SWEEPS.values()) <= sweeps.SweepAPI.PERMITTED)
 
 
+    def test_draft_preview_expiry_is_scheduled_locally(self):
+        self.assertIn("draft_preview_expire", sweeps.LOCAL_SWEEPS)
+        api = FakeAPI({"worker_heartbeat": [True, True]})
+        report = sweeps.run_sweeps(api, ["draft_preview_expire"], environment={})
+        self.assertEqual(report["draft_preview_expire"], {"state": "skipped", "reason": "not configured"})
+        base = Path(tempfile.mkdtemp())
+        root = base / "intake"; root.mkdir(mode=0o700)
+        key = base / "signing.key"; key.write_bytes(b"s" * 32); os.chmod(key, 0o600)
+        env = {"SDI_DRAFT_PREVIEW_OWNER_ID": str(uuid.uuid4()), "SDI_INTAKE_ORIGIN": "https://intake.example.test",
+               "SDI_PREVIEW_SIGNING_KEY_FILE": str(key), "SDI_INTAKE_DIRECTORY": str(root), "SDI_INTAKE_TOTAL_BYTES": str(1 << 20)}
+        upload = str(uuid.uuid4())
+        (root / (upload + ".mp4")).write_bytes(b"x")
+        (root / (upload + ".draft.json")).write_text(json.dumps({"schema": "sdi_spatter_draft_preview", "upload": upload, "expires": 1, "byte_count": 1}))
+        report = sweeps.run_sweeps(api, ["draft_preview_expire"], environment=env)
+        self.assertEqual(report["draft_preview_expire"], {"state": "ok", "iterations": 1, "result": {"removed": 1, "retained_bytes": 0}})
+        self.assertFalse((root / (upload + ".mp4")).exists())
+        self.assertEqual([c[0] for c in api.calls], ["worker_heartbeat", "worker_heartbeat"], "no RPC for a local sweep")
+
     def test_room_asset_sweep_is_scheduled_and_service_only(self):
         self.assertEqual(sweeps.SWEEPS["room_asset_sweep"], "room_asset_sweep")
         self.assertIn("room_asset_sweep", sweeps.SweepAPI.PERMITTED)

@@ -64,6 +64,18 @@ DEPENDENCIES = {
     "StickDeathInfinity/Services/StudioAudioVideoMuxService.swift": {
         "StickDeathInfinity/Services/StudioSoundCredits.swift",
     },
+    # Headless daily-draft renderer (#212): the job/planning half and the
+    # macOS export half compile together with the production planner and exporter.
+    "Tools/SpatterDraftRenderer/main.swift": {
+        "Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift",
+        "StickDeathInfinity/Services/StudioMovieExportService.swift",
+    },
+    "Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift": {
+        "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
+        "StickDeathInfinity/Models/StudioCommands.swift",
+        "StickDeathInfinity/Models/StudioDocument.swift",
+    },
     "StickDeathInfinity/Services/StudioMovieExportSession.swift": {
         "StickDeathInfinity/Services/StudioSoundCredits.swift",
         "StickDeathInfinity/Services/StudioSoundCatalogue.swift",

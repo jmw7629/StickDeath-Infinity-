@@ -8,7 +8,9 @@ claims the day's job through the SQL contract in `backend/sql/spatter-draft-jobs
 for the private draft and either submits it to the owner's review queue or records
 the failure. Nothing here renders, publishes, schedules itself, buys capacity or
 contacts a provider; without a renderer every job is marked failed with an
-explicit OWNER-GATED capacity message.
+explicit OWNER-GATED capacity message. `configured_renderer` selects the headless
+macOS CLI renderer (`renderer_cli`, `Tools/SpatterDraftRenderer`) when
+`SDI_DRAFT_RENDERER_CLI` is set.
 """
 from __future__ import annotations
 
@@ -19,7 +21,17 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional, Protocol
 
-BRIEF_VERSION = "briefs.v2"
+BRIEF_VERSION = "briefs.v3"
+# briefs.v3 bounds each plan's length by the Swift planner's own element budget
+# (`SpatterMultiClauseBrief.prepare`); briefs.v2 is kept replayable unchanged.
+BUDGETED_VERSIONS = {"briefs.v3"}
+PLAN_FPS = 24                      # the renderer's frame rate; a lower rate only shortens plans
+MAX_GENERATED_ELEMENTS = 1024      # StudioCommandExecutor.maximumGeneratedElements
+ELEMENT_RESERVE = 16               # prepare(): elementBudget = maximumGeneratedElements - 16
+MAX_APPENDED_FRAMES = 240          # StudioCommandExecutor.maximumAppendedFrames
+PROJECT_FRAME_LIMIT = 1000         # prepare(): context.frames.count + frames <= 1000
+MAX_POSE_HOLD_TICKS = 4            # prepare() refuses a plan that needs a hold above 4 ticks
+MIN_PLAN_SECONDS = 2
 ACTIONS = ("walks", "runs", "jumps", "waves", "punches", "kicks", "sits", "ducks", "throws")
 TERMINAL_ACTIONS = ("falls", "explodes")
 COLORS = ("red", "blue", "green", "black", "orange", "purple", "cyan", "magenta")
@@ -81,17 +93,47 @@ class Plan:
         return {"text": self.brief, "actors": self.actors, "seconds": self.seconds, "seed": self.seed, "version": self.version}
 
 
+def element_estimate(actor_count: int, clauses: list) -> int:
+    """`perFrameEstimate` in SpatterMultiClauseBrief.prepare: ten primitives per
+    stick figure, 40 for an explosion burst and one projectile for a throw."""
+    verbs = {clause.split(" ")[0] for clause in clauses}
+    return actor_count * 10 + (40 if "explodes" in verbs else 0) + (1 if "throws" in verbs else 0)
+
+
+def fits_element_budget(seconds: float, estimate: int, fps: int = PLAN_FPS, existing_frames: int = 1) -> bool:
+    """Mirror of the pose-hold search in SpatterMultiClauseBrief.prepare: some hold
+    of 1–4 ticks must keep frames, elements and the project frame limit in bounds."""
+    ticks = int(round(seconds * fps))
+    if ticks < 1:
+        return False
+    for hold in range(1, MAX_POSE_HOLD_TICKS + 1):
+        frames = -(-ticks // hold)
+        if frames <= MAX_APPENDED_FRAMES and frames * estimate <= MAX_GENERATED_ELEMENTS - ELEMENT_RESERVE \
+                and existing_frames + frames <= PROJECT_FRAME_LIMIT:
+            return True
+    return False
+
+
+def brief_clauses(brief: str) -> list:
+    """Clauses of a planner brief (all actors), e.g. ["walks left to right", "falls"]."""
+    segments = brief.lower().rstrip(".").split("; ")[:-2]
+    return [clause for segment in segments for clause in segment.split(" stick figure ", 1)[1].split(", then ")]
+
+
 def plan_brief(target_date: _dt.date, version: str = BRIEF_VERSION) -> Plan:
     """One original brief per day: 1–3 actors, 2–4 clauses each, 3–8 seconds, a
     terminal action on at most one actor, written in the app grammar with an
-    explicit seed so the app reproduces exactly this plan."""
+    explicit seed so the app reproduces exactly this plan. From briefs.v3 the
+    length is shortened (never below 2 s) until the plan fits the app planner's
+    element budget at PLAN_FPS, so the renderer does not refuse it."""
     seed = seed_for(target_date, version)
     random = SplitMix64(seed)
     actors = 1 + int(random.unit() * 3) % 3
-    seconds = 3 + int(random.unit() * 6)  # 3…8 whole seconds keeps every plan within the element budget at 24 FPS
+    seconds = 3 + int(random.unit() * 6)  # 3…8 whole seconds before the v3 budget bound
     segments = []
     used_colors: list[str] = []
     terminal_used = False
+    all_clauses: list[str] = []
     for _ in range(actors):
         color = random.choice([c for c in COLORS if c not in used_colors])
         used_colors.append(color)
@@ -106,6 +148,11 @@ def plan_brief(target_date: _dt.date, version: str = BRIEF_VERSION) -> Plan:
             clauses.append(random.choice(TERMINAL_ACTIONS))
             terminal_used = True
         segments.append(f"a {color} stick figure " + ", then ".join(clauses))
+        all_clauses.extend(clauses)
+    if version in BUDGETED_VERSIONS:
+        estimate = element_estimate(actors, all_clauses)
+        while seconds > MIN_PLAN_SECONDS and not fits_element_budget(seconds, estimate):
+            seconds -= 1
     text = "; ".join(segments) + f"; {seconds} seconds; seed {seed}."
     text = text[0].upper() + text[1:]
     assert BRIEF_PATTERN.match(text.lower()), text
@@ -132,6 +179,11 @@ class RenderResult:
     quality: Mapping[str, Any]
     source_project_digest: str
     preview_url: str
+    # When the private preview link stops working (ISO 8601). None keeps the SQL default.
+    preview_expires_at: Optional[str] = None
+    # The retained private copy behind the preview: {"object_key", "byte_count",
+    # "expires_at"}. Required for the owner to renew the preview and approve.
+    artifact: Optional[Mapping[str, Any]] = None
 
 
 class Renderer(Protocol):
@@ -152,6 +204,17 @@ class RunOutcome:
     def as_dict(self) -> dict:
         return {"date": self.target_date.isoformat(), "claimed": self.claimed, "state": self.state, "reason": self.reason,
                 "job": self.job, "review": self.review, "attempt": self.attempt}
+
+
+def configured_renderer(environ: Optional[Mapping[str, str]] = None,
+                        publish_preview: Optional[Callable[..., str]] = None) -> Optional[Renderer]:
+    """The headless draft renderer selected by `SDI_DRAFT_RENDERER_CLI`, or None.
+
+    None keeps `run_once` on the honest CAPACITY_NOT_CONFIGURED failure path.
+    `publish_preview(movie_path, sha256, plan) -> https URL` stores the private
+    preview for the owner's review queue; see `renderer_cli`."""
+    from .renderer_cli import renderer_from_env
+    return renderer_from_env(environ, publish_preview)
 
 
 def run_once(store: Store, *, owner: str, reviewer: str, now: Callable[[], _dt.datetime],
@@ -186,9 +249,15 @@ def run_once(store: Store, *, owner: str, reviewer: str, now: Callable[[], _dt.d
         reason = "Quality report incomplete: " + incomplete
         store.progress(job, owner, "failed", quality=result.quality, error=reason)
         return RunOutcome(day, True, "failed", reason, job, attempt=attempt, plan=plan)
+    review = {"creator": reviewer, "preview_url": result.preview_url, "source_project_digest": result.source_project_digest,
+              "title": f"Spatter daily draft {day.isoformat()}", "source_revision": f"draft:{day.isoformat()}:seed:{plan.seed}"}
+    if result.preview_expires_at:
+        review["preview_expires_at"] = result.preview_expires_at
+    if result.artifact:
+        review.update(object_key=result.artifact["object_key"], byte_count=result.artifact["byte_count"],
+                      artifact_expires_at=result.artifact["expires_at"])
     submitted = store.progress(job, owner, "review_pending", storyboard=result.storyboard, quality=result.quality, sha256=result.sha256,
-                               review={"creator": reviewer, "preview_url": result.preview_url, "source_project_digest": result.source_project_digest,
-                                       "title": f"Spatter daily draft {day.isoformat()}", "source_revision": f"draft:{day.isoformat()}:seed:{plan.seed}"})
+                               review=review)
     if submitted.get("status") != "confirmed":
         return RunOutcome(day, True, "refused", str(submitted.get("reason", "")), job, attempt=attempt, plan=plan)
     return RunOutcome(day, True, "review_pending", "Private draft submitted to the owner's review queue; nothing is released.",
@@ -289,7 +358,8 @@ class InMemoryStore:
                 return {"status": "refused", "reason": "The quality report did not pass; mark the job failed with the finding instead."}
             review_id = f"review-{len(self.reviews) + 1}"
             self.reviews.append({"id": review_id, "render_digest": sha256, "storyboard": storyboard, "source_project_digest": review["source_project_digest"],
-                                 "state": "pending", "spatter_generated": True, "destinations": []})
+                                 "state": "pending", "spatter_generated": True, "destinations": [],
+                                 "artifact": {k: review[k] for k in ("object_key", "byte_count", "artifact_expires_at")} if "object_key" in review else None})
             record.update(state="review_pending", storyboard=storyboard, quality=quality, sha256=sha256, review_id=review_id, lease_owner=None, lease_expires_at=None)
             return {"status": "confirmed", "state": "review_pending", "review": review_id}
         return {"status": "refused", "reason": f"Transition {record['state']} → {state} is not allowed."}

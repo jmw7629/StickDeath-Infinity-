@@ -2151,9 +2151,13 @@ struct SpatterStickPoseGenerator {
                               handBack: .init(x: 0.10, y: -0.30), handFront: .init(x: 0.14, y: -0.30))
             return [(0, stand), (0.4, seated), (1, seated)]
         case .duck:
-            let crouch = Pose(hip: .init(x: 0, y: -0.26), shoulder: .init(x: 0.04, y: -0.46), head: .init(x: 0.06, y: -0.60),
+            // The torso (hip→neck) is a rigid bone: the crouch leans it forward at
+            // the standing length (0.331) instead of compressing it to 0.253,
+            // which the limb-variance gate rightly reported as a 18–24% stretch.
+            // Hands stay raised over the lowered head.
+            let crouch = Pose(hip: .init(x: 0, y: -0.26), shoulder: .init(x: 0.183, y: -0.481), head: .init(x: 0.203, y: -0.621),
                               footBack: .init(x: -0.14, y: -0.02), footFront: .init(x: 0.14, y: -0.02),
-                              handBack: .init(x: -0.06, y: -0.66), handFront: .init(x: 0.16, y: -0.66))
+                              handBack: .init(x: 0.10, y: -0.72), handFront: .init(x: 0.26, y: -0.70))
             return [(0, stand), (0.3, crouch), (0.7, crouch), (1, stand)]
         case .throw:
             var windup = stand; windup.handFront = .init(x: -0.22, y: -1.02); windup.shoulder = .init(x: -0.03, y: -0.72); windup.handBack = .init(x: 0.15, y: -0.72)
@@ -2357,7 +2361,9 @@ struct SpatterMultiClauseBrief: Equatable {
         var seconds: Double?
         var seed: UInt64?
         let durationPattern = try NSRegularExpression(pattern: #"\A([0-9]+(?:\.[0-9]+)?)\s+seconds?\z"#, options: [.caseInsensitive])
-        let seedPattern = try NSRegularExpression(pattern: #"\Aseed\s+([0-9]{1,18})\z"#, options: [.caseInsensitive])
+        // Up to 20 digits: the backend daily planner emits 63-bit seeds (often 19
+        // digits). A value above UInt64.max fails the conversion and is refused.
+        let seedPattern = try NSRegularExpression(pattern: #"\Aseed\s+([0-9]{1,20})\z"#, options: [.caseInsensitive])
         while let last = segments.last {
             let range = NSRange(last.startIndex..., in: last)
             if seconds == nil, let match = durationPattern.firstMatch(in: last, range: range), let captured = Range(match.range(at: 1), in: last) {
@@ -3446,10 +3452,20 @@ struct SpatterQualityReport: Equatable {
         }
         // Limb-length variance: for generated stick layers, every line element on
         // the layer should keep a stable length across frames (per ordinal position).
+        // When the layer holds stick-figure rigs (`SpatterStickPoseGenerator`: nine
+        // bone lines, the head circle, optionally a thrown-ball circle), only rig
+        // frames are compared: after an explosion the layer carries burst debris,
+        // whose lines are not limbs. Layers without any rig frame are measured whole.
+        func isRig(_ elements: [DrawnElement]) -> Bool {
+            (elements.count == 10 || elements.count == 11) && elements.prefix(9).allSatisfy { $0.tool == .line && $0.points.count == 2 }
+                && elements.dropFirst(9).allSatisfy { $0.tool == .circle }
+        }
         for layerID in generatedLayerIDs.sorted() {
             var lengthsByPosition: [Int: [Double]] = [:]
-            for frame in document.frames {
-                let lines = frame.elements.filter { $0.layerID == layerID && $0.tool == .line && $0.points.count == 2 }
+            let layerFrames = document.frames.map { frame in frame.elements.filter { $0.layerID == layerID } }
+            let rigOnly = layerFrames.contains(where: isRig)
+            for elements in layerFrames where !rigOnly || isRig(elements) {
+                let lines = elements.filter { $0.tool == .line && $0.points.count == 2 }
                 for (position, line) in lines.enumerated() {
                     let dx = Double(line.points[1].x - line.points[0].x), dy = Double(line.points[1].y - line.points[0].y)
                     lengthsByPosition[position, default: []].append((dx * dx + dy * dy).squareRoot())

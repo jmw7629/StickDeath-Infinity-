@@ -10,6 +10,7 @@ revoke all on sdi_private.preview_permits from public,anon,authenticated;
 create function sdi_private.preview_permit(review uuid,digest text,version bigint) returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews; a sdi_private.render_artifacts; u sdi_private.upload_registrations; permit uuid;
+ draft boolean; upload_id uuid;
 begin
  if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then
   return jsonb_build_object('error','Current review permission and MFA required.');end if;
@@ -17,18 +18,30 @@ begin
  delete from sdi_private.preview_permits where actor=auth.uid() and expires_at<clock_timestamp();
  if (select count(*) from sdi_private.preview_permits where actor=auth.uid())>=20 then
   return jsonb_build_object('error','Too many preview requests. Wait one minute.');end if;
+ draft:=sdi_private.review_spatter_draft_retained(review);
  select * into r from sdi_private.render_reviews where id=review;
  if not found or r.version<>version or r.render_digest<>digest or length(r.consent_version)=0
-  or cardinality(r.destinations)=0 or r.state not in('pending','approved','changes') then
+  or (cardinality(r.destinations)=0 and not draft) or r.state not in('pending','approved','changes') then
   return jsonb_build_object('error','This review changed or is unavailable.');end if;
+ -- Spatter daily drafts are previewed by the owner only.
+ if draft and not exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) then
+  return jsonb_build_object('error','Owner review is required for this render.');end if;
  select * into a from sdi_private.render_artifacts where review_id=r.id and render_artifacts.version=r.version
   and render_digest=r.render_digest and expires_at>clock_timestamp();
  if not found then return jsonb_build_object('error','The retained render has expired. Request a new upload.');end if;
- select * into u from sdi_private.upload_registrations where review_id=r.id;
- if not found then return jsonb_build_object('error','Preview renewal is unavailable for this legacy render.');end if;
+ if draft then
+  -- The worker's DraftPreviewStore keeps the copy as <upload>.mp4 in the intake directory.
+  if a.object_key !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$' then
+   return jsonb_build_object('error','Preview renewal is unavailable for this legacy render.');end if;
+  upload_id:=left(a.object_key,36)::uuid;
+ else
+  select * into u from sdi_private.upload_registrations where review_id=r.id;
+  if not found then return jsonb_build_object('error','Preview renewal is unavailable for this legacy render.');end if;
+  upload_id:=u.upload_id;
+ end if;
  insert into sdi_private.preview_permits(actor,session_id,review_id,review_version,digest,expires_at)
  values(auth.uid(),auth.jwt()->>'session_id',r.id,r.version,r.render_digest,clock_timestamp()+interval '1 minute') returning id into permit;
- return jsonb_build_object('permit',permit,'upload',u.upload_id,'creator',r.creator,'digest',r.render_digest,'byte_count',a.byte_count);
+ return jsonb_build_object('permit',permit,'upload',upload_id,'creator',r.creator,'digest',r.render_digest,'byte_count',a.byte_count);
 end $$;
 revoke all on function sdi_private.preview_permit(uuid,text,bigint) from public,anon;
 grant execute on function sdi_private.preview_permit(uuid,text,bigint) to authenticated;
@@ -52,7 +65,10 @@ begin
   or exists(select 1 from sdi_private.account_controls where user_id=p.actor and state<>'active') then
   return jsonb_build_object('error','Review authorization changed.');end if;
  select * into r from sdi_private.render_reviews where id=p.review_id for update;
- if r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0 or cardinality(r.destinations)=0
+ if r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0
+  or (cardinality(r.destinations)=0 and not sdi_private.review_spatter_draft_retained(r.id))
+  or (sdi_private.review_spatter_draft_retained(r.id)
+   and not exists(select 1 from sdi_private.admin_roles where user_id=p.actor and enabled and owner))
   or r.state not in('pending','approved','changes')
   or exists(select 1 from sdi_private.account_controls where user_id=r.creator and state<>'active')
   or not exists(select 1 from sdi_private.render_artifacts where review_id=r.id and version=r.version and render_digest=r.render_digest and expires_at>clock_timestamp()) then

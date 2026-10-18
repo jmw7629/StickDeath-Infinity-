@@ -79,6 +79,10 @@ private enum Golden {
                 try require(try SpatterMultiClauseBrief.parse(SpatterMultiClauseBrief.example).seed == brief.seed, "Seed is not deterministic for the same brief")
                 let seeded = try SpatterMultiClauseBrief.parse(SpatterMultiClauseBrief.explosionExample)
                 try require(seeded.seed == 7 && seeded.seconds == 2 && seeded.actors[0].clauses.last?.action == .explode, "Explicit seed or default actions lost")
+                // The backend daily planner (backend/spatter/draft_queue.py) emits 63-bit seeds.
+                let daily = try SpatterMultiClauseBrief.parse("A blue stick figure throws, then walks left to right, then waves; 3 seconds; seed 5653618261817729103.")
+                try require(daily.seed == 5_653_618_261_817_729_103 && daily.seconds == 3, "Backend daily-planner 19-digit seed refused")
+                try rejects("seed above UInt64.max") { _ = try SpatterMultiClauseBrief.parse("A red stick figure sits; 2 seconds; seed 18446744073709551616.") }
                 let two = try SpatterMultiClauseBrief.parse(SpatterMultiClauseBrief.twoActorExample)
                 try require(two.actors.count == 2 && two.actors[1].color == "#0000FF" && two.actors[1].clauses.map(\.action) == [.duck, .jump] && two.seconds == 2.5, "Two-actor brief lost an actor")
                 // Historical brief forms remain parseable (superset) but are routed to their own grammars.
@@ -216,6 +220,17 @@ private enum Golden {
                         let report = SpatterQualityReport.analyze(editor.document, generatedLayerIDs: [layerID], limbVarianceTolerance: 0.01)
                         let limbFindings = report.findings.filter { $0.kind == .limbVariance && !$0.detail.contains("limb 1 ") }
                         try require(limbFindings.isEmpty, "\(action) changed a bone length: \(limbFindings)")
+                        // The torso (limb 1, hip→neck) is posed, not solved. Hold it within 10% of
+                        // the standing length in every frame so any mix of actions in one brief
+                        // stays inside the production 15%-of-mean limb-variance review gate.
+                        let torsoLengths = frames.compactMap { frame -> Double? in
+                            guard let line = frame.elements.first(where: { $0.layerID == layerID && $0.tool == .line && $0.points.count == 2 }) else { return nil }
+                            let dx = Double(line.points[1].x - line.points[0].x), dy = Double(line.points[1].y - line.points[0].y)
+                            return (dx * dx + dy * dy).squareRoot()
+                        }
+                        let standingTorso = 0.331 * Double(min(doc.width, doc.height)) * 0.35
+                        let worst = torsoLengths.map { abs($0 / standingTorso - 1) }.max() ?? 1
+                        try require(torsoLengths.count == frames.count && worst <= 0.10, "\(action) stretches or compresses the torso by \(Int((worst * 100).rounded()))%")
                         try require(report.frozenFrameCount == 0 && report.blankFrameCount == 0 && report.outOfCanvasCount == 0, "\(action) produced blank, frozen or off-canvas frames")
                         // Cyclic actions revisit poses at non-consecutive ticks; consecutive repeats are merged into holds (frozenFrameCount above).
                         let poses = Set(frames.map { $0.elements.map(\.points).description })
@@ -288,6 +303,24 @@ private enum Golden {
                 let explosion = SpatterPrimitive.fingerprint(primitives(editor.document, layerID: receipt.createdLayerIDs[0]))
                 print("fingerprint explosion-brief 0x\(String(explosion, radix: 16, uppercase: true))")
                 try require(explosion == Golden.explosionBrief, "Explosion brief golden drifted")
+                // Burst debris replaces the figure; its lines are not limbs, so the
+                // generated scene passes the unchanged 15% limb gate on its rig frames...
+                let layerID = receipt.createdLayerIDs[0]
+                let created = Set(receipt.createdFrameIDs)
+                let report = SpatterQualityReport.briefScope(editor.document, createdFrameIDs: receipt.createdFrameIDs, createdLayerIDs: [layerID],
+                                                             requestedTicks: plan.storyboard.totalTicks)
+                try require(report?.findings.filter { $0.kind == .limbVariance }.isEmpty == true && report?.verdict().passes == true,
+                            "Explosion brief fails the review gate: \(report?.verdict().failures ?? [])")
+                // ...while a stretched bone on a rig frame of the same layer is still caught.
+                var stretched = editor.document
+                let rigIndex = stretched.frames.firstIndex { created.contains($0.id) && $0.elements.filter { $0.layerID == layerID }.count == 10 }!
+                let boneIndex = stretched.frames[rigIndex].elements.firstIndex { $0.layerID == layerID && $0.tool == .line }!
+                let bone = stretched.frames[rigIndex].elements[boneIndex].points
+                stretched.frames[rigIndex].elements[boneIndex].points[1] = .init(x: bone[0].x + (bone[1].x - bone[0].x) * 1.5, y: bone[0].y + (bone[1].y - bone[0].y) * 1.5)
+                let caught = SpatterQualityReport.briefScope(stretched, createdFrameIDs: receipt.createdFrameIDs, createdLayerIDs: [layerID],
+                                                             requestedTicks: plan.storyboard.totalTicks)
+                try require(caught?.findings.contains { $0.kind == .limbVariance } == true && caught?.verdict().passes == false,
+                            "A stretched rig bone on an exploding layer was not caught")
             }
             try test("tween clipboard project-settings and brush grammars reach their typed commands and the real editor") {
                 var doc = try document(frames: 2)

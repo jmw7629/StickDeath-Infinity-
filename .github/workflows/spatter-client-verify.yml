@@ -2121,6 +2121,57 @@ jobs:
             Tests/SpatterStickFigure/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-stick-figure-tests"
           "$RUNNER_TEMP/sdi-spatter-stick-figure-tests"
+      - name: Render one daily brief with the headless draft renderer (private draft, owner review only)
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
+            StickDeathInfinity/Models/StudioCraftAudio.swift \
+            StickDeathInfinity/Models/StudioCraftLayers.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioSoundCredits.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift \
+            Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift \
+            Tools/SpatterDraftRenderer/main.swift \
+            -o "$RUNNER_TEMP/sdi-spatter-draft-renderer"
+          work="$RUNNER_TEMP/sdi-spatter-draft-render"
+          rm -rf "$work"
+          python3 scripts/backend/verify_draft_renderer_cli.py "$RUNNER_TEMP/sdi-spatter-draft-renderer" "$work"
       - name: Verify same-capture H.264 AAC timing pixels and ownership
         shell: bash
         run: |
