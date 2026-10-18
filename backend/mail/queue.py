@@ -17,9 +17,9 @@ import stat
 import time
 import uuid
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional
+from typing import Callable, Dict, Iterable, List, Mapping, Optional
 
-from .templates import Rendered, email_hash, render
+from .templates import TEMPLATES, Rendered, email_hash, render
 
 MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = (60, 600, 3600)
@@ -71,6 +71,34 @@ class EmailQueue:
                        (message_id, digest, address, template, dedup_key, rendered.category, rendered.subject, rendered.text, now, now, now))
         return {"status": "queued", "id": message_id, "state": "queued"}
 
+    def enqueue_blast(self, recipients: Iterable[Mapping[str, str]], template: str, context: Mapping[str, str],
+                      dedup_key: str, unsubscribe_url_for: Callable[[str, str], str]) -> Dict[str, int]:
+        """Queue one opt-in message per recipient for a product or marketing blast.
+
+        ``recipients`` are rows from ``sdi_email_recipients`` (the database already
+        applied opt-in, account state and suppressions); each must carry ``email``
+        and the matching ``email_hash``. The shared ``dedup_key`` (for example the
+        marketing draft id) makes a retried blast idempotent per address. Nothing is
+        sent here; ``EmailWorker`` sends later and re-checks suppression at claim.
+        Returns counts only, never addresses."""
+        definition = TEMPLATES.get(template)
+        if definition is None or definition.category == "transactional":
+            raise ValueError("blasts use a product or marketing template")
+        counts = {"queued": 0, "duplicate": 0, "refused": 0}
+        for row in recipients:
+            address = row.get("email") if isinstance(row, Mapping) else None
+            digest = row.get("email_hash") if isinstance(row, Mapping) else None
+            if not isinstance(address, str) or not isinstance(digest, str) or email_hash(address) != digest:
+                counts["refused"] += 1
+                continue
+            try:
+                result = self.enqueue(address, template, context, dedup_key, unsubscribe_url_for(digest, definition.category))
+            except ValueError:
+                counts["refused"] += 1
+                continue
+            counts["queued" if result["status"] == "queued" else "duplicate"] += 1
+        return counts
+
     def claim(self, batch: int = 50, suppressed: Optional[Callable[[str], bool]] = None) -> List[dict]:
         if not 1 <= batch <= 500:
             raise ValueError("batch must be 1..500")
@@ -120,3 +148,9 @@ class EmailQueue:
         with self._connect() as db:
             cursor = db.execute("DELETE FROM messages WHERE state IN ('sent','failed','bounced','suppressed') AND updated<?", (self.clock() - RETENTION_SECONDS,))
             return cursor.rowcount
+
+
+def enqueue_blast(queue: EmailQueue, recipients: Iterable[Mapping[str, str]], template: str, context: Mapping[str, str],
+                  dedup_key: str, unsubscribe_url_for: Callable[[str, str], str]) -> Dict[str, int]:
+    """Module-level form of ``EmailQueue.enqueue_blast``."""
+    return queue.enqueue_blast(recipients, template, context, dedup_key, unsubscribe_url_for)

@@ -5332,7 +5332,7 @@ revoke all on function public.sdi_announcement_claim(integer),public.sdi_announc
 grant execute on function public.sdi_announcement_claim(integer),public.sdi_announcement_finish(jsonb),public.sdi_email_suppress(text,text),public.sdi_email_recipients(text,integer,integer) to service_role;
 commit;
 
--- ===== marketing-workspace.sql (sha256 d3badbef1f9a859f) =====
+-- ===== marketing-workspace.sql (sha256 d23f37c6e601c2a0) =====
 -- Unapplied candidate. Install after notifications.sql (needs consent-versions.sql,
 -- publishing-jobs.sql, admin-hardening.sql, feed-publication.sql).
 -- Approval-based marketing workspace for #274 and #283: campaigns, drafts per
@@ -5572,7 +5572,11 @@ begin
   update sdi_private.marketing_drafts set state='failed',last_error=left(failure,500),lease=null,lease_expires=null,updated_at=clock_timestamp() where id=d.id;
   return true;
  end if;
- if marketing_finish.result_url is null or marketing_finish.result_url !~ '^https://' or length(marketing_finish.result_url)>2048 then return false; end if;
+ if d.destination='email' then
+  -- An email blast has no public URL: success is the count the worker actually
+  -- enqueued for opted-in, unsuppressed recipients (backend/mail/queue.py).
+  if marketing_finish.result_url is not null or coalesce(marketing_finish.provider_ref,'') !~ '^email-queue:[1-9][0-9]{0,6}$' then return false; end if;
+ elsif marketing_finish.result_url is null or marketing_finish.result_url !~ '^https://' or length(marketing_finish.result_url)>2048 then return false; end if;
  update sdi_private.marketing_drafts set state='published',result_url=marketing_finish.result_url,provider_ref=left(coalesce(marketing_finish.provider_ref,''),200),last_error='',lease=null,lease_expires=null,updated_at=clock_timestamp() where id=d.id;
  return true;
 end $$;

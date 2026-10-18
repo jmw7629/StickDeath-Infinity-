@@ -261,5 +261,15 @@ begin
  update sdi_private.render_reviews set state='pending' where id=review2;
  perform sdi_test.check((select state from sdi_private.marketing_drafts where id=draft2)='invalidated','render change invalidates marketing approval');
  perform sdi_test.check((select count(*) from sdi_private.marketing_audit)>=12,'marketing actions audited');
+ -- An email blast finishes with the enqueued count, never with a URL or a zero count.
+ r:=sdi_private.marketing_action('create_draft',campaign,payload=>jsonb_build_object('destination','email','copy','Weekly plug.'),reason=>'Draft.'); draft4:=(r->>'draft')::uuid; rev:=(r->>'revision')::bigint;
+ r:=sdi_private.marketing_action('approve',draft=>draft4,revision=>rev,reason=>'Approved copy.'); rev:=(r->>'revision')::bigint;
+ r:=sdi_private.marketing_action('queue',draft=>draft4,revision=>rev,reason=>'Go.');
+ claimed:=sdi_private.marketing_claim(); token:=(claimed->>'lease')::uuid;
+ perform sdi_test.check((claimed->>'draft')::uuid=draft4 and claimed->>'destination'='email','email draft claimed: '||claimed::text);
+ perform sdi_test.check(not sdi_private.marketing_finish(draft4,token,'https://example.com/x','email-queue:3'),'email blast refuses a url');
+ perform sdi_test.check(not sdi_private.marketing_finish(draft4,token,null,'email-queue:0'),'email blast refuses a zero count');
+ perform sdi_test.check(sdi_private.marketing_finish(draft4,token,null,'email-queue:3'),'email blast published with its enqueued count');
+ perform sdi_test.check((select state='published' and provider_ref='email-queue:3' and result_url is null from sdi_private.marketing_drafts where id=draft4),'email result recorded');
 end $$;
 rollback;

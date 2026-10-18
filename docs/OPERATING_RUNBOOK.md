@@ -50,6 +50,12 @@ Publish only from a labelled source commit; keep the previous version as the rol
 - Signing uses the `cryptography` package. Key files live in the host secret store with 0600 permissions; their paths and contents never appear in output.
 - Development and tests use `SinkTransport` or fake senders only (`backend/tests/test_push_transports.py`). Test-device delivery on real APNs/FCM is an owner-run step and has not been performed.
 
+## Marketing cadence (#283)
+
+- `python3 -m backend.publishing.marketing_scheduler` (hourly from the host timer) runs `sdi_marketing_cadence_due` and reports what it scheduled; by default nothing is claimed, posted or emailed.
+- `--live` requires `SDI_MARKETING_LIVE=1` as well. Discord needs `SDI_DISCORD_WEBHOOK_ID` + `SDI_DISCORD_WEBHOOK_TOKEN_FILE` (optional `SDI_DISCORD_GUILD_ID` for links); Facebook needs `SDI_FACEBOOK_PAGE_ID` + `SDI_FACEBOOK_PAGE_TOKEN_FILE`; the email blast needs `SDI_MAIL_QUEUE_PATH`, `SDI_UNSUBSCRIBE_BASE_URL` (https) and `SDI_UNSUBSCRIBE_SECRET_FILE`. Unconfigured destinations fail the leased draft with a plain reason (retry from the command centre after configuring); nothing is marked published without a provider receipt or a non-zero enqueued count.
+- The email blast only queues; `EmailWorker` sends from the queue (loopback sink until the sender domain is verified). Instagram/TikTok/X remain unavailable.
+
 ## Documentation upkeep
 
 - `docs/KNOWN_LIMITATIONS.md` cites file:line at a named commit; regenerate the grep and update citations with each release candidate.
