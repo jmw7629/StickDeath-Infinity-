@@ -47,7 +47,7 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(dq.BRIEF_PATTERN.match(first.brief.lower()), first.brief)
         self.assertTrue(first.brief.endswith(f"; seed {first.seed}."))
         self.assertIn(first.actors, (1, 2, 3))
-        self.assertTrue(3 <= first.seconds <= 8)
+        self.assertTrue(dq.MIN_PLAN_SECONDS <= first.seconds <= 8)
         self.assertNotEqual(first.brief, dq.plan_brief(TODAY + dt.timedelta(days=1)).brief)
         self.assertLess(first.seed, 1 << 63)
 
@@ -64,6 +64,35 @@ class PlannerTests(unittest.TestCase):
                 self.assertTrue(all(re.fullmatch(r"[a-z]+( left to right| right to left)?", c) for c in clauses), plan.brief)
             self.assertLessEqual(plan.brief.count("falls") + plan.brief.count("explodes"), 1)
             self.assertLessEqual(len(plan.brief.encode()), 1024)
+
+    def test_every_day_of_two_years_fits_the_app_planner_element_budget(self):
+        # Same pose-hold search as SpatterMultiClauseBrief.prepare (1024 - 16 elements,
+        # 240 appended frames, holds of 1-4 ticks) at the renderer's 24 FPS. Before v3,
+        # 15 of the 40 days from 2026-10-01 were refused by the app planner.
+        shortened = 0
+        for offset in range(730):
+            plan = dq.plan_brief(dt.date(2026, 10, 1) + dt.timedelta(days=offset))
+            estimate = dq.element_estimate(plan.actors, dq.brief_clauses(plan.brief))
+            self.assertTrue(dq.fits_element_budget(plan.seconds, estimate), plan.brief)
+            self.assertTrue(dq.MIN_PLAN_SECONDS <= plan.seconds <= 8, plan.brief)
+            self.assertTrue(plan.brief.endswith(f"; {int(plan.seconds)} seconds; seed {plan.seed}."), plan.brief)
+            shortened += plan.seconds < 3
+        self.assertGreater(shortened, 0, "the budget bound is exercised")
+
+    def test_budget_mirror_matches_known_app_planner_outcomes(self):
+        # Measured with the production Swift planner (Linux harness, 2026-10-18).
+        self.assertFalse(dq.fits_element_budget(8, dq.element_estimate(2, ["kicks", "throws", "explodes"])))  # refused: budget(2)
+        self.assertFalse(dq.fits_element_budget(7, dq.element_estimate(1, ["runs", "explodes"])))  # refused: budget(3)
+        self.assertFalse(dq.fits_element_budget(8, dq.element_estimate(3, ["throws", "falls"])))  # refused: budget(5)
+        self.assertTrue(dq.fits_element_budget(3, dq.element_estimate(1, ["throws", "walks left to right", "waves"])))
+        self.assertEqual(dq.brief_clauses("A red stick figure walks left to right, then falls; a blue stick figure sits; 3 seconds; seed 1."),
+                         ["walks left to right", "falls", "sits"])
+
+    def test_v2_briefs_remain_replayable(self):
+        day = dt.date(2026, 10, 18)
+        self.assertEqual(dq.plan_brief(day, "briefs.v2").brief,
+                         "A blue stick figure throws, then walks left to right, then waves; 3 seconds; seed 5653618261817729103.")
+        self.assertNotEqual(dq.plan_brief(day).seed, dq.plan_brief(day, "briefs.v2").seed)
 
 
 class WorkerTests(unittest.TestCase):
