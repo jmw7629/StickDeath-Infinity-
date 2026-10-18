@@ -5137,7 +5137,7 @@ revoke all on function public.sdi_consent_verify(uuid,text) from public,anon,aut
 grant execute on function public.sdi_consent_verify(uuid,text) to service_role;
 commit;
 
--- ===== notifications.sql (sha256 41c0fa6e2b923288) =====
+-- ===== notifications.sql (sha256 635975526ab91184) =====
 -- Unapplied candidate. Install after consent-versions.sql (needs admin-hardening.sql,
 -- billing.sql for the subscriber audience and pgcrypto in extensions).
 -- Notification preferences, device registrations, admin-composed announcements and
@@ -5236,9 +5236,10 @@ begin
   if not found then return jsonb_build_object('error','Device unavailable.'); end if;
   return jsonb_build_object('status','confirmed');
  elsif action='inbox' then
-  select coalesce(jsonb_agg(jsonb_build_object('delivery',d.id,'title',a.title,'body',a.body,'category',a.category,'state',d.state,'delivered_at',d.updated_at) order by d.updated_at desc),'[]'::jsonb)
-   into items from sdi_private.announcement_deliveries d join sdi_private.announcements a on a.id=d.announcement_id
-   where d.user_id=actor and d.channel='in_app' and d.state in('sent','read') and a.state<>'cancelled' limit 50;
+  -- The limit belongs to the rows, not to the single aggregate row (clients refuse more than 50).
+  select coalesce(jsonb_agg(jsonb_build_object('delivery',t.id,'title',t.title,'body',t.body,'category',t.category,'state',t.state,'delivered_at',t.updated_at) order by t.updated_at desc,t.id),'[]'::jsonb)
+   into items from (select d.id,a.title,a.body,a.category,d.state,d.updated_at from sdi_private.announcement_deliveries d join sdi_private.announcements a on a.id=d.announcement_id
+   where d.user_id=actor and d.channel='in_app' and d.state in('sent','read') and a.state<>'cancelled' order by d.updated_at desc,d.id limit 50) t;
   return jsonb_build_object('notices',items,'unread',(select count(*) from sdi_private.announcement_deliveries d where d.user_id=actor and d.channel='in_app' and d.state='sent'));
  elsif action='mark_read' then
   update sdi_private.announcement_deliveries set state='read',updated_at=clock_timestamp() where id=(payload->>'delivery')::uuid and user_id=actor and channel='in_app' and state='sent';
