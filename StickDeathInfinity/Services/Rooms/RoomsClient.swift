@@ -3,8 +3,10 @@
 // projects (collaboration-watch.sql, room-invitations.sql, rooms-v2.sql).
 // Codes are admission-request credentials, never account tokens; both the
 // recipient's consent and the owner's approval are recorded server-side.
-// No chat, calls, camera, microphone or media streams exist here, and no
-// project content leaves the device through any of these calls.
+// No chat, calls, camera, microphone or media streams exist here. Project
+// content leaves the device only through the owner's explicit "Send project to
+// members" handoff (RoomProjectHandoff.swift): a temporary, hash-verified copy
+// for approved members that the server deletes after delivery or expiry.
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
@@ -128,6 +130,8 @@ final class RoomsClient {
 
     /// Bounded transfer of explicitly chosen files (#233).
     var assets: RoomAssetTransfer { RoomAssetTransfer(gateway: gateway) }
+    /// Owner-approved handoff of the shared project to approved members (#234).
+    var handoff: RoomProjectHandoff { RoomProjectHandoff(gateway: gateway) }
 
     // MARK: Versioned command stream (#232)
 

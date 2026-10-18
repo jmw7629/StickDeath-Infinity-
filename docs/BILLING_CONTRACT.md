@@ -63,8 +63,8 @@ AI key + server-funded prompts per billing period of
 3 490 000 (USD 4.99 net of a 30% store commission, rounded down; the budget can
 never exceed the 4 990 000 gross price) / 20 000 (USD 0.02, an owner-editable
 conservative estimate per prompt) = 174; Pro $9.99 = unlimited (still under the
-safety, rate and global caps and the emergency stop) + own AI key; **the free
-trial applies to both paid plans** (Creator and Pro). Actual provider cost is not
+safety, rate and global caps and the emergency stop) + own AI key; **there is no
+free trial on any plan** (owner decision 2026-10-15). Actual provider cost is not
 recorded (the provider contract returns usage units only). Background:
 `docs/SPATTER_BILLING_DECISIONS_2026_10_14.md`.
 
@@ -133,13 +133,13 @@ if you want." Implemented server side (unapplied candidates, tested locally):
   plan screens show the plan line without a count. Free shows its credit
   balance and offers Creator, Pro or credits; Creator at zero offers Pro or
   credits.
-- Trial: applies to both paid plans (`BillingPlanDefinition.offersTrial` is
-  true for Creator and Pro, false for Free). Copy is shown only when the loaded
-  `Product` has a free-trial introductory offer and `isEligibleForIntroOffer` is
-  true (`BillingCopy.trial(for:days:eligible:)`). Trial length is App Store
-  Connect configuration; no trial is hard-coded. Server side, a `trialing`
-  subscription maps to its own tier (`backend/billing/contract.py`
-  `TRIAL_TIERS`, `sdi_private.entitlements`).
+- Trial: none on any plan (owner decision 2026-10-15). `BillingPlanDefinition.offersTrial`
+  is false for every tier and `BillingCopy.trial(for:days:eligible:)` returns nil
+  even if a store introductory offer were left configured, so the apps never show
+  trial copy. Do not configure introductory offers in App Store Connect or Stripe.
+  Server side, a `trialing` status from a provider still maps to its tier
+  (`backend/billing/contract.py` `TRIAL_TIERS`) so a misconfigured store offer
+  cannot strand a paying member.
 - Bring-your-own AI key (#209): listed as a pending entitlement on Creator and
   Pro. The key is stored only in the device Keychain
   (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, not synchronizable), is sent
@@ -238,7 +238,7 @@ is still not opened from any screen.
     "Price shown when configured". The CTA is disabled while no product exists.
   - Feature pills come from `BillingPlanCatalog` (owner-stated entitlements of
     2026-10-07); everything the server does not enforce yet is marked `*` with the
-    pending note. Trial copy appears only from an eligible store offer. No
+    pending note. No trial copy (no plan has a trial). No
     "Commercial license", project counts, coins or sale claims. (Updated #259,
     2026-10-14; earlier this list was "Extras pending owner configuration".)
   - A failed purchase shows the error and stays on the screen; it no longer

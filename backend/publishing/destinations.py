@@ -250,6 +250,10 @@ class MarketingWorker:
         job = self.api.call("claim")
         if job.get("empty"):
             return {"state": "idle"}
+        return self.process(job)
+
+    def process(self, job: Mapping[str, object]) -> dict:
+        """Post one already leased draft and report its real result."""
         draft, token = job["draft"], job["lease"]
         adapter = self.registry.get(job.get("destination"))
         if adapter is None:
