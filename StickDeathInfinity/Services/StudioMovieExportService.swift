@@ -123,6 +123,24 @@ final class StudioMovieExportService {
         var movieFilename: String? = nil
         /// Library sound attribution carried by a mixed export (#191); nil without audio.
         var soundCredits: [StudioSoundCredit]? = nil
+        /// SHA-256 (lowercase hex) of the editable document's canonical bytes at
+        /// capture (#214): sorted-key JSON with millisecond dates, the same bytes
+        /// as `SpatterProjectDigest.canonicalData`. Binds a submitted render to
+        /// the exact project revision; any later edit changes it. Nil in older manifests.
+        var projectDigest: String? = nil
+        /// Counted by decoding the finished file during verification (#213), not
+        /// copied from the plan. Nil in older manifests.
+        var decodedFrameCount: Int? = nil
+        var decodedDurationSeconds: Double? = nil
+        var expectedDurationSeconds: Double { durationDenominator > 0 ? Double(durationNumerator) / Double(durationDenominator) : 0 }
+    }
+    /// Canonical project bytes -> lowercase SHA-256 hex. Kept byte-identical to
+    /// `SpatterProjectDigest.canonicalData` (checked by the Spatter planner suite);
+    /// this service does not link the Spatter model file.
+    static func projectDigest(_ document: StudioDocument) throws -> String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        return SHA256.hash(data: try encoder.encode(document)).map { String(format: "%02x", $0) }.joined()
     }
     /// The caller retains this handle while a share sheet or decoder consumes
     /// its files. URLs alone do not transfer cleanup ownership. Neither service
@@ -744,7 +762,7 @@ final class StudioMovieExportService {
             let verifiedBytes = try fingerprint(movie, started: started)
             try progress(Progress(phase: .verifying, completedFrames: document.frames.count, totalFrames: document.frames.count))
             try confirmOwnership()
-            try await verify(movie, document: document, plan: plan, codec: codec, started: started)
+            let measured = try await verify(movie, document: document, plan: plan, codec: codec, started: started)
             try confirmOwnership()
             let bytes = try checkOutputSize(movie, requireNonempty: true)
             var manifest = Manifest(version: imageCredits.isEmpty ? 1 : 2, projectID: document.id, documentRevision: document.revision,
@@ -757,6 +775,10 @@ final class StudioMovieExportService {
             manifest.renderPlan = plan; manifest.renderRule = plan.rule
             manifest.heldLastFrameTicks = snapshot.heldLastFrameTicks > 0 ? snapshot.heldLastFrameTicks : nil
             manifest.movieFilename = movieFilename
+            manifest.decodedFrameCount = measured.frames
+            manifest.decodedDurationSeconds = measured.seconds
+            // The captured editable project, before reference layers were hidden.
+            manifest.projectDigest = try Self.projectDigest(snapshot.document)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
             let manifestData = try encoder.encode(manifest)
             guard manifestData.count <= 128 * 1024, manifestData.count <= limits.maximumOutputBytes - bytes else {
@@ -980,7 +1002,9 @@ final class StudioMovieExportService {
         }
     }
 
-    private func verify(_ movie: URL, document: StudioDocument, plan: RenderPlan, codec: Codec, started: TimeInterval) async throws {
+    /// Decodes the finished movie and returns what was actually counted: decoded
+    /// pictures and the container duration in seconds.
+    private func verify(_ movie: URL, document: StudioDocument, plan: RenderPlan, codec: Codec, started: TimeInterval) async throws -> (frames: Int, seconds: Double) {
         try checkpoint(started)
         let asset = AVURLAsset(url: movie)
         let tracks = try await asset.loadTracks(withMediaType: .video)
@@ -1048,6 +1072,9 @@ final class StudioMovieExportService {
         }
         guard reader.status == .completed, count == document.frames.count else { throw ExportError.verificationFailed }
         try checkpoint(started)
+        let seconds = CMTimeGetSeconds(duration)
+        guard seconds.isFinite, seconds >= 0 else { throw ExportError.verificationFailed }
+        return (count, seconds)
     }
 
     enum ExportError: LocalizedError {

@@ -28,6 +28,8 @@ DEPENDENCIES = {
         "StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift",
         "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
         "StickDeathInfinity/Models/StudioCommands.swift",
+        # Brief-scope quality report and its draft-submission record (#213).
+        "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
     },
     "StickDeathInfinity/Services/StudioAudioPreviewSession.swift": {
         "StickDeathInfinity/Services/StudioSoundCatalogue.swift",

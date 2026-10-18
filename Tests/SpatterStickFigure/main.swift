@@ -90,6 +90,19 @@ private func rejects(_ action: () throws -> Void) throws {
                     try require(tracks.count == 1, "No actual video stream")
                     let duration = try await asset.load(.duration).seconds
                     try require(abs(duration - Double(count + 1) / 24) < 0.001, "Movie duration ignores recipe FPS")
+                    // #213/#214: the manifest carries counts decoded from this file and the
+                    // canonical project digest, byte-identical to SpatterProjectDigest.
+                    let canonical = try SpatterProjectDigest.canonicalData(reopened.document)
+                    let expectedDigest = SHA256.hash(data: canonical).map { String(format: "%02x", $0) }.joined()
+                    try require(output.manifest.projectDigest == expectedDigest, "Manifest project digest differs from SpatterProjectDigest")
+                    try require(output.manifest.decodedFrameCount == reopened.document.frames.count
+                        && abs((output.manifest.decodedDurationSeconds ?? -1) - duration) < 0.0005, "Manifest decoded counts were not measured from the movie")
+                    let measurement = SpatterQualityReport.MovieMeasurement(decodedFrameCount: output.manifest.decodedFrameCount!,
+                        decodedDurationSeconds: output.manifest.decodedDurationSeconds!, audioOffsetSeconds: nil,
+                        expectedFrameCount: output.manifest.frameIDs.count, expectedDurationSeconds: output.manifest.expectedDurationSeconds)
+                    let movieReport = SpatterQualityReport.analyze(reopened.document, movie: measurement)
+                    try require(!movieReport.findings.contains { $0.kind == .movieFrameCount || $0.kind == .movieDuration }
+                        && !movieReport.unmeasured.contains("decodedMovieFrameCount"), "Decoded movie measurement produced findings: \(movieReport.findings)")
                     let reader = try AVAssetReader(asset: asset)
                     let frames = AVAssetReaderTrackOutput(track: tracks[0], outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
                     reader.add(frames); try require(reader.startReading(), "Movie decoder did not start")

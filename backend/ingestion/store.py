@@ -123,8 +123,13 @@ class UploadStore:
     def begin(self, actor: str, request: str, metadata: dict):
         actor, request = identifier(actor), identifier(request)
         allowed = {"size", "sha256", "title", "source_revision", "destinations", "rights_summary", "consent_version", "made_for_kids"}
-        if not isinstance(metadata, dict) or set(metadata) - {"asset_credits"} != allowed:
+        if not isinstance(metadata, dict) or set(metadata) - {"asset_credits", "source_project_digest"} != allowed:
             raise IntakeError("Complete render metadata required.")
+        # Optional canonical digest of the editable project the render came from
+        # (#214). Bound to the review so a revised project invalidates approval.
+        if "source_project_digest" in metadata and (not isinstance(metadata["source_project_digest"], str)
+                                                    or not DIGEST.fullmatch(metadata["source_project_digest"])):
+            raise IntakeError("Invalid source project digest.")
         if "asset_credits" in metadata:
             if self.licensed_assets is None:
                 raise IntakeError("Asset licence checks are not configured on this service. Submission refused.", 503)

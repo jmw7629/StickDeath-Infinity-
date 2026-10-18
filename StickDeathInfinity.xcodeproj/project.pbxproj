@@ -195,6 +195,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		5ED395C49295EED7E8119CCC /* SpatterOwnKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ED4E67E4308938A88BCC035 /* SpatterOwnKey.swift */; };
 		4CC1DAF2ED4054F712711D06 /* SpatterOwnKeyKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */; };
 		C7953DD7BA410182ACCC25AD /* SpatterPlanControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C24E7F66CB174D3CD9A63A2 /* SpatterPlanControls.swift */; };
+		5BB8A5D3E7CBD3B7909E46AE /* SpatterReviewEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -399,6 +400,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		6ED4E67E4308938A88BCC035 /* SpatterOwnKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterOwnKey.swift"; sourceTree = SOURCE_ROOT; };
 		7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterOwnKeyKeychain.swift"; sourceTree = SOURCE_ROOT; };
 		7C24E7F66CB174D3CD9A63A2 /* SpatterPlanControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift"; sourceTree = SOURCE_ROOT; };
+		DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -692,6 +694,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		45135823BC2869CE1BB1BFE8 /* Spatter */ = {
 			isa = PBXGroup;
 			children = (
+				DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */,
 				7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */,
 				6ED4E67E4308938A88BCC035 /* SpatterOwnKey.swift */,
 				22443092EEAD8DEC27825D7F /* SpatterStudioControlRegistry.swift */,
@@ -1037,6 +1040,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5BB8A5D3E7CBD3B7909E46AE /* SpatterReviewEvidence.swift in Sources */,
 				C7953DD7BA410182ACCC25AD /* SpatterPlanControls.swift in Sources */,
 				4CC1DAF2ED4054F712711D06 /* SpatterOwnKeyKeychain.swift in Sources */,
 				5ED395C49295EED7E8119CCC /* SpatterOwnKey.swift in Sources */,

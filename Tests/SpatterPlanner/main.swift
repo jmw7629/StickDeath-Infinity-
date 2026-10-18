@@ -164,6 +164,23 @@ private enum Golden {
                 try require(report.blankFrameCount == 0 && report.frozenFrameCount == 0 && report.outOfCanvasCount == 0
                     && !report.findings.contains { $0.kind == .timingMismatch || $0.kind == .limbVariance }, "Quality findings on a clean plan: \(report.findings)")
                 try require(report.verdict().passes, "Verdict failed a clean plan")
+                // #213: the brief-scope report measures only the created frames and layer;
+                // its wire record is what a draft submission attaches as p_quality.
+                guard let scoped = SpatterQualityReport.briefScope(after, createdFrameIDs: receipt.createdFrameIDs, createdLayerIDs: receipt.createdLayerIDs,
+                                                                   requestedTicks: story.totalTicks) else { throw Failure(message: "No brief-scope report") }
+                try require(scoped.frameCount == story.frameCount && scoped.actualTicks == story.totalTicks && scoped.verdict().passes, "Brief scope measured the wrong frames: \(scoped.findings)")
+                let record = scoped.reviewRecord()
+                let wire = try JSONSerialization.jsonObject(with: try record.json()) as? [String: Any]
+                try require(wire?["schema"] as? String == "spatter_quality_report" && wire?["passes"] as? Bool == true && (wire?["failures"] as? [Any])?.isEmpty == true
+                    && (wire?["unmeasured"] as? [String])?.contains("decodedMovieFrameCount") == true && wire?["movie"] == nil, "Quality record shape wrong: \(String(describing: wire))")
+                try require(SpatterQualityReport.briefScope(after, createdFrameIDs: ["missing"], createdLayerIDs: [], requestedTicks: 1) == nil, "Report invented for absent frames")
+                let shortMovie = SpatterQualityReport.MovieMeasurement(decodedFrameCount: story.frameCount - 1, decodedDurationSeconds: story.durationSeconds,
+                    audioOffsetSeconds: nil, expectedFrameCount: story.frameCount, expectedDurationSeconds: story.durationSeconds)
+                let failing = SpatterQualityReport.briefScope(after, createdFrameIDs: receipt.createdFrameIDs, createdLayerIDs: receipt.createdLayerIDs,
+                    requestedTicks: story.totalTicks, movie: shortMovie)!
+                let failingRecord = failing.reviewRecord(movie: shortMovie)
+                try require(!failingRecord.passes && failingRecord.movie?.decodedFrameCount == story.frameCount - 1 && failingRecord.failures.contains { $0.contains("decoded") }
+                    && failing.summaryLines().first?.hasPrefix("Quality gates failed") == true, "A short decoded movie did not fail the record")
                 editor.undo()
                 try require(content(editor.document) == content(before), "One Undo did not restore the original document")
                 editor.redo()
