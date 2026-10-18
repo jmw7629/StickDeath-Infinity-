@@ -187,7 +187,9 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             }
             let folder = try parent(root, "channel-copy")
             for (width, height) in [(640, 360), (360, 640), (480, 480)] {
-                let doc = try document(colors: ["#FFFFFF", "#FFFFFF"], width: width, height: height)
+                var doc = try document(colors: ["#FFFFFF", "#FFFFFF"], width: width, height: height)
+                // Brush widths are limited to 512 px; white on the white background either way.
+                for f in doc.frames.indices { for e in doc.frames[f].elements.indices { doc.frames[f].elements[e].width = min(doc.frames[f].elements[e].width, 512) } }
                 let personal = try await Service().export(snapshot: snapshot(doc), outputParent: folder, background: .white)
                 var channel = snapshot(doc); channel.channelMark = try mark(opaque: false)
                 let marked = try await Service().export(snapshot: channel, outputParent: folder, background: .white)
@@ -204,7 +206,9 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                 try require(doc == channel.document, "Channel copy changed the editable document")
             }
             // An opaque logo or an output too small for a legible mark is refused before encoding.
-            var opaque = snapshot(try document(colors: ["#FFFFFF"], width: 640, height: 360))
+            var opaqueDoc = try document(colors: ["#FFFFFF"], width: 640, height: 360)
+            opaqueDoc.frames[0].elements[0].width = 512
+            var opaque = snapshot(opaqueDoc)
             opaque.channelMark = try mark(opaque: true)
             try await rejected({ _ = try await Service().export(snapshot: opaque, outputParent: folder, background: .white) },
                                matching: { ($0 as? StudioChannelRendition.Failure) == .markNotTransparent })
