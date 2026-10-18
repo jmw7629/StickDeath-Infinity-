@@ -1182,7 +1182,7 @@ struct AdminStepUpPolicy: Equatable {
     static let sensitiveActions: Set<String> = [
         "admin_permissions.save", "agent.emergency_stop", "agent.pause", "agent.resume", "agent.set_caps",
         "agent.set_permissions", "agent.publish_instructions", "agent.rollback_instructions",
-        "finance.set_product", "finance.configure_annual", "users.suspend", "users.ban", "users.restore", "users.signout",
+        "finance.set_product", "finance.configure_annual", "users.suspend", "users.ban", "users.restore", "users.signout", "users.reset_flags",
         "moderation.remove", "war.remove", "rooms.close", "appeal.accept", "appeal.reject",
     ]
     var stepUpCurrent: Bool?
