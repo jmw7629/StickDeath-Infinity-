@@ -386,6 +386,53 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
             try require(coordinator.handoff == nil && coordinator.session == nil && coordinator.endReason?.contains("unchanged") == true, "ending clears the handoff with a truthful reason")
         }
 
+        await test("editor hook: blocked remote edits wait in order with a reason until applied or explicitly skipped") {
+            let transport = FakeTransport()
+            let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: member)
+            try require(!coordinator.isSharing(projectID: project), "no handoff means the open project is not shared")
+            coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+            try require(coordinator.isSharing(projectID: project) && !coordinator.isSharing(projectID: UUID()), "handoff binds exactly the shared project")
+            let first = UUID(), second = UUID()
+            var attempts: [Int] = [], refuse = true
+            coordinator.applyRemote = { record in
+                attempts.append(record.revision)
+                if record.op_id == first && refuse { coordinator.noteRemoteBlocked(record, reason: "Cannot replay yet."); return false }
+                return true
+            }
+            transport.replies = [.success(#"{"commands":[\#(record(1, op: first, author: owner)),\#(record(2, op: second, author: owner))],"head":2}"#)]
+            let report = await coordinator.synchronise()
+            try require(report.catchUp == .received(2) && attempts.first == 1 && !attempts.contains(2), "later edit must wait behind the blocked one")
+            try require(coordinator.blockedRemote?.revision == 1 && coordinator.blockedRemote?.reason == "Cannot replay yet." && coordinator.head == 0
+                && coordinator.pendingRemoteCount == 2, "blocked edit recorded with its reason, nothing acknowledged")
+            // Local edits are not sent past unapplied remote edits.
+            try require(coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:a")])) && coordinator.publishedLocalCount == 1, "local edit queued")
+            try require(await coordinator.drain() == .idle && transport.calls.count == 1, "nothing sent while remote edits wait")
+            // Transient block clears by itself on the next pass.
+            refuse = false
+            coordinator.applyQueued()
+            try require(coordinator.blockedRemote == nil && coordinator.appliedRemoteCount == 2 && coordinator.head == 2 && coordinator.skippedRemote.isEmpty, "retry applied both in order")
+            // An explicit skip acknowledges exactly the blocked edit and records it.
+            refuse = true
+            let third = UUID()
+            transport.replies = [.success(#"{"commands":[\#(record(3, op: third, author: owner))],"head":3}"#)]
+            coordinator.applyRemote = { record in coordinator.noteRemoteBlocked(record, reason: "Diverged."); return false }
+            _ = await coordinator.catchUp()
+            try require(coordinator.blockedRemote?.revision == 3, "third edit blocked")
+            coordinator.applyRemote = { _ in true }
+            try require(coordinator.skipBlockedRemote() && coordinator.skippedRemote == [third] && coordinator.head == 3 && coordinator.blockedRemote == nil
+                && coordinator.appliedRemoteCount == 2, "skip acknowledges without counting as applied")
+            try require(!coordinator.skipBlockedRemote(), "nothing left to skip")
+            transport.replies = [.success(#"{"status":"applied","revision":4}"#)]
+            try require(await coordinator.drain() == .sent(1) && transport.calls.last?.params["base_revision"] as? Int == 3, "local edit sent fenced on the advanced head")
+            coordinator.noteUnsharedLocalEdit("Undo is not shared yet.")
+            try require(coordinator.unsharedLocalCount == 1 && coordinator.lastUnsharedReason == "Undo is not shared yet.", "unshared local change reported")
+            coordinator.end()
+            try require(coordinator.unsharedLocalCount == 0 && coordinator.blockedRemote == nil && coordinator.publishedLocalCount == 0, "ending resets the counters")
+            coordinator.noteUnsharedLocalEdit("ignored")
+            try require(coordinator.unsharedLocalCount == 0, "no session, nothing recorded")
+        }
+
         await test("file hashing matches FIPS 180-4 known answers on every platform") {
             try require(RoomAssetPolicy.sha256Hex(Data()) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "empty input digest")
             try require(RoomAssetPolicy.sha256Hex(Data("abc".utf8)) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "abc digest")

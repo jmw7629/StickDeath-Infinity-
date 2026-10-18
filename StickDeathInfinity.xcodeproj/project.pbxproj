@@ -195,6 +195,16 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		5ED395C49295EED7E8119CCC /* SpatterOwnKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ED4E67E4308938A88BCC035 /* SpatterOwnKey.swift */; };
 		4CC1DAF2ED4054F712711D06 /* SpatterOwnKeyKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */; };
 		C7953DD7BA410182ACCC25AD /* SpatterPlanControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C24E7F66CB174D3CD9A63A2 /* SpatterPlanControls.swift */; };
+		2A6D39591A94D046DE45646E /* NotificationsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EACFBE11D63F460908A415C9 /* NotificationsClient.swift */; };
+		FDAF2F7BB452E0DC7482FF93 /* PrivacyChoicesClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 315FBD771D0C4E0D5D5E96A0 /* PrivacyChoicesClient.swift */; };
+		5DB64B0BA4135094761B9766 /* ServerEntitlementClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4201D47ED06E53D20ADB8B47 /* ServerEntitlementClient.swift */; };
+		35D73941C50F82D260AC27E0 /* SupportClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B40E40C4E4168288EA3E0D2 /* SupportClient.swift */; };
+		8BD0018384B09413FEED26CB /* NotificationCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE5159A6E5F5FFB79A6F5399 /* NotificationCenterView.swift */; };
+		44E863DF1F4AAB40FAB954C9 /* PrivacyChoicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0825383272182A7E60F9AE2F /* PrivacyChoicesView.swift */; };
+		8200B95ACCCD747336951B44 /* SupportRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77501A7D93F38C37120FD9B6 /* SupportRequestsView.swift */; };
+		5BB8A5D3E7CBD3B7909E46AE /* SpatterReviewEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */; };
+		2298AB48D5EB9FF466B6A6CB /* StudioChannelRendition.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8638C7E7BCFFEAEC08ECA0D /* StudioChannelRendition.swift */; };
+		02366631F3092F2FFBAB75EE /* StudioViewModel+Rooms.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */; };
 		0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */; };
 		/* End PBXBuildFile section */
 
@@ -400,6 +410,16 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		6ED4E67E4308938A88BCC035 /* SpatterOwnKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterOwnKey.swift"; sourceTree = SOURCE_ROOT; };
 		7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterOwnKeyKeychain.swift"; sourceTree = SOURCE_ROOT; };
 		7C24E7F66CB174D3CD9A63A2 /* SpatterPlanControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift"; sourceTree = SOURCE_ROOT; };
+		EACFBE11D63F460908A415C9 /* NotificationsClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Notifications/NotificationsClient.swift"; sourceTree = SOURCE_ROOT; };
+		315FBD771D0C4E0D5D5E96A0 /* PrivacyChoicesClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Support/PrivacyChoicesClient.swift"; sourceTree = SOURCE_ROOT; };
+		4201D47ED06E53D20ADB8B47 /* ServerEntitlementClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Support/ServerEntitlementClient.swift"; sourceTree = SOURCE_ROOT; };
+		8B40E40C4E4168288EA3E0D2 /* SupportClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Support/SupportClient.swift"; sourceTree = SOURCE_ROOT; };
+		BE5159A6E5F5FFB79A6F5399 /* NotificationCenterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Notifications/NotificationCenterView.swift"; sourceTree = SOURCE_ROOT; };
+		0825383272182A7E60F9AE2F /* PrivacyChoicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Support/PrivacyChoicesView.swift"; sourceTree = SOURCE_ROOT; };
+		77501A7D93F38C37120FD9B6 /* SupportRequestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Support/SupportRequestsView.swift"; sourceTree = SOURCE_ROOT; };
+		DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift"; sourceTree = SOURCE_ROOT; };
+		E8638C7E7BCFFEAEC08ECA0D /* StudioChannelRendition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioChannelRendition.swift"; sourceTree = SOURCE_ROOT; };
+		4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/ViewModels/StudioViewModel+Rooms.swift"; sourceTree = SOURCE_ROOT; };
 		E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Rooms/RoomProjectHandoff.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
@@ -543,6 +563,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		444FE51936F2829A8267B473 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				E8638C7E7BCFFEAEC08ECA0D /* StudioChannelRendition.swift */,
+				41E2CA970EBDB8BC4F868660 /* Support */,
+				C1E26EB42267A122357D1C0F /* Notifications */,
 				F03A889DE68197E328E36C3C /* Diagnostics */,
 				073BADE86CF10AA441768DD6 /* StudioSelectionMask.swift */,
 				5FF8974972A03216F4C7544A /* StudioGradientFill.swift */,
@@ -611,6 +634,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		8A637DB0B401B69626E87073 /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
+				4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */,
 				6129DD42225CF20C0C028F89 /* AuthViewModel.swift */,
 				D37B6356D409139DC66A1A7A /* SpatterAIViewModel.swift */,
 				7D38EE64D979F2B1718BC78C /* StudioViewModel.swift */,
@@ -622,6 +646,8 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		4A6CA8964B099D03D70149E6 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				D9F8DFB408945532F9522C79 /* Support */,
+				82ED2A8F2792340FC673F8E3 /* Notifications */,
 				FA295816535F2ED95CA5599F /* Admin */,
 				CADE69133361D0E471AFF879 /* Collab */,
 				90132A03E62C27C079B40BC6 /* Auth */,
@@ -694,6 +720,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		45135823BC2869CE1BB1BFE8 /* Spatter */ = {
 			isa = PBXGroup;
 			children = (
+				DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */,
 				7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */,
 				6ED4E67E4308938A88BCC035 /* SpatterOwnKey.swift */,
 				22443092EEAD8DEC27825D7F /* SpatterStudioControlRegistry.swift */,
@@ -925,6 +952,41 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			path = Diagnostics;
 			sourceTree = "<group>";
 		};
+		C1E26EB42267A122357D1C0F /* Notifications */ = {
+			isa = PBXGroup;
+			children = (
+				EACFBE11D63F460908A415C9 /* NotificationsClient.swift */,
+			);
+			path = Notifications;
+			sourceTree = "<group>";
+		};
+		41E2CA970EBDB8BC4F868660 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				8B40E40C4E4168288EA3E0D2 /* SupportClient.swift */,
+				4201D47ED06E53D20ADB8B47 /* ServerEntitlementClient.swift */,
+				315FBD771D0C4E0D5D5E96A0 /* PrivacyChoicesClient.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		82ED2A8F2792340FC673F8E3 /* Notifications */ = {
+			isa = PBXGroup;
+			children = (
+				BE5159A6E5F5FFB79A6F5399 /* NotificationCenterView.swift */,
+			);
+			path = Notifications;
+			sourceTree = "<group>";
+		};
+		D9F8DFB408945532F9522C79 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				77501A7D93F38C37120FD9B6 /* SupportRequestsView.swift */,
+				0825383272182A7E60F9AE2F /* PrivacyChoicesView.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
 		/* End PBXGroup section */
 
 		/* Begin PBXNativeTarget section */
@@ -1041,6 +1103,16 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			buildActionMask = 2147483647;
 			files = (
 				0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */,
+				02366631F3092F2FFBAB75EE /* StudioViewModel+Rooms.swift in Sources */,
+				2298AB48D5EB9FF466B6A6CB /* StudioChannelRendition.swift in Sources */,
+				5BB8A5D3E7CBD3B7909E46AE /* SpatterReviewEvidence.swift in Sources */,
+				8200B95ACCCD747336951B44 /* SupportRequestsView.swift in Sources */,
+				44E863DF1F4AAB40FAB954C9 /* PrivacyChoicesView.swift in Sources */,
+				8BD0018384B09413FEED26CB /* NotificationCenterView.swift in Sources */,
+				35D73941C50F82D260AC27E0 /* SupportClient.swift in Sources */,
+				5DB64B0BA4135094761B9766 /* ServerEntitlementClient.swift in Sources */,
+				FDAF2F7BB452E0DC7482FF93 /* PrivacyChoicesClient.swift in Sources */,
+				2A6D39591A94D046DE45646E /* NotificationsClient.swift in Sources */,
 				C7953DD7BA410182ACCC25AD /* SpatterPlanControls.swift in Sources */,
 				4CC1DAF2ED4054F712711D06 /* SpatterOwnKeyKeychain.swift in Sources */,
 				5ED395C49295EED7E8119CCC /* SpatterOwnKey.swift in Sources */,

@@ -10,6 +10,11 @@ struct MainTabView: View {
     @State private var activeTab: AppTab = .home
     /// The same key AppTutorialView writes; completing or skipping once persists.
     @AppStorage("tutorial_completed") private var tutorialCompleted = false
+    /// Dismissal also holds for the rest of this launch, even when a launch
+    /// argument pins the stored preference (UI tests start every launch with
+    /// the tutorial showing), so the overlay never returns after Skip.
+    @State private var tutorialDismissedThisLaunch = MainTabView.tutorialDismissedInProcess
+    private static var tutorialDismissedInProcess = false
     @EnvironmentObject var spatterVM: SpatterAIViewModel
     @ObservedObject private var studioVM = StudioViewModel.shared
 
@@ -17,7 +22,13 @@ struct MainTabView: View {
         _activeTab = State(initialValue: initialTab)
     }
     private var showTutorial: Binding<Bool> {
-        Binding(get: { !tutorialCompleted }, set: { tutorialCompleted = !$0 })
+        Binding(get: { tutorialVisible }, set: { shown in
+            tutorialCompleted = !shown
+            if !shown { MainTabView.tutorialDismissedInProcess = true; tutorialDismissedThisLaunch = true }
+        })
+    }
+    private var tutorialVisible: Bool {
+        !tutorialCompleted && !tutorialDismissedThisLaunch && !MainTabView.tutorialDismissedInProcess
     }
 
     var body: some View {
@@ -58,7 +69,7 @@ struct MainTabView: View {
             }
 
             // Tutorial overlay (first run only; completion is a device preference)
-            if !tutorialCompleted {
+            if tutorialVisible {
                 AppTutorialView(isPresented: showTutorial)
             }
         }

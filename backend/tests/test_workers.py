@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from backend.notifications.push import AnnouncementAPI, PushBatchWorker, SinkTransport
+from backend.ops import report as ops_report
 from backend.ops import sweeps
 from backend.publishing import destinations
 from backend.publishing.destinations import DestinationConfig, MarketingWorker, Post, default_registry
@@ -323,12 +324,74 @@ class SweepTests(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             self.assertEqual(sweeps.main(["--all"], environment={}), 2)
             self.assertEqual(sweeps.main(["--list", "--all"], environment={}), 0)
-            api = FakeAPI({"billing_reconcile": [{"expired_now": 0}], "worker_heartbeat": [True], "worker_configuration": [True]})
+            api = FakeAPI({"billing_reconcile": [{"expired_now": 0}], "worker_heartbeat": [True], "worker_configuration": [True],
+                           "ops_report": [{"status": "recorded", "id": "x"}]})
             self.assertEqual(sweeps.main(["--only", "billing_reconcile"], environment={}, api_factory=lambda: api), 0)
+            self.assertEqual(api.calls[-1], ("ops_report", {"kind": "retention_sweep", "outcome": "succeeded", "label": "",
+                                                            "metrics": {"sweeps_run": 1, "sweeps_failed": 0}}))
         self.assertIn("not configured", err.getvalue())
         self.assertIn("billing_reconcile", out.getvalue())
         self.assertEqual(sweeps.SweepAPI.PREFIX, "sdi_")
         self.assertTrue(set(sweeps.SWEEPS.values()) <= sweeps.SweepAPI.PERMITTED)
+
+
+    def test_room_asset_sweep_is_scheduled_and_service_only(self):
+        self.assertEqual(sweeps.SWEEPS["room_asset_sweep"], "room_asset_sweep")
+        self.assertIn("room_asset_sweep", sweeps.SweepAPI.PERMITTED)
+        api = FakeAPI({"room_asset_sweep": [{"discarded": 2, "verified": 2, "unverified_total": 0}], "worker_heartbeat": [True]})
+        report = sweeps.run_sweeps(api, ["room_asset_sweep"])
+        self.assertEqual(report["room_asset_sweep"], {"state": "ok", "iterations": 1,
+                                                      "result": {"discarded": 2, "verified": 2, "unverified_total": 0}})
+        self.assertEqual(api.calls[0], ("room_asset_sweep", {}))
+
+    def test_run_outcome_is_reported_as_counts_only(self):
+        api = FakeAPI({"ops_report": [{"status": "recorded", "id": "x"}, {"error": "Metrics are named whole numbers only."},
+                                      RuntimeError("Job service response unavailable; secret=abc")]})
+        report = {"a": {"state": "ok"}, "b": {"state": "failed", "error": "RuntimeError"}, "c": {"state": "skipped"},
+                  "_heartbeat": {"state": "ok"}}
+        self.assertEqual(sweeps.report_outcome(api, report), {"state": "recorded"})
+        self.assertEqual(api.calls[-1][1], {"kind": "retention_sweep", "outcome": "failed", "label": "",
+                                            "metrics": {"sweeps_run": 2, "sweeps_failed": 1}})
+        self.assertEqual(sweeps.report_outcome(api, report)["state"], "refused")
+        self.assertEqual(sweeps.report_outcome(api, report), {"state": "failed", "error": "RuntimeError"})
+        self.assertEqual(sweeps.report_outcome(api, {"x": {"state": "skipped"}})["state"], "skipped")
+        self.assertEqual(len(api.calls), 3)
+
+    def test_failed_ops_report_does_not_fail_the_run(self):
+        out = io.StringIO()
+        api = FakeAPI({"support_retention": [{"deleted": 0}], "worker_heartbeat": [True], "worker_configuration": [True],
+                       "ops_report": [RuntimeError("Job service response unavailable")]})
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(sweeps.main(["--only", "support_retention"], environment={}, api_factory=lambda: api), 0)
+        self.assertEqual(json.loads(out.getvalue())["_ops_report"], {"state": "failed", "error": "RuntimeError"})
+
+
+class OpsReportCommandTests(unittest.TestCase):
+    def test_metrics_are_named_whole_numbers(self):
+        self.assertEqual(ops_report.parse_metrics(["bytes=12", "duration_seconds=3"]), {"bytes": 12, "duration_seconds": 3})
+        for bad in (["Bytes=1"], ["bytes=-1"], ["bytes=1.5"], ["host=db.internal"], ["bytes"]):
+            with self.assertRaises(ValueError):
+                ops_report.parse_metrics(bad)
+
+    def test_unconfigured_report_is_skipped_with_a_message(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(ops_report.main(["backup", "succeeded"], environment={}), ops_report.NOT_CONFIGURED)
+            self.assertEqual(ops_report.main(["backup", "succeeded"], environment={"SDI_BACKEND_URL": "http://insecure.test",
+                                                                                    "SDI_SERVICE_KEY": "k"}), ops_report.NOT_CONFIGURED)
+        self.assertIn("not configured", err.getvalue())
+
+    def test_report_is_sent_and_refusals_fail_the_command(self):
+        out = io.StringIO()
+        api = FakeAPI({"ops_report": [{"status": "recorded", "id": "x"}, {"error": "Labels are a version number or a commit hash only."}]})
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(ops_report.main(["restore_drill", "succeeded", "--label", "3f2a9c1", "--metric", "tables=40"],
+                                             environment={}, api_factory=lambda: api), 0)
+            self.assertEqual(ops_report.main(["release", "failed", "--label", "not a version"], environment={}, api_factory=lambda: api), 1)
+        self.assertEqual(api.calls[0], ("ops_report", {"kind": "restore_drill", "outcome": "succeeded", "label": "3f2a9c1",
+                                                       "metrics": {"tables": 40}}))
+        self.assertEqual(ops_report.OpsReportAPI.PREFIX, "sdi_")
+        self.assertEqual(ops_report.OpsReportAPI.PERMITTED, frozenset({"ops_report"}))
 
 
 class PushWorkerTests(unittest.TestCase):

@@ -40,6 +40,7 @@ object BackendContract {
         BackendRpc("sdi_support_action", BackendArea.Support, "support-requests.sql", BackendAccess.Member, "Create, list, withdraw and delete support requests (five per day)."),
         BackendRpc("sdi_account_lifecycle", BackendArea.Account, "account-lifecycle.sql", BackendAccess.Member, "Data export and deletion requests with a seven-day cooling-off."),
         BackendRpc("sdi_member_notices", BackendArea.Account, "account-lifecycle.sql", BackendAccess.Member, "Member notices (transactional only)."),
+        BackendRpc("sdi_notify_action", BackendArea.Account, "notifications.sql", BackendAccess.Member, "Notification preferences and the in-app announcements inbox; no push transport."),
         BackendRpc("sdi_account_appeal_action", BackendArea.Account, "admin-users.sql", BackendAccess.MemberFresh, "Own account state and restriction appeals."),
         BackendRpc("sdi_moderation_appeal", BackendArea.Moderation, "rooms-v2.sql", BackendAccess.Member, "Appeal a feed removal within 30 days."),
         BackendRpc("sdi_creator_review", BackendArea.Publishing, "creator-reviews.sql", BackendAccess.Member, "Queue a private render for review or a destination; never publishes by itself."),

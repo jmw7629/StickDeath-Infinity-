@@ -19,6 +19,9 @@ throwaway local PostgreSQL 16 with stubbed Supabase pieces
 | Run-log retention | `sdi_agent_log_retention()` | service role only | Deletes finished runs older than 180 days and agent audit rows older than 400 days. |
 | Directory plan column | `sdi_users_action('list')` | `users`; plan only with `finance` | `free` when no provider-reported entitlement exists; never inferred. |
 | Account state changes | `sdi_users_action` suspend/ban/restore/signout/note | `users` | `admin_gate`: recent second factor for state changes (not for notes), 30 per minute, denial audit. |
+| Reset flags (#285) | `sdi_users_action('reset_flags', subject, reason)` | `users` and `moderation`, step-up | Dismisses the open reports on the member's posts (the acting admin's own reports stay for another reviewer), one `moderation_audit` row per report plus the `admin_user_audit` row; returns `dismissed`. Nothing open returns `unchanged` and records nothing. Reopened if a reporter changes their reason. |
+| Directory extras (#285) | `sdi_users_action('list')` | `users`; open reports only with `moderation` | `signup_source` is the provider Supabase Auth recorded at first sign-in (name only); `open_report_count` counts pending reports. |
+| Affected-member notices (#285) | trigger on `admin_user_audit`; member reads `sdi_account_notices('list' / 'mark_read')` | the member, current session | Fixed-text notice for suspend, ban, restore, sign-out, reset flags and rejected appeals; never repeats the internal reason; notes are silent. Restricted members can still read them. Newest 50 kept. |
 | Moderation decisions | `sdi_moderation_action` dismiss/remove | `moderation` | `admin_gate` rate limit (60 per minute) with denial audit. |
 
 ## Clients
@@ -31,20 +34,34 @@ throwaway local PostgreSQL 16 with stubbed Supabase pieces
   banner. Contracts and fail-closed validation live in `AdminOperationsClient.swift`
   and are covered by `Tests/CommunityAdmin`.
 - Web (`website/admin.html`): panels for operations status and the agent audit;
-  forms for directory search, account actions (reason and confirmation required)
-  and run/audit history search. Render approvals and moderation decisions remain
-  native-only because the exact render is played before a decision.
+  forms for directory search, account actions including reset flags (reason and
+  confirmation required), run/audit history search, publishing stages and job
+  history (#245), the diagnostics read model (#291), announcement compose, schedule,
+  cancel and delivery results (#290), agent controls (pause, resume, caps,
+  permissions, publish and roll back instructions; #284) and finance records
+  (expense, CSV import, correction, reconciliation) with period summary,
+  reconciliation, agent-cost and ledger export views plus a client-side CSV download
+  with spreadsheet formulas neutralised (#254). Render approvals, moderation decisions
+  and publishing withdrawals remain native-only because the exact render is played
+  before a decision. Verified against a mocked backend in a local browser only; no
+  live administrator session has exercised these forms.
 
 ## Owner gates and remaining work
 
 - Apply the candidates (README order) to the real project, then regenerate
   `backend/sql/dist/sdi-backend-install.sql`.
-- The host backup, restore-drill, release, rollback and retention jobs must call
-  `sdi_ops_report` with the service key from the host secret store. Until they do,
-  the status honestly shows "never reported" and stale.
+- The host backup, restore-drill, release and rollback jobs must call
+  `python3 -m backend.ops.report` (or `sdi_ops_report`) with the service key from
+  the host secret store. Until they do, the status honestly shows "never reported"
+  and stale.
 - Schedule `sdi_agent_log_retention()` from the host sweep (for example as a step in
   `backend.ops.sweeps`); not wired in this change.
 - Publication hold during an emergency stop is not yet enforced by the publishing
   worker lease; the emergency stop covers agent runs and proposals only.
-- External notification of affected members (beyond the in-app restriction status
-  and appeal flow) and web parity for render approvals remain open.
+- Affected members now get account notices (`sdi_account_notices`), shown on the
+  website account page; the native app does not read them yet, and email/push
+  delivery of these notices is not wired.
+  Web parity for render approvals remains open.
+- `backend.ops.sweeps` now reports each run through `sdi_ops_report`
+  (`retention_sweep`), and `backend.ops.report` lets host jobs report backups,
+  drills, releases and rollbacks (docs/OPERATING_RUNBOOK.md).

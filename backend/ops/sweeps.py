@@ -20,6 +20,7 @@ import sys
 from typing import Callable, Dict, Iterable, Mapping, Optional
 
 from ..publishing.worker import JobAPI
+from .report import send_report
 
 SWEEPS: Dict[str, str] = {
     "billing_reconcile": "billing_reconcile",
@@ -46,7 +47,7 @@ REPORTED_SETTINGS = ("SDI_BACKEND_URL", "SDI_SERVICE_KEY", "SDI_YOUTUBE_CLIENT_F
 
 class SweepAPI(JobAPI):
     PREFIX = "sdi_"
-    PERMITTED = frozenset(SWEEPS.values()) | {"worker_heartbeat", "worker_configuration"}
+    PERMITTED = frozenset(SWEEPS.values()) | {"worker_heartbeat", "worker_configuration", "ops_report"}
 
 
 def configuration_presence(environment: Mapping[str, str], names: Iterable[str] = REPORTED_SETTINGS) -> Dict[str, bool]:
@@ -92,6 +93,21 @@ def run_sweeps(api: SweepAPI, names: Iterable[str], worker_name: str = "service-
     return report
 
 
+def report_outcome(api: SweepAPI, report: Mapping[str, dict]) -> dict:
+    """Record the run through ``sdi_ops_report`` as a retention sweep (#257).
+
+    Only whole-number counts are sent: how many sweeps ran and how many failed.
+    Unknown (skipped) names are not counted. A refused or failed report is
+    returned for printing and never changes the run's exit status.
+    """
+    ran = [v for k, v in report.items() if not k.startswith("_") and v.get("state") in ("ok", "failed")]
+    if not ran:
+        return {"state": "skipped", "reason": "no sweep ran"}
+    failed = sum(1 for v in ran if v["state"] == "failed")
+    return send_report(api, "retention_sweep", "failed" if failed else "succeeded", "",
+                       {"sweeps_run": len(ran), "sweeps_failed": failed})
+
+
 def _summarize(result) -> object:
     """Keep counts and small scalars; drop lists and nested member data."""
     if isinstance(result, Mapping):
@@ -121,8 +137,9 @@ def main(argv: Optional[list] = None, environment: Optional[Mapping[str, str]] =
     report = run_sweeps(api, names)
     # Informational: a refused or failed presence report is printed, never fatal.
     report["_configuration"] = report_configuration(api, environment)
+    report["_ops_report"] = report_outcome(api, report)
     print(json.dumps(report, sort_keys=True))
-    return 0 if all(v["state"] != "failed" for k, v in report.items() if k != "_configuration") else 1
+    return 0 if all(v["state"] != "failed" for k, v in report.items() if k not in ("_configuration", "_ops_report")) else 1
 
 
 if __name__ == "__main__":

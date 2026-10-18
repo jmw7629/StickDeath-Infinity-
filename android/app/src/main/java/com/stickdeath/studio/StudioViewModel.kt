@@ -891,7 +891,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     /** Reasons the current project cannot become an iOS `.sdi` file; empty when exportable. */
     val sdiExportBlockers: List<String> get() = document?.let { SwiftProjectExport.unsupportedReasons(it) } ?: emptyList()
-    fun prepareExport(kind: ExportKind, share: Boolean = false, options: ExportOptions = ExportOptions(transparent = exportTransparent)) {
+    fun prepareExport(kind: ExportKind, share: Boolean = false, options: ExportOptions = ExportOptions(transparent = exportTransparent), targetPackages: List<String> = emptyList()) {
         val snapshot = document ?: return
         if (exporting || exportArtifact != null || closing) return
         if (kind == ExportKind.SEQUENCE && !requirePlan(planLimits.pngSequenceExport)) return
@@ -918,7 +918,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         val coroutine = currentCoroutineContext()
                         val shared = ShareExports.stage(getApplication(), rendered) { coroutine.ensureActive() }
                         // Track ownership before returning across the cancellable dispatcher boundary.
-                        owned = shared
+                        owned = shared.copy(targetPackages = targetPackages)
                         rendered.file.delete()
                     }
                 }
@@ -932,10 +932,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             finally { if (!delivered) owned?.let { ShareExports.discard(it) }; mutableExportProgress.value = null; exporting = false; exportJob = null }
         }
     }
-    fun shareSheetOpened(artifact: ExportArtifact) {
+    fun shareSheetOpened(artifact: ExportArtifact, directApp: Boolean = false) {
         if (exportArtifact != artifact || !artifact.share) return
         exportArtifact = null; exportPickerRequested = false
-        message = "Share chooser opened. SDI cannot confirm whether another app posts or sends the file."
+        message = when {
+            directApp -> "Handed to the chosen app. SDI cannot confirm whether that app posts or sends the file."
+            artifact.targetPackages.isNotEmpty() -> "That app is not installed or did not accept the file, so the share chooser opened. SDI cannot confirm whether another app posts or sends the file."
+            else -> "Share chooser opened. SDI cannot confirm whether another app posts or sends the file."
+        }
     }
     fun markExportPickerRequested() { exportPickerRequested = true }
     fun cancelExport() {

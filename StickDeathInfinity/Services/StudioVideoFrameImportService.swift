@@ -105,6 +105,17 @@ actor StudioVideoFrameImportService {
         }
     }
 
+    /// The selected movie's bytes, read from the same owned copy that was
+    /// decoded (#199). The caller may retain them as project-managed media so a
+    /// reopened project no longer depends on the user's original file.
+    struct RetainedMovie: Sendable, Equatable {
+        let id: UUID
+        let name: String
+        /// Lowercased "mp4" or "mov".
+        let container: String
+        let data: Data
+    }
+
     struct Frame: Sendable {
         let image: StudioImageImportService.ImportedImage
         let requestedSeconds: Double
@@ -114,6 +125,8 @@ actor StudioVideoFrameImportService {
         let durationSeconds: Double
         /// Measured properties of the source movie this frame came from.
         let metadata: Metadata
+        /// Shared by every frame of one extraction; nil unless requested.
+        var movie: RetainedMovie? = nil
     }
     enum Failure: LocalizedError {
         case busy, invalidTime, invalidMapping, outsideTrim, unsupportedVideo, geometry, outsideVideo, encoding, timedOut, sequenceLimit
@@ -145,7 +158,8 @@ actor StudioVideoFrameImportService {
     /// the entire bounded sequence; no document edit occurs in this service.
     func extractSequence(from url: URL, projectFrameIndex: Int, fps: Int, frameCount: Int,
                          mapping: Mapping = Mapping(),
-                         scratchParent: URL = FileManager.default.temporaryDirectory) async throws -> [Frame] {
+                         scratchParent: URL = FileManager.default.temporaryDirectory,
+                         retainMovie: Bool = false) async throws -> [Frame] {
         try Task.checkCancellation()
         guard !busy else { throw Failure.busy }
         guard (1...Self.maximumSequenceFrames).contains(frameCount) else { throw Failure.sequenceLimit }
@@ -165,7 +179,7 @@ actor StudioVideoFrameImportService {
         do {
             let copiedURL = try owned.url()
             let byteCount = try Self.byteCount(copiedURL)
-            let frames = try await withThrowingTaskGroup(of: [Frame].self) { group in
+            var frames = try await withThrowingTaskGroup(of: [Frame].self) { group in
                 group.addTask { try await Self.decodeSequence(copiedURL, name: owned.displayName,
                     requests: requests, mapping: mapping, byteCount: byteCount) }
                 group.addTask {
@@ -178,6 +192,16 @@ actor StudioVideoFrameImportService {
             }
             try Task.checkCancellation()
             _ = try owned.url()
+            if retainMovie {
+                // The owned copy is already bounded to 16 MB and identity-checked.
+                // Its exact decoded bytes become the managed original (#199).
+                let data = try Data(contentsOf: copiedURL)
+                guard data.count == byteCount else { throw Failure.unsupportedVideo }
+                let container = url.pathExtension.lowercased() == "mov" ? "mov" : "mp4"
+                let movie = RetainedMovie(id: UUID(), name: String(owned.displayName.prefix(120)),
+                                          container: container, data: data)
+                for index in frames.indices { frames[index].movie = movie }
+            }
             try owned.cleanup()
             return frames
         } catch {

@@ -434,7 +434,7 @@ private struct RoomDetailView: View {
             Text("Shared edit stream").communitySubheading()
             Text(syncStatus).communityCaption().accessibilityIdentifier("rooms.room.sync-status")
             if let held = RoomSessionCoordinator.shared.heldConflict {
-                CommunityMessage(text: "Your edit\(held.target.map { " to \($0)" } ?? "") overlaps \(held.overlapping.count) edit\(held.overlapping.count == 1 ? "" : "s") by another creator. Nothing was overwritten. Decide after reviewing their change.", kind: .info)
+                CommunityMessage(text: "Your edit\(held.target.map { " to \($0)" } ?? "") overlaps \(held.overlapping.count) edit\(held.overlapping.count == 1 ? "" : "s") by another creator. Nothing was overwritten. Decide after reviewing their change. Discarding stops sending your edit; it stays in your device copy until you undo it there.", kind: .info)
                     .accessibilityIdentifier("rooms.room.conflict")
                 HStack(spacing: 8) {
                     Button("Keep mine on top") { RoomSessionCoordinator.shared.resolveHeldConflict(keepMine: true); Task { await pollActivity() } }
@@ -444,6 +444,19 @@ private struct RoomDetailView: View {
                 }
             }
             if let reason = RoomSessionCoordinator.shared.endReason { Text(reason).communityCaption() }
+            if let blocked = RoomSessionCoordinator.shared.blockedRemote {
+                CommunityMessage(text: "Shared edit #\(blocked.revision) is waiting: \(blocked.reason)", kind: .info)
+                    .accessibilityIdentifier("rooms.room.blocked")
+                Button("Skip this edit (my copy will differ)") {
+                    RoomSessionCoordinator.shared.skipBlockedRemote(); Task { await pollActivity() }
+                }
+                .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).accessibilityIdentifier("rooms.room.blocked-skip")
+            }
+            if RoomSessionCoordinator.shared.isHandedOff(room: room.id) {
+                let coordinator = RoomSessionCoordinator.shared
+                Text("In Studio this session: \(coordinator.appliedRemoteCount) shared edit\(coordinator.appliedRemoteCount == 1 ? "" : "s") applied, \(coordinator.publishedLocalCount) of yours queued for sending, \(coordinator.pendingLocalCount) still unsent, \(coordinator.skippedRemote.count) skipped, \(coordinator.unsharedLocalCount) local change\(coordinator.unsharedLocalCount == 1 ? "" : "s") not shared\(coordinator.lastUnsharedReason.map { " (latest: \($0))" } ?? "").")
+                    .communityCaption().accessibilityIdentifier("rooms.room.studio-sync")
+            }
             if activity.isEmpty { Text("No shared edits recorded yet.").communityCaption() }
             ForEach(activity.suffix(20)) { record in
                 HStack(alignment: .top, spacing: 8) {
@@ -455,7 +468,7 @@ private struct RoomDetailView: View {
                     }
                 }
             }
-            Text("Edits are versioned Studio commands with an idempotent operation id, a per-room sequence number and a base revision. The server places an edit on top of concurrent edits only when they touched different frames, layers or sounds; overlapping edits are held for your decision and never overwrite another creator's work. You can undo only your own edits. Applying remote edits inside Studio is not connected in this build; the stream is shown as recorded by the server.")
+            Text("Edits are versioned Studio commands with an idempotent operation id, a per-room sequence number and a base revision. The server places an edit on top of concurrent edits only when they touched different frames, layers or sounds; overlapping edits are held for your decision and never overwrite another creator's work. You can undo only your own edits. While the shared project is open in Studio, its typed edits and exactly replayable drawings are sent here, and other creators' edits are applied in order with the identities they created. Anything Studio cannot replay exactly (for example a fill, a paste from this device's clipboard, Undo or a room undo) is never claimed as shared: it is listed as not shared or waits for you to skip it.")
                 .communityCaption()
             Button("Refresh edit stream") { Task { await pollActivity() } }
                 .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
@@ -505,7 +518,8 @@ private struct RoomDetailView: View {
             let outcome = await RoomSessionCoordinator.shared.catchUp()
             guard revision == epoch else { return }
             let pendingRemote = RoomSessionCoordinator.shared.pendingRemoteCount
-            syncStatus = "Server head revision \(response.head ?? 0). \(pendingRemote) remote edit\(pendingRemote == 1 ? "" : "s") waiting for the Studio hook. \(outcome == .accessEnded ? "Access ended." : "")"
+            let waitingFor = RoomSessionCoordinator.shared.isHandedOff(room: room.id) ? "to apply in Studio" : "until you open the shared project in Studio"
+            syncStatus = "Server head revision \(response.head ?? 0). \(pendingRemote) remote edit\(pendingRemote == 1 ? "" : "s") waiting \(waitingFor). \(outcome == .accessEnded ? "Access ended." : "")"
         } catch { if revision == epoch { syncStatus = CommunityGateway.normalize(error).errorDescription ?? "Edit stream unavailable." } }
     }
     @MainActor private func act(_ operation: @MainActor () async throws -> Void) async {
@@ -552,7 +566,8 @@ private struct RoomDetailView: View {
         busy = true; defer { busy = false }
         if await studio.openProject(metadata) {
             RoomSessionCoordinator.shared.handOffToStudio(room: room.id, roomTitle: room.title, projectID: projectID)
-            notice = "Opened \(metadata.title) in Studio. Edits are saved on this device; the shared stream shows server-recorded commands only. Return to Rooms to come back to this room."
+            studio.startRoomSynchronisation()
+            notice = "Opened \(metadata.title) in Studio. Edits are saved on this device and synchronised with this room while it stays open; overlapping edits wait for your decision. Return to Rooms to come back to this room."
             NotificationCenter.default.post(name: .sdiCommunityOpenStudio, object: nil)
         } else {
             failure = studio.message ?? "Studio could not open the project."

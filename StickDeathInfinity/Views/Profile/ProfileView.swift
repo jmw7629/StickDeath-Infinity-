@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
     @Environment(\.requestSignIn) private var requestSignIn
+    @Environment(\.locale) private var locale
+    @ObservedObject private var stripe = StripeService.shared
     let onOpenProjects: () -> Void
     @State private var destination: Destination?
     @State private var localProjectCount: Int?
@@ -121,13 +123,17 @@ struct ProfileView: View {
                 }
 
                 Text("Subscription").font(.specialElite(16)).foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(reportedPlan ?? "Plan unavailable").font(.specialElite(16))
-                    Text("Pricing, renewal and purchase information are not connected. No payment or subscription change is available here.")
-                        .font(.specialElite(12)).foregroundStyle(.secondary)
+                Button { destination = .subscription } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(BillingCopy.status(stripe.billing, catalog: stripe.catalog, locale: locale, timeZone: .current).title)
+                            .font(.specialElite(16))
+                        Text("Plans, prices and renewal come from the App Store. Open to see plans, restore purchases or manage your subscription.")
+                            .font(.specialElite(12)).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                    .background(Color(hex: "141414")).clipShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-                .background(Color(hex: "141414")).clipShape(RoundedRectangle(cornerRadius: 12))
+                .buttonStyle(.plain)
                 .accessibilityIdentifier("profile.subscription-status")
             }
             .padding(.horizontal, 16).padding(.bottom, 24)
@@ -152,6 +158,10 @@ struct ProfileView: View {
         }
         .onChange(of: authVM.userId) { _ in destination = nil }
         .sheet(item: $destination) { page in
+            if page == .subscription {
+                // SubscriptionView brings its own header and close control.
+                NavigationStack { SubscriptionView() }
+            } else {
             NavigationStack {
                 Group {
                     switch page {
@@ -162,12 +172,12 @@ struct ProfileView: View {
                     case .analytics:
                         detail("Analytics unavailable", "Views, likes and engagement have not been loaded. No activity totals are estimated.")
                     case .subscription:
-                        detail(reportedPlan.map { "Reported plan: \($0)" } ?? "Plan unavailable",
-                               "Verified pricing and billing management are not connected. No purchase or renewal is claimed.")
+                        EmptyView()
                     }
                 }
                 .navigationTitle(page.title).navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { destination = nil } } }
+            }
             }
         }
     }
@@ -240,6 +250,17 @@ struct ProfileSettingsView: View {
                     AccountDataExportRow()
                 }
             }
+            Section("Help and privacy") {
+                NavigationLink("Contact support") { SupportRequestsView() }
+                    .accessibilityIdentifier("profile.support.open")
+                NavigationLink("Notifications and announcements") { NotificationCenterView() }
+                    .accessibilityIdentifier("profile.notifications.open")
+                NavigationLink("Privacy and marketing permission") { PrivacyChoicesView() }
+                    .accessibilityIdentifier("profile.privacy.open")
+            }
+            Section("Policies") {
+                PolicyLinksList()
+            }
             Section("Diagnostics") {
                 DiagnosticsSettingsView()
             }
@@ -293,77 +314,147 @@ struct ProfileSettingsView: View {
     }
 }
 
+/// Creator publishing status over `sdi_publish_status` (upload-retention.sql, #245/#188):
+/// each submitted render with its review state, the server copy's retention and
+/// every destination job's stage. Retry and cancel/removal appear only when the
+/// server says they are allowed; links appear only from a provider-confirmed result_url.
 private struct PublishingJobsView: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
-    @State private var jobs: [PublishingJob] = []
+    @State private var reviews: [PublishStatusReview] = []
     @State private var error: String?
+    @State private var notice: String?
     @State private var busy = false
+    @State private var hasMore = false
+    @State private var page = 0
     @State private var generation = UUID()
-    private var client: SupabaseClient { get throws { try SupabaseManager.shared.client } }
+    @State private var pendingCancel: PublishStatusJob?
+    private static let pageSize = 25
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Publishing activity").font(.specialElite(22))
                 Text("Only an approved render with destination consent can enter this queue. Cancelling an upload may require removal from the destination after transfer.")
                     .font(.specialElite(15, relativeTo: .callout)).foregroundStyle(.secondary)
-                if let error { Text(error).foregroundStyle(.red) }
+                if !CommunityServices.isConfigured {
+                    Text(CommunityError.notConfigured.errorDescription ?? "").font(.specialElite(13, relativeTo: .footnote)).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("profile.publishing.not-configured")
+                }
+                if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("profile.publishing.error") }
+                if let notice { Text(notice).font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.secondary) }
                 if busy { ProgressView() }
-                Button("Refresh") { Task { await load() } }.disabled(busy)
+                Button("Refresh") { Task { await load(reset: true) } }.disabled(busy || !auth.isAuthenticated)
                 NavigationLink("Upload an exported MP4 for review") { SDIRenderUploadView() }
                 CreatorReviewsView()
-                ForEach(jobs) { job in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(job.destination.capitalized).font(.specialElite(18))
-                        Text(job.state.replacingOccurrences(of: "_", with: " ").capitalized)
-                        Text("Render \(job.render_digest.prefix(12)) · Attempt \(job.attempts)").font(.specialElite(12, relativeTo: .caption))
-                        Text(job.updated_at, style: .relative).font(.specialElite(12, relativeTo: .caption))
-                        if let issue = job.last_error { Text(issue).font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.red) }
-                        if job.state == "published", let raw = job.result_url, let parts = URLComponents(string: raw),
-                           parts.scheme == "https", parts.host != nil, parts.user == nil, parts.password == nil, let url = parts.url {
-                            Link("Open published video", destination: url)
-                        }
-                        if job.state == "failed" && job.attempts < 5 {
-                            Button("Retry") { Task { await act("retry", job.id) } }.disabled(busy)
-                        }
-                        if ["queued","leased","failed","published"].contains(job.state) {
-                            Button(job.state == "published" ? "Request removal" : "Cancel", role: .destructive) {
-                                Task { await act("cancel", job.id) }
-                            }.disabled(busy)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding()
-                        .background(Color.sdSurface).clipShape(RoundedRectangle(cornerRadius: 12))
+                ForEach(reviews) { review in reviewCard(review) }
+                if hasMore {
+                    Button("Load older submissions") { Task { await load(reset: false) } }.disabled(busy)
                 }
-                if jobs.isEmpty && !busy && error == nil { Text("No publishing jobs.") }
+                if reviews.isEmpty && !busy && error == nil && auth.isAuthenticated { Text("No publishing activity.") }
+                if !auth.isAuthenticated { Text("Sign in with a full account to see publishing activity.").foregroundStyle(.secondary) }
             }.padding()
         }
+        .confirmationDialog(pendingCancel?.state == "published" ? "Request removal from this destination?" : "Cancel this publishing job?",
+                            isPresented: Binding(get: { pendingCancel != nil }, set: { if !$0 { pendingCancel = nil } })) {
+            if let job = pendingCancel {
+                Button(job.state == "published" ? "Request removal" : "Cancel job", role: .destructive) {
+                    pendingCancel = nil; Task { await act("cancel", job.id) }
+                }
+            }
+            Button("Keep", role: .cancel) { pendingCancel = nil }
+        } message: { Text("The publishing service records the request. A video already transferred is removed from the destination by the service; the stage shows when that is done.") }
         .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
-            generation = UUID(); jobs = []
-            if auth.isAuthenticated && phase == .active { await load() }
+            generation = UUID(); busy = false; reviews = []; hasMore = false; page = 0; error = nil; notice = nil; pendingCancel = nil
+            if auth.isAuthenticated && phase == .active { await load(reset: true) }
         }
-        .onDisappear { generation = UUID(); jobs = [] }
+        .onDisappear { generation = UUID(); reviews = [] }
     }
-    @MainActor private func load() async {
+
+    @ViewBuilder private func reviewCard(_ review: PublishStatusReview) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(review.title).font(.specialElite(18))
+            Text("Review: \(PublishStatusText.reviewState(review.review_state)) · Version \(review.version)")
+                .font(.specialElite(13, relativeTo: .footnote))
+                .accessibilityIdentifier("profile.publishing.review-state")
+            if review.owner_approval_required == true {
+                Text("Spatter-generated: the owner must approve this exact render before any release.")
+                    .font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.secondary)
+            }
+            Text("Render \(review.render_digest.prefix(12))").font(.specialElite(12, relativeTo: .caption).monospaced())
+            Text(PublishStatusText.serverCopy(review.server_copy, expires: review.server_copy_expires_at))
+                .font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.secondary)
+                .accessibilityIdentifier("profile.publishing.server-copy")
+            if review.jobs.isEmpty {
+                Text("No destination jobs yet.").font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.secondary)
+            }
+            ForEach(review.jobs) { job in jobRow(job) }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding()
+            .background(Color.sdSurface).clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder private func jobRow(_ job: PublishStatusJob) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(PublishStatusText.destination(job.destination)): \(PublishStatusText.stage(job.stage))")
+                .font(.specialElite(15, relativeTo: .body))
+                .accessibilityIdentifier("profile.publishing.stage")
+            HStack(spacing: 6) {
+                Text("Attempt \(job.attempts)")
+                Text("·")
+                Text(job.updated_at, style: .relative)
+            }.font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.secondary)
+            if job.current_render == false {
+                Text("This job is for an earlier version of the render.").font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.secondary)
+            }
+            if let issue = job.last_error, !issue.isEmpty {
+                Text(issue).font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.red)
+            }
+            // Only the provider-confirmed link the server returns for a published job.
+            if let url = PublishStatusText.resultLink(job.result_url) {
+                Link("Open published video", destination: url)
+            }
+            if job.can_retry {
+                Button("Retry") { Task { await act("retry", job.id) } }.disabled(busy)
+                    .accessibilityIdentifier("profile.publishing.retry")
+            }
+            if job.can_cancel {
+                Button(job.state == "published" ? "Request removal" : "Cancel", role: .destructive) { pendingCancel = job }
+                    .disabled(busy)
+                    .accessibilityIdentifier("profile.publishing.cancel")
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    @MainActor private func load(reset: Bool) async {
         guard !busy, auth.isAuthenticated else { return }
-        let epoch = generation; busy = true; defer { busy = false }
+        let epoch = generation; busy = true
+        defer { if epoch == generation { busy = false } }
+        let target = reset ? 0 : page + 1
         do {
-            let response: PublishingResponse = try await client.rpc("sdi_publish_action", params: PublishingRequest(action: "list")).execute().value
+            let response = try await CommunityServices.gateway.call("sdi_publish_status", params: PublishStatusRequest(page: target), as: PublishStatusResponse.self)
             guard !Task.isCancelled, epoch == generation else { return }
-            if let problem = response.error { jobs = []; error = problem; return }
-            guard let rows = response.jobs else { error = "Incomplete publishing response."; return }
-            jobs = rows; error = nil
-        } catch { if epoch == generation { jobs = []; self.error = "Publishing service unavailable. Check your account and connection." } }
+            guard let rows = response.reviews else { error = "Incomplete publishing response."; return }
+            reviews = reset ? rows : reviews + rows.filter { row in !reviews.contains { $0.id == row.id } }
+            page = target; hasMore = rows.count == Self.pageSize; error = nil
+        } catch {
+            guard epoch == generation else { return }
+            if reset { reviews = [] }
+            self.error = CommunityGateway.normalize(error).errorDescription ?? "Publishing service unavailable."
+        }
     }
     @MainActor private func act(_ action: String, _ job: UUID) async {
         guard !busy else { return }
         let epoch = generation; busy = true
         do {
-            let response: PublishingResponse = try await client.rpc("sdi_publish_action", params: PublishingRequest(action: action, job: job)).execute().value
+            let response = try await CommunityServices.gateway.call("sdi_publish_action", params: PublishingRequest(action: action, job: job), as: PublishingResponse.self)
             guard !Task.isCancelled, epoch == generation else { busy = false; return }
-            if let problem = response.error { error = problem; busy = false; return }
-            guard ["queued","cancellation_recorded"].contains(response.status ?? "") else { error = "Request was not confirmed."; busy = false; return }
-            busy = false; await load()
-        } catch { busy = false; if epoch == generation { self.error = "Request was not confirmed. Refresh before retrying." } }
+            guard ["queued", "cancellation_recorded"].contains(response.status ?? "") else { error = "Request was not confirmed."; busy = false; return }
+            notice = response.status == "queued" ? "Retry queued." : "Cancellation recorded. The stage shows when the service has finished."
+            busy = false; await load(reset: true)
+        } catch {
+            busy = false
+            if epoch == generation { self.error = CommunityGateway.normalize(error).errorDescription ?? "Request was not confirmed. Refresh before retrying." }
+        }
     }
 }
 @MainActor
@@ -779,11 +870,72 @@ struct AccountAuthenticatorView: View {
     }
 }
 
-private struct PublishingRequest: Encodable { let action: String; var job: UUID? = nil }
-private struct PublishingResponse: Decodable { let error: String?; let status: String?; let jobs: [PublishingJob]? }
-private struct PublishingJob: Decodable, Identifiable {
-    let id: UUID; let review_id: UUID; let render_digest: String; let destination: String
-    let state: String; let attempts: Int; let result_url: String?; let last_error: String?; let updated_at: Date
+private struct PublishingRequest: Encodable, Sendable { let action: String; var job: UUID? = nil }
+private struct PublishingResponse: CommunityResponse { let error: String?; let status: String? }
+private struct PublishStatusRequest: Encodable, Sendable { let page: Int }
+private struct PublishStatusResponse: CommunityResponse { let error: String?; let reviews: [PublishStatusReview]? }
+/// One submitted render as `sdi_publish_status` reports it.
+private struct PublishStatusReview: Decodable, Identifiable {
+    let review_id: UUID; let title: String; let render_digest: String; let version: Int
+    let review_state: String; let owner_approval_required: Bool?; let destinations: [String]?
+    let server_copy: String; let server_copy_expires_at: Date?; let jobs: [PublishStatusJob]
+    var id: UUID { review_id }
+}
+private struct PublishStatusJob: Decodable, Identifiable {
+    let id: UUID; let destination: String; let state: String; let phase: String?; let stage: String
+    let attempts: Int; let current_render: Bool?; let can_retry: Bool; let can_cancel: Bool
+    let result_url: String?; let last_error: String?; let updated_at: Date
+}
+/// Creator-facing words for the server's stage, review and retention values.
+private enum PublishStatusText {
+    static func stage(_ stage: String) -> String {
+        switch stage {
+        case "queued": return "Queued"
+        case "transferring": return "Transferring to the destination"
+        case "provider_processing": return "Destination is processing"
+        case "releasing": return "Releasing"
+        case "published": return "Published"
+        case "failed": return "Failed"
+        case "needs_reconciliation": return "Checking with the destination"
+        case "cancelling": return "Cancelling"
+        case "removal_in_progress": return "Removal in progress"
+        case "removed": return "Removed from the destination"
+        case "cancelled": return "Cancelled"
+        default: return stage.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+    static func reviewState(_ state: String) -> String {
+        switch state {
+        case "awaiting_review": return "Awaiting moderation"
+        case "changes_requested": return "Changes requested"
+        case "approved": return "Approved"
+        case "rejected": return "Rejected"
+        default: return state.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+    static func destination(_ destination: String) -> String {
+        switch destination {
+        case "youtube": return "SDI YouTube"
+        case "feed": return "SDI feed"
+        default: return destination.capitalized
+        }
+    }
+    static func serverCopy(_ copy: String, expires: Date?) -> String {
+        switch copy {
+        case "retained":
+            if let expires { return "Server copy kept until \(expires.formatted(date: .abbreviated, time: .shortened)). Your original stays on this device." }
+            return "Server copy kept for publication. Your original stays on this device."
+        case "expired": return "Server copy expired and is deleted. Your original stays on this device."
+        case "deleted": return "Server copy deleted after verified publication. Your original stays on this device."
+        default: return "Server copy: \(copy)."
+        }
+    }
+    /// HTTPS only, no embedded credentials.
+    static func resultLink(_ raw: String?) -> URL? {
+        guard let raw, let parts = URLComponents(string: raw), parts.scheme?.lowercased() == "https", parts.host?.isEmpty == false,
+              parts.user == nil, parts.password == nil else { return nil }
+        return parts.url
+    }
 }
 
 

@@ -28,8 +28,9 @@ struct StudioToolStrip: View {
         // Order, labels and tile colours follow the SD∞ reference design
         // (React Studio toolbar: selection · drawing · shapes · colour ·
         // retouch · text · navigation). Tools the native Studio does not have
-        // (Marquee, Arrow, Gradient, Clone, Heal, Crop) are not shown; native
+        // (Marquee, Arrow, Clone, Heal, Crop) are not shown; native
         // extras (Marker, Crayon, Smudge, Sharpen) sit inside their groups.
+        // Gradient (#149) sits with Fill in the colour group.
         [
             ToolDef(tool: .move,      icon: "arrow.up.and.down.and.arrow.left.and.right", emoji: "⇕", label: "Move",   topColor: "67D4FF", bottomColor: "2EA0D4", glowColor: "38BDF8"),
             ToolDef(tool: .lasso,     icon: "lasso",            emoji: "◎", label: "Lasso",  topColor: "60A5FA", bottomColor: "2563EB", glowColor: "3B82F6"),
@@ -49,6 +50,7 @@ struct StudioToolStrip: View {
         ],
         [
             ToolDef(tool: .fill,      icon: "drop.fill",        emoji: "🪣", label: "Fill",   topColor: "4ADE80", bottomColor: "1A8F48", glowColor: "34C77B"),
+            ToolDef(tool: .gradient,  icon: "square.bottomhalf.filled", emoji: "▤", label: "Gradient", topColor: "86EFAC", bottomColor: "15803D", glowColor: "22C55E"),
             ToolDef(tool: .eyedropper,icon: "eyedropper",       emoji: "💧", label: "Dropper", topColor: "5EEAD4", bottomColor: "0F766E", glowColor: "2DD4BF"),
         ],
         [

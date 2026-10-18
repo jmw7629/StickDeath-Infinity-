@@ -138,6 +138,14 @@ begin
  perform sdi_test.check((r->>'unread')::integer=1 and r->'notices'->0->>'title'='Service notice','member inbox has the notice');
  perform sdi_private.notify_action('mark_read',jsonb_build_object('delivery',(r->'notices'->0->>'delivery')::uuid));
  perform sdi_test.check((sdi_private.notify_action('inbox')->>'unread')::integer=0,'notice marked read');
+ -- The inbox returns the newest 50 notices, not every one (clients refuse more than 50).
+ insert into sdi_private.announcements(title,body,category,audience,channels,created_by,state)
+  select 'Bulk '||g,'Body.','product','all',array['in_app'],agent,'sent' from generate_series(1,55) g;
+ insert into sdi_private.announcement_deliveries(announcement_id,user_id,channel,state)
+  select id,a,'in_app','sent' from sdi_private.announcements where title like 'Bulk %';
+ r:=sdi_private.notify_action('inbox');
+ perform sdi_test.check(jsonb_array_length(r->'notices')=50 and (r->>'unread')::integer=55,'inbox bounded to 50 notices: '||jsonb_array_length(r->'notices'));
+ delete from sdi_private.announcements where title like 'Bulk %';
  -- Marketing push respects the opt-in and can be cancelled while sending.
  perform sdi_test.login(c);
  perform sdi_private.notify_action('register_device','{"platform":"android","environment":"production","token":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}');

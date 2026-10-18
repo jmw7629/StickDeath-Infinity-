@@ -21,7 +21,7 @@ declare bad text; service_expected text[]:=array[
  'sdi_legacy_communication_exposure','sdi_marketing_cadence_due','sdi_marketing_claim','sdi_marketing_finish','sdi_merch_retention','sdi_ops_report','sdi_preview_renew',
  'sdi_provision_owner','sdi_publication_release_candidates','sdi_publish_claim','sdi_publish_finish','sdi_publish_progress',
  'sdi_publish_removal_claim','sdi_publish_removal_finish','sdi_publish_removal_renew','sdi_publish_renew','sdi_publish_uncertain',
- 'sdi_register_upload','sdi_release_published_upload','sdi_retire_upload','sdi_room_asset_sweep','sdi_spatter_credits_grant','sdi_spatter_credits_refund','sdi_spatter_draft_claim',
+ 'sdi_register_upload','sdi_release_published_upload','sdi_retire_upload','sdi_review_bind_source_digest','sdi_room_asset_sweep','sdi_spatter_credits_grant','sdi_spatter_credits_refund','sdi_spatter_draft_claim',
  'sdi_spatter_draft_progress','sdi_spatter_usage_meter','sdi_support_retention','sdi_upload_preview','sdi_war_expire_proposals','sdi_war_finalize',
  'sdi_worker_configuration','sdi_worker_heartbeat'];
  anon_expected text[]:=array['sdi_merch_suggest','sdi_merch_totals','sdi_merch_vote']; anon_actual text[];

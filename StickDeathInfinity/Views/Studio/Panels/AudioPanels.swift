@@ -1410,9 +1410,13 @@ private struct AudioFilesImportControls: View {
                 let prepare: StudioAudioPreviewSession.AudioPreparation? = mapping.map { captured in
                     { progress in try await StudioVideoAudioImportService.shared.extract(from: url, mapping: captured, progress: progress).audio }
                 }
+                // The clip persists the exact trim/speed mapping it was cut with (#201).
+                let persisted = mapping.map { StudioVideoSourceMapping(sourceStartSeconds: $0.sourceStartSeconds,
+                    sourceEndSeconds: $0.sourceEndSeconds, projectStartSeconds: $0.projectStartSeconds, speed: $0.speed) }
                 _ = audio.importFile(url, prepare: prepare, stillCurrent: { target.isCurrent(vm) }, attach: { imported in
                     try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
-                        expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track, atPlayhead: target.playhead)
+                        expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track, atPlayhead: target.playhead,
+                        videoMapping: persisted)
                 })
             }
             lease = nil; capturedMovieMapping = nil
