@@ -276,7 +276,12 @@ struct SDIRenderUploadMetadata: Codable, Sendable {
     let made_for_kids: Bool
     /// Absent for renders without library assets; older journals decode without it.
     var asset_credits: [SDIRenderAssetCredit]? = nil
+    /// Canonical digest of the editable project this render was exported from
+    /// (#214), taken from the exporter's own manifest beside the movie. Absent for
+    /// files picked from Files; the review then honestly shows "not supplied".
+    var source_project_digest: String? = nil
 }
+
 struct SDIRenderUploadJournal: Codable, Identifiable, Sendable {
     let id: UUID
     let account: UUID
@@ -340,6 +345,8 @@ actor SDIRenderUploads {
         let available = try root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
         guard available >= Int64(size) + 128 * 1024 * 1024 else { throw UploadFailure.capacity }
         var captured = metadata; captured.size = Int64(size)
+        if captured.source_project_digest == nil { captured.source_project_digest = SDIRenderSourceDigest.beside(source, byteCount: Int64(size)) }
+        if let digest = captured.source_project_digest, !SDIRenderSourceDigest.isDigest(digest) { throw UploadFailure.file }
         var job = SDIRenderUploadJournal(id: UUID(), account: account, serviceOrigin: origin.absoluteString, metadata: captured)
         let output = try path(job, extension: "mp4")
         guard FileManager.default.createFile(atPath: output.path, contents: nil,
@@ -463,3 +470,30 @@ actor SDIRenderUploads {
 }
 
 #endif
+
+/// Reads the project digest the Studio exporter wrote into `manifest.json`
+/// beside a movie (#214). Only a manifest that names this exact movie file and
+/// byte count is trusted; anything else yields nil, never a guessed digest.
+enum SDIRenderSourceDigest {
+    private struct ExportManifest: Decodable {
+        let encodedBytes: Int
+        let movieFilename: String?
+        let projectDigest: String?
+    }
+    static func isDigest(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+    static func fromManifest(_ data: Data, movieFilename: String, byteCount: Int64) -> String? {
+        guard data.count <= 128 * 1024, let manifest = try? JSONDecoder().decode(ExportManifest.self, from: data),
+              manifest.movieFilename == movieFilename, Int64(manifest.encodedBytes) == byteCount,
+              let digest = manifest.projectDigest, isDigest(digest) else { return nil }
+        return digest
+    }
+    static func beside(_ movie: URL, byteCount: Int64) -> String? {
+        let url = movie.deletingLastPathComponent().appendingPathComponent("manifest.json")
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? .max) <= 128 * 1024,
+              let data = try? Data(contentsOf: url) else { return nil }
+        return fromManifest(data, movieFilename: movie.lastPathComponent, byteCount: byteCount)
+    }
+}

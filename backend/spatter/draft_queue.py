@@ -194,6 +194,11 @@ def run_once(store: Store, *, owner: str, reviewer: str, now: Callable[[], _dt.d
         reason = "Quality gate failed: " + "; ".join(str(f) for f in result.quality.get("failures", []))[:1900]
         store.progress(job, owner, "failed", quality=result.quality, error=reason)
         return RunOutcome(day, True, "failed", reason, job, attempt=attempt, plan=plan)
+    incomplete = quality_record_problem(result.quality)
+    if incomplete:
+        reason = "Quality report incomplete: " + incomplete
+        store.progress(job, owner, "failed", quality=result.quality, error=reason)
+        return RunOutcome(day, True, "failed", reason, job, attempt=attempt, plan=plan)
     submitted = store.progress(job, owner, "review_pending", storyboard=result.storyboard, quality=result.quality, sha256=result.sha256,
                                review={"creator": reviewer, "preview_url": result.preview_url, "source_project_digest": result.source_project_digest,
                                        "title": f"Spatter daily draft {day.isoformat()}", "source_revision": f"draft:{day.isoformat()}:seed:{plan.seed}"})
@@ -201,6 +206,31 @@ def run_once(store: Store, *, owner: str, reviewer: str, now: Callable[[], _dt.d
         return RunOutcome(day, True, "refused", str(submitted.get("reason", "")), job, attempt=attempt, plan=plan)
     return RunOutcome(day, True, "review_pending", "Private draft submitted to the owner's review queue; nothing is released.",
                       job, review=str(submitted.get("review")), attempt=attempt, plan=plan)
+
+
+QUALITY_SCHEMA = "spatter_quality_report"
+
+
+def quality_record_problem(quality: Mapping[str, Any]) -> Optional[str]:
+    """The record a render attaches for review (#213) is the app's
+    `SpatterQualityReport.ReviewRecord`: schema v1, a boolean verdict, string
+    failures and counts decoded from the real exported file. A record without
+    decoded movie counts cannot go to the owner as measured evidence."""
+    if not isinstance(quality, Mapping) or quality.get("schema") != QUALITY_SCHEMA or quality.get("version") != 1:
+        return "expected a spatter_quality_report v1 record."
+    if not isinstance(quality.get("passes"), bool) or not isinstance(quality.get("failures"), list) \
+            or not all(isinstance(item, str) for item in quality["failures"]):
+        return "verdict and failures are malformed."
+    movie = quality.get("movie")
+    counts = ("decodedFrameCount", "expectedFrameCount")
+    seconds = ("decodedDurationSeconds", "expectedDurationSeconds")
+    if not isinstance(movie, Mapping) or any(type(movie.get(key)) is not int or movie[key] < 0 for key in counts) \
+            or any(type(movie.get(key)) not in (int, float) or movie[key] < 0 for key in seconds):
+        return "decoded movie frame and duration counts are missing."
+    unmeasured = quality.get("unmeasured", [])
+    if not isinstance(unmeasured, list) or {"decodedMovieFrameCount", "decodedMovieDuration"} & set(map(str, unmeasured)):
+        return "decoded movie frame and duration counts are marked unmeasured."
+    return None
 
 
 def digest(data: bytes) -> str:

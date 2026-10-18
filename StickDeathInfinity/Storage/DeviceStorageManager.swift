@@ -779,6 +779,12 @@ class DeviceStorageManager {
                 decodedPixels += pixels
             }
         }
+        let videos = project.videoSources ?? []
+        guard videos.count <= 8, Set(videos.map(\.id)).count == videos.count else { throw AnimationStorageError.invalidDocument }
+        for video in videos {
+            try video.validate()
+            try account(128); try text(video.name); try asset(video.data)
+        }
         guard Set(project.audioTracks.map(\.id)).count == project.audioTracks.count else { throw AnimationStorageError.invalidDocument }
         for track in project.audioTracks {
             guard validFormat(track.format), track.startTime.isFinite, track.startTime >= 0, track.duration.isFinite, track.duration >= 0 else { throw AnimationStorageError.invalidDocument }
@@ -855,6 +861,26 @@ struct AnimationProject: Codable {
     /// Additional managed sources, independent of the historical one-record-per-frame layout.
     /// Nil decodes every existing project without changing its original frame records.
     var additionalImageAssets: [String: StoredAnimationFrame]? = nil
+    /// Movies retained as managed project media (#199). Nil decodes every
+    /// existing project; removing the project removes these copies too.
+    var videoSources: [StoredVideoSource]? = nil
+}
+
+/// The exact bytes of an imported movie, owned by one project. The user's
+/// original file is never referenced or changed after import.
+struct StoredVideoSource: Codable, Equatable {
+    static let maximumBytes = 16 * 1024 * 1024
+    let id: UUID
+    let name: String
+    let container: String
+    let data: Data
+
+    func validate() throws {
+        guard !name.isEmpty, name.count <= 120, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              ["mp4", "mov"].contains(container), !data.isEmpty, data.count <= Self.maximumBytes else {
+            throw AnimationStorageError.invalidDocument
+        }
+    }
 }
 
 struct AnimationMetadata: Codable {

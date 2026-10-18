@@ -10,13 +10,17 @@
 //   until the owner explicitly configures amounts and entitlements.
 // - Entitlements are reconciled server-side from Apple's signed
 //   transactions. This client never writes subscription tier/status to the
-//   `users` table. See `reconcileEntitlementsWithServer()`.
+//   `users` table. `reconcileEntitlementsWithServer()` reads the server's
+//   record (`sdi_my_entitlement`) and compares it with Apple's.
+// - No free trial is offered (owner decision 2026-10-15): no trial copy is
+//   produced even if App Store Connect reports an introductory offer.
 // - Call billing and tips were removed: calls are retired scope and tips
 //   are not in the current contract. The historical name "StripeService"
 //   is kept only because this file is referenced by the Xcode project;
 //   no Stripe API is called from the client.
 // ═══════════════════════════════════════════════════════════════════
 
+import Combine
 import Foundation
 import StoreKit
 
@@ -101,9 +105,11 @@ final class StripeService: ObservableObject {
     /// The purchase/subscription state machine the plan screens render
     /// (`BillingPlanCatalog.swift`). Fed only from StoreKit results.
     @Published private(set) var billing = BillingState()
-    /// Whether the App Store reports this account as eligible for a product's
-    /// introductory offer. Absent means unknown; no trial is shown then.
-    @Published private(set) var introOfferEligibility: [String: Bool] = [:]
+    /// The server's entitlement for the signed-in account (`sdi_my_entitlement`),
+    /// read after purchase, restore and when Plans opens. Nil until read.
+    @Published private(set) var serverEntitlement: ServerEntitlement?
+    /// The account `serverEntitlement` belongs to; a different account ignores it.
+    private var serverEntitlementAccount: String?
     /// Loaded Spatter credit packs (consumables), cheapest first. Empty until
     /// both pack ids are configured and App Store Connect has the products.
     @Published private(set) var creditPacks: [Product] = []
@@ -123,12 +129,16 @@ final class StripeService: ObservableObject {
     /// App Store has loaded real plans, so nobody is locked out of a feature
     /// they cannot buy. Paid tiers are unrestricted.
     private func applyStudioLimits() {
-        let tier: BillingPlanTier
+        let storeTier: BillingPlanTier
         switch currentTier {
-        case .free: tier = .free
-        case .creator: tier = .creator
-        case .pro, .studio: tier = .pro
+        case .free: storeTier = .free
+        case .creator: storeTier = .creator
+        case .pro, .studio: storeTier = .pro
         }
+        // A plan the server applied from a verified provider event (for example a
+        // website subscription) counts as well; the higher tier wins.
+        let serverTier = ServerEntitlementReconciliation.grantedTier(currentServerEntitlement)
+        let tier = serverTier.rank > storeTier.rank ? serverTier : storeTier
         let loaded: Bool
         if case .loaded = productLoadState { loaded = true } else { loaded = false }
         let enforcing = StudioPlanLimits.enforcing(catalog: catalog, storeLoaded: loaded)
@@ -136,12 +146,26 @@ final class StripeService: ObservableObject {
     }
 
     private var transactionListener: Task<Void, Error>?
+    private var accountObserver: AnyCancellable?
 
     private init() {
         // Start listening for StoreKit transactions immediately
         transactionListener = listenForTransactions()
         Task { await loadProducts() }
         Task { await refreshEntitlements() }
+        // Studio limits follow the signed-in account: a server plan read for one
+        // account never applies to the next, and a plan billed elsewhere (the
+        // website) applies from sign-in, not only after Plans is opened. The read
+        // is silent; Plans still shows its own verification state.
+        accountObserver = AuthService.shared.$state.combineLatest(AuthService.shared.$currentUser.map { $0?.id })
+            .map { state, user in state == .authenticated ? user : nil }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.applyStudioLimits()
+                Task { [weak self] in _ = try? await self?.reconcileEntitlementsWithServer() }
+            }
     }
 
     /// Retry credit grants Apple delivered but the server has not confirmed yet.
@@ -171,13 +195,6 @@ final class StripeService: ObservableObject {
             availableProducts = products.sorted { $0.price < $1.price }
             productLoadState = products.isEmpty ? .notConfigured : .loaded
             send(.catalogLoaded(productCount: products.count))
-            var eligibility: [String: Bool] = [:]
-            for product in products {
-                if let subscription = product.subscription {
-                    eligibility[product.id] = await subscription.isEligibleForIntroOffer
-                }
-            }
-            introOfferEligibility = eligibility
         } catch {
             availableProducts = []
             productLoadState = .failed(error.localizedDescription)
@@ -247,24 +264,10 @@ final class StripeService: ObservableObject {
         billing = BillingState.reduce(billing, event)
     }
 
-    /// Introductory free-trial length in days as configured in App Store
-    /// Connect, or nil when the product has no free-trial offer.
-    func introductoryTrialDays(for product: Product) -> Int? {
-        guard let offer = product.subscription?.introductoryOffer, offer.paymentMode == .freeTrial else { return nil }
-        let value = offer.period.value
-        switch offer.period.unit {
-        case .day: return value
-        case .week: return value * 7
-        case .month, .year: return nil
-        @unknown default: return nil
-        }
-    }
-
-    /// Plan copy for a loaded product's trial, only when Apple reports eligibility.
-    func trialCopy(for product: Product) -> String? {
-        BillingCopy.trial(for: catalog.plan(forProductID: product.id), days: introductoryTrialDays(for: product),
-                          eligible: introOfferEligibility[product.id] == true)
-    }
+    /// No plan offers a free trial (owner decision 2026-10-15), so no trial copy
+    /// is shown even if App Store Connect reports an introductory offer. Kept as
+    /// a function so existing plan screens compile; it always answers nil.
+    func trialCopy(for product: Product) -> String? { nil }
 
     /// The catalogue plan a loaded product belongs to.
     func plan(for product: Product) -> BillingPlanDefinition? {
@@ -460,27 +463,56 @@ final class StripeService: ObservableObject {
     // ═══════════════════════════════════════════════════════════════
 
     /// Entitlements are granted by the server after it verifies Apple's
-    /// signed transaction (App Store Server API / notifications keyed by
-    /// `appAccountToken`). That endpoint is not configured in this
-    /// repository, so this stub throws instead of pretending to sync.
-    /// The former client-side write of `subscription_tier` /
-    /// `subscription_status` to the `users` table was removed on purpose:
-    /// a client must not assert its own entitlement.
-    func reconcileEntitlementsWithServer() async throws {
-        throw PaymentError.entitlementReconciliationNotConfigured
+    /// signed transaction (App Store Server Notifications keyed by
+    /// `appAccountToken`) or a Stripe webhook; see backend/sql/billing.sql.
+    /// This reads that server record with `sdi_my_entitlement` for the
+    /// signed-in account. It never writes a tier: the former client-side
+    /// write of `subscription_tier` / `subscription_status` to the `users`
+    /// table was removed on purpose, because a client must not assert its own
+    /// entitlement. Throws `CommunityError.notConfigured` without a
+    /// validated backend configuration, `.signedOut` without a session and
+    /// `.transport` when the server cannot be reached.
+    @discardableResult
+    func reconcileEntitlementsWithServer() async throws -> ServerEntitlement {
+        guard CommunityServices.isConfigured else { throw CommunityError.notConfigured }
+        let account = AuthService.shared.userId
+        guard AuthService.shared.isAuthenticated, account != nil else { throw CommunityError.signedOut }
+        let entitlement = try await ServerEntitlementClient(gateway: CommunityServices.gateway).current()
+        guard AuthService.shared.userId == account else { throw CommunityError.stale }
+        serverEntitlement = entitlement
+        serverEntitlementAccount = account
+        applyStudioLimits()
+        return entitlement
     }
 
-    private func attemptReconciliation() async {
+    /// The server record for the account signed in now, if one was read.
+    var currentServerEntitlement: ServerEntitlement? {
+        guard let account = serverEntitlementAccount, account == AuthService.shared.userId else { return nil }
+        return serverEntitlement
+    }
+
+    /// Reads the server's record when Plans opens. Unlike a purchase or restore it
+    /// raises no notice for an account that has nothing to reconcile.
+    func refreshServerEntitlement() async {
+        guard AuthService.shared.isAuthenticated else { return }
+        await attemptReconciliation(quietWhenFree: true)
+    }
+
+    private func attemptReconciliation(quietWhenFree: Bool = false) async {
+        let storeTier = catalog.plan(forProductID: billing.activeEntitlement?.productID ?? "")?.tier ?? .free
+        let verification: BillingServerVerification
         do {
-            try await reconcileEntitlementsWithServer()
-            reconciliationNotice = nil
-            send(.serverVerification(.verified))
-        } catch PaymentError.entitlementReconciliationNotConfigured {
-            reconciliationNotice = PaymentError.entitlementReconciliationNotConfigured.localizedDescription
-            send(.serverVerification(.notConfigured))
+            let server = try await reconcileEntitlementsWithServer()
+            verification = ServerEntitlementReconciliation.verification(storeTier: storeTier, server: server)
         } catch {
-            reconciliationNotice = error.localizedDescription
-            send(.serverVerification(.failed(error.localizedDescription)))
+            verification = ServerEntitlementReconciliation.verification(for: error)
+        }
+        send(.serverVerification(verification))
+        switch verification {
+        case .verified:
+            reconciliationNotice = nil
+        case .deferred, .failed:
+            reconciliationNotice = (quietWhenFree && storeTier == .free) ? nil : BillingCopy.server(verification)
         }
     }
 
@@ -615,7 +647,7 @@ final class StripeService: ObservableObject {
             case .verificationFailed(let msg): return "Verification failed: \(msg)"
             case .limitsUnavailable:      return "Subscription limits are unavailable until the entitlement policy is configured and verified."
             case .entitlementReconciliationNotConfigured:
-                return "Entitlement reconciliation not configured: the server has not verified this purchase yet. Apple holds your receipt; no account entitlement was changed."
+                return "The StickDeath server is not configured in this build, so it has not verified this purchase. Apple holds your receipt; no account entitlement was changed."
             }
         }
     }

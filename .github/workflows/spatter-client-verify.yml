@@ -101,6 +101,30 @@ jobs:
             Tests/CommunityContests/main.swift \
             -o /tmp/sdi-community-contests-tests
           timeout 60s /tmp/sdi-community-contests-tests
+      - name: Verify official-channel mark placement, contrast and refusal rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
+            Tests/StudioChannelRendition/main.swift \
+            -o /tmp/sdi-channel-rendition-tests
+          timeout 60s /tmp/sdi-channel-rendition-tests
+      - name: Verify support, privacy choices, server entitlement and notification clients
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -O -parse-as-library \
+            StickDeathInfinity/Models/CommunityModels.swift \
+            StickDeathInfinity/Services/Social/CommunityTransport.swift \
+            StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
+            StickDeathInfinity/Services/Support/SupportClient.swift \
+            StickDeathInfinity/Services/Support/PrivacyChoicesClient.swift \
+            StickDeathInfinity/Services/Support/ServerEntitlementClient.swift \
+            StickDeathInfinity/Services/Notifications/NotificationsClient.swift \
+            Tests/AccountServices/main.swift \
+            -o /tmp/sdi-account-services-tests
+          timeout 60s /tmp/sdi-account-services-tests
       - name: Verify admin step-up policy, health, agents, finance and moderation queues
         shell: bash
         run: |
@@ -259,6 +283,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -296,6 +322,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -315,6 +343,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -351,6 +380,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -370,6 +401,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -394,6 +426,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -413,6 +447,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -437,6 +472,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -456,6 +493,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -480,6 +518,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -499,6 +539,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -523,6 +564,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -542,6 +585,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -566,6 +610,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -585,6 +631,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -609,6 +656,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -628,6 +677,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -652,6 +702,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -671,6 +723,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -695,6 +748,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -714,6 +769,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -738,6 +794,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -757,6 +815,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -781,6 +840,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
@@ -799,6 +860,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -868,6 +930,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -900,6 +964,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
             -o "$RUNNER_TEMP/sdi-studio-brush-integration-tests"
           "$RUNNER_TEMP/sdi-studio-brush-integration-tests"
@@ -909,6 +974,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -946,6 +1013,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -976,6 +1045,7 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             Tests/StudioExport/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-export-tests"
           "$RUNNER_TEMP/sdi-studio-export-tests"
@@ -1010,6 +1080,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1073,6 +1145,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1113,6 +1187,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1151,6 +1227,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1220,6 +1298,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1305,6 +1385,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library -D SDI_MOVIE_AUDIO_DIAGNOSTICS \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1370,6 +1452,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1391,6 +1475,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -1408,6 +1493,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1429,6 +1516,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -1446,6 +1534,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1467,6 +1557,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -1485,6 +1576,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1528,6 +1621,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1563,6 +1658,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             Tests/StudioImageLibrary/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-image-library-tests"
           "$RUNNER_TEMP/sdi-studio-image-library-tests" StickDeathInfinity/Resources/StudioImages
@@ -1572,6 +1668,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1607,6 +1705,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             Tests/StudioImageSequence/main.swift \
             -o "$RUNNER_TEMP/sdi-image-sequence-tests"
           "$RUNNER_TEMP/sdi-image-sequence-tests"
@@ -1616,6 +1715,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1656,6 +1757,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1696,6 +1799,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1752,6 +1857,7 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift \
             Tests/SpatterPlanner/main.swift \
@@ -1799,6 +1905,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1839,6 +1947,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1882,6 +1992,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -1901,6 +2013,7 @@ jobs:
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1922,6 +2035,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1944,6 +2059,7 @@ jobs:
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -1964,6 +2080,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1985,6 +2103,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2054,6 +2173,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -2076,6 +2197,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
@@ -2099,6 +2221,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -2122,6 +2246,7 @@ jobs:
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
@@ -2145,6 +2270,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -2166,6 +2293,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2192,6 +2320,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -2213,6 +2343,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2240,6 +2371,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -2259,6 +2392,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2291,6 +2425,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -2310,6 +2446,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2341,6 +2478,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
@@ -2364,6 +2503,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
@@ -2392,6 +2532,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -2414,6 +2556,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
@@ -2438,6 +2581,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -2460,6 +2605,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
@@ -2485,6 +2631,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -2507,6 +2655,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \

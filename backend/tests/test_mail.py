@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 from backend.mail import templates
-from backend.mail.queue import EmailQueue
+from backend.mail.queue import BLAST_MIN_INTERVAL_SECONDS, EmailQueue, fetch_recipients
 from backend.mail.sender import EmailWorker, SMTPSender
 
 SECRET = b"s" * 32
@@ -158,6 +158,81 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT address FROM messages").fetchone()[0], "")
         with self.assertRaises(ValueError):
             self.queue.enqueue("not an address", "export_ready", {"produced_on": "x"}, "k")
+
+
+def recipient(address):
+    return {"email": address, "email_hash": templates.email_hash(address)}
+
+
+class FakeRecipientAPI:
+    def __init__(self, pages):
+        self.pages = list(pages)
+        self.calls = []
+
+    def call(self, operation, **payload):
+        self.calls.append((operation, payload))
+        return self.pages.pop(0)
+
+
+class BlastTests(unittest.TestCase):
+    CONTEXT = {"headline": "New sound pack", "body": "Forty new hits are in the library."}
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        os.chmod(self.root, 0o700)
+        self.now = [1_800_000_000.0]
+        self.queue = EmailQueue(self.root / "mail.sqlite3", clock=lambda: self.now[0])
+        self.unsub = lambda h, c: "https://www.example.test/unsubscribe?c=%s&h=%s" % (c, h[:8])
+
+    def test_blast_honours_suppression_cadence_and_dedup(self):
+        people = [recipient("a@example.test"), recipient("b@example.test"), recipient("c@example.test")]
+        blocked = {templates.email_hash("c@example.test")}
+        first = self.queue.enqueue_blast(people, "marketing_campaign", self.CONTEXT, "spring-1", self.unsub,
+                                         suppressed=lambda h: h in blocked)
+        self.assertEqual((first["queued"], first["suppressed"]), (2, 1))
+        claimed = self.queue.claim(10)
+        self.assertTrue(all("One-click unsubscribe: https://www.example.test/unsubscribe?c=marketing" in c["body"] for c in claimed))
+        # A retry of the same blast is a no-op; a new campaign inside the window is held by cadence.
+        retry = self.queue.enqueue_blast(people[:2], "marketing_campaign", self.CONTEXT, "spring-1", self.unsub)
+        self.assertEqual(retry["cadence"], 2)
+        second = self.queue.enqueue_blast(people[:2], "product_update", self.CONTEXT, "update-1", self.unsub)
+        self.assertEqual((second["queued"], second["cadence"]), (0, 2))
+        # Transactional mail never counts towards the cadence and never blocks it.
+        self.queue.enqueue("b@example.test", "export_ready", {"produced_on": "2026-10-18"}, "export-1")
+        self.now[0] += BLAST_MIN_INTERVAL_SECONDS + 1
+        third = self.queue.enqueue_blast(people[:2], "marketing_campaign", self.CONTEXT, "spring-2", self.unsub)
+        self.assertEqual(third["queued"], 2)
+
+    def test_failed_or_suppressed_messages_do_not_hold_the_cadence(self):
+        person = [recipient("a@example.test")]
+        self.queue.enqueue_blast(person, "marketing_campaign", self.CONTEXT, "c-1", self.unsub)
+        item = self.queue.claim(1)[0]
+        self.queue.mark(item["id"], "bounced", "550")
+        self.assertIsNone(self.queue.last_opt_in(templates.email_hash("a@example.test")))
+
+    def test_blast_refuses_transactional_templates_bad_rows_and_limits(self):
+        with self.assertRaises(ValueError):
+            self.queue.enqueue_blast([recipient("a@example.test")], "export_ready", {"produced_on": "x"}, "c", self.unsub)
+        with self.assertRaises(ValueError):
+            self.queue.enqueue_blast([], "marketing_campaign", self.CONTEXT, "", self.unsub)
+        with self.assertRaises(ValueError):
+            self.queue.enqueue_blast([], "marketing_campaign", self.CONTEXT, "c", self.unsub, min_interval=60)
+        forged = {"email": "x@example.test", "email_hash": templates.email_hash("y@example.test")}
+        rows = [forged, "nonsense", recipient("a@example.test"), recipient("b@example.test")]
+        summary = self.queue.enqueue_blast(rows, "marketing_campaign", self.CONTEXT, "c", self.unsub, max_recipients=1)
+        self.assertEqual((summary["invalid"], summary["queued"], summary["over_cap"]), (2, 1, 1))
+        self.assertNotIn("example.test", str(summary))
+
+    def test_fetch_recipients_pages_and_checks_the_category(self):
+        api = FakeRecipientAPI([{"category": "marketing", "recipients": [recipient("a@example.test")], "has_more": True},
+                                {"category": "marketing", "recipients": [recipient("b@example.test")], "has_more": False}])
+        rows = fetch_recipients(api, "marketing", batch=1)
+        self.assertEqual([r["email"] for r in rows], ["a@example.test", "b@example.test"])
+        self.assertEqual(api.calls[1], ("email_recipients", {"category": "marketing", "batch": 1, "page": 1}))
+        with self.assertRaises(RuntimeError):
+            fetch_recipients(FakeRecipientAPI([{"category": "product", "recipients": [], "has_more": False}]), "marketing")
+        with self.assertRaises(RuntimeError):
+            fetch_recipients(FakeRecipientAPI([{"error": "Category, batch and page required."}]), "marketing")
 
 
 class SenderTests(unittest.TestCase):

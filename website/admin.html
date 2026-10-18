@@ -78,12 +78,12 @@
 <div id="admin-users-result" aria-live="polite"></div>
 </form>
 <h3>Account action</h3>
-<p class="quiet">Suspend, ban, restore and sign-out take effect on the server immediately, revoke sessions where stated and need a recent second factor; every action requires a reason and is audited. A note is internal and sends nothing to the member. Administrator accounts cannot be changed here.</p>
+<p class="quiet">Suspend, ban, restore, sign-out and reset flags take effect on the server immediately, revoke sessions where stated and need a recent second factor; every action requires a reason and is audited. The member receives a fixed-text account notice that never repeats your reason; a note is internal and sends nothing. Reset flags dismisses the open reports on the member's posts (your own reports stay for another reviewer). Administrator accounts cannot be changed here.</p>
 <form id="admin-account-form" class="support" novalidate>
 <label for="admin-account-subject">Account id (from the directory)</label>
 <input id="admin-account-subject" name="subject" maxlength="36" required>
 <label for="admin-account-action">Action</label>
-<select id="admin-account-action" name="action"><option value="note">Internal note</option><option value="signout">Force sign-out</option><option value="suspend">Suspend</option><option value="ban">Ban</option><option value="restore">Restore</option></select>
+<select id="admin-account-action" name="action"><option value="note">Internal note</option><option value="signout">Force sign-out</option><option value="suspend">Suspend</option><option value="ban">Ban</option><option value="restore">Restore</option><option value="reset_flags">Reset flags (dismiss open reports; needs moderation)</option></select>
 <label for="admin-account-reason">Reason</label>
 <input id="admin-account-reason" name="reason" maxlength="2000" required>
 <label><input id="admin-account-confirm" type="checkbox" required> I checked the account id and the effect of this action.</label>
@@ -118,6 +118,120 @@
 <div class="actions"><button class="button" type="submit" data-decision="approve">Approve</button><button class="button" type="submit" data-decision="reject">Reject</button></div>
 <p id="admin-proposal-result" class="quiet" aria-live="polite"></p>
 </form>
+<h2>Publishing stages</h2>
+<p class="quiet">Every official-channel job with its stage (queued, uploading, provider processing, published with the provider link, failed with the stored reason, cancellation, withdrawal or reconciliation), as the publishing worker last recorded it (publishing capability). Withdrawal and retry stay in the native Admin.</p>
+<form id="admin-publish-form" class="support" novalidate>
+<label for="admin-publish-page">Page (from 1)</label>
+<input id="admin-publish-page" name="page" inputmode="numeric" maxlength="3" value="1">
+<label for="admin-publish-job">Job id for its audit history (optional)</label>
+<input id="admin-publish-job" name="job" maxlength="36">
+<div class="actions"><button class="button" type="submit">Show stages</button></div>
+<div id="admin-publish-result" aria-live="polite"></div>
+</form>
+<h2>Diagnostics</h2>
+<p class="quiet">Aggregated, anonymous counters per day, platform and build (<code>sdi_diagnostics_admin</code>, overview capability): totals, crash spikes against the prior week and failed agent runs. No member identity is collected.</p>
+<form id="admin-diagnostics-form" class="support" novalidate>
+<label for="admin-diagnostics-days">Days (1 to 90)</label>
+<input id="admin-diagnostics-days" name="days" inputmode="numeric" maxlength="2" value="14">
+<div class="actions"><button class="button" type="submit">Load diagnostics</button></div>
+<div id="admin-diagnostics-result" aria-live="polite"></div>
+</form>
+<h2>Announcements</h2>
+<p class="quiet">Compose a draft, then schedule or cancel it (users capability; scheduling and cancelling need a recent second factor). Product and marketing notices reach only members who turned them on, within their daily cap; account and service notices always reach active members. Every change needs a reason and is audited. Ids and revisions are in the Announcements panel above.</p>
+<form id="admin-announce-form" class="support" novalidate>
+<label for="admin-announce-title">Title (up to 120 characters)</label>
+<input id="admin-announce-title" name="title" maxlength="120" required>
+<label for="admin-announce-body">Text (up to 1000 characters)</label>
+<textarea id="admin-announce-body" name="body" maxlength="1000" required></textarea>
+<label for="admin-announce-category">Category</label>
+<select id="admin-announce-category" name="category"><option value="product">Product (opt-in)</option><option value="marketing">Marketing (opt-in)</option><option value="transactional">Account or service notice</option></select>
+<label for="admin-announce-audience">Audience</label>
+<select id="admin-announce-audience" name="audience"><option value="all">All active members</option><option value="subscribers">Members with a paid plan</option></select>
+<fieldset><legend>Channels</legend><label><input id="admin-announce-inapp" type="checkbox" checked> In-app</label><label><input id="admin-announce-push" type="checkbox"> Push</label></fieldset>
+<label for="admin-announce-reason">Reason</label>
+<input id="admin-announce-reason" name="reason" maxlength="2000" required>
+<div class="actions"><button class="button" type="submit">Save draft</button></div>
+<p id="admin-announce-result" class="quiet" aria-live="polite"></p>
+</form>
+<form id="admin-announce-change-form" class="support" novalidate>
+<label for="admin-announce-id">Announcement id</label>
+<input id="admin-announce-id" name="announcement" maxlength="36" required>
+<label for="admin-announce-revision">Revision (as shown)</label>
+<input id="admin-announce-revision" name="revision" inputmode="numeric" maxlength="12">
+<label for="admin-announce-when">Send at (your local time; empty sends at the next run)</label>
+<input id="admin-announce-when" name="when" type="datetime-local">
+<label for="admin-announce-change-reason">Reason (schedule and cancel)</label>
+<input id="admin-announce-change-reason" name="reason" maxlength="2000">
+<div class="actions"><button class="button" type="submit" data-change="schedule">Schedule</button><button class="button" type="submit" data-change="cancel">Cancel</button><button class="button" type="submit" data-change="results">Delivery results</button></div>
+<div id="admin-announce-change-result" aria-live="polite"></div>
+</form>
+<h2>Agent controls</h2>
+<p class="quiet">Owner only, with a recent second factor and a reason; each change is audited and bumps the agent's revision (shown in the Agents panel). Pausing stops the agent's running work; resuming needs published instructions and no emergency stop. Caps are configuration, not spending.</p>
+<form id="admin-agent-form" class="support" novalidate>
+<label for="admin-agent-key">Agent key</label>
+<input id="admin-agent-key" name="agent" maxlength="40" required>
+<label for="admin-agent-revision">Revision (as shown)</label>
+<input id="admin-agent-revision" name="revision" inputmode="numeric" maxlength="12">
+<label for="admin-agent-action">Action</label>
+<select id="admin-agent-action" name="action"><option value="instructions">Show instruction versions (read only)</option><option value="pause">Pause</option><option value="resume">Resume</option><option value="set_caps">Set caps</option><option value="set_permissions">Set permissions</option><option value="publish_instructions">Publish new instructions</option><option value="rollback_instructions">Roll back to an instruction version</option></select>
+<label for="admin-agent-daily">Daily run cap (set caps)</label>
+<input id="admin-agent-daily" name="daily_run_cap" inputmode="numeric" maxlength="4">
+<label for="admin-agent-items">Per-run item cap (set caps)</label>
+<input id="admin-agent-items" name="per_run_item_cap" inputmode="numeric" maxlength="5">
+<label for="admin-agent-monthly">Monthly cost cap in minor units (set caps)</label>
+<input id="admin-agent-monthly" name="monthly_cost_cap_minor" inputmode="numeric" maxlength="12">
+<label for="admin-agent-perrun">Per-run cost cap in minor units, empty for none (set caps)</label>
+<input id="admin-agent-perrun" name="per_run_cost_cap_minor" inputmode="numeric" maxlength="12">
+<fieldset><legend>Permissions (set permissions)</legend><label><input id="admin-agent-perm-read" type="checkbox"> Read</label><label><input id="admin-agent-perm-propose" type="checkbox"> Propose</label><label><input id="admin-agent-perm-write" type="checkbox"> Write</label></fieldset>
+<label for="admin-agent-body">Instruction text (publish, up to 20000 characters)</label>
+<textarea id="admin-agent-body" name="body" maxlength="20000"></textarea>
+<label for="admin-agent-version">Instruction version (roll back)</label>
+<input id="admin-agent-version" name="version" inputmode="numeric" maxlength="6">
+<label for="admin-agent-reason">Reason</label>
+<input id="admin-agent-reason" name="reason" maxlength="2000">
+<div class="actions"><button class="button" type="submit">Apply</button></div>
+<div id="admin-agent-result" aria-live="polite"></div>
+</form>
+<h2>Finance records</h2>
+<p class="quiet">Finance capability; every record needs a recent second factor and a reason and is written to the finance audit. Amounts are whole minor units (cents). Expenses are entered positive and stored as money out. Nothing here moves money.</p>
+<form id="admin-finance-form" class="support" novalidate>
+<label for="admin-finance-action">Record</label>
+<select id="admin-finance-action" name="action"><option value="expense">Expense</option><option value="import">Import rows (CSV)</option><option value="correct">Correct an entry</option><option value="reconcile">Mark an entry reconciled</option></select>
+<label for="admin-finance-ref">Reference (expense: invoice or receipt number)</label>
+<input id="admin-finance-ref" name="ref" maxlength="200">
+<label for="admin-finance-amount">Amount in minor units (expense: positive; correction: signed)</label>
+<input id="admin-finance-amount" name="amount_minor" inputmode="numeric" maxlength="16">
+<label for="admin-finance-currency">Currency (ISO, e.g. USD)</label>
+<input id="admin-finance-currency" name="currency" maxlength="3" value="USD">
+<label for="admin-finance-date">Date (expense)</label>
+<input id="admin-finance-date" name="occurred_at" type="date">
+<label for="admin-finance-entry">Entry id (correct, reconcile)</label>
+<input id="admin-finance-entry" name="entry" maxlength="36">
+<label for="admin-finance-note">Note (correction: required)</label>
+<input id="admin-finance-note" name="note" maxlength="500">
+<label for="admin-finance-csv">CSV rows (import): ref,kind,amount_minor,currency,occurred_at,note; kind is expense, fee or adjustment; 1 to 500 rows</label>
+<textarea id="admin-finance-csv" name="rows"></textarea>
+<label for="admin-finance-reason">Reason</label>
+<input id="admin-finance-reason" name="reason" maxlength="2000" required>
+<div class="actions"><button class="button" type="submit">Record</button></div>
+<div id="admin-finance-result" aria-live="polite"></div>
+</form>
+<form id="admin-finance-report-form" class="support" novalidate>
+<label for="admin-report-view">View</label>
+<select id="admin-report-view" name="view"><option value="period_summary">Period summary</option><option value="reconciliation">Reconciliation</option><option value="export">Export (ledger rows)</option><option value="agent_costs">Agent costs this month</option></select>
+<label for="admin-report-start">From (empty: 90 days before the end)</label>
+<input id="admin-report-start" name="period_start" type="date">
+<label for="admin-report-end">To (exclusive; empty: now)</label>
+<input id="admin-report-end" name="period_end" type="date">
+<label for="admin-report-provider">Provider</label>
+<select id="admin-report-provider" name="provider"><option value="">All</option><option value="stripe">Stripe</option><option value="apple">Apple</option><option value="manual">Manual and imported</option></select>
+<label for="admin-report-currency">Currency (optional)</label>
+<input id="admin-report-currency" name="currency" maxlength="3">
+<label for="admin-report-page">Export page (from 1; 1000 rows each)</label>
+<input id="admin-report-page" name="page" inputmode="numeric" maxlength="2" value="1">
+<div class="actions"><button class="button" type="submit">Show</button><button class="button" type="button" id="admin-report-download" disabled>Download CSV of the shown export</button></div>
+<div id="admin-report-result" aria-live="polite"></div>
+</form>
 <h2>Emergency stop</h2>
 <p class="quiet">Stops every automated agent (owner only, recent MFA required). Drafts are kept; nothing is deleted.</p>
 <form id="admin-stop-form" class="support" novalidate>
@@ -131,12 +245,12 @@
 <h2>What this shell does and does not do</h2>
 <ul>
 <li>Reads: health and queues, approvals, users, moderation, publishing, support, finance records, agents, announcements, marketing, consent versions, through the existing RPC contracts. Each panel shows the server's answer, including <code>forbidden</code> or <code>step_up_required</code>, verbatim.</li>
-<li>Writes: the emergency stop, owner decisions on agent proposals and account actions (note, sign-out, suspend, ban, restore), each with a required reason and server-side audit. Render approvals, moderation decisions and other mutations stay in the native Admin, where the exact render is played before a decision.</li>
+<li>Writes: the emergency stop, owner decisions on agent proposals, agent controls (pause, resume, caps, permissions, instructions and rollback), account actions (note, sign-out, suspend, ban, restore, reset flags), finance records (expense, import, correction, reconciliation) and announcements (draft, schedule, cancel), each with a required reason and server-side audit. Render approvals, moderation decisions and publishing withdrawals stay in the native Admin, where the exact render is played before a decision.</li>
 <li>Backups, restore drills, releases and retention are shown as reported outcomes only; no control or terminal endpoint exists on this page.</li>
 <li>Sessions live in page memory only; reloading signs you out. Tokens are never written to storage.</li>
 <li>No secrets: the configuration holds the backend origin and the publishable key only. Service keys, provider credentials and host details never reach this page.</li>
 </ul>
-<p class="quiet">Owner gate: backend project, administrator provisioning (<code>sdi_provision_owner</code>, service role, no password in source) and MFA enrolment remain open items (#246, #277). Status read from source on October 13, 2026.</p>
+<p class="quiet">Owner gate: backend project, administrator provisioning (<code>sdi_provision_owner</code>, service role, no password in source) and MFA enrolment remain open items (#246, #277). Status read from source on October 18, 2026.</p>
 </main>
 <footer class="wrap"><a class="brand" href="index.html">STICKDEATH INFINITY</a><p>Companion website source</p><div><a href="account.html">Account</a><a href="policies/privacy-v1.html">Privacy (draft)</a><a href="policies/terms-v1.html">Terms (draft)</a><a href="https://discord.gg/mVUxqbB5c" rel="noopener" target="_blank">Discord</a></div></footer>
 </body></html>

@@ -136,6 +136,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         Load.Idle -> Unit
     }
     if (!account.signedInMember) Text("Guests can browse the wall; likes, reports, records and rooms need a full account.")
+    Text("Contests, rooms and account", style = MaterialTheme.typography.titleMedium)
+    CommunityFeaturesSection(account)
 }
 
 /** Cloud guidance for the Spatter panel. Replies are text only and never edit the project. */

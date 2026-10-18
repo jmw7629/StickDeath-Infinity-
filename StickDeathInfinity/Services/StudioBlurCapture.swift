@@ -11,23 +11,28 @@ enum StudioBlurCapture {
         let frameID: String
         let layerID: String
         let pixels: StudioBlur.Pixels
+        /// Selected drawings when captured (#149); the effect is clipped to
+        /// their coverage, so a changed selection makes the capture stale.
+        var selection: Set<String> = []
 
         func isCurrent(_ document: StudioDocument, selection: Set<String>) -> Bool {
             document.id == projectID && document.revision == revision &&
             document.activeFrameID == frameID && document.activeLayerID == layerID &&
-            document.width == pixels.width && document.height == pixels.height && selection.isEmpty &&
+            document.width == pixels.width && document.height == pixels.height && selection == self.selection &&
             document.layers.contains { $0.id == layerID && $0.visible && $0.opacity > 0 &&
                 !$0.isFullyLocked && $0.lockMode == "free" }
         }
     }
 
-    static func capture(document: StudioDocument, selection: Set<String>, raster: Data?, rasterDataByID: [String: Data] = [:]) throws -> Capture {
+    static func capture(document: StudioDocument, selection: Set<String>, raster: Data?, rasterDataByID: [String: Data] = [:],
+                        clipsToSelection: Bool = false) throws -> Capture {
         try Task.checkCancellation()
         try document.validate()
-        // The pixel engine accepts coverage masks, but editable selection-mask
-        // persistence is not connected yet. Never silently affect unselected art.
-        guard selection.isEmpty else {
-            throw StudioDocumentError.unavailable("Blurring within a selection is not available yet. Deselect artwork first; nothing changed.")
+        // Only a caller that clips the effected pixels to the selection
+        // coverage and persists that mask (#149) may capture with a selection.
+        // Never silently affect unselected art.
+        guard selection.isEmpty || clipsToSelection else {
+            throw StudioDocumentError.unavailable("Blurring within a selection needs its selection mask. Deselect artwork or select again; nothing changed.")
         }
         guard let layer = document.layers.first(where: { $0.id == document.activeLayerID }),
               layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
@@ -64,6 +69,6 @@ enum StudioBlurCapture {
         try Task.checkCancellation()
         return Capture(projectID: document.id, revision: document.revision,
             frameID: document.activeFrameID, layerID: document.activeLayerID,
-            pixels: try .init(width: rendered.width, height: rendered.height, rgba: bytes))
+            pixels: try .init(width: rendered.width, height: rendered.height, rgba: bytes), selection: selection)
     }
 }
