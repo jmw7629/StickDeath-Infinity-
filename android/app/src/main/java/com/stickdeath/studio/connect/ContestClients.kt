@@ -209,4 +209,99 @@ class ChallengeClient(private val gateway: CommunityGateway) {
     fun submit(challenge: String, media: String) = mutate(JSONObject().put("action", "submit").put("challenge", requireUuid(challenge)).put("media", requireUuid(media)), setOf("entered"))
     fun withdraw(entry: String) = mutate(JSONObject().put("action", "withdraw").put("entry", requireUuid(entry)), setOf("withdrawn"))
     fun vote(challenge: String, entry: String) = mutate(JSONObject().put("action", "vote").put("challenge", requireUuid(challenge)).put("entry", requireUuid(entry)), setOf("confirmed"))
+
+    // Moderator lifecycle. The server requires current moderation permission with MFA
+    // (`admin_can('moderation')`) and refuses every other account; the client claims no role.
+    private fun moderate(request: JSONObject, expecting: String): JSONObject {
+        val reply = gateway.call("sdi_challenge_action", request)
+        if (reply.str("status") != expecting) throw CommunityException.InvalidResponse("The challenge operation was not confirmed.")
+        return reply
+    }
+    /** A draft challenge; it is invisible to members until scheduled. Returns (id, revision). */
+    fun create(title: String, brief: String, reward: String): Pair<String, Int> {
+        val name = title.trim()
+        if (name.length !in 1..100 || brief.length > 2000 || reward.length > 500)
+            throw CommunityException.Server("A title of 1–100 characters, a brief of at most 2000 and reward text of at most 500 characters are required.", null)
+        val reply = moderate(JSONObject().put("action", "create").put("title", name).put("brief", brief).put("reward", reward), "created")
+        val id = reply.str("challenge_id")?.let(::requireUuidOr) ?: throw CommunityException.InvalidResponse("Creation reply incomplete.")
+        return id to (reply.int("revision") ?: throw CommunityException.InvalidResponse("Creation reply incomplete."))
+    }
+    fun schedule(challenge: String, revision: Int, draft: ChallengeScheduleDraft, now: Instant = Instant.now()): Int {
+        draft.validation(now)?.let { throw CommunityException.Server(it, null) }
+        val reply = moderate(JSONObject().put("action", "schedule").put("challenge", requireUuid(challenge)).put("revision", revision)
+            .put("starts_at", draft.startsAt.toString()).put("closes_at", draft.closesAt.toString()).put("ends_at", draft.endsAt.toString()), "confirmed")
+        return reply.int("revision") ?: (revision + 1)
+    }
+    fun cancel(challenge: String, revision: Int, reason: String): Int {
+        val text = reason.trim()
+        if (text.length !in 1..2000) throw CommunityException.Server("A cancellation reason is required.", null)
+        return moderate(JSONObject().put("action", "cancel").put("challenge", requireUuid(challenge)).put("revision", revision).put("reason", text), "confirmed")
+            .int("revision") ?: (revision + 1)
+    }
+    fun removeEntry(challenge: String, revision: Int, entry: String, reason: String): Int {
+        val text = reason.trim()
+        if (text.length !in 1..2000) throw CommunityException.Server("A reason is required.", null)
+        return moderate(JSONObject().put("action", "remove_entry").put("challenge", requireUuid(challenge)).put("entry", requireUuid(entry))
+            .put("revision", revision).put("reason", text), "confirmed").int("revision") ?: (revision + 1)
+    }
+}
+
+/** Moderator scheduling rules mirrored from `challenge_action` `schedule` (iOS `ChallengeScheduleDraft`). */
+data class ChallengeScheduleDraft(val startsAt: Instant, val closesAt: Instant, val endsAt: Instant) {
+    fun validation(now: Instant): String? = when {
+        startsAt.isBefore(now.minusSeconds(5 * 60)) -> "Start must be in the future."
+        closesAt.isBefore(startsAt.plusSeconds(3600)) -> "Allow at least one hour of submissions."
+        endsAt.isBefore(closesAt.plusSeconds(3600)) -> "Allow at least one hour of voting."
+        endsAt.isAfter(startsAt.plusSeconds(60L * 24 * 3600)) -> "A challenge may last at most sixty days."
+        else -> null
+    }
+}
+
+// MARK: Calendar (read-only schedule over `sdi_calendar_range`)
+
+/** A challenge milestone or one of the caller's own War Room voting deadlines. */
+data class CalendarItem(val kind: String, val recordID: String, val title: String, val occursAt: Instant, val milestone: String, val status: String) {
+    val id get() = "$kind:$recordID:$milestone"
+    val kindText get() = if (kind == "war_match") "War Room" else "Challenge"
+    val milestoneText get() = when (milestone) {
+        "opens" -> "Submissions open"
+        "submissions_close" -> "Submissions close"
+        "voting_ends" -> if (kind == "war_match") "Matchup voting ends" else "Voting ends"
+        else -> milestone.replace('_', ' ').replaceFirstChar { it.uppercase() }
+    }
+}
+
+/** One month, bounded to the server's 62-day maximum, with items placed on the civil day that holds
+ * their instant in the viewer's zone (DST-safe). Duplicates and out-of-range items are dropped. */
+data class CalendarMonth(val start: java.time.ZonedDateTime, val end: java.time.ZonedDateTime, val items: List<CalendarItem>, val truncated: Boolean) {
+    fun days(): List<Pair<java.time.LocalDate, List<CalendarItem>>> = items.groupBy { it.occursAt.atZone(start.zone).toLocalDate() }.toList().sortedBy { it.first }
+    companion object {
+        const val MAXIMUM_RANGE_DAYS = 62L
+        fun bounds(month: java.time.YearMonth, zone: java.time.ZoneId): Pair<java.time.ZonedDateTime, java.time.ZonedDateTime> {
+            val start = month.atDay(1).atStartOfDay(zone)
+            val end = month.plusMonths(1).atDay(1).atStartOfDay(zone)
+            val limit = start.plusDays(MAXIMUM_RANGE_DAYS)
+            return start to if (end.isAfter(limit)) limit else end
+        }
+        fun of(start: java.time.ZonedDateTime, end: java.time.ZonedDateTime, items: List<CalendarItem>, truncated: Boolean): CalendarMonth {
+            val unique = linkedMapOf<String, CalendarItem>()
+            items.filter { !it.occursAt.isBefore(start.toInstant()) && it.occursAt.isBefore(end.toInstant()) }.forEach { unique[it.id] = it }
+            return CalendarMonth(start, end, unique.values.sortedWith(compareBy({ it.occursAt }, { it.id })), truncated)
+        }
+    }
+}
+
+class CalendarClient(private val gateway: CommunityGateway) {
+    /** The visible month only. Nothing is cached on Android: offline, the calendar says so. */
+    fun month(month: java.time.YearMonth, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): CalendarMonth {
+        val (start, end) = CalendarMonth.bounds(month, zone)
+        val reply = gateway.call("sdi_calendar_range", JSONObject().put("range_start", start.toInstant().toString())
+            .put("range_end", end.toInstant().toString()).put("page_size", 500))
+        val items = reply.optJSONArray("items") ?: throw CommunityException.InvalidResponse("Calendar reply incomplete.")
+        if (items.length() > 500) throw CommunityException.InvalidResponse("Calendar reply exceeded the server bound.")
+        return CalendarMonth.of(start, end, items.objects().map { o ->
+            CalendarItem(o.need("kind"), requireUuidOr(o.need("id")), o.str("title").orEmpty(),
+                serverInstant(o.str("occurs_at")) ?: throw CommunityException.InvalidResponse("Calendar reply incomplete."), o.need("milestone"), o.str("status").orEmpty())
+        }, reply.bool("truncated") ?: false)
+    }
 }

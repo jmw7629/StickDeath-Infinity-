@@ -1001,7 +1001,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
     override fun onCleared() {
-        cancelAudioImport(); stopAudioPreview()
+        stopRoomSync(); cancelAudioImport(); stopAudioPreview()
         imageJob?.cancel(); colorSampleJob?.cancel(); exportJob?.cancel(); exportArtifact?.let { ShareExports.discard(it) }; super.onCleared()
     }
     private val undo = mutableStateListOf<Document>()
@@ -1135,6 +1135,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val next = proposed.copy(revision = before.revision + 1, modified = System.currentTimeMillis()).validated()
             cancelImageImport(); cancelFill(); cancelAudioImport(); stopAudioPreview()
             boundedPush(undo, before); redo.clear(); document = next; reconcileSelection(); dirty = true; save()
+            if (roomBridge.committed(before, next) != null) pushRoomEdits()
             return true
         } catch (e: Exception) { report(e.message ?: "This change is unavailable."); return false }
     }
@@ -1144,7 +1145,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         cancelImageImport(); cancelFill(); cancelAudioImport(); stopAudioPreview()
         boundedPush(redo, before)
         document = undo.removeAt(undo.lastIndex).copy(revision = before.revision + 1, modified = System.currentTimeMillis())
-        reconcileSelection(); dirty = true; save()
+        reconcileSelection(); dirty = true; save(); roomBridge.historyJump()
     }
     fun redo() {
         val before = document ?: return
@@ -1152,7 +1153,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         cancelImageImport(); cancelFill(); cancelAudioImport(); stopAudioPreview()
         boundedPush(undo, before)
         document = redo.removeAt(redo.lastIndex).copy(revision = before.revision + 1, modified = System.currentTimeMillis())
-        reconcileSelection(); dirty = true; save()
+        reconcileSelection(); dirty = true; save(); roomBridge.historyJump()
     }
     var textContent by mutableStateOf("Text")
     var textFontSize by mutableFloatStateOf(32f)
@@ -1238,6 +1239,105 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             is SpatterCommand.Grid -> updateGrid(command.settings?.copy(enabled = captured.grid.enabled) ?: captured.grid.copy(enabled = requireNotNull(command.visible)))
         }
     }
+    // MARK: Shared rooms (#288, iOS StudioViewModel+Rooms.swift)
+
+    /** Set by the canvas while a touch gesture is in progress; remote edits wait until it ends. */
+    var gestureActive = false; private set
+    fun noteGesture(active: Boolean) { gestureActive = active; if (!active) applyRoomEdits() }
+    /** Set while the scene plays back; remote edits wait until it stops. */
+    var playbackActive = false; private set
+    fun notePlayback(active: Boolean) { playbackActive = active; if (!active) applyRoomEdits() }
+    private val roomHost = object : SharedStudioHost {
+        override val sharedDocument get() = document
+        override val replayBlocker: String? get() = when {
+            closing -> "the project to close"
+            gestureActive -> "your drawing gesture"
+            playbackActive -> "playback"
+            filling -> "the fill in progress"
+            importingImage -> "the image import"
+            importingAudio -> "the audio import"
+            busy -> "the project to load"
+            else -> null
+        }
+        override fun commitRemote(next: Document): Boolean {
+            val before = document ?: return false
+            if (before.id != next.id || closing) return false
+            return try {
+                val committed = next.copy(revision = before.revision + 1, modified = System.currentTimeMillis(),
+                    activeFrameID = before.activeFrameID, activeLayerID = before.activeLayerID).validated()
+                boundedPush(undo, before); redo.clear(); document = committed; reconcileSelection(); dirty = true; save()
+                true
+            } catch (e: IllegalArgumentException) { false }
+        }
+        override fun roomNotice(text: String) { message = text }
+        override fun unrenderable(next: Document): String? =
+            next.layers.firstOrNull { !FrameRenderer.supports(it.blend) }?.let { FrameRenderer.unavailableReason(it.blend) }
+    }
+    val roomBridge = StudioRoomBridge(roomHost)
+    var roomSyncRoom by mutableStateOf<String?>(null); private set
+    private var roomSyncJob: Job? = null
+    private val roomNetwork = Mutex()
+
+    /** Begin synchronising the open project with the room it belongs to. The coordinator must already
+     * hold that room's session, and the room's project reference must name this exact device project. */
+    fun startRoomSync(coordinator: com.stickdeath.studio.connect.RoomSessionCoordinator, room: String, roomTitle: String): Boolean {
+        val open = document ?: run { report("Open the shared project in Studio first."); return false }
+        if (!coordinator.handOffToStudio(room, roomTitle, open.id)) {
+            report("This room's shared project is not the project open in Studio. Nothing was synchronised."); return false
+        }
+        roomSyncJob?.cancel()
+        roomBridge.attach(coordinator)
+        roomSyncRoom = coordinator.handoff?.room
+        roomSyncJob = viewModelScope.launch {
+            try {
+                while (true) {
+                    val active = document
+                    if (coordinator.handoff == null || active == null || !coordinator.isSharing(active.id)) break
+                    synchroniseRoom(coordinator)
+                    kotlinx.coroutines.delay(3_000)
+                }
+            } finally {
+                if (roomBridge.coordinator === coordinator) roomBridge.detach()
+                roomSyncRoom = null
+            }
+        }
+        message = "Synchronising ${open.name} with \"$roomTitle\". Edits are saved on this device; overlapping edits wait for your decision."
+        return true
+    }
+    /** Stop synchronising; the device project is unchanged. */
+    fun stopRoomSync() {
+        roomBridge.coordinator?.finishHandoff()
+        roomSyncJob?.cancel(); roomSyncJob = null
+        roomBridge.detach(); roomSyncRoom = null
+    }
+    private fun applyRoomEdits() { roomBridge.coordinator?.takeIf { roomBridge.isAttached }?.applyQueued() }
+    private fun pushRoomEdits() {
+        val coordinator = roomBridge.coordinator ?: return
+        viewModelScope.launch {
+            val outcome = roomNetwork.withLock { withContext(Dispatchers.IO) { runCatching { coordinator.drain() } } }
+            outcome.onSuccess { if (it is com.stickdeath.studio.connect.RoomSessionCoordinator.DrainOutcome.Stopped) message = "Room synchronisation paused: ${it.reason}" }
+                .onFailure { message = "Room synchronisation paused: ${it.message ?: "network unavailable"}" }
+        }
+    }
+    /** One pass: apply newer remote edits in order, then send queued local edits fenced on the head. */
+    private suspend fun synchroniseRoom(coordinator: com.stickdeath.studio.connect.RoomSessionCoordinator) {
+        document?.let { roomBridge.noteUnaccounted(it.revision) }
+        val previousHeld = coordinator.heldConflict
+        roomNetwork.withLock {
+            val fetched = withContext(Dispatchers.IO) { runCatching { coordinator.fetchRemote() } }
+            fetched.onFailure { message = "Room synchronisation paused: ${it.message ?: "network unavailable"}" }
+            coordinator.applyQueued()
+            if (coordinator.session == null) { coordinator.endReason?.let { message = it }; return }
+            val drained = withContext(Dispatchers.IO) { runCatching { coordinator.drain() } }
+            drained.onSuccess { if (it is com.stickdeath.studio.connect.RoomSessionCoordinator.DrainOutcome.Stopped) message = "Room synchronisation paused: ${it.reason}" }
+            // A conflict reply carries the missing remote edits; apply them before the next pass.
+            coordinator.applyQueued()
+        }
+        val held = coordinator.heldConflict
+        if (held != null && held != previousHeld)
+            message = "Another creator changed the same ${held.target ?: "project"} at the same time. Nothing was overwritten; open the room in Account to keep your edit on top or discard it."
+    }
+
     /** Local diagnostics: redacted crash reports never leave the device (#291). */
     fun crashReports(): List<java.io.File> = LocalCrashReporter(getApplication()).reports()
     fun readCrashReport(file: java.io.File): String = LocalCrashReporter(getApplication()).read(file)

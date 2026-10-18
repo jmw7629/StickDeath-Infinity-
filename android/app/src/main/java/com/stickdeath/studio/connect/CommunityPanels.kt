@@ -31,13 +31,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.time.Instant
 
-private enum class CommunityTab(val title: String) { War("War Room"), Challenges("Challenges"), Rooms("Shared rooms"), Inbox("Notifications"), Data("Account data") }
+private enum class CommunityTab(val title: String) { War("War Room"), Challenges("Challenges"), Rooms("Shared rooms"), Calendar("Calendar"), Inbox("Notifications"), Data("Account data") }
 
 /** War Room, challenges, shared-room sync, notifications and account data for a signed-in member.
  * There is no chat, calling, camera or microphone anywhere in these screens. */
 @Composable fun CommunityFeaturesSection(account: AccountViewModel, community: CommunityViewModel = viewModel()) {
     val signedIn = account.state as? AccountState.SignedIn
-    LaunchedEffect(signedIn?.userId) { community.reset() }
+    LaunchedEffect(signedIn?.userId) { community.accountChanged(signedIn?.userId) }
     var tab by remember { mutableStateOf<CommunityTab?>(null) }
     Row(Modifier.horizontalScroll(rememberScrollState())) {
         CommunityTab.entries.forEach { entry ->
@@ -50,13 +50,14 @@ private enum class CommunityTab(val title: String) { War("War Room"), Challenges
         CommunityTab.War -> WarRoomSection(community)
         CommunityTab.Challenges -> ChallengesSection(community)
         CommunityTab.Rooms -> RoomSyncSection(community)
+        CommunityTab.Calendar -> CalendarSection(community)
         CommunityTab.Inbox -> NotificationsSection(community)
         CommunityTab.Data -> AccountDataSection(community)
         null -> Unit
     }
 }
 
-@Composable private fun <T> LoadState(load: Load<T>, idle: String, content: @Composable (T) -> Unit) {
+@Composable internal fun <T> LoadState(load: Load<T>, idle: String, content: @Composable (T) -> Unit) {
     when (load) {
         Load.Idle -> Text(idle)
         Load.Loading -> Text("Loading…")
@@ -173,6 +174,7 @@ private enum class CommunityTab(val title: String) { War("War Room"), Challenges
     Text("Scheduled community challenges. Submit one approved rendered video while submissions are open; non-participants pick one favourite during voting. Reward text is descriptive only.")
     TextButton({ community.loadChallenges() }) { Text("Load challenges") }
     LoadState(community.challenges, "Load challenges to see what is open.") { listing ->
+        ChallengeModeratorTools(community, listing.challenges)
         if (listing.challenges.isEmpty()) Text("No challenges are scheduled right now.")
         val serverNow = listing.clock.now(System.currentTimeMillis())
         listing.challenges.forEach { challenge ->
@@ -206,25 +208,6 @@ private enum class CommunityTab(val title: String) { War("War Room"), Challenges
             }
         }
     }
-}
-
-@Composable private fun RoomSyncSection(community: CommunityViewModel) {
-    Text("Shared rooms", style = MaterialTheme.typography.titleMedium)
-    Text("Rooms share one explicitly chosen Studio project with approved members. Edits travel as fenced commands; overlapping edits are held for your decision, never overwritten. No chat, calls, camera or screen sharing.")
-    TextButton({ community.loadRooms() }) { Text("Load my rooms") }
-    LoadState(community.myRooms, "Load your rooms to synchronise a shared project.") { rooms ->
-        if (rooms.isEmpty()) Text("You are not in any open room.")
-        rooms.forEach { room ->
-            Text("${room.title.ifBlank { "Untitled room" }}${room.projectTitle?.let { " · $it" } ?: ""}")
-            val active = community.roomSession.session?.room == room.id
-            Row {
-                if (!active) TextButton({ community.startRoomSync(room) }) { Text("Start sync") }
-                else { TextButton({ community.checkRoomEdits() }) { Text("Check for edits") }; TextButton({ community.leaveRoomSync() }) { Text("Stop sync") } }
-            }
-        }
-    }
-    if (community.roomStatus.isNotEmpty()) Text(community.roomStatus, style = MaterialTheme.typography.bodySmall)
-    Text("Android Studio does not yet apply shared commands to the open project or publish local edits; received edits stay queued and your device project is unchanged.", style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable private fun NotificationsSection(community: CommunityViewModel) {
