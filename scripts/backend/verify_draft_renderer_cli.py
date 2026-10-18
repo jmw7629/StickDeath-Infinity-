@@ -78,6 +78,9 @@ def main(cli: Path, work: Path) -> None:
     assert movie.stat().st_size > 1000 and movie.suffix == ".mp4"
     review = store.reviews[0]
     assert review["state"] == "pending" and review["destinations"] == [] and review["render_digest"] == job["sha256"]
+    # The retained-render record the owner's renewal and approval path needs.
+    assert review["artifact"]["object_key"] == upload + ".mp4", review
+    assert review["artifact"]["byte_count"] == (intake / (upload + ".mp4")).stat().st_size, review
     project = next(movie.parents[1].glob("project.json"))
     assert hashlib.sha256(project.read_bytes()).hexdigest() == review["source_project_digest"]
     assert json.loads(project.read_text())["fps"] == 24

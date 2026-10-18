@@ -165,7 +165,19 @@ serves it only to a link signed for that owner while the record is live (the
 same owner variable enables `combined_authority` in `ingestion/application.py`).
 `DraftPreviewStore.link()` re-signs a fresh link; `expire()` deletes expired
 copies. Without the owner id the renderer fails with the OWNER-GATED preview
-message.
+message. `SDI_INTAKE_TOTAL_BYTES` is required too: draft copies share the intake
+disk quota (`UploadStore.reserved_bytes`), and a full quota refuses the copy.
+
+Owner review path: the worker's `review_pending` call records the retained copy
+(`object_key`, `byte_count`, `artifact_expires_at`) as a `render_artifacts` row.
+For such a retained draft the existing preview route
+(`POST /v1/review-previews/<review>/renew` → `sdi_preview_permit` →
+`DraftPreviewStore.signer` → `link()` → `sdi_preview_renew`) works for the owner
+only, and the owner may approve the exact digest and version with no
+destinations: approved, not scheduled. `release_allowed` needs a destination, so
+nothing publishes; adding one later returns the review to pending for a fresh
+owner approval. `python3 -m backend.ops.sweeps --all` includes the local
+`draft_preview_expire` sweep (skipped when draft previews are not configured).
 `test_renderer_cli.py` and `test_draft_preview.py` drive fake executables; the macOS CI step
 "Render one daily brief with the headless draft renderer" runs the real binary
 through `scripts/backend/verify_draft_renderer_cli.py`.

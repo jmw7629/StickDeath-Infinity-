@@ -457,7 +457,7 @@ revoke all on function public.sdi_feed_action(text,uuid,uuid,boolean,text,intege
 grant execute on function public.sdi_feed_action(text,uuid,uuid,boolean,text,integer,text,timestamptz) to authenticated;
 commit;
 
--- ===== admin-approval.sql (sha256 037fb7d39f352a7f) =====
+-- ===== admin-approval.sql (sha256 1a298038405d845a) =====
 -- Unapplied candidate. Provision role records through a protected owner operation,
 -- never from a client-supplied password, profile, username or email.
 begin;
@@ -526,6 +526,23 @@ begin
  return report;
 end $$;
 revoke all on function sdi_private.review_quality_report(uuid) from public,anon,authenticated;
+-- True only for a Spatter daily draft (spatter-draft-jobs.sql, installed later)
+-- whose exact current bytes are retained (render_artifacts, publishing-jobs.sql).
+-- Such a draft may be approved by the owner with no destinations: "approved, not
+-- scheduled". release_allowed() needs destination=any(destinations), so nothing
+-- can publish it; choosing a destination later changes the review version and
+-- returns it to pending for a fresh owner approval of the same digest.
+create function sdi_private.review_spatter_draft_retained(review uuid) returns boolean
+language plpgsql stable security definer set search_path='' as $$
+declare retained boolean;
+begin
+ if review is null or to_regclass('sdi_private.spatter_draft_jobs') is null or to_regclass('sdi_private.render_artifacts') is null then return false; end if;
+ execute 'select exists(select 1 from sdi_private.spatter_draft_jobs j join sdi_private.render_reviews r on r.id=j.review_id
+  where j.review_id=$1 and r.spatter_generated and exists(select 1 from sdi_private.render_artifacts a where a.review_id=r.id
+  and a.version=r.version and a.render_digest=r.render_digest and a.expires_at>clock_timestamp()))' into retained using review;
+ return coalesce(retained,false);
+end $$;
+revoke all on function sdi_private.review_spatter_draft_retained(uuid) from public,anon,authenticated;
 create function sdi_private.review_action(action text,review uuid default null,digest text default null,
  version bigint default null,decision text default null,note text default '') returns jsonb
 language plpgsql security definer set search_path='' as $$
@@ -551,7 +568,8 @@ begin
  select * into r from sdi_private.render_reviews where id=review for update;
  if not found or r.render_digest<>digest or r.version<>version or r.state<>'pending' then
   return jsonb_build_object('error','This render changed or was already reviewed. Reload the queue.'); end if;
- if decision='approved' and (not r.rights_cleared or length(r.consent_version)=0 or cardinality(r.destinations)=0
+ if decision='approved' and (not r.rights_cleared or length(r.consent_version)=0
+  or (cardinality(r.destinations)=0 and not (coalesce(is_owner,false) and sdi_private.review_spatter_draft_retained(r.id)))
   or r.preview_expires_at<=clock_timestamp() or (r.spatter_generated and not is_owner)) then
   return jsonb_build_object('error','Approval requires current rights, consent, a playable render and owner approval for Spatter.'); end if;
  insert into sdi_private.render_decisions(review_id,actor,owner_at_decision,render_title,source_revision,rights_summary,render_digest,review_version,consent_version,destinations,decision,note)
@@ -1776,7 +1794,7 @@ revoke all on function public.sdi_publish_status(integer) from public,anon;
 grant execute on function public.sdi_publish_status(integer) to authenticated;
 commit;
 
--- ===== preview-renewal.sql (sha256 a1a4054cf1eecb2d) =====
+-- ===== preview-renewal.sql (sha256 587eb1bc09d2299d) =====
 -- Unapplied candidate. Requires upload-registration.sql and upload-preview.sql.
 begin;
 create table sdi_private.preview_permits (
@@ -1789,6 +1807,7 @@ revoke all on sdi_private.preview_permits from public,anon,authenticated;
 create function sdi_private.preview_permit(review uuid,digest text,version bigint) returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews; a sdi_private.render_artifacts; u sdi_private.upload_registrations; permit uuid;
+ draft boolean; upload_id uuid;
 begin
  if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then
   return jsonb_build_object('error','Current review permission and MFA required.');end if;
@@ -1796,18 +1815,30 @@ begin
  delete from sdi_private.preview_permits where actor=auth.uid() and expires_at<clock_timestamp();
  if (select count(*) from sdi_private.preview_permits where actor=auth.uid())>=20 then
   return jsonb_build_object('error','Too many preview requests. Wait one minute.');end if;
+ draft:=sdi_private.review_spatter_draft_retained(review);
  select * into r from sdi_private.render_reviews where id=review;
  if not found or r.version<>version or r.render_digest<>digest or length(r.consent_version)=0
-  or cardinality(r.destinations)=0 or r.state not in('pending','approved','changes') then
+  or (cardinality(r.destinations)=0 and not draft) or r.state not in('pending','approved','changes') then
   return jsonb_build_object('error','This review changed or is unavailable.');end if;
+ -- Spatter daily drafts are previewed by the owner only.
+ if draft and not exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) then
+  return jsonb_build_object('error','Owner review is required for this render.');end if;
  select * into a from sdi_private.render_artifacts where review_id=r.id and render_artifacts.version=r.version
   and render_digest=r.render_digest and expires_at>clock_timestamp();
  if not found then return jsonb_build_object('error','The retained render has expired. Request a new upload.');end if;
- select * into u from sdi_private.upload_registrations where review_id=r.id;
- if not found then return jsonb_build_object('error','Preview renewal is unavailable for this legacy render.');end if;
+ if draft then
+  -- The worker's DraftPreviewStore keeps the copy as <upload>.mp4 in the intake directory.
+  if a.object_key !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$' then
+   return jsonb_build_object('error','Preview renewal is unavailable for this legacy render.');end if;
+  upload_id:=left(a.object_key,36)::uuid;
+ else
+  select * into u from sdi_private.upload_registrations where review_id=r.id;
+  if not found then return jsonb_build_object('error','Preview renewal is unavailable for this legacy render.');end if;
+  upload_id:=u.upload_id;
+ end if;
  insert into sdi_private.preview_permits(actor,session_id,review_id,review_version,digest,expires_at)
  values(auth.uid(),auth.jwt()->>'session_id',r.id,r.version,r.render_digest,clock_timestamp()+interval '1 minute') returning id into permit;
- return jsonb_build_object('permit',permit,'upload',u.upload_id,'creator',r.creator,'digest',r.render_digest,'byte_count',a.byte_count);
+ return jsonb_build_object('permit',permit,'upload',upload_id,'creator',r.creator,'digest',r.render_digest,'byte_count',a.byte_count);
 end $$;
 revoke all on function sdi_private.preview_permit(uuid,text,bigint) from public,anon;
 grant execute on function sdi_private.preview_permit(uuid,text,bigint) to authenticated;
@@ -1831,7 +1862,10 @@ begin
   or exists(select 1 from sdi_private.account_controls where user_id=p.actor and state<>'active') then
   return jsonb_build_object('error','Review authorization changed.');end if;
  select * into r from sdi_private.render_reviews where id=p.review_id for update;
- if r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0 or cardinality(r.destinations)=0
+ if r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0
+  or (cardinality(r.destinations)=0 and not sdi_private.review_spatter_draft_retained(r.id))
+  or (sdi_private.review_spatter_draft_retained(r.id)
+   and not exists(select 1 from sdi_private.admin_roles where user_id=p.actor and enabled and owner))
   or r.state not in('pending','approved','changes')
   or exists(select 1 from sdi_private.account_controls where user_id=r.creator and state<>'active')
   or not exists(select 1 from sdi_private.render_artifacts where review_id=r.id and version=r.version and render_digest=r.render_digest and expires_at>clock_timestamp()) then
@@ -6012,7 +6046,7 @@ revoke all on function public.sdi_marketing_claim(),public.sdi_marketing_finish(
 grant execute on function public.sdi_marketing_claim(),public.sdi_marketing_finish(uuid,uuid,text,text,text),public.sdi_marketing_cadence_due() to service_role;
 commit;
 
--- ===== spatter-draft-jobs.sql (sha256 d378eb6fb156c612) =====
+-- ===== spatter-draft-jobs.sql (sha256 ff1c5be31b460690) =====
 -- Unapplied deployment candidate (#212, #214). Install after agent-controls.sql
 -- and admin-approval.sql. Spatter's daily original-draft queue: one durable job
 -- per calendar day, bounded retries and leases, private drafts only, and the
@@ -6114,7 +6148,7 @@ end $$;
 create function sdi_private.spatter_draft_progress(p_job uuid,p_owner text,p_state text,p_storyboard jsonb default null,
  p_quality jsonb default null,p_sha text default null,p_error text default '',p_review jsonb default null)
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare j sdi_private.spatter_draft_jobs; review uuid; creator uuid;
+declare j sdi_private.spatter_draft_jobs; review uuid; creator uuid; retained timestamptz; preview_until timestamptz;
 begin
  select * into j from sdi_private.spatter_draft_jobs where id=p_job for update;
  if not found or j.lease_owner is distinct from p_owner or j.lease_expires_at<clock_timestamp() then
@@ -6135,14 +6169,33 @@ begin
    return jsonb_build_object('status','refused','reason','A review needs the render digest, storyboard, quality report, source digest, creator and private preview URL.'); end if;
   if coalesce((p_quality->>'passes')::boolean,false) is not true then
    return jsonb_build_object('status','refused','reason','The quality report did not pass; mark the job failed with the finding instead.'); end if;
+  -- Optional retained private copy (backend/spatter/draft_preview.py): object_key
+  -- <upload>.mp4, byte_count and artifact_expires_at (at most 14 days). Without it
+  -- the draft can be reviewed but not approved or have its preview renewed.
+  if p_review ? 'object_key' then
+   if (p_review->>'object_key') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$'
+    or jsonb_typeof(p_review->'byte_count') is distinct from 'number' or (p_review->>'byte_count') !~ '^[0-9]{1,10}$'
+    or (p_review->>'byte_count')::bigint not between 1 and 2147483648 or (p_review->>'artifact_expires_at') is null then
+    return jsonb_build_object('status','refused','reason','The retained draft copy needs an object key, byte count and expiry.'); end if;
+   retained:=(p_review->>'artifact_expires_at')::timestamptz;
+   if retained<=clock_timestamp() or retained>clock_timestamp()+interval '14 days' then
+    return jsonb_build_object('status','refused','reason','The retained draft copy expiry must be within 14 days.'); end if;
+  end if;
+  preview_until:=coalesce((p_review->>'preview_expires_at')::timestamptz,clock_timestamp()+interval '7 days');
+  if retained is not null then preview_until:=least(preview_until,retained); end if;
   creator:=(p_review->>'creator')::uuid;
   insert into sdi_private.render_reviews(creator,title,source_revision,render_digest,preview_url,preview_expires_at,consent_version,rights_summary,rights_cleared,
    destinations,spatter_generated,storyboard,source_project_digest)
   values(creator,left(coalesce(p_review->>'title','Spatter daily draft '||j.target_date::text),200),coalesce(p_review->>'source_revision','draft:'||j.target_date::text),
-   p_sha,p_review->>'preview_url',coalesce((p_review->>'preview_expires_at')::timestamptz,clock_timestamp()+interval '7 days'),
+   p_sha,p_review->>'preview_url',preview_until,
    coalesce(p_review->>'consent_version','spatter-draft-v1'),coalesce(p_review->>'rights_summary','Independently generated stick-figure content; no external source material.'),
    coalesce((p_review->>'rights_cleared')::boolean,true),'{}'::text[],true,p_storyboard,p_review->>'source_project_digest')
   returning id into review;
+  if retained is not null then
+   insert into sdi_private.render_artifacts(review_id,version,render_digest,object_key,byte_count,title,made_for_kids,expires_at)
+   values(review,1,p_sha,p_review->>'object_key',(p_review->>'byte_count')::bigint,
+    left(coalesce(p_review->>'title','Spatter daily draft '||j.target_date::text),100),false,retained);
+  end if;
   update sdi_private.spatter_draft_jobs set state='review_pending',storyboard=p_storyboard,quality_report=p_quality,artifact_sha256=p_sha,review_id=review,
    lease_owner=null,lease_expires_at=null,updated_at=clock_timestamp() where id=j.id;
   perform sdi_private.agent_run_finish(j.agent_run,'succeeded',1,0,'');

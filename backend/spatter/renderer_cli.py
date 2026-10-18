@@ -204,20 +204,29 @@ class CLIRenderer:
             failures.append(f"Decoded duration {float(duration):.3f} s differs from the planned {plan.seconds:.3f} s.")
         if failures != quality["failures"]:
             quality.update(passes=False, failures=failures)
-        preview_url, preview_expires_at = "", None
+        preview_url, preview_expires_at, artifact = "", None, None
         if quality["passes"]:
             published = self.publish_preview(movie_path, movie_sha, plan)
-            # A publisher returns the URL, or (URL, expiry) for a bounded signed link.
-            if isinstance(published, tuple) and len(published) == 2:
-                preview_url, expiry = published
-                if not isinstance(expiry, _dt.datetime) or expiry.tzinfo is None:
+            # A publisher returns the URL; (URL, expiry) for a bounded signed link; or a
+            # draft_preview.PublishedPreview, which also names the retained copy.
+            def aware(value):
+                if not isinstance(value, _dt.datetime) or value.tzinfo is None:
                     raise RendererError("The private preview publisher returned an invalid expiry. No draft was submitted.")
-                preview_expires_at = expiry.astimezone(_dt.timezone.utc).isoformat()
+                return value.astimezone(_dt.timezone.utc).isoformat()
+            if hasattr(published, "object_key") and hasattr(published, "url"):
+                preview_url, preview_expires_at = published.url, aware(published.expires)
+                if published.byte_count != os.stat(movie_path).st_size or not re.fullmatch(r"[0-9a-f-]{36}\.mp4", str(published.object_key)):
+                    raise RendererError("The retained preview copy does not match the rendered movie. No draft was submitted.")
+                artifact = {"object_key": published.object_key, "byte_count": published.byte_count,
+                            "expires_at": aware(published.retained_until)}
+            elif isinstance(published, tuple) and len(published) == 2:
+                preview_url, expiry = published
+                preview_expires_at = aware(expiry)
             else:
                 preview_url = published
             if not isinstance(preview_url, str) or not preview_url.startswith("https://") or len(preview_url) > 4096:
                 raise RendererError("The private preview publisher did not return an HTTPS URL. No draft was submitted.")
-        return RenderResult(sha256=movie_sha, storyboard=dict(storyboard), quality=quality,
+        return RenderResult(sha256=movie_sha, storyboard=dict(storyboard), quality=quality, artifact=artifact,
                             source_project_digest=project_sha, preview_url=preview_url, preview_expires_at=preview_expires_at)
 
 

@@ -66,6 +66,23 @@ begin
  return report;
 end $$;
 revoke all on function sdi_private.review_quality_report(uuid) from public,anon,authenticated;
+-- True only for a Spatter daily draft (spatter-draft-jobs.sql, installed later)
+-- whose exact current bytes are retained (render_artifacts, publishing-jobs.sql).
+-- Such a draft may be approved by the owner with no destinations: "approved, not
+-- scheduled". release_allowed() needs destination=any(destinations), so nothing
+-- can publish it; choosing a destination later changes the review version and
+-- returns it to pending for a fresh owner approval of the same digest.
+create function sdi_private.review_spatter_draft_retained(review uuid) returns boolean
+language plpgsql stable security definer set search_path='' as $$
+declare retained boolean;
+begin
+ if review is null or to_regclass('sdi_private.spatter_draft_jobs') is null or to_regclass('sdi_private.render_artifacts') is null then return false; end if;
+ execute 'select exists(select 1 from sdi_private.spatter_draft_jobs j join sdi_private.render_reviews r on r.id=j.review_id
+  where j.review_id=$1 and r.spatter_generated and exists(select 1 from sdi_private.render_artifacts a where a.review_id=r.id
+  and a.version=r.version and a.render_digest=r.render_digest and a.expires_at>clock_timestamp()))' into retained using review;
+ return coalesce(retained,false);
+end $$;
+revoke all on function sdi_private.review_spatter_draft_retained(uuid) from public,anon,authenticated;
 create function sdi_private.review_action(action text,review uuid default null,digest text default null,
  version bigint default null,decision text default null,note text default '') returns jsonb
 language plpgsql security definer set search_path='' as $$
@@ -91,7 +108,8 @@ begin
  select * into r from sdi_private.render_reviews where id=review for update;
  if not found or r.render_digest<>digest or r.version<>version or r.state<>'pending' then
   return jsonb_build_object('error','This render changed or was already reviewed. Reload the queue.'); end if;
- if decision='approved' and (not r.rights_cleared or length(r.consent_version)=0 or cardinality(r.destinations)=0
+ if decision='approved' and (not r.rights_cleared or length(r.consent_version)=0
+  or (cardinality(r.destinations)=0 and not (coalesce(is_owner,false) and sdi_private.review_spatter_draft_retained(r.id)))
   or r.preview_expires_at<=clock_timestamp() or (r.spatter_generated and not is_owner)) then
   return jsonb_build_object('error','Approval requires current rights, consent, a playable render and owner approval for Spatter.'); end if;
  insert into sdi_private.render_decisions(review_id,actor,owner_at_decision,render_title,source_revision,rights_summary,render_digest,review_version,consent_version,destinations,decision,note)

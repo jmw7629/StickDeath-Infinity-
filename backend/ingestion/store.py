@@ -61,6 +61,9 @@ class UploadStore:
         self.account_quota = account_quota
         self.lifetime = lifetime
         self.clock = clock
+        # Bytes held in this directory outside the upload table (Spatter draft
+        # preview copies, backend/spatter/draft_preview.py) that share the quota.
+        self.reserved_bytes: Callable[[], int] = lambda: 0
         with self._connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS uploads (
                 id TEXT PRIMARY KEY, actor TEXT NOT NULL, request TEXT NOT NULL,
@@ -166,6 +169,7 @@ class UploadStore:
                 return self._response(prior)
             # Completed files remain charged until retention removes their owned copy.
             used = db.execute("SELECT coalesce(sum(size),0) FROM uploads WHERE state NOT IN ('cancelled','expired','invalid')").fetchone()[0]
+            used += self.reserved_bytes()
             own = db.execute("SELECT coalesce(sum(size),0),count(*) FROM uploads WHERE actor=? AND state NOT IN ('cancelled','expired','invalid')", (actor,)).fetchone()
             if used + size > self.total_quota or own[0] + size > self.account_quota or own[1] >= 5:
                 raise IntakeError("Upload capacity reached. Cancel unused uploads or retry later.", 429)
@@ -173,6 +177,11 @@ class UploadStore:
             db.execute("INSERT INTO uploads(id,actor,request,metadata,digest,size,expires,created) VALUES(?,?,?,?,?,?,?,?)",
                        (upload, actor, request, encoded, metadata["sha256"], size, now+self.lifetime, now))
             return self._response(self._owned(db, actor, upload))
+
+    def charged_bytes(self) -> int:
+        """Bytes the upload table charges against the total quota."""
+        with self._connect() as db:
+            return int(db.execute("SELECT coalesce(sum(size),0) FROM uploads WHERE state NOT IN ('cancelled','expired','invalid')").fetchone()[0])
 
     def status(self, actor: str, upload: str):
         with self._connect() as db:

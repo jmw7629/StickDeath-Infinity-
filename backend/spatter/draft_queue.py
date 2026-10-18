@@ -181,6 +181,9 @@ class RenderResult:
     preview_url: str
     # When the private preview link stops working (ISO 8601). None keeps the SQL default.
     preview_expires_at: Optional[str] = None
+    # The retained private copy behind the preview: {"object_key", "byte_count",
+    # "expires_at"}. Required for the owner to renew the preview and approve.
+    artifact: Optional[Mapping[str, Any]] = None
 
 
 class Renderer(Protocol):
@@ -250,6 +253,9 @@ def run_once(store: Store, *, owner: str, reviewer: str, now: Callable[[], _dt.d
               "title": f"Spatter daily draft {day.isoformat()}", "source_revision": f"draft:{day.isoformat()}:seed:{plan.seed}"}
     if result.preview_expires_at:
         review["preview_expires_at"] = result.preview_expires_at
+    if result.artifact:
+        review.update(object_key=result.artifact["object_key"], byte_count=result.artifact["byte_count"],
+                      artifact_expires_at=result.artifact["expires_at"])
     submitted = store.progress(job, owner, "review_pending", storyboard=result.storyboard, quality=result.quality, sha256=result.sha256,
                                review=review)
     if submitted.get("status") != "confirmed":
@@ -352,7 +358,8 @@ class InMemoryStore:
                 return {"status": "refused", "reason": "The quality report did not pass; mark the job failed with the finding instead."}
             review_id = f"review-{len(self.reviews) + 1}"
             self.reviews.append({"id": review_id, "render_digest": sha256, "storyboard": storyboard, "source_project_digest": review["source_project_digest"],
-                                 "state": "pending", "spatter_generated": True, "destinations": []})
+                                 "state": "pending", "spatter_generated": True, "destinations": [],
+                                 "artifact": {k: review[k] for k in ("object_key", "byte_count", "artifact_expires_at")} if "object_key" in review else None})
             record.update(state="review_pending", storyboard=storyboard, quality=quality, sha256=sha256, review_id=review_id, lease_owner=None, lease_expires_at=None)
             return {"status": "confirmed", "state": "review_pending", "review": review_id}
         return {"status": "refused", "reason": f"Transition {record['state']} → {state} is not allowed."}

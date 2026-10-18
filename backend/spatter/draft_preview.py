@@ -24,6 +24,7 @@ import re
 import stat
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
@@ -40,6 +41,7 @@ ENV_KEY_FILE = "SDI_PREVIEW_SIGNING_KEY_FILE"
 ENV_DIRECTORY = "SDI_INTAKE_DIRECTORY"
 ENV_OWNER = "SDI_DRAFT_PREVIEW_OWNER_ID"
 ENV_RETENTION = "SDI_DRAFT_PREVIEW_RETENTION_SECONDS"
+ENV_QUOTA = "SDI_INTAKE_TOTAL_BYTES"
 
 
 def draft_upload_id(digest: str) -> str:
@@ -49,9 +51,23 @@ def draft_upload_id(digest: str) -> str:
     return str(uuid.UUID(bytes=hashlib.sha256(b"sdi-spatter-draft:" + digest.encode()).digest()[:16], version=4))
 
 
+@dataclass(frozen=True)
+class PublishedPreview:
+    """A signed owner link plus the retained-render record the review row needs
+    (`object_key`, `byte_count`, `artifact_expires_at` in spatter_draft_progress)."""
+    url: str
+    expires: _dt.datetime
+    object_key: str
+    byte_count: int
+    retained_until: _dt.datetime
+
+
 class DraftPreviewStore:
     def __init__(self, root: Path, links: PreviewLinks, owner: str, *, retention: int = DEFAULT_RETENTION_SECONDS,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, total_quota: Optional[int] = None,
+                 other_usage: Callable[[], int] = lambda: 0):
+        """`total_quota` bounds intake disk use: drafts plus `other_usage()` (the
+        intake uploads' charged bytes) must stay within it."""
         root = Path(root)
         info = root.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -60,8 +76,23 @@ class DraftPreviewStore:
             raise ValueError("Signed private preview links are required.")
         if not 3600 <= retention <= MAX_RETENTION_SECONDS:
             raise ValueError(f"Draft preview retention must be 1 hour to {MAX_RETENTION_SECONDS // 86400} days.")
+        if total_quota is not None and (type(total_quota) is not int or not 1 <= total_quota <= 1024 ** 4):
+            raise ValueError("Invalid intake disk quota.")
         self.root, self.links, self.retention, self.clock = root.resolve(), links, int(retention), clock
         self.owner = str(uuid.UUID(owner))
+        self.total_quota, self.other_usage = total_quota, other_usage
+
+    def retained_bytes(self, exclude: Optional[str] = None) -> int:
+        """Bytes of live (unexpired) draft copies: charged to the intake disk quota."""
+        total = 0
+        for record_path in self.root.glob("*.draft.json"):
+            upload = record_path.name[: -len(".draft.json")]
+            if upload == exclude:
+                continue
+            record = self._record(upload)
+            if record and type(record.get("byte_count")) is int and type(record.get("expires")) is int and record["expires"] > self.clock():
+                total += record["byte_count"]
+        return total
 
     def _paths(self, upload: str):
         return self.root / (upload + ".mp4"), self.root / (upload + ".draft.json"), self.root / (upload + ".lock")
@@ -87,9 +118,9 @@ class DraftPreviewStore:
                 return None
         return record if isinstance(record, dict) and record.get("schema") == SCHEMA else None
 
-    def publish(self, movie: Path, digest: str, plan: Any = None) -> tuple[str, _dt.datetime]:
+    def publish(self, movie: Path, digest: str, plan: Any = None) -> PublishedPreview:
         """Copy a verified draft into the preview directory and sign an owner link.
-        Returns (https URL, link expiry). Idempotent for the same digest."""
+        Idempotent for the same digest. Refused when the intake disk quota is full."""
         upload = draft_upload_id(digest)
         target, record_path, _ = self._paths(upload)
         fd = self._lock(upload)
@@ -104,6 +135,9 @@ class DraftPreviewStore:
                     raise ValueError("The preview slot belongs to different content.")
                 if existing is None and target.exists():
                     raise ValueError("The preview slot is occupied by an intake upload.")
+                if self.total_quota is not None and \
+                        self.other_usage() + self.retained_bytes(exclude=upload) + info.st_size > self.total_quota:
+                    raise ValueError("The intake disk quota is full; no draft preview was made.")
                 temporary = self.root / (upload + ".mp4.partial")
                 hasher, size = hashlib.sha256(), 0
                 out = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
@@ -128,7 +162,10 @@ class DraftPreviewStore:
                         temporary.unlink()
         finally:
             os.close(fd)
-        return self.link(upload, digest)
+        url, expires = self.link(upload, digest)
+        record = self._record(upload) or {}
+        return PublishedPreview(url=url, expires=expires, object_key=upload + ".mp4", byte_count=int(record["byte_count"]),
+                                retained_until=_dt.datetime.fromtimestamp(record["expires"], _dt.timezone.utc))
 
     def link(self, upload: str, digest: str) -> tuple[str, _dt.datetime]:
         """A fresh short-lived owner link while the retained copy is valid (renewal)."""
@@ -182,8 +219,18 @@ class DraftPreviewStore:
                 break
         return removed
 
-    def __call__(self, movie: Path, digest: str, plan: Any = None) -> tuple[str, _dt.datetime]:
+    def __call__(self, movie: Path, digest: str, plan: Any = None) -> PublishedPreview:
         return self.publish(movie, digest, plan)
+
+    def signer(self, fallback: Callable[[str, str, str], tuple]) -> Callable[[str, str, str], tuple]:
+        """Preview signer for the intake host (ReviewRegistrar): a live draft record
+        for this owner and digest is re-signed through `link()` (bounded by its
+        retention); anything else goes to the registered-upload signer."""
+        def sign(upload: str, owner: str, digest: str):
+            if self.authority(upload, owner, digest) is not None:
+                return self.link(str(uuid.UUID(upload)), digest)
+            return fallback(upload, owner, digest)
+        return sign
 
 
 def _secret_file(path: str) -> bytes:
@@ -201,10 +248,10 @@ def _secret_file(path: str) -> bytes:
 def draft_previews_from_env(environ: Optional[Mapping[str, str]] = None,
                             clock: Callable[[], float] = time.time) -> Optional[DraftPreviewStore]:
     """The draft preview publisher, or None unless the owner id, intake origin,
-    signing key file and intake directory are all configured (unconfigured-safe:
-    the renderer then fails with its OWNER-GATED preview message)."""
+    signing key file, intake directory and intake disk quota are all configured
+    (unconfigured-safe: the renderer then fails with its OWNER-GATED preview message)."""
     environ = os.environ if environ is None else environ
-    values = {key: environ.get(key, "").strip() for key in (ENV_OWNER, ENV_ORIGIN, ENV_KEY_FILE, ENV_DIRECTORY)}
+    values = {key: environ.get(key, "").strip() for key in (ENV_OWNER, ENV_ORIGIN, ENV_KEY_FILE, ENV_DIRECTORY, ENV_QUOTA)}
     if not values[ENV_OWNER]:
         return None
     missing = [key for key, value in values.items() if not value]
@@ -213,9 +260,16 @@ def draft_previews_from_env(environ: Optional[Mapping[str, str]] = None,
     retention = environ.get(ENV_RETENTION, "").strip()
     if retention and not re.fullmatch(r"[0-9]{1,8}", retention):
         raise ValueError(f"{ENV_RETENTION} must be a whole number of seconds.")
+    if not re.fullmatch(r"[0-9]{1,13}", values[ENV_QUOTA]):
+        raise ValueError(f"{ENV_QUOTA} must be a whole number of bytes.")
     links = PreviewLinks(values[ENV_ORIGIN], _secret_file(values[ENV_KEY_FILE]), clock=clock)
+    from backend.ingestion.store import MAX_BYTES, UploadStore
+    # Read-only use: the intake uploads' charged bytes; the same total quota covers both.
+    quota = int(values[ENV_QUOTA])
+    uploads = UploadStore(Path(values[ENV_DIRECTORY]), total_quota=quota, account_quota=max(1, min(quota, MAX_BYTES)))
     return DraftPreviewStore(Path(values[ENV_DIRECTORY]), links, values[ENV_OWNER],
-                             retention=int(retention) if retention else DEFAULT_RETENTION_SECONDS, clock=clock)
+                             retention=int(retention) if retention else DEFAULT_RETENTION_SECONDS, clock=clock,
+                             total_quota=int(values[ENV_QUOTA]), other_usage=uploads.charged_bytes)
 
 
 def combined_authority(drafts: Optional[DraftPreviewStore], fallback: Callable[[str, str, str], Any]):
