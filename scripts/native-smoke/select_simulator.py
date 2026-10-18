@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create one CI phone on the selected SDK's installed runtime; never reset."""
+"""Create one CI phone (or, for the journey job, one iPad) on the selected SDK's installed runtime; never reset."""
 import argparse
 import json
 import os
@@ -16,6 +16,12 @@ UPLOAD = 'sdi-fresh-simulator-upload.json'
 MARKER_CAP = 16 * 1024
 INVENTORY_CAP = 2 * 1024 * 1024
 TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro'
+# The adaptive-layout journey job (#264) also needs one fresh iPad. Each family
+# is an exact installed device type and name; there is no fallback model.
+DEVICES = {
+    'iphone': (TYPE, 'iPhone 16 Pro'),
+    'ipad': ('com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11-inch-M4-8GB', 'iPad Pro 11-inch (M4)'),
+}
 TOTAL_SECONDS = 100
 
 
@@ -126,7 +132,10 @@ def version_tuple(value):
     return tuple(parts)
 
 
-def create_fresh():
+def create_fresh(device='iphone'):
+    if device not in DEVICES:
+        raise ValueError('Unknown simulator family')
+    dtype, dname = DEVICES[device]
     root, run = context()
     marker = Marker(root, run)
     deadline = time.monotonic() + TOTAL_SECONDS
@@ -144,9 +153,9 @@ def create_fresh():
         marker.value['simulatorSDKVersion'] = sdk_version
         raw = command(['xcrun', 'simctl', 'list', '--json'], 'initial-inventory', marker, deadline)
         initial, devices, old_ids = inventory(raw)
-        types = [d for d in initial['devicetypes'] if d.get('identifier') == TYPE and d.get('name') == 'iPhone 16 Pro']
+        types = [d for d in initial['devicetypes'] if d.get('identifier') == dtype and d.get('name') == dname]
         if len(types) != 1:
-            raise ValueError('Installed iPhone16Pro type is unavailable or ambiguous')
+            raise ValueError('Installed ' + dname + ' type is unavailable or ambiguous')
         choices = []
         for runtime in initial['runtimes']:
             rid = runtime.get('identifier', '')
@@ -160,19 +169,19 @@ def create_fresh():
             if runtime_version != selected_sdk:
                 continue
             for actual_runtime, device in devices:
-                if actual_runtime == rid and device.get('isAvailable') is True and device.get('name') == 'iPhone 16 Pro' and device.get('deviceTypeIdentifier') == TYPE:
+                if actual_runtime == rid and device.get('isAvailable') is True and device.get('name') == dname and device.get('deviceTypeIdentifier') == dtype:
                     choices.append((tuple(map(int, version.split('.'))), rid, device))
         if not choices:
-            raise ValueError('No available installed iPhone16Pro runtime matching the selected simulator SDK; no fallback or download')
+            raise ValueError('No available installed ' + dname + ' runtime matching the selected simulator SDK; no fallback or download')
         _, rid, template = sorted(choices, key=lambda c: (c[0], c[1], c[2]['udid']))[-1]
         name = 'SDI-' + run['runID'] + '-' + run['runAttempt']
         if any(d.get('name') == name for _, d in devices):
             raise ValueError('Run-owned simulator name already exists; no duplicate')
         marker.value.update({'state': 'creation-requested', 'createAttempted': True,
-                             'template': {'udid': template['udid'], 'name': template['name'], 'runtime': rid, 'deviceType': TYPE},
-                             'created': {'name': name, 'runtime': rid, 'deviceType': TYPE, 'udid': None}})
+                             'template': {'udid': template['udid'], 'name': template['name'], 'runtime': rid, 'deviceType': dtype},
+                             'created': {'name': name, 'runtime': rid, 'deviceType': dtype, 'udid': None}})
         marker.write()
-        response = command(['xcrun', 'simctl', 'create', name, TYPE, rid], 'create', marker, deadline, cap=128).decode('ascii').strip()
+        response = command(['xcrun', 'simctl', 'create', name, dtype, rid], 'create', marker, deadline, cap=128).decode('ascii').strip()
         new_id = str(uuid.UUID(response)).upper()
         if response.upper() != new_id or new_id in old_ids:
             raise ValueError('Create did not return a new complete UUID')
@@ -185,7 +194,7 @@ def create_fresh():
         actual_runtime, actual = matches[0]
         available_runtime = [r for r in fresh['runtimes'] if r.get('identifier') == rid
                              and r.get('isAvailable') is True and version_tuple(r.get('version')) == selected_sdk]
-        if len(available_runtime) != 1 or actual_runtime != rid or actual.get('name') != name or actual.get('deviceTypeIdentifier') != TYPE or actual.get('isAvailable') is not True or actual.get('state') != 'Shutdown':
+        if len(available_runtime) != 1 or actual_runtime != rid or actual.get('name') != name or actual.get('deviceTypeIdentifier') != dtype or actual.get('isAvailable') is not True or actual.get('state') != 'Shutdown':
             raise ValueError('Fresh device identity does not match its verified template')
         marker.value['state'] = 'verified'; marker.write()
         return new_id
@@ -293,6 +302,7 @@ def main():
     parser.add_argument('--copy-marker', type=pathlib.Path)
     parser.add_argument('--expected-udid')
     parser.add_argument('--source')
+    parser.add_argument('--device', choices=sorted(DEVICES), default='iphone')
     args = parser.parse_args()
     if args.copy_marker is not None:
         if args.expected_udid is None or args.source is None:
@@ -301,7 +311,7 @@ def main():
     elif args.expected_udid is not None or args.source is not None:
         raise ValueError('Unexpected selection arguments')
     else:
-        print(create_fresh())
+        print(create_fresh(args.device))
 
 
 if __name__ == '__main__':

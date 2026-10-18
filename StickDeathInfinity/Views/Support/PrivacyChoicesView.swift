@@ -38,6 +38,9 @@ struct PrivacyChoicesView: View {
     var body: some View {
         List {
             Section("Policies") { PolicyLinksList() }
+            // The same server-recorded acceptance as the onboarding step, for
+            // members who skipped the guide or signed up before a new version.
+            Section("Accepted versions") { OnboardingPolicyConsentView().listRowBackground(Color.clear) }
             Section("Marketing reuse") { marketingContent }
             Section("Other permissions") {
                 Text("Permission to publish a video to the official SDI channels is separate and is given or withdrawn per video in Profile → Publishing. Account data export and deletion are in Profile → Settings.")
