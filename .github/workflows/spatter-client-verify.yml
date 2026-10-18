@@ -2166,6 +2166,7 @@ jobs:
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
             StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift \
+            Tools/SpatterDraftRenderer/MacPlatform.swift \
             Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift \
             Tools/SpatterDraftRenderer/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-draft-renderer"

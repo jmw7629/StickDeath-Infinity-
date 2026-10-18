@@ -68,6 +68,7 @@ DEPENDENCIES = {
     # macOS export half compile together with the production planner and exporter.
     "Tools/SpatterDraftRenderer/main.swift": {
         "Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift",
+        "Tools/SpatterDraftRenderer/MacPlatform.swift",
         "StickDeathInfinity/Services/StudioMovieExportService.swift",
     },
     "Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift": {
