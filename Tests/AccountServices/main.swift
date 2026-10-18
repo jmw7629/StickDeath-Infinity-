@@ -76,11 +76,14 @@ private let device = UUID(uuidString: "44444444-4444-4444-8444-444444444444")!
         await test("support create refuses empty or oversized drafts before sending") {
             let (transport, gateway) = fixture([])
             let client = SupportClient(gateway: gateway)
-            for (subject, body) in [("   ", "body"), ("s", ""), (String(repeating: "x", count: 121), "b"), ("s", String(repeating: "y", count: 2001))] {
+            for (subject, body) in [("   ", "body"), ("s", ""), (String(repeating: "x", count: 121), "b"), ("s", String(repeating: "y", count: 2001)),
+                                   // 61 flags are 61 characters to Swift but 122 code points to PostgreSQL's length().
+                                   (String(repeating: "\u{1F1FA}\u{1F1F8}", count: 61), "b")] {
                 do { _ = try await client.create(category: .other, subject: subject, body: body, appVersion: "", idempotency: key); throw Failure(description: "accepted invalid draft") }
                 catch let error as CommunityError { if case .server = error {} else { throw Failure(description: "wrong error \(error)") } }
             }
             try require(transport.calls.isEmpty, "nothing sent")
+            try require(SupportLimits.length("\u{1F1FA}\u{1F1F8}") == 2 && SupportLimits.prefix("ab\u{1F1FA}\u{1F1F8}", 3) == "ab\u{1F1FA}", "code-point counting")
         }
         await test("support create surfaces the server's daily limit and refuses a reply without a valid receipt") {
             let (_, gateway) = fixture([#"{"error":"Daily support request limit reached. Existing requests remain open."}"#,

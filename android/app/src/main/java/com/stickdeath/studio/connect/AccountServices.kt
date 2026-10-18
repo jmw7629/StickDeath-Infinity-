@@ -36,7 +36,11 @@ class AccountLifecycleClient(private val gateway: CommunityGateway) {
     fun requestDeletion(): AccountDeletionStatus {
         val reply = lifecycle("request_deletion")
         val state = AccountDeletionStatus.State.of(reply.str("status")) ?: throw CommunityException.InvalidResponse("The server returned an unknown deletion state. Nothing was deleted.")
-        return AccountDeletionStatus(state, reply.str("scheduled_for"), reply.int("revision"))
+        val revision = reply.int("revision")
+        // An already open request comes back without its revision; re-read the status so the
+        // member can cancel it right away instead of after a manual refresh.
+        if (revision == null) status().deletion?.let { return it }
+        return AccountDeletionStatus(state, reply.str("scheduled_for"), revision)
     }
     /** Cancels a pending request at the revision the member last saw. */
     fun cancelDeletion(revision: Int) {

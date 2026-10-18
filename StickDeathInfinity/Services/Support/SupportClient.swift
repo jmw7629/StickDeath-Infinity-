@@ -37,11 +37,18 @@ enum SupportLimits {
     static let dailyRequests = 5
 
     static func trimmed(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// Length as PostgreSQL's `length()` counts it: Unicode code points, not the
+    /// grapheme clusters `String.count` reports (a flag emoji is one cluster, two points).
+    static func length(_ text: String) -> Int { text.unicodeScalars.count }
+    /// At most `limit` code points, cut on a code-point boundary.
+    static func prefix(_ text: String, _ limit: Int) -> String {
+        var scalars = String.UnicodeScalarView(); scalars.append(contentsOf: text.unicodeScalars.prefix(limit)); return String(scalars)
+    }
 
     /// Nil when the draft can be sent; otherwise the reason it cannot.
     static func problem(subject: String, body: String) -> String? {
-        let subjectCount = trimmed(subject).count
-        let bodyCount = trimmed(body).count
+        let subjectCount = length(trimmed(subject))
+        let bodyCount = length(trimmed(body))
         if !Self.subject.contains(subjectCount) { return "Add a subject of up to \(Self.subject.upperBound) characters." }
         if !Self.body.contains(bodyCount) { return "Describe the issue in up to \(Self.body.upperBound) characters." }
         return nil
@@ -119,7 +126,7 @@ final class SupportClient {
     func create(category: SupportCategory, subject: String, body: String, appVersion: String,
                 platform: String = "ios", idempotency: UUID) async throws -> SupportReceipt {
         if let problem = SupportLimits.problem(subject: subject, body: body) { throw CommunityError.server(message: problem, code: nil) }
-        let version = String(appVersion.prefix(SupportLimits.appVersion))
+        let version = SupportLimits.prefix(appVersion, SupportLimits.appVersion)
         let request = SupportActionRequest(action: "create", category: category.rawValue, platform: platform, app_version: version,
                                            subject: SupportLimits.trimmed(subject), body: SupportLimits.trimmed(body), idempotency: idempotency)
         let response = try await gateway.call("sdi_support_action", params: request, as: SupportActionResponse.self)

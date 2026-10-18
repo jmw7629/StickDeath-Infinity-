@@ -86,7 +86,7 @@ struct SupportRequestsView: View {
                     .accessibilityLabel("Description")
                     .accessibilityIdentifier("support.body")
             }
-            Text("\(SupportLimits.trimmed(detail).count) of \(SupportLimits.body.upperBound) characters")
+            Text("\(SupportLimits.length(SupportLimits.trimmed(detail))) of \(SupportLimits.body.upperBound) characters")
                 .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
             Button(busy ? "Sending…" : "Send to support") { Task { await send() } }
                 .disabled(busy || draftProblem != nil)

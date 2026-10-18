@@ -18,6 +18,14 @@ class RoomCommandSyncTest {
                          commands: List<RoomCommandRecord>? = null, missing: List<RoomCommandRecord>? = null) =
         RoomCommandResponse(error, status, revision, head, commands, missing)
 
+    @Test fun payloadsKeepTheIosMarginBelowTheServerBound() {
+        val sync = RoomCommandSync(room, 0)
+        // {"b":"…"} is 8 bytes of envelope around the text.
+        assertTrue(sync.enqueue("edit", JSONObject().put("b", "x".repeat(60_000 - 8)), op(1)))
+        assertFalse(sync.enqueue("edit", JSONObject().put("b", "x".repeat(60_000 - 7)), op(2)))
+        assertEquals(60_000, RoomQuotaPolicy.CLIENT_PAYLOAD_BYTES)
+    }
+
     @Test fun appliedAppendAdvancesTheHeadAndFencesTheNext() {
         val sync = RoomCommandSync(room, 5)
         assertTrue(sync.enqueue("edit", JSONObject().put("target", "layer:a"), op(1)))
