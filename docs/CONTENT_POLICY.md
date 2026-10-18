@@ -45,6 +45,7 @@ review and legal review are still required.
 | Point | Where | Behaviour |
 | --- | --- | --- |
 | Consent and age gate | `backend/sql/consent-versions.sql`, `backend/ingestion/registration.py` | no registration without current, attested consent |
+| Deterministic content rules | `backend/spatter/content_rules.py`, wired into `backend/spatter/handler.py` and `backend/ingestion/store.py` | Spatter prompts (every non-assistant message) and submission title/rights summary are checked against a small, conservative phrase/pattern list for the section 2 categories before any provider call or upload row; a refusal returns `content_rule.<category>` without echoing the text. Passing is not approval |
 | Real media only | `backend/ingestion/media.py` | bounded `ffprobe` + full decode of the MP4; duration, dimensions, audio, integrity |
 | Human review before release | `admin-approval.sql`, `review-rights.sql` | approve / reject / request changes bound to the exact digest, consent version and destinations; rights cleared separately |
 | Private previews | `upload-preview.sql`, `preview-renewal.sql` | reviewers watch expiring private HTTPS previews; nothing is sent to a public service for review |
@@ -56,7 +57,10 @@ review and legal review are still required.
 
 ## 5. What is not enforced automatically
 
-- No automated classifier decides on content: every public release passes human review. There is
+- No automated classifier decides on content: every public release passes human review. The
+  deterministic content rules only refuse text that plainly matches a refused category (and
+  personal data or credentials pasted into a prompt or title); they do not detect most
+  violations, do not inspect video or audio, and never mark anything compliant. There is
   no claim that review catches everything; reports and appeals exist for that reason.
 - Platform rule changes are not tracked automatically; the destination adapters report
   `unavailable` until the owner confirms each platform's current terms (#243).

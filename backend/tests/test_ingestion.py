@@ -94,6 +94,18 @@ class UploadStoreTests(unittest.TestCase):
         with self.assertRaises(IntakeError):
             self.store.begin(self.actor, str(uuid.uuid4()), bad)
 
+    def test_content_rules_refuse_metadata_before_any_upload_row(self):
+        bad = metadata(len(self.payload), self.digest)
+        bad["title"] = "Call 555-123-4567"
+        with self.assertRaises(IntakeError) as refused:
+            self.store.begin(self.actor, str(uuid.uuid4()), bad)
+        self.assertEqual(refused.exception.status, 422)
+        self.assertIn("content_rule.personal_data", str(refused.exception))
+        self.assertNotIn("555", str(refused.exception))
+        ok = metadata(len(self.payload), self.digest)
+        ok["rights_summary"] = "Music licensed; licensor contact licensing@example.com"
+        self.assertEqual(self.store.begin(self.actor, str(uuid.uuid4()), ok)["state"], "receiving")
+
     def test_optional_project_digest_is_validated_and_kept(self):
         good = {**metadata(len(self.payload), self.digest), "source_project_digest": "d" * 64}
         upload = self.store.begin(self.actor, str(uuid.uuid4()), good)["id"]
