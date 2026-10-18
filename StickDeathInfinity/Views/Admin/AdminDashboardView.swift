@@ -644,13 +644,85 @@ struct AdminSpatterContent: View {
 /// show the counts that exist. Nothing is sampled or estimated here.
 struct AdminAnalyticsContent: View {
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Analytics").font(.specialElite(22))
+                Text("Engagement analytics are not connected. Registered-user, review, publishing and report counts are on the Dashboard; queue depth, worker liveness and denials are under Service health.")
+                    .font(.caption)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                .background(Color(hex: "12121A")).cornerRadius(12)
+                .accessibilityIdentifier("admin.analytics.status")
+            AdminDiagnosticsContent()
+        }
+    }
+}
+
+// MARK: - Diagnostics (#291)
+/// Opt-in, first-party stability counts from `sdi_diagnostics_admin`: day totals
+/// per platform/build/counter, crash spikes and failed agent runs. Only members
+/// who opted in send reports, so these are not population rates.
+private struct AdminDiagnosticsContent: View {
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var summary: AdminDiagnosticsSummary?
+    @State private var days = 14
+    @State private var busy = false
+    @State private var error: String?
+    @State private var requestID = UUID()
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Analytics").font(.specialElite(22))
-            Text("Engagement analytics are not connected. Registered-user, review, publishing and report counts are on the Dashboard; queue depth, worker liveness and denials are under Service health.")
-                .font(.caption)
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
-            .background(Color(hex: "12121A")).cornerRadius(12)
-            .accessibilityIdentifier("admin.analytics.status")
+            Text("Stability diagnostics").font(.specialElite(18))
+            Text("Counts from members who opted in to diagnostics. No account, device identifier, project content or free text is stored; day rows are kept 90 days.").font(.caption)
+            HStack {
+                Picker("Window", selection: $days) {
+                    Text("7 days").tag(7); Text("14 days").tag(14); Text("30 days").tag(30); Text("90 days").tag(90)
+                }.pickerStyle(.segmented).disabled(busy)
+                Button("Refresh") { Task { await load() } }.disabled(busy).accessibilityIdentifier("admin.diagnostics.refresh")
+            }
+            if busy { ProgressView() }
+            if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.diagnostics.error") }
+            if let summary {
+                Text("\(summary.reports ?? 0) report(s) since \(summary.since ?? "?") · latest complete day \(summary.latest_complete_day ?? "?")").font(.caption)
+                if let failed = summary.agent_runs_failed_24h {
+                    Text("Failed agent runs (24 h): \(failed)").font(.caption)
+                        .foregroundStyle(failed > 0 ? StudioCraftTheme.accentText : .primary)
+                }
+                if let spikes = summary.crash_spikes, !spikes.isEmpty {
+                    Text("Crash spikes").font(.specialElite(15)).foregroundStyle(StudioCraftTheme.accentText)
+                    ForEach(Array(spikes.enumerated()), id: \.offset) { _, spike in
+                        Text("\(spike.platform) build \(spike.build): \(spike.latest_total) crashes on the latest day vs \(String(format: "%.2f", spike.prior_daily_mean))/day before").font(.caption)
+                    }
+                } else {
+                    Text("No crash spike on the latest complete day (rule: at least 5 and over five times the prior 7-day mean).").font(.caption)
+                }
+                ForEach(["ios", "android"], id: \.self) { platform in
+                    let rows = summary.counterTotals(platform: platform)
+                    Text(platform == "ios" ? "iOS" : "Android").font(.specialElite(15))
+                    if rows.isEmpty { Text("No reports in this window.").font(.caption) }
+                    ForEach(rows) { row in
+                        Text("\(row.counter.replacingOccurrences(of: "_", with: " ")): \(row.total)").font(.caption)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+        .background(Color(hex: "12121A")).cornerRadius(12)
+        .accessibilityIdentifier("admin.diagnostics.summary")
+        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active):\(days)") {
+            clear(); if auth.isAuthenticated && phase == .active { await load() }
+        }
+        .onDisappear { clear() }
+    }
+    private func clear() { requestID = UUID(); busy = false; summary = nil; error = nil }
+    private func load() async {
+        guard !busy, auth.isAuthenticated, phase == .active else { return }
+        let id = UUID(); requestID = id; busy = true
+        defer { if requestID == id { busy = false } }
+        do {
+            let value = try await CommunityServices.admin.diagnostics(days: days)
+            guard !Task.isCancelled, requestID == id else { return }
+            summary = value; error = nil
+        } catch { if requestID == id { summary = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
     }
 }
 
@@ -809,9 +881,33 @@ private struct AdminVideoApprovalContent: View {
                 Text("Consent: \(selected.consent_version)").font(.caption)
                 Text(selected.rights_summary)
                 Text("Destinations: \(selected.destinations.joined(separator: ", "))")
-                Text("Script and storyboard: not supplied by the review service for this render; the decision binds to the exact rendered video, its source revision, consent and destinations above.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("admin.review.storyboard")
+                // Real submission evidence (#213/#214); "not supplied" only when the field is null.
+                VStack(alignment: .leading, spacing: 3) {
+                    let story = AdminReviewEvidence.storyboardLines(selected.storyboard)
+                    if story.isEmpty {
+                        Text("Script and storyboard: not supplied for this render. The decision binds to the exact rendered video, its source revision, consent and destinations above.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(story.enumerated()), id: \.offset) { Text($0.element).textSelection(.enabled) }
+                    }
+                }
+                .font(.caption)
+                .accessibilityIdentifier("admin.review.storyboard")
+                Text(AdminReviewEvidence.digestLine(selected.source_project_digest))
+                    .font(.caption.monospaced()).textSelection(.enabled)
+                    .accessibilityIdentifier("admin.review.project-digest")
+                VStack(alignment: .leading, spacing: 3) {
+                    let quality = AdminReviewEvidence.qualityLines(selected.quality_report)
+                    if quality.isEmpty {
+                        Text("Quality report: not supplied for this render.").foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(quality.enumerated()), id: \.offset) { Text($0.element) }
+                    }
+                }
+                .font(.caption)
+                .accessibilityIdentifier("admin.review.quality")
+                Text("Any change to the render, storyboard or project digest returns this review to pending under a new version; an earlier approval does not carry over.")
+                    .font(.caption2).foregroundStyle(.secondary)
                 if selected.spatter_generated { Text("Spatter video — owner approval required").foregroundColor(.red) }
                 DisclosureGroup("Decision history for this render (\(history.count))") {
                     if let historyNote { Text(historyNote).font(.caption) }
@@ -922,7 +1018,9 @@ private struct AdminVideoApprovalContent: View {
                 render_digest: selected.render_digest, preview_url: response.preview_url, preview_expires_at: expires,
                 consent_version: selected.consent_version, rights_summary: selected.rights_summary,
                 rights_cleared: selected.rights_cleared, destinations: selected.destinations,
-                spatter_generated: selected.spatter_generated, version: selected.version)
+                spatter_generated: selected.spatter_generated, version: selected.version,
+                storyboard: selected.storyboard, source_project_digest: selected.source_project_digest,
+                quality_report: selected.quality_report)
         } catch {
             if revision == generation { self.error = error.localizedDescription }
         }
@@ -965,6 +1063,10 @@ private struct RenderReview: Decodable, Identifiable {
     let id: UUID; let title: String; let source_revision: String; let render_digest: String
     let preview_url: String; let preview_expires_at: Date; let consent_version: String; let rights_summary: String
     let rights_cleared: Bool; let destinations: [String]; let spatter_generated: Bool; let version: Int
+    /// Null when the render was submitted without them (#214).
+    var storyboard: CommunityJSONValue? = nil
+    var source_project_digest: String? = nil
+    var quality_report: CommunityJSONValue? = nil
 }
 
 @MainActor
@@ -997,6 +1099,7 @@ private struct AdminPublishingContent: View {
             if let selected {
                 Text(selected.title).font(.specialElite(18))
                 Text("\(selected.destination) · \(selected.state) · \(selected.phase)")
+                AdminPublishStageView(stage: selected.stage)
                 Text("Upload attempts: \(selected.attempts) · Withdrawal attempts: \(selected.removal_attempts)").font(.caption)
                 Text(selected.render_digest).font(.caption.monospaced()).textSelection(.enabled)
                 if let provider = selected.provider_id { Text("Provider video: \(provider)").font(.caption) }
@@ -1025,7 +1128,8 @@ private struct AdminPublishingContent: View {
                 Button { Task { await select(job) } } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(job.title).font(.specialElite(16))
-                        Text("\(job.destination) · \(job.state) · \(job.updated_at.formatted())").font(.caption)
+                        Text("\(job.destination) · \(job.stage.title) · \(job.updated_at.formatted())").font(.caption)
+                            .accessibilityIdentifier("admin.publishing.stage")
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
                 }.disabled(busy)
             }
@@ -1406,6 +1510,30 @@ private struct AdminPublishJob: Decodable, Identifiable {
     let id: UUID; let title: String; let destination: String; let state: String; let phase: String
     let revision: Int; let attempts: Int; let removal_attempts: Int; let render_digest: String
     let provider_id: String?; let result_url: String?; let last_error: String?; let updated_at: Date
+    /// Same words as the creator's status screen (`publish_stage`, #245).
+    var stage: AdminPublishStage { AdminPublishStage(state: state, phase: phase, attempts: attempts, providerID: provider_id) }
+}
+
+/// Moderation → exact-render approval → transfer → provider processing →
+/// visibility → confirmed link. A publishing job exists only after the first
+/// two, so they read as complete; off-path outcomes are named, not hidden.
+private struct AdminPublishStageView: View {
+    let stage: AdminPublishStage
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Stage: \(stage.title)").font(.specialElite(15))
+                .foregroundStyle(stage.isOffPath ? StudioCraftTheme.accentText : .primary)
+            ForEach(Array(AdminPublishStage.releasePath.enumerated()), id: \.offset) { index, step in
+                let done = index < stage.completedSteps
+                let current = !stage.isOffPath && index == stage.completedSteps && stage != .published
+                Label(step.title, systemImage: done ? "checkmark.circle.fill" : (current ? "arrow.right.circle" : "circle"))
+                    .font(.caption).foregroundStyle(done || current ? .primary : .secondary)
+            }
+            if stage.isOffPath { Text("Left the release path after \(AdminPublishStage.releasePath[max(0, stage.completedSteps - 1)].title.lowercased()).").font(.caption) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("admin.publishing.stages")
+    }
 }
 private struct AdminPublishEvent: Decodable, Identifiable {
     let id: UUID; let actor: UUID; let action: String; let previous_state: String
@@ -1690,6 +1818,11 @@ private struct AdminAgentsContent: View {
     @State private var daily = ""
     @State private var perRun = ""
     @State private var monthlyMinor = ""
+    @State private var perRunCost = ""
+    /// The current per-run cost cap was read for the selected agent; caps are not
+    /// saved before that, because an omitted value clears it on the server.
+    @State private var perRunCostLoaded = false
+    @State private var console: AdminAgentConsoleEntry?
     @State private var permissions: Set<String> = []
     @State private var instructionBody = ""
     @State private var busy = false
@@ -1738,8 +1871,12 @@ private struct AdminAgentsContent: View {
                 Text(selected.title).font(.specialElite(18))
                 HStack {
                     Button(selected.paused ? "Resume" : "Pause") {
-                        Task { await mutate(AdminAgentRequest(action: selected.paused ? "resume" : "pause", agent: selected.key, revision: selected.revision, reason: reason), action: selected.paused ? "agent.resume" : "agent.pause") }
+                        Task { await run(selected.paused ? .resume : .pause, on: selected) }
                     }.disabled(busy || !reasonValid).accessibilityIdentifier(selected.paused ? "admin.agents.resume" : "admin.agents.pause")
+                }
+                if let console {
+                    Text("Last started \(console.last_started?.formatted() ?? "never") · proposals awaiting decision \(console.pending_proposals.map(String.init) ?? "unavailable")").font(.caption)
+                    if let failure = console.last_error, !failure.isEmpty { Text("Last error: \(failure)").font(.caption).foregroundStyle(.red) }
                 }
                 if selected.paused && selected.active_instruction_version == nil { Text("Publish instructions before this agent can resume.").font(.caption) }
                 Text("Caps").font(.specialElite(15))
@@ -1748,13 +1885,16 @@ private struct AdminAgentsContent: View {
                     TextField("Items per run", text: $perRun).keyboardType(.numberPad).accessibilityIdentifier("admin.agents.cap-items")
                     TextField("Monthly cost cap (minor units)", text: $monthlyMinor).keyboardType(.numberPad).accessibilityIdentifier("admin.agents.cap-cost")
                 }.textFieldStyle(.roundedBorder)
+                TextField("Per-run cost cap (minor units, empty for none)", text: $perRunCost).keyboardType(.numberPad)
+                    .textFieldStyle(.roundedBorder).disabled(!perRunCostLoaded)
+                    .accessibilityIdentifier("admin.agents.cap-run-cost")
+                if !perRunCostLoaded { Text("The current per-run cost cap has not been read yet; caps cannot be saved until it is, so it is never cleared by accident.").font(.caption) }
                 Button("Save caps") {
-                    guard let d = Int(daily), let p = Int(perRun), let m = Int(monthlyMinor),
-                          let request = AdminAgentRequest.caps(agent: selected, daily: d, perRun: p, monthlyMinor: m, reason: reason) else {
-                        error = "Caps must be numeric: daily runs up to 9999, items per run up to 99999, cost cap in minor units."; return
+                    guard let command = AdminAgentCommand.caps(daily: daily, perRunItems: perRun, monthlyCostMinor: monthlyMinor, perRunCostMinor: perRunCost) else {
+                        error = "Caps must be whole numbers: daily runs up to 9999, items per run up to 99999, cost caps in minor units."; return
                     }
-                    Task { await mutate(request, action: "agent.set_caps") }
-                }.disabled(busy || !reasonValid).accessibilityIdentifier("admin.agents.save-caps")
+                    Task { await run(command, on: selected) }
+                }.disabled(busy || !reasonValid || !perRunCostLoaded).accessibilityIdentifier("admin.agents.save-caps")
                 Text("Permissions").font(.specialElite(15))
                 ForEach(["read", "write", "propose"], id: \.self) { permission in
                     Toggle(permission.capitalized, isOn: Binding(get: { permissions.contains(permission) }, set: { on in
@@ -1762,15 +1902,13 @@ private struct AdminAgentsContent: View {
                     })).disabled(busy)
                 }
                 Button("Save permissions") {
-                    Task { await mutate(AdminAgentRequest(action: "set_permissions", agent: selected.key, revision: selected.revision,
-                        payload: .object(["permissions": .array(permissions.sorted().map { .string($0) })]), reason: reason), action: "agent.set_permissions") }
+                    Task { await run(.setPermissions(permissions), on: selected) }
                 }.disabled(busy || !reasonValid).accessibilityIdentifier("admin.agents.save-permissions")
                 Text("Instructions (active v\(activeVersion.map(String.init) ?? "none"))").font(.specialElite(15))
                 TextField("New instruction text (publishing creates the next version and activates it)", text: $instructionBody, axis: .vertical).lineLimit(3...10)
                     .textFieldStyle(.roundedBorder).accessibilityIdentifier("admin.agents.instructions")
                 Button("Publish instructions") {
-                    Task { await mutate(AdminAgentRequest(action: "publish_instructions", agent: selected.key, revision: selected.revision,
-                        payload: .object(["body": .string(instructionBody)]), reason: reason), action: "agent.publish_instructions") }
+                    Task { await run(.publishInstructions(instructionBody), on: selected) }
                 }.disabled(busy || !reasonValid || instructionBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || instructionBody.count > 20_000)
                     .accessibilityIdentifier("admin.agents.publish-instructions")
                 ForEach(instructions) { version in
@@ -1782,8 +1920,7 @@ private struct AdminAgentsContent: View {
                         Spacer()
                         if version.version != activeVersion {
                             Button("Roll back") {
-                                Task { await mutate(AdminAgentRequest(action: "rollback_instructions", agent: selected.key, revision: selected.revision,
-                                    payload: .object(["version": .string(String(version.version))]), reason: reason), action: "agent.rollback_instructions") }
+                                Task { await run(.rollbackInstructions(version: version.version), on: selected) }
                             }.disabled(busy || !reasonValid).accessibilityIdentifier("admin.agents.rollback")
                         }
                     }
@@ -1811,11 +1948,13 @@ private struct AdminAgentsContent: View {
     }
     private func clear() {
         requestID = UUID(); busy = false; registry = nil; selected = nil; runs = []; instructions = []; activeVersion = nil
-        reason = ""; daily = ""; perRun = ""; monthlyMinor = ""; permissions = []; instructionBody = ""; error = nil; notice = nil; stepUp = nil; confirmStop = nil
+        reason = ""; daily = ""; perRun = ""; monthlyMinor = ""; perRunCost = ""; perRunCostLoaded = false; console = nil
+        permissions = []; instructionBody = ""; error = nil; notice = nil; stepUp = nil; confirmStop = nil
     }
     private func select(_ agent: AdminAgent) {
         selected = agent; daily = String(agent.daily_run_cap); perRun = String(agent.per_run_item_cap)
         monthlyMinor = String(agent.monthly_cost_cap_minor); permissions = Set(agent.permissions); instructionBody = ""
+        perRunCost = ""; perRunCostLoaded = false; console = nil
         Task { await loadDetail(agent) }
     }
     private func load() async {
@@ -1834,9 +1973,31 @@ private struct AdminAgentsContent: View {
         do {
             let log = try await CommunityServices.admin.agentRuns(agent.key)
             let history = try await CommunityServices.admin.agentInstructions(agent.key)
+            let entry = try await CommunityServices.admin.agentConsole().first { $0.key == agent.key }
             guard !Task.isCancelled, requestID == id, selected?.key == agent.key else { return }
             runs = log; instructions = history.versions; activeVersion = history.active
+            console = entry
+            if let entry { perRunCost = entry.per_run_cost_cap_minor.map(String.init) ?? ""; perRunCostLoaded = true }
         } catch { if requestID == id { runs = []; instructions = []; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+    }
+    /// One typed owner command (#284): validated client-side, step-up gated,
+    /// and confirmed only at the next server revision.
+    private func run(_ command: AdminAgentCommand, on agent: AdminAgent) async {
+        guard !busy else { return }
+        if let prompt = CommunityServices.admin.stepUpPrompt(for: command.stepUpAction) { stepUp = prompt; return }
+        stepUp = nil
+        let id = UUID(); requestID = id; busy = true; error = nil; notice = nil
+        defer { if requestID == id { busy = false } }
+        do {
+            _ = try await CommunityServices.admin.runAgentCommand(command, agent: agent.key, revision: agent.revision, reason: reason)
+            guard !Task.isCancelled, requestID == id else { return }
+            notice = "Change confirmed and audited."; busy = false; await load()
+            if let refreshed = selected, refreshed.key == agent.key { select(refreshed) }
+        } catch {
+            guard requestID == id else { return }
+            let problem = CommunityServices.admin.noteRefusal(error)
+            if problem.isStepUpRequired { stepUp = problem.errorDescription } else { self.error = problem.errorDescription }
+        }
     }
     private func mutate(_ request: AdminAgentRequest, action: String) async {
         guard !busy else { return }

@@ -50,8 +50,11 @@ class FakeRecipients:
 
     def call(self, operation, **payload):
         self.calls.append(payload)
-        assert operation == "recipients" and payload["category"] == "marketing"
-        return self.pages[payload["page"]]
+        assert operation == "email_recipients" and payload["category"] == "marketing"
+        page = dict(self.pages[payload["page"]])
+        if "error" not in page:
+            page.setdefault("category", "marketing")
+        return page
 
 
 class RecordingTransport:
@@ -81,9 +84,10 @@ class EnqueueBlastTests(unittest.TestCase):
         rows = [person(1), person(2), {"email": "x@example.test", "email_hash": "0" * 64}]
         context = {"headline": "Hi", "body": "Plug"}
         first = enqueue_blast(self.queue, rows, "marketing_campaign", context, "marketing-draft:d1", self.url_for)
-        self.assertEqual(first, {"queued": 2, "duplicate": 0, "refused": 1})
+        self.assertEqual((first["queued"], first["invalid"]), (2, 1))
         again = enqueue_blast(self.queue, rows, "marketing_campaign", context, "marketing-draft:d1", self.url_for)
-        self.assertEqual(again, {"queued": 0, "duplicate": 2, "refused": 1})
+        self.assertEqual((again["queued"], again["cadence"], again["invalid"]), (0, 2, 1))
+        self.assertEqual(self.queue.campaign_count("marketing-draft:d1"), 2)
         self.assertEqual(self.queue.counts(), {"queued": 2})
         claimed = self.queue.claim(10)
         self.assertIn("One-click unsubscribe: https://www.example.test/unsubscribe?token=", claimed[0]["body"])
@@ -153,7 +157,7 @@ class SchedulerTests(unittest.TestCase):
     def test_email_failures_are_reported_not_published(self):
         cases = [
             (None, FakeRecipients([]), "Email blast not configured"),
-            ("blaster", FakeRecipients([{"recipients": [], "has_more": False}]), "No opted-in"),
+            ("blaster", FakeRecipients([{"recipients": [], "has_more": False}]), "No eligible recipients"),
             ("blaster", FakeRecipients([{"error": "Category, batch and page required."}]), "Recipient lookup failed"),
         ]
         for kind, recipients, expected in cases:

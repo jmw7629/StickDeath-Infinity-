@@ -258,6 +258,18 @@ struct SpatterMotionRecipePanel: View {
         }
     }
 
+    /// Decoded counts from the verified direct MP4 of the current document, if any.
+    private var briefMovieMeasurement: SpatterQualityReport.MovieMeasurement? {
+        movieState.flatMap { SpatterQualityReport.MovieMeasurement.make(from: $0, document: vm.document) }
+    }
+    /// Measured quality of exactly the frames and layers this brief created (#213),
+    /// recomputed from the live document so later edits show up immediately.
+    private var briefQualityReport: SpatterQualityReport? {
+        guard let edit = session.appliedEdit, let storyboard = edit.storyboard, vm.document.id == edit.receipt.projectID else { return nil }
+        return SpatterQualityReport.briefScope(vm.document, createdFrameIDs: edit.createdFrames.map(\.id),
+            createdLayerIDs: edit.createdLayers.map(\.id), requestedTicks: storyboard.totalTicks, movie: briefMovieMeasurement)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -611,6 +623,9 @@ struct SpatterMotionRecipePanel: View {
                                 .font(.caption).textSelection(.enabled)
                                 .accessibilityIdentifier("spatter.motion.storyboard")
                         }
+                        if let report = briefQualityReport {
+                            SpatterBriefQualityView(report: report, movieMeasured: briefMovieMeasurement != nil)
+                        }
                         Button("Export this edit as MP4") {
                             guard let request = session.prepareMovieExport(in: vm, currentScope: scope) else { return }
                             session.close(); onMovieExport(request)
@@ -670,6 +685,45 @@ struct SpatterMotionRecipePanel: View {
             if !isForeground { session.cancel() }
         }
         .onChange(of: authVM.userId) { _ in session.close() }
+    }
+}
+
+// MARK: - Brief quality report (#213)
+
+extension SpatterQualityReport.MovieMeasurement {
+    /// Built only from a still-owned direct MP4 export of exactly this document
+    /// revision whose manifest carries counts decoded from the file. Nil means
+    /// "not measured"; nothing is inferred from the plan.
+    @MainActor
+    static func make(from state: StudioMoviePanelState, document: StudioDocument) -> Self? {
+        guard state.directSource != nil, let output = state.session.output, !state.session.isRunning,
+              !state.session.isClosed, !output.isCleaned,
+              output.manifest.projectID == document.id, output.manifest.documentRevision == document.revision,
+              let decoded = output.manifest.decodedFrameCount, let seconds = output.manifest.decodedDurationSeconds else { return nil }
+        return .init(decodedFrameCount: decoded, decodedDurationSeconds: seconds, audioOffsetSeconds: nil,
+                     expectedFrameCount: output.manifest.frameIDs.count, expectedDurationSeconds: output.manifest.expectedDurationSeconds)
+    }
+}
+
+/// Read-only findings for the generated sequence. A pass is a measurement, not
+/// an approval: every Spatter render still needs the owner's exact-render approval.
+struct SpatterBriefQualityView: View {
+    let report: SpatterQualityReport
+    let movieMeasured: Bool
+    var body: some View {
+        let lines = report.summaryLines()
+        VStack(alignment: .leading, spacing: 3) {
+            Text(report.verdict().passes ? "Quality report: passed" : "Quality report: rework needed")
+                .font(.specialElite(12, relativeTo: .caption))
+                .foregroundColor(report.verdict().passes ? .white : Color(hex: "#F87171"))
+            ForEach(Array(lines.dropFirst().enumerated()), id: \.offset) { Text($0.element).font(.caption2) }
+            if !movieMeasured {
+                Text("Export this edit as MP4 to add decoded frame and duration counts.").font(.caption2).foregroundColor(.white.opacity(0.6))
+            }
+        }
+        .textSelection(.enabled)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("spatter.motion.quality")
     }
 }
 

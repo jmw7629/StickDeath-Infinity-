@@ -112,6 +112,47 @@ import ImageIO
                 "Cold reopen lost original PNG data")
         }
         print("PASS production save and cold reopen retain all original/sequence assets")
-        print("STUDIO_IMAGE_SEQUENCE_TESTS=PASS groups=8")
+
+        // #199/#200: the movie behind a reference sequence is project-managed
+        // media; its measured metadata and trim/speed mapping persist with it.
+        let movieID = UUID(), movieBytes = Data((0..<4096).map { UInt8($0 % 251) })
+        let mapping = StudioVideoSourceMapping(sourceStartSeconds: 1, sourceEndSeconds: 3, projectStartSeconds: 0, speed: 0.5)
+        let video = StudioViewModel.ImportedVideoSource(
+            reference: StudioVideoReference(id: movieID, name: "Phone clip", container: "mov",
+                metadata: .init(durationSeconds: 4, byteCount: movieBytes.count, orientedWidth: 1080, orientedHeight: 1920,
+                    rotationDegrees: 90, isMirrored: false, nominalFrameRate: 30, hasVariableFrameRate: false, hasAudio: true),
+                mapping: mapping),
+            movie: StoredVideoSource(id: movieID, name: "Phone clip", container: "mov", data: movieBytes))
+        let videoFrames = try [image(0), image(1)], beforeVideo = reopened.document
+        func attachVideo(_ value: StudioViewModel.ImportedVideoSource) throws -> [String] {
+            try reopened.attachImportedImageSequence(videoFrames, expectedProjectID: beforeVideo.id,
+                expectedRevision: beforeVideo.revision, frameID: beforeVideo.activeFrameID,
+                layerID: beforeVideo.activeLayerID, video: value)
+        }
+        var mismatched = video; mismatched.reference.metadata.byteCount = 17
+        try rejects { _ = try attachVideo(mismatched) }
+        try require(reopened.document == beforeVideo && reopened.videoSource(forReferenceID: movieID) == nil,
+            "Inconsistent movie metadata partially attached")
+        _ = try attachVideo(video)
+        let attachedReference = reopened.document.videoReferences?.first
+        try require(attachedReference?.mapping == mapping && attachedReference?.metadata.rotationDegrees == 90 &&
+            attachedReference?.frameAssetIDs == videoFrames.map { "image-" + $0.id.uuidString } &&
+            reopened.videoSource(forReferenceID: movieID)?.data == movieBytes &&
+            reopened.document.revision == beforeVideo.revision + 1, "Movie, mapping and frames were not one transaction")
+        let savedVideo = await reopened.save()
+        try require(savedVideo, "Video project save")
+        guard let storedVideo = try storage.loadAnimation(id: original.id) else { throw Failure(message: "Video project load") }
+        try require(storedVideo.videoSources?.map(\.data) == [movieBytes], "Saved project does not own the movie bytes")
+        let cold = StudioViewModel(storage: storage), coldOpened = await cold.openProject(storedVideo.metadata)
+        try require(coldOpened && cold.document.videoReferences == reopened.document.videoReferences &&
+            cold.videoSource(forReferenceID: movieID)?.data == movieBytes, "Cold reopen lost the retained movie or mapping")
+        reopened.undo()
+        try require(reopened.document.videoReferences == nil && reopened.videoSource(forReferenceID: movieID) != nil,
+            "Undo must drop the reference but keep bytes for Redo")
+        let savedUndo = await reopened.save()
+        guard savedUndo, let undone = try storage.loadAnimation(id: original.id) else { throw Failure(message: "Undo save") }
+        try require(undone.videoSources == nil, "A removed reference left its movie in later saves")
+        print("PASS retained movie, metadata and mapping: atomic attach, save, cold reopen and Undo cleanup")
+        print("STUDIO_IMAGE_SEQUENCE_TESTS=PASS groups=9")
     }
 }

@@ -110,8 +110,9 @@ No upload, post or deployment has run.
 (queues only drafts the owner already approved for the exact render, re-checking
 consent), and in live mode claims leased drafts: social ones go through
 `MarketingWorker.process`, an `email` draft becomes a blast queued with
-`EmailQueue.enqueue_blast` to `sdi_email_recipients('marketing')` (opted in, active,
-unsuppressed) under the draft id as dedup key, finished as `email-queue:<count>`
+`EmailQueue.enqueue_blast` (seven-day per-address cadence, recipient cap) to
+`sdi_email_recipients('marketing')` (opted in, active, unsuppressed) under the draft id
+as campaign key, finished as `email-queue:<campaign count>`
 (`marketing_finish` accepts that only for email drafts and never a zero count). Dry run
 is the default; live needs `--live` plus `SDI_MARKETING_LIVE=1`. Tests:
 `backend/tests/test_marketing_scheduler.py`. No post or email has been sent.

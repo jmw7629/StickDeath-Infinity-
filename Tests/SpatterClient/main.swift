@@ -236,6 +236,23 @@ struct SpatterClientTests {
             try await test("actual delegate rejects one oversized chunk") {
                 try await expect(.responseTooLarge) { _ = try await fixture("/burst-large").run() }
             }
+            try await test("project digest is read only from the exporter manifest for this exact movie") {
+                let digest = String(repeating: "ab", count: 32)
+                let manifest = Data(#"{"encodedBytes":4096,"movieFilename":"clip.mp4","projectDigest":"\#(digest)","fps":12}"#.utf8)
+                try require(SDIRenderSourceDigest.fromManifest(manifest, movieFilename: "clip.mp4", byteCount: 4096) == digest, "matching manifest digest not read")
+                try require(SDIRenderSourceDigest.fromManifest(manifest, movieFilename: "other.mp4", byteCount: 4096) == nil, "digest taken for another movie")
+                try require(SDIRenderSourceDigest.fromManifest(manifest, movieFilename: "clip.mp4", byteCount: 4097) == nil, "digest taken for different bytes")
+                let upper = Data(#"{"encodedBytes":1,"movieFilename":"a.mp4","projectDigest":"\#(digest.uppercased())"}"#.utf8)
+                try require(SDIRenderSourceDigest.fromManifest(upper, movieFilename: "a.mp4", byteCount: 1) == nil, "non-canonical digest accepted")
+                let older = Data(#"{"encodedBytes":1,"movieFilename":"a.mp4"}"#.utf8)
+                try require(SDIRenderSourceDigest.fromManifest(older, movieFilename: "a.mp4", byteCount: 1) == nil, "older manifest invented a digest")
+                let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-digest-\(UUID().uuidString)")
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: folder) }
+                try manifest.write(to: folder.appendingPathComponent("manifest.json"))
+                try require(SDIRenderSourceDigest.beside(folder.appendingPathComponent("clip.mp4"), byteCount: 4096) == digest, "manifest beside the movie not read")
+                try require(SDIRenderSourceDigest.beside(folder.appendingPathComponent("sub/clip.mp4"), byteCount: 4096) == nil, "missing manifest produced a digest")
+            }
             try await test("actual delegate rejects unauthorized response") {
                 try await expect(.httpStatus(401)) { _ = try await fixture("/denied").run() }
             }

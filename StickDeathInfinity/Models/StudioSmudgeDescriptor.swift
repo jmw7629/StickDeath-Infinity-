@@ -35,6 +35,8 @@ struct StudioSmudgeDescriptor: Codable, Equatable {
                 touchedPixels = try descriptor.validate(element: element, width: width, height: height).touchedPixels
             } else if let descriptor = element.dodgeBurn {
                 touchedPixels = try descriptor.validate(element: element, width: width, height: height).touchedPixels
+            } else if let descriptor = element.gradient {
+                touchedPixels = try descriptor.validate(element: element, width: width, height: height)
             } else { continue }
             // A mixed frame shares one processing budget, not one per tool.
             count += 1; touched += touchedPixels; renderedPixels += width * height

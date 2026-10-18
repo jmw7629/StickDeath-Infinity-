@@ -10,9 +10,10 @@ One invocation from the host timer (``python3 -m backend.publishing.marketing_sc
    destination adapters (``destinations.py``: Discord webhook, Facebook Page; the
    others report unavailable). An ``email`` draft becomes a blast: recipients come
    from ``sdi_email_recipients('marketing')`` (opted in, active, not suppressed) and
-   are queued with ``EmailQueue.enqueue_blast`` under the draft id as dedup key, so a
-   retried draft never mails anyone twice. ``EmailWorker`` sends later and re-checks
-   suppression. The draft is finished with the enqueued count (``email-queue:<n>``).
+   are queued with ``EmailQueue.enqueue_blast`` (seven-day per-address cadence,
+   recipient cap) under the draft id as campaign key, so a retried draft never mails
+   anyone twice. ``EmailWorker`` sends later and re-checks suppression. The draft is
+   finished with the campaign's queued count (``email-queue:<n>``).
 
 Dry run is the default: step 1 runs (it only moves approved drafts into the queue,
 as the hourly sweep already does), nothing is claimed, posted or emailed. Live mode
@@ -37,7 +38,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional, Tuple
 
-from ..mail.queue import EmailQueue, enqueue_blast
+from ..mail.queue import EmailQueue, enqueue_blast, fetch_recipients
 from ..mail.templates import render, unsubscribe_token
 from .destinations import (MAX_RESPONSE_BYTES, Destination, DestinationConfig, MarketingJobAPI, MarketingWorker,
                            Transport, default_registry)
@@ -45,13 +46,13 @@ from .worker import JobAPI
 
 BLAST_TEMPLATE = "marketing_campaign"
 DEFAULT_HEADLINE = "New from StickDeath Infinity"
-MAX_RECIPIENT_PAGES = 200
+MAX_RECIPIENT_PAGES = 20   # 20 x 500 = the queue's 10,000 recipient cap
 EMAIL_SETTINGS = ("SDI_MAIL_QUEUE_PATH", "SDI_UNSUBSCRIBE_BASE_URL", "SDI_UNSUBSCRIBE_SECRET_FILE")
 
 
 class EmailRecipientsAPI(JobAPI):
-    PREFIX = "sdi_email_"
-    PERMITTED = frozenset({"recipients"})
+    PREFIX = "sdi_"
+    PERMITTED = frozenset({"email_recipients"})
 
 
 def unsubscribe_url_factory(base_url: str, secret: bytes) -> Callable[[str, str], str]:
@@ -67,7 +68,13 @@ def unsubscribe_url_factory(base_url: str, secret: bytes) -> Callable[[str, str]
 
 
 class EmailBlaster:
-    """Turns one leased email draft into queued opt-in messages; sends nothing."""
+    """Turns one leased email draft into queued opt-in messages; sends nothing.
+
+    Recipients come from ``fetch_recipients`` (``sdi_email_recipients('marketing')``);
+    ``EmailQueue.enqueue_blast`` applies the per-address cadence (one opt-in email per
+    seven days), the recipient cap and the hash checks. The draft id is the campaign
+    key, so a retried draft never queues a second copy; the receipt is the number of
+    messages this campaign holds in the queue."""
 
     def __init__(self, recipients_api, queue: EmailQueue, unsubscribe_url_for: Callable[[str, str], str],
                  page_size: int = 500, max_pages: int = MAX_RECIPIENT_PAGES):
@@ -84,24 +91,17 @@ class EmailBlaster:
             body = "%s\n\nWatch: %s" % (body, job["media_url"])
         return {"headline": headline[:150], "body": body}
 
+    @staticmethod
+    def campaign_key(job: Mapping[str, object]) -> str:
+        return "marketing-draft:%s" % job["draft"]
+
     def blast(self, job: Mapping[str, object]) -> Dict[str, int]:
         context = self.context(job)
         render(BLAST_TEMPLATE, context, "https://validation.invalid/u")  # raises ValueError before any recipient is read
-        totals = {"queued": 0, "duplicate": 0, "refused": 0, "pages": 0}
-        for page in range(self.max_pages):
-            result = self.api.call("recipients", category="marketing", batch=self.page_size, page=page)
-            if not isinstance(result, Mapping) or "error" in result or not isinstance(result.get("recipients"), list):
-                raise RuntimeError("recipient lookup refused")
-            counts = enqueue_blast(self.queue, result["recipients"], BLAST_TEMPLATE, context,
-                                   "marketing-draft:%s" % job["draft"], self.unsubscribe_url_for)
-            for key in ("queued", "duplicate", "refused"):
-                totals[key] += counts[key]
-            totals["pages"] += 1
-            if not result.get("has_more"):
-                break
-        else:
-            totals["truncated"] = 1
-        return totals
+        rows = fetch_recipients(self.api, "marketing", batch=self.page_size, max_pages=self.max_pages)
+        summary = dict(enqueue_blast(self.queue, rows, BLAST_TEMPLATE, context, self.campaign_key(job), self.unsubscribe_url_for))
+        summary["campaign_total"] = self.queue.campaign_count(self.campaign_key(job))
+        return summary
 
 
 class MarketingScheduler:
@@ -147,12 +147,13 @@ class MarketingScheduler:
             return self._fail(job, "Draft content invalid for email: %s" % error)
         except Exception:
             return self._fail(job, "Recipient lookup failed; addresses already queued stay deduplicated on retry.")
-        enqueued = counts["queued"] + counts["duplicate"]
+        enqueued = counts["campaign_total"]
         if enqueued == 0:
-            return self._fail(job, "No opted-in, unsuppressed recipients; nothing was queued.")
+            return self._fail(job, "No eligible recipients (opt-in, suppression, seven-day cadence); nothing was queued.")
         accepted = self.api.call("finish", draft=job["draft"], token=job["lease"], provider_ref="email-queue:%d" % enqueued)
-        return {"state": "published" if accepted is True else "late_result", "draft": job["draft"],
-                "queued": counts["queued"], "duplicate": counts["duplicate"], "refused": counts["refused"]}
+        report = {"state": "published" if accepted is True else "late_result", "draft": job["draft"]}
+        report.update({k: v for k, v in counts.items() if isinstance(v, int)})
+        return report
 
 
 # --------------------------------------------------------------------------- environment wiring

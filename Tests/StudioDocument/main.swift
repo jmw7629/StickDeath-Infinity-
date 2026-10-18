@@ -362,6 +362,130 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
         print("PASS bounded distinct primary/alias image-mask history, source lifetime, Undo/Redo and invalid-mask rollback")
     }
 
+    private static func rejects(_ text: String, _ body: () throws -> Void) throws {
+        do { try body() } catch { return }
+        throw Failure(text: "Accepted: " + text)
+    }
+
+    /// #149: the editable gradient and selection-limited effects, through the
+    /// real document editor, archive and the shared replay compositor helpers.
+    private static func gradientAndSelectionEffects() throws {
+        let document = try StudioDocument.new(name: "Gradient", width: 32, height: 32, fps: 12)
+        let full = StudioFillMask(width: 32, height: 32, spans: (0..<32).map { .init(row: $0, start: 0, end: 32, alpha: 255) })
+        let gradient = DrawnElement(id: "gradient", tool: .fill, points: [.init(x: 0, y: 16), .init(x: 32, y: 16)],
+            color: "#FF0000", width: 1, opacity: 1, layerID: document.activeLayerID, fillMask: full,
+            gradient: .init(stops: [.init(location: 0, color: .init(red: 1, green: 0, blue: 0)),
+                                    .init(location: 1, color: .init(red: 0, green: 0, blue: 1))]))
+        var editor = try StudioDocumentEditor(document: document)
+        try editor.commit(gradient, frameID: document.activeFrameID)
+        try require(editor.document.schemaVersion == StudioGradientDescriptor.schemaVersion && gradient.hasPixelEffect,
+                    "Gradient did not enter the ordered effect stream at schema 36")
+        let archived = try StudioDocumentArchive.decode(StudioDocumentArchive(document: editor.document, rasterFrameIndices: [:]).encoded()).document
+        try require(archived == editor.document, "Gradient archive changed content")
+        var downgraded = editor.document; downgraded.schemaVersion = 35
+        try rejects("gradient below schema 36") { try downgraded.validate() }
+        editor.undo()
+        try require(editor.document.frames == document.frames, "Gradient Undo")
+        for mutate in [{ (e: inout DrawnElement) in e.points = [.init(x: 4, y: 4), .init(x: 4.2, y: 4.2)] },
+                       { (e: inout DrawnElement) in e.opacity = 0 },
+                       { (e: inout DrawnElement) in e.gradient!.stops.removeLast() },
+                       { (e: inout DrawnElement) in e.fillMask = nil },
+                       { (e: inout DrawnElement) in e.selectionMask = full }] {
+            var bad = gradient; mutate(&bad)
+            try rejects("invalid gradient") { try editor.commit(bad, frameID: document.activeFrameID) }
+        }
+        try require(editor.document.frames == document.frames, "Rejected gradients changed artwork")
+
+        // Pixel truth through the replay helpers every renderer and export use.
+        let transparent = try StudioSmudge.Pixels(width: 32, height: 32, rgba: [UInt8](repeating: 0, count: 32 * 32 * 4))
+        let painted = try StudioSmudgeReplay.applyGradient(gradient, to: transparent)
+        let left = Array(painted.rgba[(16 * 32 + 0) * 4..<(16 * 32 + 0) * 4 + 4])
+        let right = Array(painted.rgba[(16 * 32 + 31) * 4..<(16 * 32 + 31) * 4 + 4])
+        try require(left[3] == 255 && right[3] == 255 && left[0] > 240 && left[2] < 16 && right[2] > 240 && right[0] < 16,
+                    "Gradient pixels do not run from the start to the end color: \(left) \(right)")
+        var half = gradient
+        half.fillMask = StudioFillMask(width: 32, height: 32, spans: (0..<32).map { .init(row: $0, start: 0, end: 16, alpha: 255) })
+        let limited = try StudioSmudgeReplay.applyGradient(half, to: transparent)
+        try require(limited.rgba[(16 * 32 + 8) * 4 + 3] == 255 && limited.rgba[(16 * 32 + 24) * 4 + 3] == 0,
+                    "Gradient escaped its fill coverage")
+
+        // A selected Blur commits only with its coverage, and replay keeps
+        // every unselected byte of the preceding layer.
+        var selected = try StudioDocumentEditor(document: document)
+        try selected.commit(stroke(layer: document.activeLayerID, id: "line"), frameID: document.activeFrameID)
+        selected.selectedElementIDs = ["line"]
+        var coverage = [UInt8](repeating: 0, count: 32 * 32)
+        for y in 8..<24 { for x in 8..<24 { coverage[y * 32 + x] = x < 20 ? 255 : 128 } }
+        guard let mask = try StudioFillMask.fromCoverage(coverage, width: 32, height: 32) else { throw Failure(text: "Empty selection mask") }
+        let dense = try mask.denseCoverage()
+        try require(dense == coverage, "Selection mask lost coverage weights")
+        var blur = DrawnElement(id: "blur", tool: .blur, points: [.init(x: 10, y: 10), .init(x: 20, y: 20)],
+            color: "#000000", width: 8, opacity: 1, layerID: document.activeLayerID, blur: .init())
+        try rejects("selected blur without its mask") { try selected.commit(blur, frameID: document.activeFrameID) }
+        blur.selectionMask = mask
+        try selected.commit(blur, frameID: document.activeFrameID)
+        try require(selected.document.schemaVersion == StudioGradientDescriptor.schemaVersion, "Selection mask schema")
+        var wrong = selected.document; wrong.frames[0].elements[0].selectionMask = mask
+        try rejects("selection mask on plain artwork") { try wrong.validate() }
+        let before = [UInt8](repeating: 60, count: 32 * 32 * 4), after = [UInt8](repeating: 180, count: 32 * 32 * 4)
+        let clipped = try StudioSmudgeReplay.clipRGBA(original: before, effected: after, mask: mask, width: 32, height: 32)
+        try require(clipped[0] == 60 && clipped[(10 * 32 + 10) * 4] == 180 && clipped[(10 * 32 + 22) * 4] == 120,
+                    "Selection clip leaked or ignored feathered weights")
+        let unclipped = try StudioSmudgeReplay.clipRGBA(original: before, effected: after, mask: nil, width: 32, height: 32)
+        try require(unclipped == after, "Unselected effects changed historical whole-layer output")
+        print("PASS gradient tool document, archive, Undo, invalid settings, replay pixels and selection-limited effects")
+    }
+
+    /// #199–#201: video references, persisted trim/speed mapping and
+    /// backward-compatible decoding of projects saved before them.
+    private static func videoReferenceAndMappingPersistence() throws {
+        var document = try StudioDocument.new(name: "Video", width: 64, height: 64, fps: 12)
+        let plain = try JSONEncoder().encode(document)
+        let historical = try JSONDecoder().decode(StudioDocument.self, from: plain)
+        try require(!String(decoding: plain, as: UTF8.self).contains("videoReferences") &&
+                    historical.videoReferences == nil, "Historical decode")
+        let asset = "image-" + UUID().uuidString
+        let mapping = StudioVideoSourceMapping(sourceStartSeconds: 0.5, sourceEndSeconds: 2, projectStartSeconds: 0.25, speed: 2)
+        let reference = StudioVideoReference(id: UUID(), name: "Clip", container: "mov",
+            metadata: .init(durationSeconds: 2.5, byteCount: 4096, orientedWidth: 1080, orientedHeight: 1920,
+                rotationDegrees: 90, isMirrored: false, nominalFrameRate: 29.97, hasVariableFrameRate: true, hasAudio: true),
+            mapping: mapping, frameAssetIDs: [asset])
+        document.schemaVersion = 4
+        var editor = try StudioDocumentEditor(document: document)
+        try editor.change { value in
+            var frame = AnimationFrame(id: "reference", elements: [])
+            frame.rasterAssetID = asset; frame.rasterLayerID = value.activeLayerID
+            frame.rasterPlacement = .init(x: 0, y: 0, width: 64, height: 64)
+            value.frames.append(frame); value.videoReferences = [reference]
+        }
+        let archived = try StudioDocumentArchive.decode(StudioDocumentArchive(document: editor.document,
+            rasterFrameIndices: [:]).encoded()).document
+        try require(archived.videoReferences == [reference], "Archive lost the video reference or its mapping")
+        try editor.change { $0.frames.removeLast() }
+        try require(editor.document.videoReferences == nil && editor.referencedVideoSourceIDsIncludingHistory == [reference.id],
+                    "A reference outlived its frames or Undo history lost it")
+        editor.undo()
+        try require(editor.document.videoReferences == [reference], "Undo did not restore the reference")
+        var invalid = editor.document; invalid.videoReferences![0].mapping.speed = 8
+        try rejects("speed outside 0.25–4") { try invalid.validate() }
+        invalid = editor.document; invalid.videoReferences = [reference, reference]
+        try rejects("duplicate video identity") { try invalid.validate() }
+        try require(mapping.sourceTime(projectSeconds: 0.75) == 1.5 && mapping.projectTime(sourceSeconds: 1.5) == 0.75 &&
+                    mapping.sourceTime(projectSeconds: 1) == nil, "Mapping inverse or exclusive trim end")
+        let old = Data(#"{"id":"a","soundName":"Old","track":1,"startTime":0,"duration":1}"#.utf8)
+        let oldClip = try JSONDecoder().decode(AudioClip.self, from: old)
+        try require(oldClip.videoMapping == nil, "Historical clip decode")
+        try editor.change { $0.schemaVersion = max($0.schemaVersion, 4)
+            $0.audioClips = [AudioClip(id: "movie", soundName: "Movie audio", track: 1, startTime: 0.25, duration: 1,
+                                       assetID: UUID(), videoMapping: mapping)] }
+        let right = try editor.splitAudioClip("movie", at: 0.75, newClipID: "right")
+        let leftTime = editor.document.audioClips[0].movieSourceTime(atStudioSeconds: 0.5)
+        let rightTime = right.movieSourceTime(atStudioSeconds: 1)
+        try require(right.videoMapping == mapping && leftTime.map { abs($0 - 1) < 1e-9 } == true &&
+                    rightTime.map { abs($0 - 2) < 1e-6 } == true, "Split clip lost movie synchronization")
+        print("PASS video references, persisted trim/speed mapping, synchronized split audio and historical decoding")
+    }
+
     private static func linkedRasterJourneys() throws {
         var original = try StudioDocument.new(name: "Linked pictures", width: 320, height: 240, fps: 12)
         let primary = original.activeLayerID, frameID = original.activeFrameID
@@ -979,6 +1103,8 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
             try mixedImageOrdering()
             try imageMaskHistoryBudget()
             try linkedRasterJourneys()
+            try gradientAndSelectionEffects()
+            try videoReferenceAndMappingPersistence()
             // Historical disabled colors were opaque metadata, including eight-digit and
             // noncanonical strings. Opening and editing unrelated content must preserve them.
             for historicalColor in ["#FF000080", "legacy-custom-color"] {
@@ -1063,7 +1189,7 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
                 try require(openedFinal && finalSpace.document == dirtyBefore, "Retry cold reopen lost dirty artwork")
             }
             print("PASS actual VM payload/receipt disk-full dirty retention, old cold reader, retry and final cold reopen")
-            print("STUDIO_DOCUMENT_TESTS=PASS 26 journeys")
+            print("STUDIO_DOCUMENT_TESTS=PASS 28 journeys")
         } catch {
             print("STUDIO_DOCUMENT_TESTS=FAIL \(error)")
             exit(1)

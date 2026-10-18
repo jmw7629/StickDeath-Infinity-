@@ -116,7 +116,7 @@ enum StudioFillService {
     /// Source-body alpha only: layer opacity/glow/blending belong to the final
     /// paint layer, not to selection clipping. No raster or bounding-box proxy.
     @MainActor
-    private static func selectionCoverage(document: StudioDocument, frame: AnimationFrame,
+    static func selectionCoverage(document: StudioDocument, frame: AnimationFrame,
                                           selectedIDs: Set<String>, imageLayerID: String? = nil, sources: [String: Data] = [:]) throws -> Data? {
         guard !selectedIDs.isEmpty || imageLayerID != nil else { return nil }
         guard selectedIDs.count <= 1024 else { throw Failure.selection }

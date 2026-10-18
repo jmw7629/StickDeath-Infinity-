@@ -31,11 +31,46 @@ project.
 - Revocation: a removed member, a closed room or a withdrawn edit role stops
   appends immediately; local edits stay on the device.
 
-Editor integration still required (Studio owner): register
-`RoomSessionCoordinator.shared.applyRemote` to apply records to the document,
-call `publishLocalEdit(kind:payload:)` with a `target` from each Studio command,
-and `drain()`/`catchUp()` on a timer while a handoff is active. Until then the
-Rooms screen shows the server stream as recorded, never as applied.
+### Studio connection (#232, 2026-10-18)
+
+`StudioRoomBridge` (`ViewModels/StudioViewModel+Rooms.swift`) starts when *Open
+shared project in Studio* records the handoff and runs while the handoff lasts:
+
+- **Publish.** `StudioViewModel.applyStudioCommands` and the touch commit path
+  report each commit through `StudioEditObservers` (`Models/StudioCommands.swift`).
+  `StudioSharedEdit.share` turns the committed batch into replayable commands
+  (cuts become deletions; selection, guides and clipboard copies are view-only).
+  Each edit is one `studio.apply` record whose payload carries the commands as
+  one JSON array, a `target` (`frame:<id>`, `layer:<id>`, `audio:<clip id>` or
+  `audio:track-<n>`; anything structural or mixed has no target and therefore
+  overlaps every other edit) and the frame, layer and element identities the
+  author's device created. Touch drawings are shared as `draw` commands only
+  when replaying them on the earlier document reproduces the committed document
+  exactly.
+- **Replay.** `applyRemote` rebuilds the record through
+  `StudioSharedEdit.request(from:)` — the same strict wire decoder as any
+  untrusted input, replayable commands only, target must match — and applies it
+  through `applyStudioCommands` with `sharedIdentities`, so new frames, layers
+  and elements keep the author's IDs. A replay that creates a different number of
+  objects, or whose IDs already exist, is refused (the copies diverged) instead
+  of guessed. The creator's own active frame, layer and valid selection are kept.
+- **Conflicts.** Appends stay fenced on the head; overlapping edits are held for
+  *Keep mine on top* / *Discard mine* (discarding stops sending; the device copy
+  keeps the edit until the creator undoes it). A remote record that cannot be
+  applied yet (playback, a touch in progress, a room undo, a malformed or
+  diverged edit) blocks later remote records in order and is shown with its
+  reason; the creator may explicitly skip it, which is recorded.
+- **Not shared, said so.** Fills, pastes from the device clipboard,
+  selected-drawing erasures, Undo/Redo and any revision change made without a
+  shared command are reported as "not shared" in Studio and counted in the room.
+- `drain()`/`catchUp()` run every 3 seconds (`RoomSessionCoordinator.synchronise`)
+  and a push follows each published edit.
+
+Verification: `Tests/CommunityRooms` (blocked/skip/counter coordinator case) and
+`Tests/SpatterPlanner` (identity-preserving replay, divergence refusal, hostile
+payloads, targets, faithful touch replay) pass on Linux with stub UI modules.
+Two authorized devices editing frames/layers/audio, reconnect/replay and
+revocation on real hardware are **deferred** to native verification.
 
 ## Asset transfer (`sdi_room_asset`, rooms-v2.sql)
 

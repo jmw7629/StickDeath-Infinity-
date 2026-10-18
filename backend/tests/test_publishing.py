@@ -2,6 +2,7 @@
 
 Run from the repository root:  python3 -m unittest discover -s backend/tests -t .
 """
+import fcntl
 import hashlib
 import json
 import os
@@ -11,7 +12,7 @@ import unittest
 import uuid
 
 from backend.publishing.owner_oauth import OwnerAuthorizationRequired, OwnerGrant, OwnerTokenProvider
-from backend.publishing.worker import JobAPI, PublishingWorker
+from backend.publishing.worker import MAX_CONCURRENCY, JobAPI, PublishingWorker
 from backend.publishing.youtube_upload import ReconciliationRequired, UploadError, YouTubeUploader, google_url
 from backend.publishing.youtube_withdraw import withdraw
 
@@ -242,6 +243,25 @@ class WorkerTests(unittest.TestCase):
         api = ScriptedJobAPI({"removal_claim": {"empty": True}, "claim": {"empty": True}})
         worker = PublishingWorker(api, self.artifacts, self.checkpoints, lambda: "token", CHANNEL)
         self.assertEqual(worker.run_once(), {"state": "idle"})
+
+    def test_concurrency_cap_reports_busy_without_claiming(self):
+        api = ScriptedJobAPI({"removal_claim": {"empty": True}, "claim": {"empty": True}})
+        worker = PublishingWorker(api, self.artifacts, self.checkpoints, lambda: "token", CHANNEL)
+        self.assertEqual(worker.run_once(), {"state": "idle"})
+        calls = len(api.calls)
+        with (self.checkpoints / "worker.lock").open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(worker.run_once(), {"state": "busy"})
+            self.assertEqual(len(api.calls), calls)   # nothing was claimed
+            second = PublishingWorker(api, self.artifacts, self.checkpoints, lambda: "token", CHANNEL, max_concurrent=2)
+            self.assertEqual(second.run_once(), {"state": "idle"})
+            with (self.checkpoints / "worker-1.lock").open("a") as other:
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertEqual(second.run_once(), {"state": "busy"})
+        self.assertEqual(worker.run_once(), {"state": "idle"})
+        for bad in (0, MAX_CONCURRENCY + 1, True, "2"):
+            with self.assertRaises(ValueError):
+                PublishingWorker(api, self.artifacts, self.checkpoints, lambda: "token", CHANNEL, max_concurrent=bad)
 
     def test_unsupported_destination_fails_the_job_without_provider_calls(self):
         job = str(uuid.uuid4()); lease = str(uuid.uuid4())
