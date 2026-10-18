@@ -68,7 +68,7 @@ limitations list, not a claim that everything else is verified.
 
 | Limitation | Source |
 | --- | --- |
-| "Project editing synchronization is not connected yet. Creating a room does not upload or share your device projects." | `Views/Collab/CollabRoomView.swift:46` |
+| Shared Studio edits (#232) replay only typed commands and drawings a `draw` replay reproduces exactly; fills, pastes from the device clipboard, selected-drawing erasures, Undo/Redo and room undo are listed as "not shared" or wait for an explicit skip. Members need a device copy of the same project; nothing is downloaded. Two-device native verification is deferred. | `ViewModels/StudioViewModel+Rooms.swift`, `Views/Collab/CollabRoomView.swift` |
 | Spatter: "Collaboration rooms are planned …; connected rooms are not available yet." | `ViewModels/SpatterAIViewModel.swift:282` |
 | War Room shows only genuine matchups; "No available matchups." / leaderboard "No public finalized records yet." | `Views/Collab/WarRoomView.swift:38`, `Views/Collab/LeaderboardView.swift:29` |
 | Feed: "Sign in to view the community feed." / "No approved videos in this feed yet." | `Views/Home/HomeFeedView.swift:42,48` |

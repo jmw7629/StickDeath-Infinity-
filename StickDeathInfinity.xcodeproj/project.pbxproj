@@ -204,6 +204,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		8200B95ACCCD747336951B44 /* SupportRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77501A7D93F38C37120FD9B6 /* SupportRequestsView.swift */; };
 		5BB8A5D3E7CBD3B7909E46AE /* SpatterReviewEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */; };
 		2298AB48D5EB9FF466B6A6CB /* StudioChannelRendition.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8638C7E7BCFFEAEC08ECA0D /* StudioChannelRendition.swift */; };
+		02366631F3092F2FFBAB75EE /* StudioViewModel+Rooms.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -417,6 +418,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		77501A7D93F38C37120FD9B6 /* SupportRequestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Support/SupportRequestsView.swift"; sourceTree = SOURCE_ROOT; };
 		DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift"; sourceTree = SOURCE_ROOT; };
 		E8638C7E7BCFFEAEC08ECA0D /* StudioChannelRendition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioChannelRendition.swift"; sourceTree = SOURCE_ROOT; };
+		4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/ViewModels/StudioViewModel+Rooms.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -630,6 +632,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		8A637DB0B401B69626E87073 /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
+				4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */,
 				6129DD42225CF20C0C028F89 /* AuthViewModel.swift */,
 				D37B6356D409139DC66A1A7A /* SpatterAIViewModel.swift */,
 				7D38EE64D979F2B1718BC78C /* StudioViewModel.swift */,
@@ -1096,6 +1099,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				02366631F3092F2FFBAB75EE /* StudioViewModel+Rooms.swift in Sources */,
 				2298AB48D5EB9FF466B6A6CB /* StudioChannelRendition.swift in Sources */,
 				5BB8A5D3E7CBD3B7909E46AE /* SpatterReviewEvidence.swift in Sources */,
 				8200B95ACCCD747336951B44 /* SupportRequestsView.swift in Sources */,

@@ -218,6 +218,35 @@ enum StudioCommand: Codable {
     /// `appendFrames`); at least one frame must remain.
     case deleteFrameRange(ReverseFrames)
 
+    // MARK: Registry extensions (#204, #279; appended 2026-10-18)
+    /// Explicit element selection by stable ID on the active frame. Selection is
+    /// editor state: it never changes the document, revision or Undo history.
+    struct SelectElements: Codable, Equatable { let frame: StudioCommandReference; let elementIDs: [String] }
+    /// Bucket fill at one canvas point. The region is computed by
+    /// StudioFillService from the rendered artwork; the request must carry that
+    /// prepared result (`StudioCommandRequest.preparedFills`) for exactly these
+    /// arguments, otherwise the executor refuses the command.
+    struct FillAtPoint: Codable, Equatable {
+        let frame: StudioCommandReference
+        let layer: StudioCommandReference
+        /// Document pixels, inside the canvas.
+        let x: Double
+        let y: Double
+        let color: String
+        let opacity: Double
+        let tolerance: Int
+        let contiguous: Bool
+        let sampleAllLayers: Bool
+        /// Identity of the fill element this command adds.
+        let elementID: String
+    }
+    /// Records (or clears, when `reference` is nil) the project's reference
+    /// source and its rights basis (#279). Metadata only; nothing is fetched.
+    struct SetSourceReference: Codable { var reference: SpatterSourceReference? = nil }
+    case selectElements(SelectElements)
+    case fillAtPoint(FillAtPoint)
+    case setSourceReference(SetSourceReference)
+
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
@@ -269,6 +298,9 @@ enum StudioCommand: Codable {
         case "canvasOptions": self = .canvasOptions(try container.decode(CanvasOptions.self, forKey: key))
         case "appendFrames": self = .appendFrames(try container.decode(AppendFrames.self, forKey: key))
         case "deleteFrameRange": self = .deleteFrameRange(try container.decode(ReverseFrames.self, forKey: key))
+        case "selectElements": self = .selectElements(try container.decode(SelectElements.self, forKey: key))
+        case "fillAtPoint": self = .fillAtPoint(try container.decode(FillAtPoint.self, forKey: key))
+        case "setSourceReference": self = .setSourceReference(try container.decode(SetSourceReference.self, forKey: key))
         default: throw StudioCommandError.unsupportedCommand
         }
     }
@@ -323,6 +355,9 @@ enum StudioCommand: Codable {
         case .canvasOptions(let value): try container.encode(value, forKey: StudioWireKey("canvasOptions"))
         case .appendFrames(let value): try container.encode(value, forKey: StudioWireKey("appendFrames"))
         case .deleteFrameRange(let value): try container.encode(value, forKey: StudioWireKey("deleteFrameRange"))
+        case .selectElements(let value): try container.encode(value, forKey: StudioWireKey("selectElements"))
+        case .fillAtPoint(let value): try container.encode(value, forKey: StudioWireKey("fillAtPoint"))
+        case .setSourceReference(let value): try container.encode(value, forKey: StudioWireKey("setSourceReference"))
         }
     }
 }
@@ -354,6 +389,30 @@ struct StudioCommandRequest: Codable {
     let projectID: UUID
     let expectedRevision: Int
     let action: StudioCommandAction
+    /// Local preparation results that are never part of the wire form: fill
+    /// regions computed by StudioFillService, keyed by `FillAtPoint.elementID`.
+    var preparedFills: [String: StudioPreparedFill] = [:]
+    /// Set only when replaying another creator's shared edit (#232): the
+    /// identities their device assigned to frames, layers and elements this
+    /// request creates, so every copy keeps the same stable IDs.
+    var sharedIdentities: StudioSharedIdentities? = nil
+    private enum CodingKeys: String, CodingKey { case schemaVersion, requestID, projectID, expectedRevision, action }
+}
+
+/// A fill region prepared for one `fillAtPoint` command on one exact revision.
+struct StudioPreparedFill {
+    let projectID: UUID
+    let revision: Int
+    let command: StudioCommand.FillAtPoint
+    let element: DrawnElement
+}
+
+/// Identities a shared edit created on its author's device, in document order.
+struct StudioSharedIdentities: Equatable {
+    var frameIDs: [String] = []
+    var layerIDs: [String] = []
+    var elementIDs: [String] = []
+    static let maximumCount = 4096
 }
 
 struct StudioCommandReceipt {
@@ -415,6 +474,8 @@ struct StudioCommandContext {
     let onionEnabled: Bool
     let onionSettings: StudioOnionSettings
     let unavailableCommands = ["export", "importMedia", "publish", "sendMessage", "call", "shell", "admin"]
+    /// The recorded reference source and rights basis (#279); nil for original briefs.
+    let spatterSource: SpatterSourceReference?
 
     init(document: StudioDocument) {
         projectID = document.id; revision = document.revision; name = document.name
@@ -433,6 +494,7 @@ struct StudioCommandContext {
         }
         layers = document.layers; editableAudioClips = document.audioClips
         supportedTools = StudioCommandExecutor.supportedTools
+        spatterSource = document.spatterSource
     }
 }
 
@@ -444,8 +506,11 @@ enum StudioCommandExecutor {
     static let maximumInputPoints = 16_384
     static let maximumGeneratedElements = 1024
     static let maximumGeneratedPoints = 65_536
-    /// Frames one `appendFrames` command may create: the MP4 exporter's frame cap.
-    static let maximumAppendedFrames = 240
+    /// Frames one `appendFrames` command may create (#279): the 1,000-frame
+    /// project limit, which sits below the MP4 exporter's 1,440-frame cap
+    /// (StudioMovieExportService.Limits.maximumFrames). The generated-element
+    /// budget usually binds first; frame holds carry the remaining ticks.
+    static let maximumAppendedFrames = 1000
     static let supportedTools: [DrawingTool] = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text]
 
     /// Only these plain primitives have identical append semantics and can share
@@ -521,7 +586,10 @@ enum StudioCommandExecutor {
             "cutElements": ["frame", "elementIDs"],
             "duplicateElements": ["frame", "elementIDs"], "copyElements": ["frame", "elementIDs"], "pasteElements": ["frame", "layer", "clipboardID"],
             "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion", "gridSettings", "onionSettings"],
-            "appendFrames": ["after", "frames"], "deleteFrameRange": ["frameIDs"]
+            "appendFrames": ["after", "frames"], "deleteFrameRange": ["frameIDs"],
+            "selectElements": ["frame", "elementIDs"],
+            "fillAtPoint": ["frame", "layer", "x", "y", "color", "opacity", "tolerance", "contiguous", "sampleAllLayers", "elementID"],
+            "setSourceReference": ["reference"]
         ]
         func textDescriptor(_ value: Any) throws {
             let fields = try object(value, keys: ["version", "content", "style"])
@@ -541,6 +609,9 @@ enum StudioCommandExecutor {
             }
             if ["transformSelectedArtwork", "deleteSelectedArtwork", "orderSelectedArtwork"].contains(kind), let image = fields["image"], !(image is NSNull) {
                 _ = try object(image, keys: ["assetID", "layerID"])
+            }
+            if kind == "setSourceReference", let reference = fields["reference"], !(reference is NSNull) {
+                _ = try object(reference, keys: ["url", "rightsBasis", "recordedAt", "note"])
             }
             if kind == "canvasOptions" {
                 if let settings = fields["gridSettings"] { _ = try object(settings, keys: ["spacing", "opacity", "tint"]) }
@@ -651,15 +722,23 @@ enum StudioCommandExecutor {
         switch request.action {
         case .apply(let commands):
             guard !commands.isEmpty, commands.count <= maximumCommands else { throw StudioCommandError.limitExceeded }
+            // A prepared fill region describes the captured revision only, so a
+            // fill must be the request's sole command.
+            if commands.count > 1, commands.contains(where: { if case .fillAtPoint = $0 { return true } else { return false } }) {
+                throw StudioCommandError.unsupportedCommand
+            }
             var budget = Budget()
             for command in commands {
                 try checkCancellation()
-                try apply(command, editor: &candidate, created: &created, budget: &budget, checkCancellation: checkCancellation)
+                try apply(command, editor: &candidate, created: &created, budget: &budget, request: request, checkCancellation: checkCancellation)
             }
             // Staging used the actual editor's commands; internal revision/history
             // increments are replaced with a single full-document commit below.
             var result = candidate.document
             result.revision = original.revision; result.modifiedAt = original.modifiedAt
+            if let identities = request.sharedIdentities {
+                result = try adopt(identities, original: original, result: result, created: &created)
+            }
             try result.validate()
             let stagedClipboard = candidate
             candidate = editor
@@ -677,7 +756,18 @@ enum StudioCommandExecutor {
                 default: return false
                 }
             }
-            if candidate.document != original && !preservesSelection { candidate.selectedElementIDs.removeAll() }
+            if request.sharedIdentities != nil {
+                // Another creator's replayed edit keeps this creator's selection
+                // while every selected drawing still exists on the active frame.
+                let existing = Set(candidate.document.frames.first { $0.id == candidate.document.activeFrameID }?.elements.map(\.id) ?? [])
+                if !editor.selectedElementIDs.isSubset(of: existing) { candidate.selectedElementIDs.removeAll() }
+            } else if candidate.document != original && !preservesSelection { candidate.selectedElementIDs.removeAll() }
+            // An explicit selection command leaves the staged selection, limited to
+            // drawings that still exist on the final active frame.
+            if commands.contains(where: { if case .selectElements = $0 { return true } else { return false } }) {
+                let existing = Set(candidate.document.frames.first { $0.id == candidate.document.activeFrameID }?.elements.map(\.id) ?? [])
+                candidate.selectedElementIDs = stagedClipboard.selectedElementIDs.intersection(existing)
+            }
             outcome = candidate.document == original ? .unchanged : .applied
         case .undo:
             guard candidate.canUndo else { throw StudioCommandError.noHistory }
@@ -758,7 +848,7 @@ enum StudioCommandExecutor {
     }
     private static func apply(_ command: StudioCommand, editor: inout StudioDocumentEditor,
                               created: inout [String: StudioCommandReceipt.Identity], budget: inout Budget,
-                              checkCancellation: () throws -> Void) throws {
+                              request: StudioCommandRequest, checkCancellation: () throws -> Void) throws {
         let document = editor.document
         func frame(_ reference: StudioCommandReference) throws -> String { try resolve(reference, kind: .frame, document: document, created: created) }
         func layer(_ reference: StudioCommandReference) throws -> String { try resolve(reference, kind: .layer, document: document, created: created) }
@@ -1133,7 +1223,94 @@ enum StudioCommandExecutor {
                 guard document.frames.contains(where: { $0.id == id }) else { throw StudioCommandError.invalidReference }
             }
             try editor.deleteFrames(value.frameIDs, checkCancellation: checkCancellation)
+        case .selectElements(let value):
+            // Selection by stable ID follows the canvas rules: drawings on the
+            // active frame, on visible unlocked layers, never erasers or invisible strokes.
+            let id = try frame(value.frame)
+            guard id == document.activeFrameID else { throw StudioCommandError.invalidReference }
+            let ids = Set(value.elementIDs)
+            guard ids.count == value.elementIDs.count, ids.count <= maximumGeneratedElements,
+                  ids.allSatisfy({ !$0.isEmpty && $0.count <= 160 }) else { throw StudioCommandError.invalidSettings }
+            let elements = document.frames.first { $0.id == id }!.elements
+            for elementID in value.elementIDs {
+                try checkCancellation()
+                guard let element = elements.first(where: { $0.id == elementID }), element.tool != .eraser, element.opacity > 0,
+                      let layerID = element.layerID, let target = document.layers.first(where: { $0.id == layerID }),
+                      target.visible, target.opacity > 0 else { throw StudioCommandError.invalidReference }
+                guard !target.isFullyLocked else { throw StudioDocumentError.locked }
+            }
+            editor.selectedElementIDs = ids
+        case .fillAtPoint(let value):
+            let frameID = try frame(value.frame), layerID = try layer(value.layer)
+            guard value.x.isFinite, value.y.isFinite, value.x >= 0, value.y >= 0,
+                  value.x < Double(document.width), value.y < Double(document.height) else { throw StudioCommandError.invalidGeometry }
+            guard validColor(value.color), value.opacity.isFinite, (0...1).contains(value.opacity),
+                  (0...128).contains(value.tolerance) else { throw StudioCommandError.invalidSettings }
+            guard !value.elementID.isEmpty, value.elementID.count <= 128 else { throw StudioCommandError.invalidGeometry }
+            guard let target = document.layers.first(where: { $0.id == layerID }), target.visible,
+                  !target.isFullyLocked, ["free", "position"].contains(target.lockMode) else { throw StudioDocumentError.locked }
+            // The executor cannot render artwork; the fill region must come from
+            // StudioFillService for exactly this command and captured revision.
+            guard let prepared = request.preparedFills[value.elementID] else { throw StudioCommandError.unsupportedCapability }
+            let element = prepared.element
+            guard prepared.projectID == request.projectID, prepared.revision == request.expectedRevision,
+                  prepared.command == value, element.id == value.elementID, element.tool == .fill,
+                  element.layerID == layerID, element.color == value.color, element.opacity == value.opacity,
+                  let mask = element.fillMask, mask.width == document.width, mask.height == document.height else {
+                throw StudioCommandError.staleRevision
+            }
+            do { try mask.validate() } catch { throw StudioCommandError.invalidGeometry }
+            try budget.generate([element])
+            try editor.commit(element, frameID: frameID)
+        case .setSourceReference(let value):
+            if let reference = value.reference {
+                do { try reference.validate() } catch { throw StudioCommandError.invalidSettings }
+                guard reference.recordedAt.timeIntervalSinceReferenceDate.isFinite else { throw StudioCommandError.invalidSettings }
+            }
+            try editor.change { $0.spatterSource = value.reference }
         }
+    }
+
+    /// A replayed shared edit (#232) keeps the identities its author's device
+    /// assigned. New frames, layers and elements are matched in document order;
+    /// any difference in what the replay created means the copies diverged, and
+    /// the edit is refused instead of guessed.
+    private static func adopt(_ identities: StudioSharedIdentities, original: StudioDocument, result: StudioDocument,
+                              created: inout [String: StudioCommandReceipt.Identity]) throws -> StudioDocument {
+        func added(_ old: [String], _ new: [String]) -> [String] { let existing = Set(old); return new.filter { !existing.contains($0) } }
+        let frames = added(original.frames.map(\.id), result.frames.map(\.id))
+        let layers = added(original.layers.map(\.id), result.layers.map(\.id))
+        let elements = added(original.frames.flatMap { $0.elements.map(\.id) }, result.frames.flatMap { $0.elements.map(\.id) })
+        guard frames.count == identities.frameIDs.count, layers.count == identities.layerIDs.count,
+              elements.count == identities.elementIDs.count else { throw StudioCommandError.invalidReference }
+        var replacements: [(local: String, shared: String)] = []
+        for (local, shared) in zip(frames + layers + elements, identities.frameIDs + identities.layerIDs + identities.elementIDs) where local != shared {
+            replacements.append((local, shared))
+        }
+        var adopted = result
+        if !replacements.isEmpty {
+            // Plain identifier tokens only, so a quoted JSON string match is exact.
+            func plain(_ id: String) -> Bool {
+                !id.isEmpty && id.utf8.count <= 160 && id.utf8.allSatisfy {
+                    (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 || $0 == 46 || $0 == 58
+                }
+            }
+            guard replacements.allSatisfy({ plain($0.local) && plain($0.shared) }),
+                  Set(replacements.map(\.local)).count == replacements.count,
+                  Set(replacements.map(\.shared)).count == replacements.count else { throw StudioCommandError.invalidReference }
+            let encoded = try JSONEncoder().encode(result)
+            guard try JSONDecoder().decode(StudioDocument.self, from: encoded) == result else { throw StudioCommandError.invalidReference }
+            var text = String(decoding: encoded, as: UTF8.self)
+            for pair in replacements where text.contains("\"" + pair.shared + "\"") { throw StudioCommandError.invalidReference }
+            for pair in replacements { text = text.replacingOccurrences(of: "\"" + pair.local + "\"", with: "\"" + pair.shared + "\"") }
+            adopted = try JSONDecoder().decode(StudioDocument.self, from: Data(text.utf8))
+            let map = Dictionary(uniqueKeysWithValues: replacements.map { ($0.local, $0.shared) })
+            created = created.mapValues { .init(kind: $0.kind, id: map[$0.id] ?? $0.id) }
+        }
+        // Another creator's edit does not move this creator's own view.
+        if adopted.frames.contains(where: { $0.id == original.activeFrameID }) { adopted.activeFrameID = original.activeFrameID }
+        if adopted.layers.contains(where: { $0.id == original.activeLayerID }) { adopted.activeLayerID = original.activeLayerID }
+        return adopted
     }
     private static func receipt(_ request: StudioCommandRequest, original: StudioDocument, final: StudioDocument,
                                 created: [String: StudioCommandReceipt.Identity], outcome: StudioCommandReceipt.Outcome,
@@ -1241,5 +1418,179 @@ extension StudioDocumentEditor {
                 value.activeFrameID = value.frames[min(activeIndex, value.frames.count - 1)].id
             }
         }
+    }
+}
+
+// MARK: - Shared room edits (#232)
+
+/// Post-commit notifications for shared rooms. The editor only reports what it
+/// committed; the Rooms bridge decides whether and how to share it. A nil hook
+/// costs nothing, and no hook can change or veto the commit it observes.
+@MainActor enum StudioEditObservers {
+    /// A typed request `StudioViewModel.applyStudioCommands` committed.
+    static var commandsCommitted: ((_ request: StudioCommandRequest, _ receipt: StudioCommandReceipt) -> Void)?
+    /// Drawings committed by touch (strokes, shapes, fills) outside typed commands.
+    static var elementsCommitted: ((_ before: StudioDocument, _ after: StudioDocument, _ frameID: String) -> Void)?
+}
+
+/// Which committed edits another creator's copy can replay, which entity each
+/// edit targets, and the bounded wire form. Pure value logic: Rooms owns the
+/// transport, and replays run through the same strict decoder and executor as
+/// every other typed command.
+enum StudioSharedEdit {
+    static let kind = "studio.apply"
+    /// Below the room stream's 65,536-byte payload bound, leaving room for the envelope.
+    static let maximumPayloadBytes = 60_000
+
+    struct Payload: Codable, Equatable {
+        var schemaVersion = 1
+        /// "frame:<id>", "layer:<id>" or "audio:<id>"; nil means the whole document.
+        var target: String?
+        /// The typed commands as one JSON array, replayed through `StudioCommandExecutor.decode`.
+        let commands: String
+        var createdFrameIDs: [String] = []
+        var createdLayerIDs: [String] = []
+        var createdElementIDs: [String] = []
+    }
+
+    enum Share {
+        /// Selection, guides and clipboard copies change only this device's view.
+        case viewOnly
+        case replay([StudioCommand])
+        case unsupported(String)
+    }
+
+    /// The document effect of a committed batch, in replayable form. Cuts are
+    /// shared as deletions (the clipboard stays on this device); anything that
+    /// depends on this device's clipboard, selection mask or rendered pixels is
+    /// reported as unsupported rather than approximated.
+    static func share(_ commands: [StudioCommand]) -> Share {
+        var replay: [StudioCommand] = []
+        for command in commands {
+            switch command {
+            case .selectFrame, .selectLayer, .selectElements, .canvasOptions, .copyFrame, .copyElements: continue
+            case .cutFrame(let reference): replay.append(.deleteFrame(reference))
+            case .cutElements(let value): replay.append(.deleteElements(value))
+            case .pasteFrame, .pasteElements: return .unsupported("Pasting from this device's clipboard is not shared with the room yet.")
+            case .eraseSelectedElements: return .unsupported("Erasing selected drawings is not shared with the room yet.")
+            case .fillAtPoint: return .unsupported("Fill regions are not shared with the room yet.")
+            default: replay.append(command)
+            }
+        }
+        return replay.isEmpty ? .viewOnly : .replay(replay)
+    }
+
+    /// Commands a replay may contain: exactly those `share` passes through unchanged.
+    static func isReplayable(_ command: StudioCommand) -> Bool {
+        switch command {
+        case .selectFrame, .selectLayer, .selectElements, .canvasOptions, .copyFrame, .copyElements,
+             .cutFrame, .cutElements, .pasteFrame, .pasteElements, .eraseSelectedElements, .fillAtPoint: return false
+        default: return true
+        }
+    }
+
+    /// One entity when every command edits the same frame, layer or sound;
+    /// otherwise nil, which the server treats as overlapping every other edit.
+    static func target(of commands: [StudioCommand]) -> String? {
+        var targets = Set<String>()
+        for command in commands {
+            guard let target = target(of: command) else { return nil }
+            targets.insert(target)
+        }
+        return targets.count == 1 ? targets.first : nil
+    }
+    static func target(of command: StudioCommand) -> String? {
+        func frame(_ reference: StudioCommandReference) -> String? {
+            if case .id(let id) = reference, !id.isEmpty, id.count <= 160 { return "frame:" + id }
+            return nil
+        }
+        func audio(_ clipID: String) -> String? { clipID.isEmpty || clipID.count > 160 ? nil : "audio:" + clipID }
+        switch command {
+        case .draw(let value): return frame(value.frame)
+        case .deleteElements(let value), .cutElements(let value), .duplicateElements(let value): return frame(value.frame)
+        case .translateElements(let value): return frame(value.frame)
+        case .orderElements(let value): return frame(value.frame)
+        case .reflectElements(let value): return frame(value.frame)
+        case .transformElements(let value): return frame(value.frame)
+        case .updateText(let value): return frame(value.frame)
+        case .transformSelectedArtwork(let value): return frame(value.frame)
+        case .deleteSelectedArtwork(let value): return frame(value.frame)
+        case .orderSelectedArtwork(let value): return frame(value.frame)
+        case .cropImage(let value): return frame(value.frame)
+        case .rotateImage(let value): return frame(value.frame)
+        case .reflectImage(let value): return frame(value.frame)
+        case .deleteImage(let value): return frame(value.frame)
+        case .updateImagePlacement(let value): return frame(value.frame)
+        case .setFrameHold(let value): return frame(value.frame)
+        case .updateLayer(let value):
+            if case .id(let id) = value.layer, !id.isEmpty, id.count <= 160 { return "layer:" + id }
+            return nil
+        case .updateAudioClip(let value): return audio(value.clipID)
+        case .splitAudioClip(let value): return audio(value.clipID)
+        case .deleteAudioClip(let value): return audio(value.clipID)
+        case .duplicateAudioClip(let value): return audio(value.clipID)
+        case .updateAudioTrack(let value): return "audio:track-\(value.track)"
+        default: return nil // frame/layer structure, project settings and generation touch the whole document
+        }
+    }
+
+    static func payload(_ commands: [StudioCommand], receipt: StudioCommandReceipt) throws -> Payload {
+        try payload(commands, created: .init(frameIDs: receipt.createdFrameIDs, layerIDs: receipt.createdLayerIDs, elementIDs: receipt.createdElementIDs))
+    }
+    static func payload(_ commands: [StudioCommand], created: StudioSharedIdentities) throws -> Payload {
+        guard !commands.isEmpty, commands.count <= StudioCommandExecutor.maximumCommands else { throw StudioCommandError.limitExceeded }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let payload = Payload(target: target(of: commands), commands: String(decoding: try encoder.encode(commands), as: UTF8.self),
+                              createdFrameIDs: created.frameIDs, createdLayerIDs: created.layerIDs, createdElementIDs: created.elementIDs)
+        guard try encoder.encode(payload).count <= maximumPayloadBytes else { throw StudioCommandError.limitExceeded }
+        return payload
+    }
+
+    /// Rebuilds another creator's edit as a request against this device's copy.
+    /// The commands pass the same strict wire validation as any untrusted input
+    /// and must all be replayable; the author's identities travel with it.
+    static func request(from payload: Payload, projectID: UUID, revision: Int, requestID: UUID = UUID()) throws -> StudioCommandRequest {
+        guard payload.schemaVersion == 1, payload.commands.utf8.count <= maximumPayloadBytes else { throw StudioCommandError.unsupportedCommand }
+        let lists = [payload.createdFrameIDs, payload.createdLayerIDs, payload.createdElementIDs]
+        guard lists.allSatisfy({ $0.count <= StudioSharedIdentities.maximumCount && $0.allSatisfy { !$0.isEmpty && $0.utf8.count <= 160 } }),
+              payload.target.map({ (1...200).contains($0.count) }) ?? true else { throw StudioCommandError.malformed }
+        // A complete JSON array on its own cannot break out of the envelope below.
+        let commandData = Data(payload.commands.utf8)
+        guard (try? JSONSerialization.jsonObject(with: commandData)) is [Any] else { throw StudioCommandError.malformed }
+        let envelope = "{\"schemaVersion\":1,\"requestID\":\"\(requestID.uuidString)\",\"projectID\":\"\(projectID.uuidString)\",\"expectedRevision\":\(revision),\"action\":{\"apply\":" + payload.commands + "}}"
+        var request = try StudioCommandExecutor.decode(Data(envelope.utf8))
+        guard request.projectID == projectID, request.expectedRevision == revision, case .apply(let commands) = request.action,
+              commands.allSatisfy(isReplayable) else { throw StudioCommandError.unsupportedCommand }
+        guard target(of: commands) == payload.target else { throw StudioCommandError.malformed }
+        request.sharedIdentities = .init(frameIDs: payload.createdFrameIDs, layerIDs: payload.createdLayerIDs, elementIDs: payload.createdElementIDs)
+        return request
+    }
+
+    /// Drawings a touch commit added to one frame, as `draw` commands, only when
+    /// replaying them on the earlier document reproduces the committed document
+    /// exactly. Nil means the commit cannot be shared faithfully.
+    static func drawCommands(before: StudioDocument, after: StudioDocument, frameID: String) -> (commands: [StudioCommand], created: StudioSharedIdentities)? {
+        guard before.id == after.id, let old = before.frames.first(where: { $0.id == frameID }),
+              let new = after.frames.first(where: { $0.id == frameID }) else { return nil }
+        let oldIDs = Set(old.elements.map(\.id))
+        let added = new.elements.filter { !oldIDs.contains($0.id) }
+        guard !added.isEmpty, added.count <= StudioCommandExecutor.maximumStrokes else { return nil }
+        var groups: [(layer: String, strokes: [StudioCommandStroke])] = []
+        for element in added {
+            guard let layerID = element.layerID else { return nil }
+            let stroke = StudioCommandStroke(id: element.id, tool: element.tool, points: element.points, color: element.color,
+                width: Double(element.width), opacity: element.opacity, shape: element.shape, eraser: element.eraser,
+                text: element.text, brush: element.brush)
+            if groups.last?.layer == layerID { groups[groups.count - 1].strokes.append(stroke) }
+            else { groups.append((layerID, [stroke])) }
+        }
+        let commands: [StudioCommand] = groups.map { .draw(.init(frame: .id(frameID), layer: .id($0.layer), strokes: $0.strokes)) }
+        guard var probe = try? StudioDocumentEditor(document: before) else { return nil }
+        let request = StudioCommandRequest(requestID: UUID(), projectID: before.id, expectedRevision: before.revision, action: .apply(commands))
+        guard (try? StudioCommandExecutor.execute(request, editor: &probe, checkCancellation: {})) != nil else { return nil }
+        func content(_ document: StudioDocument) -> StudioDocument {
+            var value = document; value.revision = 0; value.modifiedAt = value.createdAt; return value
+        }
+        return content(probe.document) == content(after) ? (commands, .init(elementIDs: added.map(\.id))) : nil
     }
 }

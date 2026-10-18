@@ -1997,7 +1997,7 @@ struct SpatterInstructionGrammar: Equatable {
 }
 
 enum SpatterInstructionCatalog {
-    static let version = 3
+    static let version = 4
     static let grammars: [SpatterInstructionGrammar] = [
         .init(name: "multiClauseBrief", examples: ["A red stick figure walks left to right for 1 second, then punches, then falls; 3 seconds.",
                                                    "A red stick figure runs left to right, then kicks; a blue stick figure ducks, then jumps; 2.5 seconds.",
@@ -2060,7 +2060,13 @@ enum SpatterInstructionCatalog {
         .init(name: "audioClip", examples: ["Set selected audio clip volume to 40%.", "Mute selected audio clip.", "Unmute selected audio clip.", "Fade selected audio clip in over 0.05 seconds and out over 0.10 seconds.", "Clear selected audio clip fades.", "Move selected audio clip to 1.25 seconds on track 2.", "Trim selected audio clip from source 0.10 seconds for 0.50 seconds.", "Duplicate selected audio clip.", "Repeat selected audio clip with 4 additional copies.", "Split selected audio clip at 0.5 timeline seconds.", "Delete selected audio clip."],
               commands: ["updateAudioClip", "duplicateAudioClip", "splitAudioClip", "deleteAudioClip"], summary: "Selected clip volume, mute, linear fades, placement, trim, duplicate, repeat, split and delete."),
         .init(name: "audioTrack", examples: ["Set audio track 1 volume to 40%.", "Mute audio track 1.", "Unmute audio track 1.", "Pan audio track 2 to L40.", "Pan audio track 2 to center.", "Solo audio track 3.", "Unsolo audio track 3."],
-              commands: ["updateAudioTrack"], summary: "Track 1–4 volume, mute, pan L100–R100 and solo.")
+              commands: ["updateAudioTrack"], summary: "Track 1–4 volume, mute, pan L100–R100 and solo."),
+        .init(name: "fill", examples: [SpatterFillInstruction.example, SpatterFillInstruction.optionsExample],
+              commands: ["fillAtPoint"], summary: "Bucket fill on the active frame and layer at a canvas point given in percent, with #RRGGBB color, opacity 0–100%, tolerance 0–128 and active-layer or all-layer sampling. Studio's Fill tool computes the region."),
+        .init(name: "selectByID", examples: [SpatterSelectByIDInstruction.example, SpatterSelectByIDInstruction.clearExample],
+              commands: ["selectElements"], summary: "Select 1–64 drawings on the active frame by their quoted IDs, or clear the drawing selection. Selection never changes the project."),
+        .init(name: "sourceReference", examples: [SpatterSourceInstruction.example, SpatterSourceInstruction.noteExample, SpatterSourceInstruction.clearExample],
+              commands: ["setSourceReference"], summary: "Record an https reference source with its rights basis (licensed, owner-authorized, creator-confirmed or unknown) and time, or clear it. Nothing is downloaded; with a source recorded, only 20–60 s briefs on an allowed basis generate.")
     ]
     static var names: [String] { grammars.map(\.name) }
     static var commandNames: [String] { Array(Set(grammars.flatMap(\.commands))).sorted() }
