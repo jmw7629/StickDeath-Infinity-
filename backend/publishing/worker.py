@@ -43,9 +43,20 @@ class JobAPI:
             raise RuntimeError('Job service response unavailable; preserve lease for reconciliation.') from None
 
 
+# Bounded concurrency (#263): each running executor holds one slot lock in the
+# private checkpoint directory. A host may run up to ``max_concurrent`` copies
+# (default one, never more than MAX_CONCURRENCY); an executor that finds every
+# slot taken claims nothing and reports ``busy`` instead of piling up uploads
+# against the channel quota.
+MAX_CONCURRENCY = 4
+
+
 class PublishingWorker:
     def __init__(self, api: JobAPI, artifact_root: Path, checkpoint_root: Path,
-                 access_token, channel_id: str):
+                 access_token, channel_id: str, max_concurrent: int = 1):
+        if isinstance(max_concurrent, bool) or not isinstance(max_concurrent, int) or not 1 <= max_concurrent <= MAX_CONCURRENCY:
+            raise ValueError('Worker concurrency must be between 1 and %d.' % MAX_CONCURRENCY)
+        self.max_concurrent = max_concurrent
         self.api = api
         self.artifacts = artifact_root.resolve(strict=True)
         self.checkpoints = checkpoint_root
@@ -56,8 +67,10 @@ class PublishingWorker:
         self.checkpoints.mkdir(mode=0o700,parents=True,exist_ok=True)
         if self.checkpoints.is_symlink() or self.checkpoints.stat().st_mode & 0o077:
             raise RuntimeError('Worker state must be private.')
-        with (self.checkpoints/'worker.lock').open('a') as lock:
-            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        lock = self._acquire_slot()
+        if lock is None:
+            return {'state':'busy'}
+        with lock:
             removal = self.api.call('removal_claim')
             if not removal.get('empty'):
                 return self._withdraw(removal)
@@ -100,6 +113,18 @@ class PublishingWorker:
                 self.api.call('finish',job=job_id,token=token,provider=None,url=None,
                               failure='Artifact or approval rejected. Refresh status before retry.')
                 return {'state':'failed','job':job_id}
+
+    def _acquire_slot(self):
+        """Open and lock the first free slot file; None when all are held."""
+        for slot in range(self.max_concurrent):
+            name = 'worker.lock' if slot == 0 else 'worker-%d.lock' % slot
+            handle = (self.checkpoints/name).open('a')
+            try:
+                fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                return handle
+            except BlockingIOError:
+                handle.close()
+        return None
 
     def _withdraw(self, job: dict) -> dict:
         job_id = job['job']; token = job['lease']; provider = job['provider']

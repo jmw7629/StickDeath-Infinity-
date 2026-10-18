@@ -11,11 +11,33 @@
 # backups and must be rehearsed there by the owner with the same checks.
 # It also confirms that the audit append-only guard, the closed legacy messaging
 # surface and the credential slots (references only) survive the restore.
-# Usage: scripts/backend/verify_backup.sh [--keep]
+# With --report the outcome (succeeded or failed) is also recorded through the
+# service-only sdi_ops_report RPC as kind restore_drill, labelled with the source
+# commit and carrying the metric local_rehearsal=1 so the command centre never
+# mistakes it for a drill of the live project (#257). SDI_BACKEND_URL and
+# SDI_SERVICE_KEY come from the environment (host secret store); when either is
+# missing the report is skipped with a message and the rehearsal result stands.
+# Usage: scripts/backend/verify_backup.sh [--keep] [--report]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SQL_DIR="$ROOT/backend/sql"; README="$SQL_DIR/README.md"; STUBS="$ROOT/scripts/backend/sql_test_stubs.sql"
-KEEP=0; [ "${1:-}" = "--keep" ] && KEEP=1
+KEEP=0; REPORT=0
+for arg in "$@"; do
+ case "$arg" in
+  --keep) KEEP=1 ;;
+  --report) REPORT=1 ;;
+  *) echo "Unknown option: $arg (use --keep and/or --report)" >&2; exit 2 ;;
+ esac
+done
+TABLES=0; NONEMPTY=0; DUMP_BYTES=0
+report_outcome() {
+ local outcome="$1" label=""
+ [ "$REPORT" = "1" ] || return 0
+ label="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || true)"
+ (cd "$ROOT" && python3 -m backend.ops.report restore_drill "$outcome" --label "$label" \
+   --metric local_rehearsal=1 --metric tables="$TABLES" --metric nonempty_tables="$NONEMPTY" --metric dump_bytes="$DUMP_BYTES") \
+   || echo "Operations report not recorded (see message above); the rehearsal result is unchanged." >&2
+}
 PGBIN="${PGBIN:-}"
 if [ -z "$PGBIN" ]; then
  for candidate in "$(command -v pg_config >/dev/null 2>&1 && pg_config --bindir || true)" /usr/lib/postgresql/*/bin /usr/local/pgsql/bin /opt/homebrew/opt/postgresql@16/bin; do
@@ -35,6 +57,8 @@ fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sdi-backup-test.XXXXXX")"; SOCKET_DIR="$(mktemp -d /tmp/sdibk.XXXXXX)"
 DATA="$WORK/data"; LOG="$WORK/postgres.log"; PORT="${SDI_SQL_TEST_PORT:-54331}"; DUMP="$WORK/backup.dump"
 cleanup() {
+ local status=$?
+ if [ "$status" = "0" ]; then report_outcome succeeded; else report_outcome failed; fi
  if [ -f "$DATA/postmaster.pid" ]; then "${AS_PG[@]}" "$PGBIN/pg_ctl" -D "$DATA" stop -m fast -s >/dev/null 2>&1 || true; fi
  rm -rf "$SOCKET_DIR"; if [ "$KEEP" = "0" ]; then rm -rf "$WORK"; else echo "Kept $WORK"; fi
 }
@@ -68,7 +92,8 @@ begin
 end $$;
 SQL
 "${AS_PG[@]}" "$PGBIN/pg_dump" -h "$SOCKET_DIR" -p "$PORT" -U postgres -Fc -f "$DUMP" source
-echo "== dump written: $(stat -c %s "$DUMP") bytes"
+DUMP_BYTES="$(stat -c %s "$DUMP")"
+echo "== dump written: $DUMP_BYTES bytes"
 "${AS_PG[@]}" "$PGBIN/pg_restore" -h "$SOCKET_DIR" -p "$PORT" -U postgres -d restored --no-owner "$DUMP" 2>"$WORK/restore.err" || { echo "pg_restore reported errors:" >&2; cat "$WORK/restore.err" >&2; exit 1; }
 [ -s "$WORK/restore.err" ] && { echo "pg_restore warnings:"; cat "$WORK/restore.err"; }
 COUNT_SQL="select n.nspname||'.'||c.relname||'='||(xpath('/row/c/text()',query_to_xml(format('select count(*) as c from %I.%I',n.nspname,c.relname),false,true,'')))[1]::text
