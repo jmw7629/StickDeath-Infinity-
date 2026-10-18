@@ -2699,7 +2699,7 @@ grant execute on function public.sdi_feed_publish_claim(),public.sdi_feed_publis
  public.sdi_feed_removal_claim(),public.sdi_feed_removal_finish(text,uuid,uuid,boolean) to service_role;
 commit;
 
--- ===== rooms-v2.sql (sha256 3fc2e08a25799b69) =====
+-- ===== rooms-v2.sql (sha256 d8bb0f20d712961c) =====
 -- Unapplied candidate. Install after feed-publication.sql (needs room-invitations.sql,
 -- moderation.sql and admin-users.sql). Rooms remain invitation-based collaboration on
 -- an explicitly shared Studio project: no chat, calls, media streams or draft harvesting.
@@ -3279,6 +3279,255 @@ create function public.sdi_room_asset_sweep(max_items integer default 200) retur
 language sql security invoker set search_path='' as $$select sdi_private.room_asset_sweep(max_items)$$;
 revoke all on function public.sdi_room_asset_sweep(integer) from public,anon,authenticated;
 grant execute on function public.sdi_room_asset_sweep(integer) to service_role;
+commit;
+
+-- Rooms v2.2 (#234, owner decision 2026-10-18). Owner-approved project handoff:
+-- the room owner may send the shared project, as the portable .sdiproject
+-- backup bytes, to approved members through temporary server storage that is
+-- deleted afterwards. One live snapshot per room; the server recomputes its
+-- SHA-256; only approved, non-revoked members of that room (never the owner,
+-- outsiders or anonymous callers) may download it; each member records a
+-- receipt after verifying and importing it as a new device project. The copy is
+-- deleted once every current member holds a receipt, on revocation, when it is
+-- replaced, when the shared project changes, when the room closes, or after 72
+-- hours. The owner's device project is only read; nothing here edits, replaces
+-- or deletes any device project, and a member's import never overwrites one.
+-- Bounds: 32 MiB per snapshot in 256 KiB chunks (max 128), 20 offers per owner
+-- per day, 600 handoff calls per minute per account.
+begin;
+create table sdi_private.room_project_snapshots (
+ id uuid primary key default gen_random_uuid(),
+ room_id uuid not null references public.sdi_rooms(id) on delete cascade,
+ owner_id uuid not null references auth.users(id) on delete cascade,
+ project_ref text not null check(length(project_ref) between 1 and 200),
+ project_revision bigint not null,
+ title text not null check(length(title) between 1 and 100),
+ byte_size integer not null check(byte_size between 1 and 33554432),
+ chunk_count integer not null check(chunk_count between 1 and 128),
+ sha256 text not null check(sha256 ~ '^[a-f0-9]{64}$'),
+ state text not null default 'receiving' check(state in('receiving','available','deleted')),
+ end_reason text check(end_reason in('rejected','revoked','replaced','expired','room_closed','project_changed','delivered')),
+ created_at timestamptz not null default clock_timestamp(),
+ offered_at timestamptz,
+ expires_at timestamptz not null,
+ deleted_at timestamptz,
+ delete_verified boolean not null default false,
+ check((state='deleted')=(end_reason is not null))
+);
+create unique index room_project_snapshots_one_live on sdi_private.room_project_snapshots(room_id) where state<>'deleted';
+create table sdi_private.room_project_snapshot_chunks (
+ snapshot_id uuid not null references sdi_private.room_project_snapshots(id) on delete cascade,
+ idx integer not null check(idx between 0 and 127),
+ data bytea not null check(octet_length(data) between 1 and 262144),
+ primary key(snapshot_id,idx)
+);
+-- One receipt per member per snapshot: the member verified the SHA-256 and
+-- imported the project as a new device project.
+create table sdi_private.room_project_snapshot_receipts (
+ snapshot_id uuid not null references sdi_private.room_project_snapshots(id) on delete cascade,
+ member uuid not null references auth.users(id) on delete cascade,
+ received_at timestamptz not null default clock_timestamp(),
+ primary key(snapshot_id,member)
+);
+create table sdi_private.room_snapshot_budget (
+ user_id uuid primary key references auth.users(id) on delete cascade, window_start timestamptz not null, attempts integer not null
+);
+-- Append-only evidence (guarded by security-audit-integrity.sql): offers,
+-- downloads and every deletion with its verified chunk count.
+create table sdi_private.room_snapshot_audit (
+ id uuid primary key default gen_random_uuid(), snapshot_id uuid not null, room_id uuid not null, actor uuid,
+ event text not null check(event in('offered','downloaded','rejected','revoked','replaced','expired','room_closed','project_changed','delivered')),
+ chunks_removed integer, verified boolean, created_at timestamptz not null default clock_timestamp()
+);
+alter table sdi_private.room_project_snapshots enable row level security;
+alter table sdi_private.room_project_snapshot_chunks enable row level security;
+alter table sdi_private.room_project_snapshot_receipts enable row level security;
+alter table sdi_private.room_snapshot_budget enable row level security;
+alter table sdi_private.room_snapshot_audit enable row level security;
+revoke all on sdi_private.room_project_snapshots,sdi_private.room_project_snapshot_chunks,sdi_private.room_project_snapshot_receipts,
+ sdi_private.room_snapshot_budget,sdi_private.room_snapshot_audit from public,anon,authenticated;
+
+-- Approved, non-revoked members other than the owner who hold no receipt yet.
+create function sdi_private.room_snapshot_awaiting(s uuid) returns integer
+language sql stable security definer set search_path='' as $$
+ select count(*)::integer from sdi_private.room_project_snapshots x join public.sdi_rooms room on room.id=x.room_id
+  join public.sdi_room_members m on m.room_id=x.room_id and m.user_id<>room.owner_id
+  where x.id=s and m.owner_approved and m.member_accepted and not m.revoked
+  and not exists(select 1 from sdi_private.room_project_snapshot_receipts r where r.snapshot_id=x.id and r.member=m.user_id)
+$$;
+revoke all on function sdi_private.room_snapshot_awaiting(uuid) from public,anon,authenticated;
+-- Receipts held by members who are still active in the room.
+create function sdi_private.room_snapshot_delivered(s uuid) returns integer
+language sql stable security definer set search_path='' as $$
+ select count(*)::integer from sdi_private.room_project_snapshot_receipts r join sdi_private.room_project_snapshots x on x.id=r.snapshot_id
+  where r.snapshot_id=s and sdi_private.room_member_active(x.room_id,r.member)
+$$;
+revoke all on function sdi_private.room_snapshot_delivered(uuid) from public,anon,authenticated;
+
+-- Delete a snapshot's bytes and record verified evidence. Never touches a device.
+create function sdi_private.room_snapshot_discard(snapshot uuid,reason text,actor uuid default null) returns boolean
+language plpgsql security definer set search_path='' as $$
+declare removed integer; remaining boolean; s sdi_private.room_project_snapshots;
+begin
+ select * into s from sdi_private.room_project_snapshots where id=snapshot for update;
+ if not found or s.state='deleted' then return false; end if;
+ delete from sdi_private.room_project_snapshot_chunks where snapshot_id=snapshot;
+ get diagnostics removed=row_count;
+ remaining:=exists(select 1 from sdi_private.room_project_snapshot_chunks where snapshot_id=snapshot);
+ update sdi_private.room_project_snapshots set state='deleted',end_reason=reason,deleted_at=clock_timestamp(),delete_verified=not remaining where id=snapshot;
+ insert into sdi_private.room_snapshot_audit(snapshot_id,room_id,actor,event,chunks_removed,verified) values(snapshot,s.room_id,actor,reason,removed,not remaining);
+ return not remaining;
+end $$;
+revoke all on function sdi_private.room_snapshot_discard(uuid,text,uuid) from public,anon,authenticated;
+
+create function sdi_private.room_snapshot(action text,room uuid default null,snapshot uuid default null,byte_size bigint default null,
+ sha256 text default null,chunk_index integer default null,data text default null) returns jsonb
+language plpgsql security definer set search_path='' as $$
+#variable_conflict use_column
+declare actor uuid:=auth.uid(); target public.sdi_rooms; s sdi_private.room_project_snapshots; n integer; raw bytea; whole bytea;
+ expected integer; chunk_size constant integer:=262144; chunks integer; created uuid; is_owner boolean; verified boolean;
+begin
+ if actor is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor and not is_anonymous) then
+  return jsonb_build_object('error','Sign in with a full account.'); end if;
+ insert into sdi_private.room_snapshot_budget values(actor,clock_timestamp(),1)
+ on conflict(user_id) do update set
+ attempts=case when room_snapshot_budget.window_start<clock_timestamp()-interval '1 minute' then 1 else room_snapshot_budget.attempts+1 end,
+ window_start=case when room_snapshot_budget.window_start<clock_timestamp()-interval '1 minute' then clock_timestamp() else room_snapshot_budget.window_start end
+ returning attempts into n;
+ if n>600 then return jsonb_build_object('error','Too many handoff requests. Wait a minute.'); end if;
+ if room is null or not sdi_private.room_access(room) then return jsonb_build_object('error','Room is unavailable.'); end if;
+ select * into target from public.sdi_rooms where id=room and not closed;
+ if not found then return jsonb_build_object('error','Room is unavailable.'); end if;
+ is_owner:=target.owner_id=actor;
+ -- The live snapshot of this room only; another room's snapshot id never resolves here.
+ select * into s from sdi_private.room_project_snapshots x where x.room_id=target.id and x.state<>'deleted'
+  and (snapshot is null or x.id=snapshot) for update;
+ if found and (s.expires_at<=clock_timestamp() or s.project_ref is distinct from target.project_ref) then
+  perform sdi_private.room_snapshot_discard(s.id,case when s.expires_at<=clock_timestamp() then 'expired' else 'project_changed' end);
+  s:=null;
+ end if;
+ if action='current' then
+  if s.id is null or (s.state<>'available' and not is_owner) then return jsonb_build_object('snapshot',null,'chunk_size',chunk_size); end if;
+  return jsonb_build_object('chunk_size',chunk_size,'snapshot',jsonb_build_object('snapshot_id',s.id,'title',s.title,'project_ref',s.project_ref,
+   'project_revision',s.project_revision,'byte_size',s.byte_size,'chunk_count',s.chunk_count,'sha256',s.sha256,'state',s.state,
+   'offered_at',s.offered_at,'expires_at',s.expires_at,'mine',is_owner,
+   'received_by_me',exists(select 1 from sdi_private.room_project_snapshot_receipts r where r.snapshot_id=s.id and r.member=actor),
+   'received',case when is_owner then (select coalesce(jsonb_agg(c.idx order by c.idx),'[]'::jsonb) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id) end,
+   'delivered',case when is_owner then sdi_private.room_snapshot_delivered(s.id) end,
+   'awaiting',case when is_owner then sdi_private.room_snapshot_awaiting(s.id) end));
+ end if;
+ if action='offer' then
+  if not is_owner then return jsonb_build_object('error','Only the room owner can send the shared project.'); end if;
+  if target.project_ref is null or target.project_title is null then return jsonb_build_object('error','Share a project in this room before sending it.'); end if;
+  if byte_size is null or byte_size not between 1 and 33554432 or sha256 is null or sha256 !~ '^[a-f0-9]{64}$' then
+   return jsonb_build_object('error','A project backup up to 32 MB and its SHA-256 are required.'); end if;
+  if s.id is not null then
+   if s.sha256=room_snapshot.sha256 and s.byte_size=room_snapshot.byte_size and s.project_revision=target.project_revision then
+    return jsonb_build_object('status','existing','snapshot_id',s.id,'state',s.state,'chunk_size',chunk_size,'chunk_count',s.chunk_count,'expires_at',s.expires_at,
+     'received',(select coalesce(jsonb_agg(c.idx order by c.idx),'[]'::jsonb) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id));
+   end if;
+   perform sdi_private.room_snapshot_discard(s.id,'replaced',actor);
+  end if;
+  if (select count(*) from sdi_private.room_project_snapshots x where x.owner_id=actor and x.created_at>clock_timestamp()-interval '1 day')>=20 then
+   return jsonb_build_object('error','Daily project handoff limit reached.'); end if;
+  chunks:=((byte_size+chunk_size-1)/chunk_size)::integer;
+  insert into sdi_private.room_project_snapshots(room_id,owner_id,project_ref,project_revision,title,byte_size,chunk_count,sha256,expires_at)
+  values(target.id,actor,target.project_ref,target.project_revision,target.project_title,byte_size,chunks,sha256,clock_timestamp()+interval '1 hour')
+  returning id into created;
+  return jsonb_build_object('status','declared','snapshot_id',created,'state','receiving','chunk_size',chunk_size,'chunk_count',chunks,
+   'expires_at',(select expires_at from sdi_private.room_project_snapshots where id=created));
+ end if;
+ if s.id is null then return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+ if action='put' then
+  if not is_owner or s.state<>'receiving' then return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+  if chunk_index is null or chunk_index<0 or chunk_index>=s.chunk_count or data is null or length(data)>360000 then
+   return jsonb_build_object('error','Chunk index or size is invalid.'); end if;
+  begin raw:=decode(data,'base64'); exception when others then return jsonb_build_object('error','Chunk is not valid base64.'); end;
+  expected:=case when chunk_index=s.chunk_count-1 then s.byte_size-chunk_index*chunk_size else chunk_size end;
+  if octet_length(raw)<>expected then return jsonb_build_object('error','Chunk length does not match the declared size.'); end if;
+  insert into sdi_private.room_project_snapshot_chunks(snapshot_id,idx,data) values(s.id,chunk_index,raw)
+  on conflict(snapshot_id,idx) do update set data=excluded.data;
+  return jsonb_build_object('status','stored','received',(select count(*) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id));
+ elsif action='finalize' then
+  if not is_owner or s.state<>'receiving' then return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+  if (select count(*) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id)<>s.chunk_count then
+   return jsonb_build_object('error','incomplete','received',(select coalesce(jsonb_agg(c.idx order by c.idx),'[]'::jsonb) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id));
+  end if;
+  select string_agg(c.data,''::bytea order by c.idx) into whole from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id;
+  if octet_length(whole)<>s.byte_size or encode(extensions.digest(whole,'sha256'),'hex')<>s.sha256 then
+   perform sdi_private.room_snapshot_discard(s.id,'rejected',actor);
+   return jsonb_build_object('error','The sent project was corrupt and has been discarded. Send it again.');
+  end if;
+  update sdi_private.room_project_snapshots set state='available',offered_at=clock_timestamp(),expires_at=clock_timestamp()+interval '72 hours' where id=s.id;
+  insert into sdi_private.room_snapshot_audit(snapshot_id,room_id,actor,event) values(s.id,target.id,actor,'offered');
+  return jsonb_build_object('status','available','snapshot_id',s.id,'awaiting',sdi_private.room_snapshot_awaiting(s.id),
+   'expires_at',(select expires_at from sdi_private.room_project_snapshots where id=s.id));
+ elsif action='get' then
+  if is_owner or s.state<>'available' or not sdi_private.room_member_active(target.id,actor) then
+   return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+  if chunk_index is null or chunk_index<0 or chunk_index>=s.chunk_count then return jsonb_build_object('error','Chunk index is invalid.'); end if;
+  return jsonb_build_object('snapshot_id',s.id,'chunk_index',chunk_index,'chunk_count',s.chunk_count,'sha256',s.sha256,
+   'data',(select encode(c.data,'base64') from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id and c.idx=chunk_index));
+ elsif action='receipt' then
+  -- The member verified the SHA-256 and imported a new device project.
+  if is_owner or s.state<>'available' or not sdi_private.room_member_active(target.id,actor) then
+   return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+  if sha256 is distinct from s.sha256 then return jsonb_build_object('error','The receipt does not match the shared project.'); end if;
+  insert into sdi_private.room_project_snapshot_receipts(snapshot_id,member) values(s.id,actor) on conflict do nothing;
+  if found then insert into sdi_private.room_snapshot_audit(snapshot_id,room_id,actor,event) values(s.id,target.id,actor,'downloaded'); end if;
+  if sdi_private.room_snapshot_awaiting(s.id)=0 then
+   verified:=sdi_private.room_snapshot_discard(s.id,'delivered',actor);
+   return jsonb_build_object('status','recorded','server_copy','deleted','verified',verified);
+  end if;
+  return jsonb_build_object('status','recorded','server_copy','retained');
+ elsif action='revoke' then
+  if not is_owner then return jsonb_build_object('error','Only the room owner can withdraw the shared project.'); end if;
+  return jsonb_build_object('status','revoked','verified',sdi_private.room_snapshot_discard(s.id,'revoked',actor));
+ end if;
+ return jsonb_build_object('error','Unsupported handoff operation.');
+end $$;
+revoke all on function sdi_private.room_snapshot(text,uuid,uuid,bigint,text,integer,text) from public,anon;
+grant execute on function sdi_private.room_snapshot(text,uuid,uuid,bigint,text,integer,text) to authenticated;
+create function public.sdi_room_snapshot(action text,room uuid default null,snapshot uuid default null,byte_size bigint default null,
+ sha256 text default null,chunk_index integer default null,data text default null) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.room_snapshot(action,room,snapshot,byte_size,sha256,chunk_index,data)$$;
+revoke all on function public.sdi_room_snapshot(text,uuid,uuid,bigint,text,integer,text) from public,anon;
+grant execute on function public.sdi_room_snapshot(text,uuid,uuid,bigint,text,integer,text) to authenticated;
+
+-- The service sweep now also deletes project snapshots that expired, whose room
+-- closed, whose shared project changed, or that every current member received.
+create or replace function sdi_private.room_asset_sweep(max_items integer default 200) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare item record; done integer:=0; verified integer:=0; snap_done integer:=0; snap_verified integer:=0; cap integer;
+begin
+ cap:=least(greatest(coalesce(max_items,200),1),1000);
+ for item in
+  select x.id,case when room.closed then 'room_closed'
+   when not sdi_private.room_member_active(x.room_id,x.uploader) then 'membership_ended' else 'expired' end as reason
+  from sdi_private.room_assets x join public.sdi_rooms room on room.id=x.room_id
+  where x.state<>'deleted' and (x.expires_at<=clock_timestamp() or room.closed or not sdi_private.room_member_active(x.room_id,x.uploader))
+  order by x.expires_at limit cap
+ loop
+  done:=done+1;
+  if sdi_private.room_asset_discard(item.id,item.reason) then verified:=verified+1; end if;
+ end loop;
+ for item in
+  select x.id,case when room.closed then 'room_closed' when x.expires_at<=clock_timestamp() then 'expired'
+   when x.project_ref is distinct from room.project_ref or room.owner_id<>x.owner_id then 'project_changed' else 'delivered' end as reason
+  from sdi_private.room_project_snapshots x join public.sdi_rooms room on room.id=x.room_id
+  where x.state<>'deleted' and (room.closed or x.expires_at<=clock_timestamp() or x.project_ref is distinct from room.project_ref
+   or room.owner_id<>x.owner_id
+   or (x.state='available' and sdi_private.room_snapshot_delivered(x.id)>0 and sdi_private.room_snapshot_awaiting(x.id)=0))
+  order by x.expires_at limit cap
+ loop
+  snap_done:=snap_done+1;
+  if sdi_private.room_snapshot_discard(item.id,item.reason) then snap_verified:=snap_verified+1; end if;
+ end loop;
+ return jsonb_build_object('discarded',done,'verified',verified,
+  'unverified_total',(select count(*) from sdi_private.room_assets where state='deleted' and not delete_verified),
+  'snapshots_discarded',snap_done,'snapshots_verified',snap_verified,
+  'snapshots_unverified_total',(select count(*) from sdi_private.room_project_snapshots where state='deleted' and not delete_verified));
+end $$;
 commit;
 
 -- ===== challenges.sql (sha256 98ab811c7c89c120) =====

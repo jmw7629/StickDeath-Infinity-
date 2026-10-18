@@ -295,6 +295,16 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(api.calls[-1][1]["note"], "failed: support_retention")
         self.assertNotIn("secret", json.dumps(report))
 
+    def test_room_sweep_reports_asset_and_project_handoff_counts(self):
+        api = FakeAPI({"room_asset_sweep": [{"discarded": 1, "verified": 1, "unverified_total": 0, "snapshots_discarded": 2,
+                                             "snapshots_verified": 2, "snapshots_unverified_total": 0}], "worker_heartbeat": [True]})
+        report = sweeps.run_sweeps(api, ["room_asset_sweep"])
+        self.assertEqual(report["room_asset_sweep"]["state"], "ok")
+        self.assertEqual(report["room_asset_sweep"]["result"]["snapshots_discarded"], 2)
+        self.assertEqual(report["room_asset_sweep"]["result"]["snapshots_unverified_total"], 0)
+        self.assertEqual(api.calls[0], ("room_asset_sweep", {}))
+        self.assertIn("room_asset_sweep", sweeps.SweepAPI.PERMITTED)
+
     def test_configuration_report_sends_presence_booleans_only(self):
         env = {"SDI_BACKEND_URL": "https://backend.example.test", "SDI_SERVICE_KEY": "service-secret-value",
                "SDI_YOUTUBE_CLIENT_FILE": "/run/secrets/yt", "SDI_MAIL_SENDER_DOMAIN": ""}
