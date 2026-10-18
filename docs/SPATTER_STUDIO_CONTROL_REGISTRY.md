@@ -49,7 +49,7 @@ reachable from no control, unmapped `DrawingTool` cases, unknown panel keys and
 empty reasons. The SwiftUI panel maps `StudioPanelType` with an exhaustive
 `switch`, so a new panel cannot compile without a registry decision.
 
-Pixel tools other than Fill (Smudge, Sharpen, Dodge, Burn, Blur), selection
+Pixel tools other than Fill (Gradient, Smudge, Sharpen, Dodge, Burn, Blur), selection
 tools (Lasso, Wand), freehand tools other than Brush, and view tools (Hand, Zoom)
 are `manual`: no grammar exists for them, and the registry says so rather than
 implying coverage.

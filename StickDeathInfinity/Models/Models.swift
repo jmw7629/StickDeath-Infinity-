@@ -103,6 +103,13 @@ struct DrawnElement: Codable, Identifiable, Equatable {
 
     /// Schema29: local erasure coverage; source geometry remains editable.
     var selectionErasures: [StudioElementErasure]? = nil
+    /// Schema36: replayable gradient fill (#149) in the ordered effect stream.
+    /// Stored on a `.fill` element whose `fillMask` is the painted coverage and
+    /// whose two `points` are the gradient start and end in document pixels.
+    var gradient: StudioGradientDescriptor? = nil
+    /// Schema36: selection coverage limiting a pixel effect (#149). Unselected
+    /// pixels keep the preceding layer bytes exactly.
+    var selectionMask: StudioFillMask? = nil
 
     func erasurePlacement() throws -> StudioElementTransform {
         if let translation { try translation.validate() }
@@ -115,7 +122,7 @@ struct DrawnElement: Codable, Identifiable, Equatable {
         return result
     }
 
-    var hasPixelEffect: Bool { smudge != nil || blur != nil || sharpen != nil || dodgeBurn != nil }
+    var hasPixelEffect: Bool { smudge != nil || blur != nil || sharpen != nil || dodgeBurn != nil || gradient != nil }
 
     var selectionBounds: CGRect? {
         let bounds: CGRect
@@ -416,6 +423,177 @@ struct StudioFillMask: Codable, Equatable, Sendable {
     enum Failure: LocalizedError {
         case invalid
         var errorDescription: String? { "This fill region is invalid or exceeds the editable limit. Nothing has changed." }
+    }
+}
+
+extension StudioFillMask {
+    /// Number of listed span pixels, independent of their coverage weight.
+    var coveredPixels: Int { spans.reduce(0) { $0 + ($1.end - $1.start) } }
+    /// Dense one-byte-per-pixel coverage, top-left origin (0 = outside).
+    func denseCoverage() throws -> [UInt8] {
+        try validate()
+        var result = [UInt8](repeating: 0, count: width * height)
+        for span in spans {
+            let base = span.row * width
+            for column in span.start..<span.end { result[base + column] = span.alpha }
+        }
+        return result
+    }
+    /// Sparse spans of dense coverage; nil when nothing is covered.
+    static func fromCoverage(_ coverage: [UInt8], width: Int, height: Int) throws -> StudioFillMask? {
+        guard (16...4096).contains(width), (16...4096).contains(height), width <= 4_194_304 / height,
+              coverage.count == width * height else { throw Failure.invalid }
+        var spans: [Span] = []
+        for row in 0..<height {
+            var column = 0
+            while column < width {
+                let alpha = coverage[row * width + column], start = column
+                column += 1
+                while column < width && coverage[row * width + column] == alpha { column += 1 }
+                if alpha != 0 {
+                    guard spans.count < maximumSpans else { throw Failure.invalid }
+                    spans.append(.init(row: row, start: start, end: column, alpha: alpha))
+                }
+            }
+        }
+        guard !spans.isEmpty else { return nil }
+        let mask = StudioFillMask(width: width, height: height, spans: spans)
+        try mask.validate()
+        return mask
+    }
+}
+
+/// Editable gradient fill (#149). Self-contained so the document model does not
+/// depend on the pixel engine; StudioSmudgeReplay maps it onto
+/// StudioGradientFill with identical raw values. Opacity is the element's.
+struct StudioGradientDescriptor: Codable, Equatable, Sendable {
+    enum Shape: String, Codable, CaseIterable, Sendable { case linear, radial }
+    enum Interpolation: String, Codable, CaseIterable, Sendable { case sRGB, linearLight }
+    struct Color: Codable, Equatable, Sendable {
+        var red: Double, green: Double, blue: Double, alpha: Double = 1
+        var isValid: Bool { [red, green, blue, alpha].allSatisfy { $0.isFinite && (0...1).contains($0) } }
+    }
+    struct Stop: Codable, Equatable, Sendable {
+        var location: Double
+        var color: Color
+    }
+    /// Gradients and selection-limited effects share one document version.
+    static let schemaVersion = 36
+    static let maximumStops = 16
+    var version = 1
+    var shape: Shape = .linear
+    var interpolation: Interpolation = .sRGB
+    var dither = true
+    var stops: [Stop]
+
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "This gradient is invalid: use 2–16 ordered color stops, a visible opacity and a drag longer than one pixel. Nothing changed." }
+    }
+
+    /// Returns the covered pixel count used by the shared effect budget.
+    @discardableResult
+    func validate(element: DrawnElement, width: Int, height: Int) throws -> Int {
+        guard version == 1, element.tool == .fill, let mask = element.fillMask,
+              mask.width == width, mask.height == height, element.points.count == 2,
+              element.brush == nil, element.shape == nil, element.eraser == nil, element.text == nil,
+              element.smudge == nil, element.blur == nil, element.sharpen == nil, element.dodgeBurn == nil,
+              element.translation == nil, element.reflection == nil, element.transform == nil,
+              element.selectionErasures == nil, element.preservesLayerAlpha == nil, element.selectionMask == nil,
+              element.opacity.isFinite, element.opacity > 0, element.opacity <= 1,
+              (2...Self.maximumStops).contains(stops.count),
+              element.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 1_000_000 && abs($0.y) <= 1_000_000 }) else {
+            throw Failure.invalid
+        }
+        let dx = Double(element.points[1].x - element.points[0].x), dy = Double(element.points[1].y - element.points[0].y)
+        guard dx * dx + dy * dy >= 1 else { throw Failure.invalid }
+        var previous = -Double.infinity
+        for stop in stops {
+            guard stop.location.isFinite, (0...1).contains(stop.location), stop.location >= previous,
+                  stop.color.isValid else { throw Failure.invalid }
+            previous = stop.location
+        }
+        guard stops.contains(where: { $0.color.alpha > 0 }) else { throw Failure.invalid }
+        try mask.validate()
+        return mask.coveredPixels
+    }
+}
+
+/// Persisted trim/speed mapping of an imported movie (#200, #201). Mirrors
+/// StudioVideoFrameImportService.Mapping field for field; the end is exclusive.
+struct StudioVideoSourceMapping: Codable, Equatable, Sendable {
+    var sourceStartSeconds: Double = 0
+    var sourceEndSeconds: Double? = nil
+    var projectStartSeconds: Double = 0
+    var speed: Double = 1
+
+    var isValid: Bool {
+        sourceStartSeconds.isFinite && (0..<3600).contains(sourceStartSeconds) &&
+        projectStartSeconds.isFinite && (0...3600).contains(projectStartSeconds) &&
+        speed.isFinite && (0.25...4).contains(speed) &&
+        (sourceEndSeconds.map { $0.isFinite && $0 > sourceStartSeconds && $0 <= 3600 } ?? true)
+    }
+    /// Studio time at which `sourceSeconds` appears; nil outside the trim.
+    func projectTime(sourceSeconds: Double) -> Double? {
+        guard isValid, sourceSeconds.isFinite, sourceSeconds >= sourceStartSeconds,
+              sourceSeconds < (sourceEndSeconds ?? 3600) else { return nil }
+        return projectStartSeconds + (sourceSeconds - sourceStartSeconds) / speed
+    }
+    /// Source time shown at Studio time `projectSeconds`; nil outside the trim.
+    func sourceTime(projectSeconds: Double) -> Double? {
+        guard isValid, projectSeconds.isFinite, projectSeconds >= projectStartSeconds else { return nil }
+        let result = sourceStartSeconds + (projectSeconds - projectStartSeconds) * speed
+        return result.isFinite && result < (sourceEndSeconds ?? 3600) ? result : nil
+    }
+}
+
+/// Measured movie properties recorded with a video reference (#199). Values
+/// come from AVFoundation at import; none are estimated or invented.
+struct StudioVideoMetadataRecord: Codable, Equatable, Sendable {
+    var durationSeconds: Double
+    var byteCount: Int
+    var orientedWidth: Int
+    var orientedHeight: Int
+    var rotationDegrees: Int?
+    var isMirrored: Bool
+    var nominalFrameRate: Double
+    var hasVariableFrameRate: Bool
+    var hasAudio: Bool
+
+    var isValid: Bool {
+        durationSeconds.isFinite && durationSeconds > 0 && durationSeconds <= 3600 &&
+        (1...(16 * 1024 * 1024)).contains(byteCount) &&
+        (1...4096).contains(orientedWidth) && (1...4096).contains(orientedHeight) &&
+        (rotationDegrees.map { [0, 90, 180, 270].contains($0) } ?? true) &&
+        nominalFrameRate.isFinite && (0...1000).contains(nominalFrameRate)
+    }
+}
+
+/// A movie the project retains as managed media (#199). The document keeps
+/// identity, metadata and the import mapping; the bytes live beside the
+/// project's other managed assets (`AnimationProject.videoSources`) and are
+/// pruned with the document and its undo history, never from the user's file.
+struct StudioVideoReference: Codable, Equatable, Sendable {
+    static let maximumReferences = 8
+    let id: UUID
+    var name: String
+    var container: String
+    var metadata: StudioVideoMetadataRecord
+    var mapping: StudioVideoSourceMapping
+    /// Managed image assets decoded from this movie, in timeline order.
+    var frameAssetIDs: [String] = []
+
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "A video reference has invalid metadata or timing. The original has not changed." }
+    }
+    func validate() throws {
+        guard !name.isEmpty, name.count <= 120, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              ["mp4", "mov"].contains(container), metadata.isValid, mapping.isValid,
+              frameAssetIDs.count <= 24, Set(frameAssetIDs).count == frameAssetIDs.count,
+              frameAssetIDs.allSatisfy({ $0.hasPrefix("image-") && UUID(uuidString: String($0.dropFirst(6))) != nil }) else {
+            throw Failure.invalid
+        }
     }
 }
 
@@ -1115,17 +1293,21 @@ struct AudioClip: Codable, Identifiable, Equatable {
     var isMuted: Bool = false
     /// Sample-aligned source envelope; trimming/splitting preserves its phase.
     var fadeEnvelope: AudioFadeEnvelope? = nil
+    /// Movie trim/speed mapping of an extracted soundtrack (#201). Reference
+    /// frames use the same mapping, so a source event lands at one Studio time.
+    /// Nil for ordinary audio and every historical clip.
+    var videoMapping: StudioVideoSourceMapping? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, soundName, track, startTime, duration, volume, assetID, sourceOffset, isMuted, fadeEnvelope
+        case id, soundName, track, startTime, duration, volume, assetID, sourceOffset, isMuted, fadeEnvelope, videoMapping
     }
     init(id: String, soundName: String, track: Int, startTime: Double, duration: Double,
          volume: Double = 0.8, assetID: UUID? = nil, sourceOffset: Double = 0, isMuted: Bool = false,
-         fadeEnvelope: AudioFadeEnvelope? = nil) {
+         fadeEnvelope: AudioFadeEnvelope? = nil, videoMapping: StudioVideoSourceMapping? = nil) {
         self.id = id; self.soundName = soundName; self.track = track; self.startTime = startTime
         self.duration = duration; self.volume = volume; self.assetID = assetID
         self.sourceOffset = sourceOffset; self.isMuted = isMuted
-        self.fadeEnvelope = fadeEnvelope
+        self.fadeEnvelope = fadeEnvelope; self.videoMapping = videoMapping
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1137,6 +1319,15 @@ struct AudioClip: Codable, Identifiable, Equatable {
         sourceOffset = try c.decodeIfPresent(Double.self, forKey: .sourceOffset) ?? 0
         isMuted = try c.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
         fadeEnvelope = try c.decodeIfPresent(AudioFadeEnvelope.self, forKey: .fadeEnvelope)
+        videoMapping = try c.decodeIfPresent(StudioVideoSourceMapping.self, forKey: .videoMapping)
+    }
+    /// Movie time heard at Studio time `seconds`. The persisted mapping's
+    /// `projectStartSeconds` records the original placement; this uses the
+    /// clip's current start and trim, so moves and splits stay synchronized.
+    func movieSourceTime(atStudioSeconds seconds: Double) -> Double? {
+        guard let mapping = videoMapping, mapping.isValid, seconds.isFinite,
+              seconds >= startTime, seconds < startTime + duration else { return nil }
+        return mapping.sourceStartSeconds + (sourceOffset + seconds - startTime) * mapping.speed
     }
 }
 

@@ -11,17 +11,20 @@ struct StudioBlurContext: Equatable {
     let width: Int
     let height: Int
     let settings: StudioBlur.Settings
+    /// Selected drawings (#149): the effect is clipped to their coverage.
+    let selection: Set<String>
 
     @MainActor static func current(_ vm: StudioViewModel, ownedStroke: String? = nil) -> Self? {
         let settings = StudioBlur.Settings(diameter: vm.strokeWidth, hardness: vm.blurHardness, radius: vm.blurRadius, strength: vm.strokeOpacity)
         guard vm.isEditing, !vm.isPlaying, !vm.isSaving, vm.selectedTool == .blur,
               vm.activeStrokeID == ownedStroke, vm.pendingBrushStroke == nil, vm.textDraft == nil,
-              vm.selectedElementIDs.isEmpty, (try? settings.validate()) != nil,
+              (try? settings.validate()) != nil,
               let layer = vm.layers.first(where: { $0.id == vm.activeLayerID }), layer.visible,
               layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
         return Self(projectID: vm.document.id, revision: vm.document.revision,
             frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
-            width: vm.canvasWidth, height: vm.canvasHeight, settings: settings)
+            width: vm.canvasWidth, height: vm.canvasHeight, settings: settings,
+            selection: vm.selectedElementIDs)
     }
 }
 
@@ -88,15 +91,24 @@ struct StudioBlurInput {
         isApplying = true
         defer { work = nil; isApplying = false; vm.finishStrokeInput(id: id) }
         do {
-            let element = try input.element(id: id)
+            var element = try input.element(id: id)
+            // A selection limits the effect (#149): its coverage is captured
+            // once, clips the result and is persisted with the operation.
+            let selectionMask = try vm.effectSelectionMask()
+            element.selectionMask = selectionMask
+            let coverage = try selectionMask?.denseCoverage()
             // Reject cumulative document budgets before rendering any bitmap.
             var frame = vm.currentFrame; frame.elements.append(element)
             try StudioSmudgeDescriptor.validateFrame(frame, width: input.context.width, height: input.context.height)
             let captured = try StudioBlurCapture.capture(document: vm.document,
                 selection: vm.selectedElementIDs, raster: vm.rasterData(vm.currentFrame.rasterAssetID),
-                rasterDataByID: vm.rasterSources(for: vm.currentFrame))
-            let worker = Task.detached(priority: .userInitiated) {
-                try StudioBlur.apply(to: captured.pixels, path: input.points, settings: input.context.settings)
+                rasterDataByID: vm.rasterSources(for: vm.currentFrame), clipsToSelection: selectionMask != nil)
+            let worker = Task.detached(priority: .userInitiated) { () throws -> StudioBlur.Pixels in
+                let effected = try StudioBlur.apply(to: captured.pixels, path: input.points, settings: input.context.settings)
+                guard let coverage else { return effected }
+                return try StudioBlur.Pixels(width: effected.width, height: effected.height,
+                    rgba: StudioSelectionMask.clip(original: captured.pixels.rgba, effected: effected.rgba,
+                        coverage: coverage, width: effected.width, height: effected.height))
             }
             work = worker
             let pixels = try await withTaskCancellationHandler(operation: { try await worker.value },
@@ -112,10 +124,72 @@ struct StudioBlurInput {
                 return false
             }
             let committed = vm.commitElement(element, frameID: input.context.frameID)
-            if committed { vm.message = "Blurred the active layer. Undo restores the original." }
+            if committed { vm.message = "Blurred \(selectionMask == nil ? "the active layer" : "the selected area"). Undo restores the original." }
             return committed
         } catch is CancellationError {
             vm.message = "Blur cancelled. Nothing was added."
+            return false
+        } catch {
+            vm.message = error.localizedDescription
+            return false
+        }
+    }
+}
+
+/// Gradient tool (#149). It shares Blur's validated active-layer capture: the
+/// replayable gradient is computed off the main actor against the real layer
+/// pixels, and only a gradient that changes them enters document history.
+@MainActor final class StudioGradientSession: ObservableObject {
+    @Published private(set) var isApplying = false
+    private var work: Task<StudioSmudge.Pixels, Error>?
+    func cancel() { work?.cancel() }
+
+    @discardableResult
+    func apply(_ vm: StudioViewModel, capture: StudioViewModel.GradientCapture, from start: CGPoint, to end: CGPoint) async -> Bool {
+        guard !isApplying, !Task.isCancelled, vm.captureGradient() == capture else {
+            vm.message = "Studio changed before the gradient was applied. Nothing was added."
+            return false
+        }
+        let id = UUID().uuidString
+        guard vm.beginStrokeInput(id: id) else { return false }
+        isApplying = true
+        defer { work = nil; isApplying = false; vm.finishStrokeInput(id: id) }
+        do {
+            let element = try vm.gradientElement(capture, from: start, to: end, id: id)
+            // Reject cumulative document budgets before rendering any bitmap.
+            var frame = vm.currentFrame; frame.elements.append(element)
+            try StudioSmudgeDescriptor.validateFrame(frame, width: capture.width, height: capture.height)
+            // The gradient carries any selection in its own fill mask.
+            let captured = try StudioBlurCapture.capture(document: vm.document, selection: vm.selectedElementIDs,
+                raster: vm.rasterData(vm.currentFrame.rasterAssetID), rasterDataByID: vm.rasterSources(for: vm.currentFrame),
+                clipsToSelection: true)
+            let original = try StudioSmudge.Pixels(width: captured.pixels.width, height: captured.pixels.height, rgba: captured.pixels.rgba)
+            let worker = Task.detached(priority: .userInitiated) { () throws -> StudioSmudge.Pixels in
+                try StudioSmudgeReplay.applyGradient(element, to: original)
+            }
+            work = worker
+            let pixels = try await withTaskCancellationHandler(operation: { try await worker.value },
+                onCancel: { worker.cancel() })
+            guard !Task.isCancelled, !worker.isCancelled, vm.activeStrokeID == id,
+                  vm.document.id == capture.projectID, vm.document.revision == capture.revision,
+                  vm.currentFrame.id == capture.frameID, vm.activeLayerID == capture.layerID,
+                  vm.selectedElementIDs == capture.selection, vm.selectedTool == .gradient,
+                  captured.isCurrent(vm.document, selection: vm.selectedElementIDs) else {
+                vm.message = "Gradient cancelled because Studio changed. Nothing was added."
+                return false
+            }
+            guard pixels != original else {
+                vm.message = "This gradient does not change any pixels here. Nothing was added."
+                return false
+            }
+            let committed = vm.commitElement(element, frameID: capture.frameID)
+            if committed {
+                vm.message = (capture.selection.isEmpty ? "Filled the active layer" : "Filled the selected area")
+                    + " with a \(element.gradient?.shape == .radial ? "radial" : "linear") gradient. Undo removes it; the artwork below stays editable."
+            }
+            return committed
+        } catch is CancellationError {
+            vm.message = "Gradient cancelled. Nothing was added."
             return false
         } catch {
             vm.message = error.localizedDescription

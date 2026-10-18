@@ -93,6 +93,9 @@ final class StudioImageImportSession: ObservableObject {
     private var librarySelection: (StudioImageCatalogue, StudioImageCatalogue.Image)?
     private var imported: StudioImageImportService.ImportedImage?
     private var importedSequence: [StudioImageImportService.ImportedImage] = []
+    /// The decoded movie and its measured metadata/mapping, retained by Add
+    /// as project-managed media (#199, #200). Nil for still images.
+    private var importedVideo: StudioViewModel.ImportedVideoSource?
     private let scratchParent: URL
     private let checkpoint: Checkpoint
     private let importer: StudioImageImportService
@@ -183,7 +186,8 @@ final class StudioImageImportSession: ObservableObject {
                     guard let captured = self.capture else { throw SessionError.contextChanged }
                     self.progressText = "Extracting the video frame at the Studio playhead…"
                     extractedFrames = try await StudioVideoFrameImportService.shared.extractSequence(from: selected,
-                        projectFrameIndex: captured.frameIndex, fps: captured.fps, frameCount: captured.videoFrameCount, mapping: captured.videoMapping, scratchParent: self.scratchParent)
+                        projectFrameIndex: captured.frameIndex, fps: captured.fps, frameCount: captured.videoFrameCount, mapping: captured.videoMapping, scratchParent: self.scratchParent,
+                        retainMovie: true)
                     url = selected; name = nil
                 case .photo(let provider):
                     let handle = try await StudioImagePickerTransfer.load(from: provider, scratchParent: self.scratchParent, cleanupFailure: self.cleanupFailure)
@@ -200,7 +204,8 @@ final class StudioImageImportSession: ObservableObject {
                     url = try handle.url(); name = handle.displayName
                     self.progressText = "Extracting the video frame at the Studio playhead…"
                     extractedFrames = try await StudioVideoFrameImportService.shared.extractSequence(from: url,
-                        projectFrameIndex: captured.frameIndex, fps: captured.fps, frameCount: captured.videoFrameCount, mapping: captured.videoMapping, scratchParent: self.scratchParent)
+                        projectFrameIndex: captured.frameIndex, fps: captured.fps, frameCount: captured.videoFrameCount, mapping: captured.videoMapping, scratchParent: self.scratchParent,
+                        retainMovie: true)
                 case .library(let catalogue, let image):
                     self.librarySelection = (catalogue, image)
                     let verification = Task.detached(priority: .userInitiated) {
@@ -235,6 +240,7 @@ final class StudioImageImportSession: ObservableObject {
                 let thumbnail = try Self.thumbnail(result.normalizedPNG)
                 self.imported = result
                 self.importedSequence = extractedFrames.count > 1 ? extractedFrames.map(\.image) : []
+                self.importedVideo = extractedFrames.first.flatMap(Self.videoSource)
                 self.previewFrameCount = max(1, extractedFrames.count)
                 self.preview = Preview(name: result.name, width: result.width, height: result.height,
                     originalWidth: result.originalWidth, originalHeight: result.originalHeight,
@@ -242,11 +248,14 @@ final class StudioImageImportSession: ObservableObject {
                     normalizedByteCount: result.normalizedPNG.count, container: result.container,
                     catalogueAttribution: result.catalogueAttribution)
                 self.previewImage = thumbnail; self.status = .preview
-                if extractedFrames.count > 1 {
-                    self.notice = "Preview of the first of \(extractedFrames.count) decoded frames. Add inserts consecutive frames after the selected frame in one undoable edit. Originals stay intact; no audio is attached."
+                // Measured movie properties (#199) precede the timing summary.
+                let retained = self.importedVideo == nil ? "" : " Add keeps a copy of the movie with this project, so it reopens after the original file is removed."
+                if let first = extractedFrames.first, extractedFrames.count > 1 {
+                    self.notice = "Video: \(first.metadata.summary). Preview of the first of \(extractedFrames.count) decoded frames. Add inserts consecutive frames after the selected frame in one undoable edit, with their trim and speed recorded.\(retained) No audio is attached."
                 } else if let extracted = extractedFrames.first {
-                    self.notice = String(format: "Preview only: Studio %.3fs → source %.3fs → decoded %.3fs of %.3fs (%.2f×). Add attaches this single reference frame on a separate layer. The movie and its audio are not imported.",
+                    self.notice = "Video: \(extracted.metadata.summary). " + String(format: "Preview only: Studio %.3fs → source %.3fs → decoded %.3fs of %.3fs (%.2f×). Add attaches this single reference frame on a separate layer.",
                         extracted.requestedSeconds, extracted.sourceRequestedSeconds, extracted.actualSeconds, extracted.durationSeconds, extracted.mapping.speed)
+                        + retained + " Its audio is not imported."
                 } else {
                     self.notice = "Preview only. Add to current frame attaches the image on a new layer in one undoable edit."
                 }
@@ -300,22 +309,24 @@ final class StudioImageImportSession: ObservableObject {
             if count > 1 {
                 let frames = try studio.attachImportedImageSequence(importedSequence,
                     expectedProjectID: captured.projectID, expectedRevision: captured.revision,
-                    frameID: captured.frameID, layerID: captured.layerID,
+                    frameID: captured.frameID, layerID: captured.layerID, video: importedVideo,
                     checkCancellation: { try self.requireCurrent(id, scope: currentScope, requireForeground: true) })
                 assetID = "image-" + imported.id.uuidString
                 resultFrameID = frames[0]
             } else {
                 assetID = try studio.attachImportedImage(imported,
                     expectedProjectID: captured.projectID, expectedRevision: captured.revision,
-                    frameID: captured.frameID, layerID: captured.layerID,
+                    frameID: captured.frameID, layerID: captured.layerID, video: importedVideo,
                     checkCancellation: { try self.requireCurrent(id, scope: currentScope, requireForeground: true) })
                 resultFrameID = captured.frameID
             }
             appliedImage = AppliedImage(assetID: assetID, projectID: captured.projectID,
                 revision: studio.document.revision, frameID: resultFrameID, name: imported.name)
-            self.imported = nil; importedSequence = []
+            let keptMovie = importedVideo != nil
+            self.imported = nil; importedSequence = []; importedVideo = nil
             status = .applied
-            notice = count > 1 ? "Added \(count) reference frames in one undoable edit." : "Added \(imported.name) on a new image layer in one undoable edit."
+            notice = (count > 1 ? "Added \(count) reference frames in one undoable edit." : "Added \(imported.name) on a new image layer in one undoable edit.")
+                + (keptMovie ? " The movie is kept with this project until those frames and their undo history are gone." : "")
             return true
         } catch { fail(error); return false }
     }
@@ -400,7 +411,22 @@ final class StudioImageImportSession: ObservableObject {
         }
         return false
     }
-    private func clearPreview() { librarySelection = nil; imported = nil; importedSequence = []; previewFrameCount = 1; preview = nil; previewImage = nil }
+    /// Project-managed movie record for an extraction that retained its bytes.
+    private static func videoSource(_ frame: StudioVideoFrameImportService.Frame) -> StudioViewModel.ImportedVideoSource? {
+        guard let movie = frame.movie else { return nil }
+        let measured = frame.metadata, mapping = frame.mapping
+        let reference = StudioVideoReference(id: movie.id, name: movie.name, container: movie.container,
+            metadata: .init(durationSeconds: measured.durationSeconds, byteCount: measured.byteCount,
+                orientedWidth: measured.orientedWidth, orientedHeight: measured.orientedHeight,
+                rotationDegrees: measured.rotationDegrees, isMirrored: measured.isMirrored,
+                nominalFrameRate: measured.nominalFrameRate, hasVariableFrameRate: measured.hasVariableFrameRate,
+                hasAudio: measured.hasAudio),
+            mapping: .init(sourceStartSeconds: mapping.sourceStartSeconds, sourceEndSeconds: mapping.sourceEndSeconds,
+                projectStartSeconds: mapping.projectStartSeconds, speed: mapping.speed))
+        return .init(reference: reference,
+                     movie: StoredVideoSource(id: movie.id, name: movie.name, container: movie.container, data: movie.data))
+    }
+    private func clearPreview() { librarySelection = nil; imported = nil; importedSequence = []; importedVideo = nil; previewFrameCount = 1; preview = nil; previewImage = nil }
     private static func thumbnail(_ png: Data) throws -> CGImage {
         guard let source = CGImageSourceCreateWithData(png as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetCount(source) == 1,

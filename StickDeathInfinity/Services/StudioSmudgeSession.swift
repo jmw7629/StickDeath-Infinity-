@@ -11,17 +11,20 @@ struct StudioSmudgeContext: Equatable {
     let width: Int
     let height: Int
     let settings: StudioSmudge.Settings
+    /// Selected drawings (#149): the effect is clipped to their coverage.
+    let selection: Set<String>
 
     @MainActor static func current(_ vm: StudioViewModel, ownedStroke: String? = nil) -> Self? {
         let settings = StudioSmudge.Settings(diameter: vm.strokeWidth, strength: 0.5, opacity: vm.strokeOpacity)
         guard vm.isEditing, !vm.isPlaying, !vm.isSaving, vm.selectedTool == .smudge,
               vm.activeStrokeID == ownedStroke, vm.pendingBrushStroke == nil, vm.textDraft == nil,
-              vm.selectedElementIDs.isEmpty, (try? settings.validate()) != nil,
+              (try? settings.validate()) != nil,
               let layer = vm.layers.first(where: { $0.id == vm.activeLayerID }), layer.visible,
               layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
         return Self(projectID: vm.document.id, revision: vm.document.revision,
             frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
-            width: vm.canvasWidth, height: vm.canvasHeight, settings: settings)
+            width: vm.canvasWidth, height: vm.canvasHeight, settings: settings,
+            selection: vm.selectedElementIDs)
     }
 }
 
@@ -88,15 +91,24 @@ struct StudioSmudgeInput {
         isApplying = true
         defer { work = nil; isApplying = false; vm.finishStrokeInput(id: id) }
         do {
-            let element = try input.element(id: id)
+            var element = try input.element(id: id)
+            // A selection limits the effect (#149): its coverage is captured
+            // once, clips the result and is persisted with the operation.
+            let selectionMask = try vm.effectSelectionMask()
+            element.selectionMask = selectionMask
+            let coverage = try selectionMask?.denseCoverage()
             // Reject cumulative document budgets before rendering any bitmap.
             var frame = vm.currentFrame; frame.elements.append(element)
             try StudioSmudgeDescriptor.validateFrame(frame, width: input.context.width, height: input.context.height)
             let captured = try StudioSmudgeCapture.capture(document: vm.document,
                 selection: vm.selectedElementIDs, raster: vm.rasterData(vm.currentFrame.rasterAssetID),
-                rasterDataByID: vm.rasterSources(for: vm.currentFrame))
-            let worker = Task.detached(priority: .userInitiated) {
-                try StudioSmudge.apply(to: captured.pixels, path: input.points, settings: input.context.settings)
+                rasterDataByID: vm.rasterSources(for: vm.currentFrame), clipsToSelection: selectionMask != nil)
+            let worker = Task.detached(priority: .userInitiated) { () throws -> StudioSmudge.Pixels in
+                let effected = try StudioSmudge.apply(to: captured.pixels, path: input.points, settings: input.context.settings)
+                guard let coverage else { return effected }
+                return try StudioSmudge.Pixels(width: effected.width, height: effected.height,
+                    rgba: StudioSelectionMask.clip(original: captured.pixels.rgba, effected: effected.rgba,
+                        coverage: coverage, width: effected.width, height: effected.height))
             }
             work = worker
             let pixels = try await withTaskCancellationHandler(operation: { try await worker.value },
@@ -112,7 +124,7 @@ struct StudioSmudgeInput {
                 return false
             }
             let committed = vm.commitElement(element, frameID: input.context.frameID)
-            if committed { vm.message = "Smudged the active layer. Undo restores the original." }
+            if committed { vm.message = "Smudged \(selectionMask == nil ? "the active layer" : "the selected area"). Undo restores the original." }
             return committed
         } catch is CancellationError {
             vm.message = "Smudge cancelled. Nothing was added."

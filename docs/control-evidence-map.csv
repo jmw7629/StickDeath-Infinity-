@@ -598,6 +598,15 @@ studio.frames-viewer.menu.duplicate,StickDeathInfinity/Views/Studio/StudioView.s
 studio.frames-viewer.menu.move-earlier,StickDeathInfinity/Views/Studio/StudioView.swift,FramesViewerPanel,button 'Move earlier' -> vm.moveFrame,yes,#161,deferred
 studio.frames-viewer.menu.move-later,StickDeathInfinity/Views/Studio/StudioView.swift,FramesViewerPanel,button 'Move later' -> vm.moveFrame,yes,#161,deferred
 studio.frames-viewer.menu.paste-after,StickDeathInfinity/Views/Studio/StudioView.swift,FramesViewerPanel,button 'Paste frame after this' -> vm.pasteFrame,yes,#161,deferred
+studio.gradient.cancel,StickDeathInfinity/Views/Studio/StudioCanvasView.swift,StudioCanvasView,button 'Cancel' -> gradientSession.cancel,no,#149,deferred
+studio.gradient.dither,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,toggle 'Dither (reduces banding)' -> binds vm.gradientDither,no,#149,deferred
+studio.gradient.end-color,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,color well -> vm.brushGradientEndColor,no,#149,deferred
+studio.gradient.fade,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,toggle 'Fade to transparent' -> binds vm.gradientFadeToTransparent,no,#149,deferred
+studio.gradient.instructions,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text: drag to place the gradient on the layer or selection,no,#149,deferred
+studio.gradient.interpolation,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,picker 'Blend colors' -> binds vm.gradientInterpolation,no,#149,deferred
+studio.gradient.progress,StickDeathInfinity/Views/Studio/StudioCanvasView.swift,StudioCanvasView,progress 'Applying gradient…',no,#149,deferred
+studio.gradient.release-hint,StickDeathInfinity/Views/Studio/StudioCanvasView.swift,StudioCanvasView,text: release to fill the active layer or selection,no,#149,deferred
+studio.gradient.shape,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,picker 'Shape' -> binds vm.gradientShape,no,#149,deferred
 studio.grid.opacity,StickDeathInfinity/Views/Studio/Panels/ProjectSettingsPanel.swift,StudioGridSettingsControls,slider 'Grid opacity' -> binds vm.gridOpacity,no,#151,testGuestStudioPortraitLandscapeAndPersistedGuideControls
 studio.grid.spacing,StickDeathInfinity/Views/Studio/Panels/ProjectSettingsPanel.swift,StudioGridSettingsControls,"slider 'Grid spacing' -> vm.gridSpacing.rounded, binds vm.gridSpacing",no,#151,testGuestStudioPortraitLandscapeAndPersistedGuideControls
 studio.grid.tint,StickDeathInfinity/Views/Studio/Panels/ProjectSettingsPanel.swift,StudioGridSettingsControls,"text 'Tint' -> binds vm.gridTint, binds 0.rawValue.capitalized, binds 0",no,#151,testGuestStudioPortraitLandscapeAndPersistedGuideControls
@@ -805,8 +814,14 @@ studio.wand.copy,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,
 studio.wand.count,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text 'Grow and Shrink adjust the boundary by one sourc',no,#153,testImageWandRegionCopyDeletePasteUndoAndColdReopen
 studio.wand.cut,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Cut pixels' -> vm.applyImageRegion,no,#153 #155 #156,deferred
 studio.wand.delete,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Delete pixels' -> vm.applyImageRegion,no,#153 #155 #156,testImageWandRegionCopyDeletePasteUndoAndColdReopen
+studio.wand.drawing-copy,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Copy' -> vm.copySelected,yes,#153 #155,deferred
+studio.wand.drawing-count,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text: drawings selected through Wand,no,#153,deferred
+studio.wand.drawing-cut,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Cut' -> vm.cutSelected,yes,#153 #155,deferred
+studio.wand.drawing-delete,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Delete' -> vm.deleteSelected,yes,#153 #156,deferred
+studio.wand.drawing-deselect,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Deselect' -> vm.clearElementSelection,no,#153,deferred
 studio.wand.dx,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text field 'X offset' -> binds vm.wandMoveX,no,#153,deferred
 studio.wand.dy,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text field 'Y offset' -> binds vm.wandMoveY,no,#153,deferred
+studio.wand.feather,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,slider 'Feather' -> binds vm.wandFeather,no,#153,deferred
 studio.wand.grow,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,"button 'Grow 1 px' -> vm.captureImageRegion, vm.changeImageRegionMembership",no,#153,deferred
 studio.wand.invert,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Invert selection' -> vm.changeImageRegionMembership,no,#153,deferred
 studio.wand.lift,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,button 'Move on canvas' -> vm.applyImageRegion,no,#153 #154,deferred
