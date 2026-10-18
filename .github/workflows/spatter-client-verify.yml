@@ -2811,7 +2811,7 @@ jobs:
           if-no-files-found: error
   native-ios-build:
     # Keep the required check name. A partial, cancelled or absent shard stays red.
-    needs: [source-security, spatter-production-tests, native-production-tests, native-ios-shards]
+    needs: [source-security, spatter-production-tests, native-production-tests, native-ios-shards, native-ios-journeys]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -2839,3 +2839,90 @@ jobs:
             --source Tests/NativeUI/StudioSmokeUITests.swift --commit "$(git rev-parse HEAD)" \
             --input "$RUNNER_TEMP/native-shard-receipts" \
             --output "$RUNNER_TEMP/native-complete-receipt.json"
+      - name: Download only compact journey receipts for this exact run attempt
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDI_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern "native-journey-receipt-$SDI_EXPECTED_HEAD-$GITHUB_RUN_ATTEMPT-*" \
+            --dir "$RUNNER_TEMP/native-journey-receipts"
+      - name: Require passing phone and iPad journeys from this exact source
+        if: ${{ always() }}
+        env:
+          SDI_DEPENDENCY_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 scripts/native-smoke/journey_receipt.py aggregate \
+            --commit "$(git rev-parse HEAD)" \
+            --input "$RUNNER_TEMP/native-journey-receipts" \
+            --output "$RUNNER_TEMP/native-journey-complete-receipt.json"
+  native-ios-journeys:
+    # Adaptive layouts (#264) and the native journey gate (#265, #273) on one
+    # fresh phone and one fresh iPad. Runs after the shards so only one Mac job
+    # is active at a time; a failed shard still leaves this evidence.
+    needs: [native-production-tests, native-ios-shards]
+    if: ${{ !cancelled() && needs.native-production-tests.result == 'success' }}
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          # 25 min build + 5 UI journeys x 180 s + 300 s, plus 6 hosted
+          # service journeys x 60 s + 300 s on the phone only.
+          # Tests/NativeSmokeHarness/test_journeys.py derives these ceilings.
+          - device: iphone
+            timeout: 56
+          - device: ipad
+            timeout: 45
+    timeout-minutes: ${{ matrix.timeout }}
+    env:
+      SDI_JOURNEY_DEVICE: ${{ matrix.device }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build checked-in native iOS target without signing or deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild \
+            -project StickDeathInfinity.xcodeproj \
+            -scheme StickDeathInfinity \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/sdi-native-build" \
+            CODE_SIGNING_ALLOWED=NO build
+      - name: Create one fresh simulator of this family
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdi_udid="$(python3 scripts/native-smoke/select_simulator.py --device "$SDI_JOURNEY_DEVICE")"
+          printf 'simulator_udid=%s\n' "$sdi_udid" >> "$GITHUB_OUTPUT"
+      - name: Run phone and iPad journeys with isolated local data
+        id: journeys
+        if: ${{ !cancelled() && steps.simulator.outputs.simulator_udid != '' }}
+        env:
+          SDI_SMOKE_SIMULATOR_UDID: ${{ steps.simulator.outputs.simulator_udid }}
+        run: python3 scripts/native-smoke/run_journey_ci.py
+      - name: Preserve journey evidence from this exact source
+        if: always() && steps.journeys.outputs.artifact_path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-journeys-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}-${{ matrix.device }}
+          path: ${{ steps.journeys.outputs.artifact_path }}
+          retention-days: 3
+          compression-level: 3
+          if-no-files-found: error
+      - name: Upload compact journey receipt
+        if: always() && steps.journeys.outputs.artifact_path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-journey-receipt-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}-${{ matrix.device }}
+          path: ${{ runner.temp }}/native-journey-receipt/receipt.json
+          retention-days: 3
+          if-no-files-found: error

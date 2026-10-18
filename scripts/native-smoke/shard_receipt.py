@@ -109,7 +109,10 @@ def collect(source, evidence, index, binding, gates):
 
 
 def aggregate(source, receipts, binding, dependency_results):
-    if set(dependency_results) != {"source-security", "spatter-production-tests", "native-production-tests", "native-ios-shards"} or any(v != "success" for v in dependency_results.values()):
+    # native-ios-journeys (#264/#265) is a separate required job; journey_receipt.py
+    # verifies its own receipts. The shard inventory below is unaffected by it.
+    if set(dependency_results) != {"source-security", "spatter-production-tests", "native-production-tests", "native-ios-shards",
+                                   "native-ios-journeys"} or any(v != "success" for v in dependency_results.values()):
         raise ValueError("A mandatory prerequisite/shard job did not succeed")
     if len(receipts) != 2 or sorted(r.get("shardIndex", -1) for r in receipts) != [0, 1]:
         raise ValueError("Exactly one receipt per native shard is required")

@@ -90,6 +90,8 @@ auth.provider.apple,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,-> a
 auth.provider.apple,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,-> authVM.signInWithApple,n-a,#134 #136 #137,deferred
 auth.recovery.save,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,button 'Save Password' -> authVM.updatePassword,n-a,#134 #136 #137,deferred
 auth.signup.notice,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,text,n-a,#134 #136 #137,deferred
+auth.signup.policy.privacy,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,link 'Privacy Policy' -> PolicyLinks.privacy,n-a,#273,deferred
+auth.signup.policy.terms,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,link 'Terms of Service' -> PolicyLinks.terms,n-a,#273,deferred
 calendar.day.empty,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),text 'No scheduled items on this day.',n-a,#297,deferred
 calendar.error,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),progress,n-a,#297,deferred
 calendar.item,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),text,n-a,#297,deferred
@@ -134,6 +136,16 @@ notifications.save,StickDeathInfinity/Views/Notifications/NotificationCenterView
 notifications.unread,StickDeathInfinity/Views/Notifications/NotificationCenterView.swift,NotificationCenterView,text 'No announcements.' -> load,n-a,#290,deferred
 onboarding.back,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,label,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.next,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,next-page button 'onboarding.next' (identifier-derived; review source),n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
+onboarding.policies.accept,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,button 'Accept these versions' -> acceptOnboarding (sdi_consent_action accept),n-a,#273,deferred
+onboarding.policies.accepted,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,text 'Accepted: ...' from the server's current acceptances,n-a,#273,deferred
+onboarding.policies.age,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,toggle -> binds ageConfirmed (content policy min_age attestation),n-a,#273,deferred
+onboarding.policies.guest,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,text 'Guests are not asked to accept anything',n-a,#273,deferred
+onboarding.policies.not-configured,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,text 'Policy acceptance is unavailable: account services are not configured',n-a,#273,deferred
+onboarding.policies.privacy,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,link 'Privacy Policy' -> PolicyLinks.privacy,n-a,#273,deferred
+onboarding.policies.problem,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,text (normalized server or transport error),n-a,#273,deferred
+onboarding.policies.retry,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,button 'Retry' -> load,n-a,#273,deferred
+onboarding.policies.terms,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,link 'Terms of Service' -> PolicyLinks.terms,n-a,#273,deferred
+onboarding.policies.unpublished,StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift,OnboardingPolicyConsentView,text 'No policy versions have been published yet',n-a,#273,deferred
 onboarding.position,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.skip,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text 'Skip',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 privacy.marketing.allow,StickDeathInfinity/Views/Support/PrivacyChoicesView.swift,PrivacyChoicesView,button,n-a,#273,deferred
