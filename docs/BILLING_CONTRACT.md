@@ -206,21 +206,24 @@ file; the client calls no Stripe API).
 - `sendTip(...)` — tips are not in the current contract. "No new paid service
   is authorized."
 
-### Entitlement reconciliation (owner-gated stub)
+### Entitlement reconciliation (server read, 2026-10-18)
 
-`StripeService.reconcileEntitlementsWithServer()` throws
-`PaymentError.entitlementReconciliationNotConfigured`. After a successful
-purchase or restore the service attempts it and publishes the error text in
-`reconciliationNotice`, which the Subscription view shows. The real
-implementation belongs on the server: verify Apple's signed transaction
+`StripeService.reconcileEntitlementsWithServer()` reads the signed-in member's
+plan with the `sdi_my_entitlement` RPC (`ServerEntitlementClient`) and compares
+it with Apple's entitlement. A match is reported as verified; no server record
+yet, or a different tier, is reported as deferred with both tiers named; not
+configured, signed out and offline each have their own notice. The client never
+writes a tier. A paid plan the server applied (for example a website
+subscription) counts toward Studio limits for that account. Granting the
+entitlement itself stays on the server: verify Apple's signed transaction
 (App Store Server API / Server Notifications keyed by `appAccountToken`) and
-write the entitlement there.
+write it there.
 
 ## Views
 
-Both views are compiled by the Xcode target but are **not mounted** anywhere in
-the app flow (no call site constructs `SubscriptionView()` or
-`ChoosePlanView(onSelected:)`).
+`SubscriptionView` opens from Profile (Subscription row and card), the legacy
+Settings "Current Plan" row, Spatter and Studio. `ChoosePlanView(onSelected:)`
+is still not opened from any screen.
 
 - `StickDeathInfinity/Views/Settings/SubscriptionView.swift`
   - Shows the actual entitlement from Apple (`Active`, purchase date, period end
@@ -304,12 +307,10 @@ Apple proceeds (App Store Connect financial reports) have no parser yet.
    configuration.
 2. Decide annual amounts and entitlements, if any. Nothing annual ships until
    then.
-3. Entitlement questions answered 2026-10-14 (free prompts monthly and
-   suggested-only; own AI key on Creator and Pro; trial on both paid plans).
-   Remaining: configure the trial as an App Store introductory offer on **both**
-   subscriptions (and, if web checkout is used, the Stripe trial settings for
-   both prices), deploy the Spatter metering SQL and handler, then bind the
-   native client to `sdi_my_entitlement` and replace the throwing stub.
+3. Entitlement rules are in `docs/PLAN_DECISIONS_2026_10_15.md` (no free trial
+   on any plan; Free previews Spatter; Creator break-even allowance; credits).
+   Remaining: deploy the Spatter metering and billing SQL and handlers. The
+   native client already reads `sdi_my_entitlement`.
 4. Verify the existing Stripe account before any reuse. Stripe has no
    client-side role in the current contract; any server-side use (web
    payments) must be verified separately and must not be a new paid service.

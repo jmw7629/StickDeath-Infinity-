@@ -110,6 +110,21 @@ jobs:
             Tests/StudioChannelRendition/main.swift \
             -o /tmp/sdi-channel-rendition-tests
           timeout 60s /tmp/sdi-channel-rendition-tests
+      - name: Verify support, privacy choices, server entitlement and notification clients
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -O -parse-as-library \
+            StickDeathInfinity/Models/CommunityModels.swift \
+            StickDeathInfinity/Services/Social/CommunityTransport.swift \
+            StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
+            StickDeathInfinity/Services/Support/SupportClient.swift \
+            StickDeathInfinity/Services/Support/PrivacyChoicesClient.swift \
+            StickDeathInfinity/Services/Support/ServerEntitlementClient.swift \
+            StickDeathInfinity/Services/Notifications/NotificationsClient.swift \
+            Tests/AccountServices/main.swift \
+            -o /tmp/sdi-account-services-tests
+          timeout 60s /tmp/sdi-account-services-tests
       - name: Verify admin step-up policy, health, agents, finance and moderation queues
         shell: bash
         run: |
