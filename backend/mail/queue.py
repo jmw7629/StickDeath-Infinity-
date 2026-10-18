@@ -179,6 +179,15 @@ class EmailQueue:
             summary[result["status"]] += 1
         return summary
 
+    def campaign_count(self, campaign_key: str) -> int:
+        """Messages this campaign key holds that are queued, in flight or sent. A
+        retried blast reports its earlier messages as ``cadence``; the marketing
+        scheduler uses this count as the blast's receipt so a retry stays truthful."""
+        with self._connect() as db:
+            row = db.execute("SELECT COUNT(*) AS n FROM messages WHERE dedup_key=? AND category IN ('product','marketing')"
+                             " AND state IN ('queued','sending','sent')", (campaign_key,)).fetchone()
+        return int(row["n"])
+
     def counts(self) -> Dict[str, int]:
         with self._connect() as db:
             return {row["state"]: row["n"] for row in db.execute("SELECT state, COUNT(*) AS n FROM messages GROUP BY state")}
@@ -206,3 +215,9 @@ def fetch_recipients(api, category: str, batch: int = 500, max_pages: int = 20) 
         if not answer.get("has_more"):
             break
     return rows
+
+
+def enqueue_blast(queue: EmailQueue, recipients: Iterable[Mapping[str, str]], template: str, context: Mapping[str, str],
+                  campaign_key: str, unsubscribe_url_for: Callable[[str, str], str], **limits) -> Dict[str, int]:
+    """Module-level form of ``EmailQueue.enqueue_blast`` (same cadence, cap and checks)."""
+    return queue.enqueue_blast(recipients, template, context, campaign_key, unsubscribe_url_for, **limits)

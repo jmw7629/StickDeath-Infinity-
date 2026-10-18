@@ -31,6 +31,8 @@ SWEEPS: Dict[str, str] = {
     "award_achievements": "award_achievements",
     "account_deletion_run": "account_deletion_run",
     "marketing_cadence_due": "marketing_cadence_due",
+    # Room asset copies and project handoff snapshots (rooms-v2.sql): expired,
+    # closed-room, ended-membership, changed-project and fully delivered copies.
     "room_asset_sweep": "room_asset_sweep",
 }
 LOOPING = {"account_deletion_run": ("action", {"idle", "waiting", "blocked"})}

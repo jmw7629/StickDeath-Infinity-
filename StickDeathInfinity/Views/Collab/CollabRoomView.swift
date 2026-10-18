@@ -300,6 +300,9 @@ private struct RoomDetailView: View {
             if let notice { CommunityMessage(text: notice, kind: .success).accessibilityIdentifier("rooms.room.notice") }
             if busy { ProgressView().tint(StudioCraftTheme.accent) }
             projectCard
+            if summary?.project_ref != nil {
+                RoomProjectHandoffCard(room: room.id, isOwner: owner, projectRef: summary?.project_ref, projectTitle: summary?.project_title)
+            }
             if owner { invitationCard }
             membersCard
             activityCard
@@ -544,16 +547,22 @@ private struct RoomDetailView: View {
             onLeft(owner ? "Room closed. Members lost access; no project was deleted." : "You left the room. Synchronisation stopped.")
         } catch { failure = CommunityGateway.normalize(error).errorDescription }
     }
-    /// Safe handoff: open the exact device project the owner shared. Members
-    /// without a local copy are told so; nothing is downloaded or invented.
+    /// Safe handoff: open the exact device project the owner shared, or the
+    /// copy this device imported from the owner's handoff. Members without
+    /// either are told to download it; nothing is invented.
     @MainActor private func openInStudio() async {
-        guard !busy, let summary, let projectID = RoomProjectShare.projectID(from: summary.project_ref) else {
+        guard !busy, let summary, let ownerProjectID = RoomProjectShare.projectID(from: summary.project_ref) else {
             failure = "This room's project reference is not a device project."; return
         }
         guard !studio.isEditing else { failure = "Finish and save the project that is open in Studio first."; return }
-        guard let metadata = DeviceStorageManager.shared.listAnimations().first(where: { $0.id == projectID }) else {
-            failure = "The shared project is on the owner's device, not this one. Shared edits replay only onto a copy of the same project on this device; nothing was downloaded."; return
+        let library = DeviceStorageManager.shared.listAnimations()
+        let linked = RoomProjectLinkStore.device.link(room: room.id, projectRef: summary.project_ref)?.localProjectID
+        guard let metadata = library.first(where: { $0.id == ownerProjectID }) ?? linked.flatMap({ id in library.first(where: { $0.id == id }) }) else {
+            failure = owner ? "The shared project is no longer in this device's project library."
+                : "This device has no copy of the shared project. Use Download shared project once the owner sends it."
+            return
         }
+        let projectID = metadata.id
         busy = true; defer { busy = false }
         if await studio.openProject(metadata) {
             RoomSessionCoordinator.shared.handOffToStudio(room: room.id, roomTitle: room.title, projectID: projectID)
@@ -563,6 +572,223 @@ private struct RoomDetailView: View {
         } else {
             failure = studio.message ?? "Studio could not open the project."
         }
+    }
+}
+
+extension RoomProjectLinkStore {
+    /// Links live beside the app's own data in Application Support, never in a project.
+    static var device: RoomProjectLinkStore {
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+        return RoomProjectLinkStore(directory: base.appendingPathComponent("Rooms", isDirectory: true))
+    }
+}
+
+/// Owner-approved project handoff (#234). The owner sends the shared project's
+/// portable backup as a temporary, hash-verified copy for approved members; a
+/// member imports it as a new device project. The server copy is deleted once
+/// every current member has it, when the owner withdraws it, or after 72 hours.
+private struct RoomProjectHandoffCard: View {
+    let room: UUID
+    let isOwner: Bool
+    let projectRef: String?
+    let projectTitle: String?
+    @ObservedObject private var studio = StudioViewModel.shared
+    @State private var snapshot: RoomSnapshotRecord?
+    @State private var loaded = false
+    @State private var problem: String?
+    @State private var notice: String?
+    @State private var progress: String?
+    @State private var busy = false
+    @State private var confirmSend = false
+    @State private var work: Task<Void, Never>?
+    @State private var download: RoomProjectHandoff.Download?
+    @State private var linkRevision = 0
+
+    private var memberState: RoomProjectHandoffPolicy.MemberState {
+        _ = linkRevision
+        let library = DeviceStorageManager.shared.listAnimations()
+        let ownerID = RoomProjectShare.projectID(from: projectRef)
+        let link = RoomProjectLinkStore.device.link(room: room, projectRef: projectRef)
+        return RoomProjectHandoffPolicy.memberState(isOwner: isOwner, snapshot: snapshot,
+            ownerProjectOnDevice: ownerID.map { id in library.contains { $0.id == id } } ?? false,
+            link: link, linkedProjectExists: link.map { value in library.contains { $0.id == value.localProjectID } } ?? false)
+    }
+
+    var body: some View {
+        CommunityCard {
+            Text("Project handoff").communitySubheading()
+            if let problem { CommunityMessage(text: problem, kind: .error).accessibilityIdentifier("rooms.handoff.error") }
+            if let notice { CommunityMessage(text: notice, kind: .success).accessibilityIdentifier("rooms.handoff.notice") }
+            if let progress { Text(progress).communityCaption().accessibilityIdentifier("rooms.handoff.progress") }
+            if isOwner { ownerControls } else { memberControls }
+            Text("A sent project is a temporary copy of the saved project backup (up to \(RoomProjectHandoffPolicy.maximumBytes / 1_048_576) MB). Only approved members of this room can download it. The server deletes it once every current member has it, when the owner withdraws it, when the shared project changes or the room closes, and after \(Int(RoomProjectHandoffPolicy.retention / 3600)) hours at most. Copies members already imported stay on their devices.")
+                .communityCaption()
+            Button("Refresh handoff") { Task { await refresh() } }
+                .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy || work != nil)
+                .accessibilityIdentifier("rooms.handoff.refresh")
+        }
+        .accessibilityIdentifier("rooms.handoff")
+        .task(id: "\(room):\(projectRef ?? "")") { snapshot = nil; loaded = false; download = nil; await refresh() }
+        .onDisappear { work?.cancel() }
+        .confirmationDialog("Send this project to the room's members?", isPresented: $confirmSend, titleVisibility: .visible) {
+            Button("Send project to members") { startSend() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("A temporary copy of the saved project\(projectTitle.map { " \"\($0)\"" } ?? "") is uploaded for approved members to import as their own new project. It is deleted after every current member has it or within \(Int(RoomProjectHandoffPolicy.retention / 3600)) hours. Your device project is not changed.")
+        }
+    }
+
+    @ViewBuilder private var ownerControls: some View {
+        if let snapshot {
+            Text(ownerStatus(snapshot)).communityCaption().accessibilityIdentifier("rooms.handoff.status")
+        } else if loaded {
+            Text("No project copy is waiting on the server.").communityCaption().accessibilityIdentifier("rooms.handoff.status")
+        }
+        HStack(spacing: 8) {
+            Button(work == nil ? (snapshot == nil ? "Send project to members" : "Send current version again") : "Sending…") { confirmSend = true }
+                .buttonStyle(CommunityPrimaryButtonStyle()).disabled(busy || work != nil || studio.isEditing)
+                .accessibilityIdentifier("rooms.handoff.send")
+            if work != nil {
+                Button("Cancel") { work?.cancel() }
+                    .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).accessibilityIdentifier("rooms.handoff.cancel")
+            } else if let snapshot {
+                Button("Withdraw sent project") { Task { await withdraw(snapshot) } }
+                    .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).disabled(busy)
+                    .accessibilityIdentifier("rooms.handoff.withdraw")
+            }
+        }
+        if studio.isEditing { Text("Finish and save the project that is open in Studio first.").communityCaption() }
+    }
+
+    private func ownerStatus(_ snapshot: RoomSnapshotRecord) -> String {
+        guard snapshot.state == "available" else {
+            return "Upload unfinished (\(snapshot.received?.count ?? 0)/\(snapshot.chunk_count) parts). Send again within an hour to resume."
+        }
+        let delivered = snapshot.delivered ?? 0, awaiting = snapshot.awaiting ?? 0
+        return "Sent and verified by the server · \(delivered) member\(delivered == 1 ? "" : "s") imported it · \(awaiting) still waiting · deleted by \(snapshot.expires_at.formatted(date: .abbreviated, time: .shortened)) at the latest"
+    }
+
+    @ViewBuilder private var memberControls: some View {
+        let state = memberState
+        switch state {
+        case .ownerProjectOnDevice:
+            Text("The shared project is already on this device.").communityCaption().accessibilityIdentifier("rooms.handoff.status")
+        case .imported(let id):
+            Text("Imported on this device as \(DeviceStorageManager.shared.listAnimations().first { $0.id == id }?.title ?? "a project"). Open it with Open shared project in Studio.")
+                .communityCaption().accessibilityIdentifier("rooms.handoff.status")
+        case .download, .updateAvailable:
+            if let snapshot {
+                Text("\(snapshot.title) · \(ByteCountFormatter.string(fromByteCount: Int64(snapshot.byte_size), countStyle: .file)) · SHA-256 \(snapshot.sha256.prefix(12))… · available until \(snapshot.expires_at.formatted(date: .abbreviated, time: .shortened))")
+                    .communityCaption().accessibilityIdentifier("rooms.handoff.status")
+            }
+            if case .updateAvailable = state {
+                Text("A newer version was sent. Downloading creates another new project; your earlier import is kept unchanged.").communityCaption()
+            }
+            HStack(spacing: 8) {
+                Button(work == nil ? "Download shared project" : "Downloading…") { startDownload() }
+                    .buttonStyle(CommunityPrimaryButtonStyle()).disabled(busy || work != nil || studio.isEditing || snapshot == nil)
+                    .accessibilityIdentifier("rooms.handoff.download")
+                if work != nil {
+                    Button("Cancel") { work?.cancel() }
+                        .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).accessibilityIdentifier("rooms.handoff.cancel")
+                }
+            }
+            if studio.isEditing { Text("Finish and save the project that is open in Studio first.").communityCaption() }
+        case .nothingToDo:
+            if loaded { Text("The owner has not sent the project yet. This device has no copy.").communityCaption().accessibilityIdentifier("rooms.handoff.status") }
+        }
+    }
+
+    @MainActor private func refresh() async {
+        do { snapshot = try await CommunityServices.rooms.handoff.current(room: room); loaded = true; problem = nil }
+        catch { loaded = true; snapshot = nil; problem = describe(error) }
+        linkRevision += 1
+    }
+    @MainActor private func startSend() {
+        guard work == nil, isOwner else { return }
+        guard let projectID = RoomProjectShare.projectID(from: projectRef),
+              let metadata = DeviceStorageManager.shared.listAnimations().first(where: { $0.id == projectID }) else {
+            problem = "The shared project is no longer in this device's project library. Nothing was sent."; return
+        }
+        work = Task { @MainActor in
+            defer { work = nil; progress = nil }
+            problem = nil; notice = nil; progress = "Preparing the saved project backup…"
+            do {
+                // The same portable backup as Save Project Backup; the device project is only read.
+                let bundle = try await studio.preparePortableBackup(metadata)
+                let outcome = try await CommunityServices.rooms.handoff.send(room: room, bundle: bundle) { sent, total in
+                    progress = "Sent \(sent) of \(total) parts…"
+                }
+                switch outcome {
+                case .available(_, let awaiting):
+                    notice = "Project sent and verified by the server. \(awaiting) member\(awaiting == 1 ? "" : "s") can download it now; members approved later can too until it expires."
+                case .alreadyAvailable:
+                    notice = "This exact version is already waiting for members."
+                }
+            } catch RoomProjectHandoff.HandoffError.cancelled {
+                notice = "Sending paused. Send again within an hour to resume, or withdraw it."
+            } catch { problem = describe(error) }
+            await refresh()
+        }
+    }
+    @MainActor private func startDownload() {
+        guard work == nil, !isOwner, let snapshot else { return }
+        work = Task { @MainActor in
+            defer { work = nil; progress = nil }
+            problem = nil; notice = nil; progress = "Receiving \(snapshot.title)…"
+            var state = download.flatMap { $0.snapshot == snapshot ? $0 : nil } ?? RoomProjectHandoff.Download(snapshot: snapshot)
+            let data: Data
+            do {
+                data = try await CommunityServices.rooms.handoff.receive(room: room, &state)
+                download = nil
+            } catch {
+                download = state.chunks.isEmpty ? nil : state
+                problem = describe(error) + (state.chunks.isEmpty ? "" : " Try again to resume from part \(state.chunks.count + 1).")
+                return
+            }
+            progress = "SHA-256 verified. Importing as a new project…"
+            let metadata: AnimationMetadata
+            do {
+                // Always a fresh identity: an existing device project is never overwritten.
+                metadata = try await studio.importPortableProject(data)
+            } catch {
+                problem = "The download was verified but the project could not be imported: \((error as? LocalizedError)?.errorDescription ?? "unknown error"). No project was created or changed."
+                return
+            }
+            do {
+                try RoomProjectLinkStore.device.record(RoomProjectLink(room: room, projectRef: snapshot.project_ref, sha256: snapshot.sha256,
+                                                                       localProjectID: metadata.id, importedAt: Date()))
+            } catch {
+                problem = "Imported as \(metadata.title), but this device could not remember its link to the room. Open it from the project library."
+            }
+            linkRevision += 1
+            do {
+                switch try await CommunityServices.rooms.handoff.confirmReceipt(room: room, snapshot: snapshot) {
+                case .serverCopyDeleted(let verified):
+                    notice = "Imported as a new project, \(metadata.title). Every current member has it, so the server copy was deleted\(verified ? " (deletion verified)" : "; deletion is still being verified")."
+                case .serverCopyRetained:
+                    notice = "Imported as a new project, \(metadata.title). The server keeps its copy until the other members have it or it expires."
+                }
+            } catch {
+                notice = "Imported as a new project, \(metadata.title). Your receipt was not recorded, so the server copy stays until it expires."
+            }
+            await refresh()
+        }
+    }
+    @MainActor private func withdraw(_ snapshot: RoomSnapshotRecord) async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        do {
+            let verified = try await CommunityServices.rooms.handoff.revoke(room: room, snapshot: snapshot.snapshot_id)
+            notice = verified ? "The server copy was deleted and the deletion verified. Copies members already imported stay on their devices."
+                : "The server copy was withdrawn; deletion is still being verified."
+        } catch { problem = describe(error) }
+        await refresh()
+    }
+    private func describe(_ error: Error) -> String {
+        if let handoff = error as? RoomProjectHandoff.HandoffError { return handoff.errorDescription ?? "Project handoff failed." }
+        return CommunityGateway.normalize(error).errorDescription ?? "Project handoff failed."
     }
 }
 

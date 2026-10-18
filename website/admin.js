@@ -592,7 +592,8 @@
   let lastExport = null;
   const csvCell = (value) => {
     let text = value === null || value === undefined ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
-    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;   // keep spreadsheet formulas inert
+    // Keep spreadsheet formulas inert, but leave plain numbers (negative ledger amounts) numeric.
+    if (/^[=+\-@\t\r]/.test(text) && !/^-?[0-9]+(\.[0-9]+)?$/.test(text)) text = `'${text}`;
     return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   async function financeReport(event) {
