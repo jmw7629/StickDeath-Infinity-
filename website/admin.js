@@ -83,7 +83,7 @@
     $('admin-panels').replaceChildren();
     for (const id of ['admin-users-result', 'admin-history-result', 'admin-publish-result', 'admin-diagnostics-result', 'admin-announce-change-result', 'admin-agent-result', 'admin-finance-result', 'admin-report-result']) { const el = $(id); if (el) el.replaceChildren(); }
     for (const id of ['admin-account-result', 'admin-proposal-result', 'admin-stop-result', 'admin-announce-result']) { const el = $(id); if (el) el.textContent = ''; }
-    lastExport = null; { const d = $('admin-report-download'); if (d) d.disabled = true; }
+    lastExport = null; capsLoaded = null; { const d = $('admin-report-download'); if (d) d.disabled = true; }
     setStatus('Signed out.', message || 'No session is held. Sign in to continue.');
     if (token) call('/auth/v1/logout', { token }).catch(() => {});
   }
@@ -402,20 +402,29 @@
   const dayStart = (value) => (value ? `${value}T00:00:00Z` : null);
 
   // --- publishing stages (#245) --------------------------------------------------------
-  // Maps the worker's recorded state and phase to the stage a person reads. The server's
-  // own state, phase and stored failure text are shown beside it, unchanged.
-  function publishStage(job) {
+  // The stage a person reads, computed exactly as sdi_private.publish_stage(state, phase,
+  // attempts, provider_id) in upload-retention.sql, with the iOS AdminPublishStage words.
+  // The server's own state, phase and stored failure text are shown beside it, unchanged.
+  const PUBLISH_STAGE_TITLE = {
+    queued: 'Queued', transferring: 'Transferring to provider', provider_processing: 'Provider processing',
+    releasing: 'Setting visibility', published: 'Published (provider confirmed)', failed: 'Failed',
+    needs_reconciliation: 'Needs reconciliation (provider outcome uncertain)', cancelling: 'Cancelling',
+    removal_in_progress: 'Removal in progress', removed: 'Removed from provider', cancelled: 'Cancelled before upload',
+  };
+  function publishStageKey(job) {
     const state = job.state; const phase = job.phase;
-    if (state === 'published') return job.result_url ? 'Published' : 'Published (link not recorded)';
-    if (state === 'queued') return phase === 'upload' ? 'Queued for upload' : phase === 'processing' ? 'Waiting for provider processing' : 'Waiting for release';
-    if (state === 'leased') return phase === 'upload' ? 'Uploading' : phase === 'processing' ? 'Provider processing' : 'Releasing';
-    if (state === 'failed') return 'Failed';
-    if (state === 'cancel_requested') return 'Cancellation requested';
-    if (state === 'cancelled') return 'Cancelled';
-    if (state === 'removal_pending') return 'Withdrawal pending';
-    if (state === 'reconcile') return 'Needs reconciliation';
-    return String(state || 'Unknown');
+    if (state === 'published') return 'published';
+    if (state === 'failed') return 'failed';
+    if (state === 'reconcile') return 'needs_reconciliation';
+    if (state === 'cancel_requested') return 'cancelling';
+    if (state === 'removal_pending') return 'removal_in_progress';
+    if (state === 'cancelled') return job.provider_id !== null && job.provider_id !== undefined ? 'removed' : 'cancelled';
+    if (phase === 'processing') return 'provider_processing';
+    if (phase === 'release') return 'releasing';
+    if (state === 'queued' && job.attempts === 0) return 'queued';
+    return 'transferring';
   }
+  const publishStage = (job) => PUBLISH_STAGE_TITLE[publishStageKey(job)];
   async function showPublishing(event) {
     event.preventDefault();
     const out = $('admin-publish-result');
@@ -493,6 +502,7 @@
   }
 
   // --- agent controls (#284) ------------------------------------------------------------
+  let capsLoaded = null;   // { agent, revision } whose current caps fill the form
   async function agentControl(event) {
     event.preventDefault();
     const out = $('admin-agent-result');
@@ -505,6 +515,23 @@
     }
     const ACTIONS = ['pause', 'resume', 'set_caps', 'set_permissions', 'publish_instructions', 'rollback_instructions'];
     const revision = wholeNumber($('admin-agent-revision').value, { min: 1 });
+    // An empty per-run cost cap clears it on the server, so caps are sent only
+    // after the agent's current values were read into the form (as on iOS).
+    if (action === 'set_caps' && !(capsLoaded && capsLoaded.agent === agent && capsLoaded.revision === revision)) {
+      capsLoaded = null; say(out, 'Reading the current caps…');
+      try {
+        const list = await rpc('sdi_agent_admin', { action: 'list' });
+        const row = list && Array.isArray(list.agents) ? list.agents.find((a) => a && a.key === agent) : null;
+        if (!row || !Number.isInteger(row.revision)) { say(out, list && (list.error || list.code) ? refusal(list) : 'That agent is not in the registry; nothing was sent.'); return; }
+        $('admin-agent-daily').value = String(row.daily_run_cap); $('admin-agent-items').value = String(row.per_run_item_cap);
+        $('admin-agent-monthly').value = String(row.monthly_cost_cap_minor);
+        $('admin-agent-perrun').value = row.per_run_cost_cap_minor === null || row.per_run_cost_cap_minor === undefined ? '' : String(row.per_run_cost_cap_minor);
+        $('admin-agent-revision').value = String(row.revision);
+        capsLoaded = { agent, revision: row.revision };
+        say(out, `Current caps for ${agent} loaded at revision ${row.revision}. Edit them and apply again; an empty per-run cost cap means none. Nothing was sent.`);
+      } catch (_) { say(out, 'The current caps could not be read; nothing was sent.'); }
+      return;
+    }
     const reason = $('admin-agent-reason').value.trim();
     if (!ACTIONS.includes(action) || revision === null || !reason || reason.length > 2000) { say(out, 'The revision shown in the Agents panel and a reason are required; nothing was sent.'); return; }
     let payload = {};
@@ -529,6 +556,7 @@
       const result = await rpc('sdi_agent_admin', { action, agent, revision, payload, reason });
       if (result && result.status === 'confirmed') {
         $('admin-agent-revision').value = String(result.revision); $('admin-agent-reason').value = '';
+        capsLoaded = action === 'set_caps' ? { agent, revision: result.revision } : null;
         say(out, `${action.replace(/_/g, ' ')} confirmed and audited; ${agent} is now at revision ${result.revision}.`);
       } else say(out, refusal(result));
     } catch (_) { say(out, 'The request did not complete. Refresh the Agents panel before retrying.'); }
