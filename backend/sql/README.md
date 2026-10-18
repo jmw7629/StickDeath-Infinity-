@@ -204,7 +204,13 @@ id per room (idempotent replay), strictly increasing room revision, explicit con
 responses carrying the missing commands, bounded payloads and rate. It also supplies
 the feed-removal appeal RPC for `moderation_appeals` (problem 9): owner-only
 submission within 30 days, uninvolved-admin decision, restoration only while the
-hosted copy still exists.
+hosted copy still exists. Its v2.2 block adds the owner-approved project handoff
+(`sdi_room_snapshot`, #234): one live 32 MiB portable-backup snapshot per room with a
+server-recomputed SHA-256, download only by approved members of that room, a receipt
+per member, deletion once every current member has it (or on withdrawal, replacement,
+project change, room close, corruption or 72-hour expiry) with `room_snapshot_audit`
+evidence; `sdi_room_asset_sweep` now also reports `snapshots_*` counts. See
+docs/ROOMS_SYNC_AND_TRANSFER.md.
 
 `challenges.sql` implements challenge create/schedule/cancel (moderation capability
 with MFA), member submit/withdraw/vote with the War Room digest-eligibility rule, one

@@ -195,6 +195,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		5ED395C49295EED7E8119CCC /* SpatterOwnKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ED4E67E4308938A88BCC035 /* SpatterOwnKey.swift */; };
 		4CC1DAF2ED4054F712711D06 /* SpatterOwnKeyKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */; };
 		C7953DD7BA410182ACCC25AD /* SpatterPlanControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C24E7F66CB174D3CD9A63A2 /* SpatterPlanControls.swift */; };
+		0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -399,6 +400,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		6ED4E67E4308938A88BCC035 /* SpatterOwnKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterOwnKey.swift"; sourceTree = SOURCE_ROOT; };
 		7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterOwnKeyKeychain.swift"; sourceTree = SOURCE_ROOT; };
 		7C24E7F66CB174D3CD9A63A2 /* SpatterPlanControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift"; sourceTree = SOURCE_ROOT; };
+		E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Rooms/RoomProjectHandoff.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -870,6 +872,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		54FD439F3474ABE7A8C46D90 /* Rooms */ = {
 			isa = PBXGroup;
 			children = (
+				E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */,
 				789E252DA7A77F141C94F064 /* RoomsClient.swift */,
 				1E765C1C2A24DAE3DDDC8B71 /* RoomSessionCoordinator.swift */,
 			);
@@ -1037,6 +1040,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */,
 				C7953DD7BA410182ACCC25AD /* SpatterPlanControls.swift in Sources */,
 				4CC1DAF2ED4054F712711D06 /* SpatterOwnKeyKeychain.swift in Sources */,
 				5ED395C49295EED7E8119CCC /* SpatterOwnKey.swift in Sources */,

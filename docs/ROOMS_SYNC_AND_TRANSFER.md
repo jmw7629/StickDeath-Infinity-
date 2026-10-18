@@ -62,9 +62,10 @@ The sweep removes expired copies, copies in closed rooms and copies whose sender
 is no longer a member. A sender's file is hidden from others the moment their
 membership ends. Device originals are only read, never moved or deleted.
 
-Operator gate: schedule `public.sdi_room_asset_sweep(200)` (for example every
-15 minutes) from the existing service-sweeps worker once rooms-v2.sql is applied.
-Not scheduled here.
+Operator gate: `room_asset_sweep` is now one of the named sweeps in
+`backend/ops/sweeps.py` (`--all` or `--only room_asset_sweep`); the host timer
+that runs the sweeps worker (for example every 15 minutes) must exist once
+rooms-v2.sql is applied. Not scheduled by this repository.
 
 ## Browser, join and handoff (#234)
 
@@ -77,5 +78,44 @@ Not scheduled here.
   Rooms (or posting `.sdiCommunityReturnToRoom`) re-opens that room, and *Back*
   or *Leave* ends the session. Losing access ends the session with a notice that
   the device copy is unchanged.
-- Members without a local copy of the project are told so; project files are
-  not transferred through rooms.
+- A member without a local copy opens the copy imported from the owner's
+  project handoff (below) when one exists; otherwise they are told to download it.
+
+## Owner-approved project handoff (`sdi_room_snapshot`, rooms-v2.sql v2.2)
+
+Owner decision 2026-10-18: a room owner may send the shared project to room
+members when they join, using temporary server storage that is deleted afterwards.
+
+| Bound | Value |
+| --- | --- |
+| Format | The portable `.sdiproject` backup (`SDIPROJECT000001` header), as produced by *Save Project Backup* |
+| Per snapshot | 32 MiB, 256 KiB chunks (max 128) |
+| Live snapshots | one per room; a new offer replaces the old one |
+| Per owner | 20 offers per day; 600 handoff calls per minute per account |
+| Unfinished upload | expires after 1 hour |
+| Finished copy | expires after 72 hours |
+
+- **Owner** (*Send project to members*, confirmation dialog): the app builds the
+  saved project's portable backup (the device project is only read), then
+  `offer` (size, SHA-256) → `put` chunks (resumable) → `finalize`, where the
+  server recomputes the SHA-256 and discards a mismatching copy. The owner sees
+  how many members imported it and how many are still waiting, and can
+  *Withdraw sent project* (verified deletion).
+- **Member** (*Download shared project*): `current` → `get` each chunk (only
+  approved, non-revoked members of that room; never the owner, a pending
+  requester, an outsider or another room) → the client checks every chunk
+  length, the whole-file SHA-256 and the backup header → `importPortableProject`
+  creates a **new** project with a fresh identity (an existing project is never
+  overwritten) → a local link (`Application Support/Rooms/room-project-links.json`)
+  remembers which project the room's copy became → `receipt` with the verified
+  digest. A newer version creates another new project; the earlier import is kept.
+- **Deletion**: the server copy is deleted, with verified chunk counts and an
+  append-only `room_snapshot_audit` row, when every current approved member holds
+  a receipt, on owner withdrawal, on replacement, when the room's shared project
+  changes, when the room closes, after a corrupt upload, or on expiry. The
+  service sweep (`room_asset_sweep`) also performs these deletions. Copies
+  members already imported stay on their devices; revocation cannot erase them.
+- Status: SQL verified on local PostgreSQL 16 (`backend/sql/tests/160_room_project_handoff.sql`);
+  the Foundation client logic is verified by `Tests/CommunityRooms`. The SwiftUI
+  card, the real backup/import path on device and a two-client journey are
+  **deferred** to native CI and device acceptance. Nothing is applied to the live project.

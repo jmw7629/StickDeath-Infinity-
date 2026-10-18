@@ -183,6 +183,16 @@ rooms.create.project-picker,StickDeathInfinity/Views/Collab/CollabRoomView.swift
 rooms.create.submit,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomCreateSheet,button,no,#228 #234,deferred
 rooms.create.title,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomCreateSheet,"text field 'Room name' -> binds 0.id.uuidString, binds title",no,#228 #234,deferred
 rooms.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,container 'rooms.error' (identifier-derived; review source),no,#228 #234,deferred
+rooms.handoff,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,container 'rooms.handoff' owner-approved project handoff card,no,#234,deferred
+rooms.handoff.cancel,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,button 'Cancel' -> cancels the running send or download,no,#234,deferred
+rooms.handoff.download,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,button 'Download shared project' -> receive + SHA-256 verify -> importPortableProject (new project) -> receipt,no,#234,deferred
+rooms.handoff.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,text handoff failure message,no,#234,deferred
+rooms.handoff.notice,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,text handoff outcome message,no,#234,deferred
+rooms.handoff.progress,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,text send/receive progress,no,#234,deferred
+rooms.handoff.refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,button 'Refresh handoff' -> refresh,no,#234,deferred
+rooms.handoff.send,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,button 'Send project to members' -> confirm -> preparePortableBackup -> chunked offer,no,#234,deferred
+rooms.handoff.status,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,text snapshot state and delivery counts,no,#234,deferred
+rooms.handoff.withdraw,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomProjectHandoffCard,button 'Withdraw sent project' -> revoke (verified server deletion),no,#234,deferred
 rooms.join.code,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,text field 'Invitation code' -> binds code,no,#228 #234,deferred
 rooms.join.consent,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,toggle 'I agree to join this room and let its owner see ' -> binds consent,no,#228 #234,deferred
 rooms.join.request,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,button 'Request admission',no,#228 #234,deferred
