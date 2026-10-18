@@ -20,6 +20,7 @@
 //   no Stripe API is called from the client.
 // ═══════════════════════════════════════════════════════════════════
 
+import Combine
 import Foundation
 import StoreKit
 
@@ -145,12 +146,26 @@ final class StripeService: ObservableObject {
     }
 
     private var transactionListener: Task<Void, Error>?
+    private var accountObserver: AnyCancellable?
 
     private init() {
         // Start listening for StoreKit transactions immediately
         transactionListener = listenForTransactions()
         Task { await loadProducts() }
         Task { await refreshEntitlements() }
+        // Studio limits follow the signed-in account: a server plan read for one
+        // account never applies to the next, and a plan billed elsewhere (the
+        // website) applies from sign-in, not only after Plans is opened. The read
+        // is silent; Plans still shows its own verification state.
+        accountObserver = AuthService.shared.$state.combineLatest(AuthService.shared.$currentUser.map { $0?.id })
+            .map { state, user in state == .authenticated ? user : nil }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.applyStudioLimits()
+                Task { [weak self] in _ = try? await self?.reconcileEntitlementsWithServer() }
+            }
     }
 
     /// Retry credit grants Apple delivered but the server has not confirmed yet.
