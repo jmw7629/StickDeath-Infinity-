@@ -4,6 +4,8 @@
 # This exercises the SQL on vanilla PostgreSQL with stubbed Supabase pieces
 # (scripts/backend/sql_test_stubs.sql). It is not a deployment and proves nothing
 # about the live project. Usage: scripts/backend/run_sql_tests.sh [--keep]
+# Environment: SDI_SQL_AFTER=<script> runs after the candidates are applied;
+# SDI_SQL_SKIP_TESTS=1 then skips the test files.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SQL_DIR="$ROOT/backend/sql"
@@ -72,6 +74,14 @@ for name in "${ORDER[@]}"; do
  "${PSQL[@]}" -f "$SQL_DIR/$name"
 done
 echo "== applied ${#ORDER[@]} candidate files"
+
+# Optional hook for measurement scripts (scripts/backend/burst_rehearsal.sh): run a
+# command against the freshly applied cluster. SDI_SQL_SKIP_TESTS=1 skips the suite.
+if [ -n "${SDI_SQL_AFTER:-}" ]; then
+ echo "== after-apply hook: $(basename "$SDI_SQL_AFTER")"
+ SDI_PGBIN="$PGBIN" SDI_PGHOST="$SOCKET_DIR" SDI_PGPORT="$PORT" SDI_WORK="$WORK" bash "$SDI_SQL_AFTER" || { echo "after-apply hook failed" >&2; exit 1; }
+fi
+if [ "${SDI_SQL_SKIP_TESTS:-0}" = "1" ]; then echo "== sql tests skipped (SDI_SQL_SKIP_TESTS=1)"; exit 0; fi
 
 status=0; passed=0; failed=0
 shopt -s nullglob
