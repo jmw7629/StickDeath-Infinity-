@@ -319,7 +319,7 @@ struct StudioImageImportPanel: View {
             }
         }
         .sheet(item: $libraryRequest) { request in
-            StudioImageLibraryView { catalogue, image in
+            StudioImageLibraryView(retainedOriginals: vm.catalogueOriginalDigests) { catalogue, image in
                 guard libraryRequest?.id == request.id else { return }
                 libraryRequest = nil
                 let holder = scopeHolder
