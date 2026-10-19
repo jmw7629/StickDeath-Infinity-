@@ -132,7 +132,7 @@ struct StudioToolStrip: View {
                         } else {
                             // A plan-locked tool shows the upgrade note instead.
                             guard vm.selectDrawingTool(def.tool) else { return }
-                            if hasSettings(def.tool) {
+                            if hasSettings(def.tool) && FloatingToolSettingsPanel.opensOnSelect(def.tool) {
                                 vm.activePanel = .toolSettings
                             } else {
                                 vm.activePanel = .none

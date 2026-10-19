@@ -29,6 +29,10 @@ struct FloatingToolSettingsPanel: View {
     @FocusState private var imageFocusedField: StudioImagePlacementField?
 
     static func hasSettings(_ tool: DrawingTool) -> Bool { true }
+    /// Selecting the Eyedropper does not open its popup: the popup would cover
+    /// the canvas the creator is about to sample. Its sample size and layer
+    /// mode open by tapping the selected Eyedropper again.
+    static func opensOnSelect(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
     
     var toolDef: ToolDef? {
         StudioToolStrip.tools.first { $0.tool == vm.selectedTool }
