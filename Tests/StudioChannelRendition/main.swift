@@ -19,6 +19,25 @@ private func require(_ value: Bool, _ message: String) throws { if !value { thro
         test("only the channel copy carries the mark") {
             try require(R.Purpose.channelCopy.carriesChannelMark && !R.Purpose.personalExport.carriesChannelMark, "purpose rule")
             try require(R.markAssetName == "SDIChannelWatercolorMark", "asset name")
+            try require(R.markAssetNames == ["SDIChannelWatercolorMark", "SDIChannelMarkSkull", "SDIChannelMarkWordmark"], "rotation set")
+        }
+
+        test("the owner's three marks rotate: sequences never repeat consecutively") {
+            let names = (0..<9).map(R.markAssetName(forSequence:))
+            try require(Set(names) == Set(R.markAssetNames), "all marks reached \(names)")
+            for i in 1..<names.count { try require(names[i] != names[i - 1], "repeat at \(i)") }
+            try require(R.markAssetName(forSequence: 3) == R.markAssetName(forSequence: 0)
+                && R.markAssetName(forSequence: -1) == R.markAssetNames[2], "wraps, including negatives")
+        }
+
+        test("a stable key always picks the same mark and keys spread over all three") {
+            let key = "3F2504E0-4F89-11D3-9A0C-0305E82C3301"
+            try require(R.markAssetName(forRotationKey: key) == R.markAssetName(forRotationKey: key), "deterministic")
+            // FNV-1a is fixed, so this value is the same on every platform and run.
+            try require(R.markAssetName(forRotationKey: "") == R.markAssetNames[Int(0xcbf2_9ce4_8422_2325 % UInt64(3))], "empty-key anchor")
+            var seen: [String: Int] = [:]
+            for i in 0..<300 { seen[R.markAssetName(forRotationKey: "project-\(i)"), default: 0] += 1 }
+            try require(Set(seen.keys) == Set(R.markAssetNames) && seen.values.allSatisfy { $0 >= 60 }, "spread \(seen)")
         }
 
         test("orientation classification") {

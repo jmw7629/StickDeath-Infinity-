@@ -683,11 +683,12 @@ extension StudioExportService {
     /// The owner-approved watercolor mark from the app's asset catalogue. Throws
     /// `StudioChannelRendition.Failure.markUnavailable` when the asset is not
     /// installed; nothing is drawn in its place.
-    static func installedChannelMark() throws -> CGImage {
+    static func installedChannelMark(named name: String = StudioChannelRendition.markAssetName) throws -> CGImage {
+        guard StudioChannelRendition.markAssetNames.contains(name) else { throw StudioChannelRendition.Failure.markUnavailable }
         #if canImport(UIKit)
-        guard let mark = UIImage(named: StudioChannelRendition.markAssetName)?.cgImage else { throw StudioChannelRendition.Failure.markUnavailable }
+        guard let mark = UIImage(named: name)?.cgImage else { throw StudioChannelRendition.Failure.markUnavailable }
         #elseif canImport(AppKit)
-        guard let mark = NSImage(named: StudioChannelRendition.markAssetName)?.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        guard let mark = NSImage(named: name)?.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             throw StudioChannelRendition.Failure.markUnavailable
         }
         #else

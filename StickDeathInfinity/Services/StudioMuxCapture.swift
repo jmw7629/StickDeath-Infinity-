@@ -35,6 +35,7 @@ import CryptoKit
             heldLastFrameTicks: snapshot.heldLastFrameTicks, soundCredits: snapshot.soundCredits)
         // An official-channel copy keeps its mark through the audio path (#241).
         hidden.channelMark = snapshot.channelMark
+        hidden.channelMarkAsset = snapshot.channelMarkAsset
         let prepared = try holdingLastFrameForAudio(hidden)
         return StudioMuxCapture(snapshot: prepared, proof: try proofFor(prepared))
     }
@@ -66,6 +67,7 @@ import CryptoKit
         prepared.heldLastFrameTicks = snapshot.heldLastFrameTicks + extra
         prepared.soundCredits = snapshot.soundCredits
         prepared.channelMark = snapshot.channelMark
+        prepared.channelMarkAsset = snapshot.channelMarkAsset
         return prepared
     }
     private struct Asset: Codable {

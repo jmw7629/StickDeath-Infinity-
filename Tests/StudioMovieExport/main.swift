@@ -174,6 +174,13 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             // The owner's asset is not bundled with this test binary: preparation is refused, not substituted.
             do { _ = try Service.channelCopy(of: snapshot(try document())); throw Failure(message: "Channel copy prepared without the owner's mark") }
             catch let error as StudioChannelRendition.Failure { try require(error == .markUnavailable, "Wrong refusal \(error)") }
+            for sequence in 0..<3 {
+                do { _ = try Service.channelCopy(of: snapshot(try document()), sequence: sequence); throw Failure(message: "Rotated mark \(sequence) substituted") }
+                catch let error as StudioChannelRendition.Failure { try require(error == .markUnavailable, "Wrong refusal \(error)") }
+            }
+            // Only the owner's named marks are ever loaded.
+            do { _ = try StudioExportService.installedChannelMark(named: "AppIcon"); throw Failure(message: "Non-mark asset accepted") }
+            catch let error as StudioChannelRendition.Failure { try require(error == .markUnavailable, "Wrong refusal \(error)") }
             // A synthetic transparent test mark (not product art): opaque black core, transparent border.
             func mark(opaque: Bool) throws -> CGImage {
                 let width = 64, height = 32
@@ -192,6 +199,7 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                 for f in doc.frames.indices { for e in doc.frames[f].elements.indices { doc.frames[f].elements[e].width = min(doc.frames[f].elements[e].width, 512) } }
                 let personal = try await Service().export(snapshot: snapshot(doc), outputParent: folder, background: .white)
                 var channel = snapshot(doc); channel.channelMark = try mark(opaque: false)
+                channel.channelMarkAsset = StudioChannelRendition.markAssetName(forSequence: width)
                 let marked = try await Service().export(snapshot: channel, outputParent: folder, background: .white)
                 let rect = try StudioChannelRendition.placement(outputWidth: width, outputHeight: height, markWidth: 64, markHeight: 32)
                 let plain = try await decode(personal.movieURL), copy = try await decode(marked.movieURL)
@@ -203,6 +211,8 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                     try pixel(copy.frames[index].pixel(max(0, rect.x - 4), max(0, rect.y - 4)), [255, 255, 255, 255], tolerance: 24)
                 }
                 try require(personal.manifest.channelRendition == nil && marked.manifest.channelRendition == true, "Manifest did not distinguish the channel copy")
+                try require(personal.manifest.channelMarkAsset == nil && marked.manifest.channelMarkAsset == channel.channelMarkAsset,
+                            "Manifest did not record which rotating mark the channel copy carries")
                 try require(doc == channel.document, "Channel copy changed the editable document")
             }
             // An opaque logo or an output too small for a legible mark is refused before encoding.

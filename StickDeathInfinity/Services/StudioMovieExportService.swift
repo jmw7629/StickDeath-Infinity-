@@ -91,15 +91,24 @@ final class StudioMovieExportService {
         /// watercolor mark composited bottom-right on every frame. Personal
         /// exports leave it nil. Use `channelCopy(of:)`; never assign other art.
         var channelMark: CGImage? = nil
+        /// Asset name of `channelMark`, recorded in the manifest so the approved
+        /// render states which of the rotating owner marks it carries.
+        var channelMarkAsset: String? = nil
     }
     /// The official-channel rendition of an export snapshot (#241): the same
-    /// document and audio, with the installed SDI watercolor mark and without
-    /// the free-plan plate. Throws `StudioChannelRendition.Failure.markUnavailable`
-    /// when the owner's mark asset is not in this build, so no channel copy is
-    /// prepared. The snapshot passed in, the project and personal exports are unchanged.
-    static func channelCopy(of snapshot: Snapshot) throws -> Snapshot {
+    /// document and audio, with one of the installed SDI marks and without the
+    /// free-plan plate. The mark rotates across videos: a publication
+    /// `sequence` picks it in order; otherwise the project ID does, so the same
+    /// video always gets the same mark. Throws
+    /// `StudioChannelRendition.Failure.markUnavailable` when that mark is not in
+    /// this build, so no channel copy is prepared. The snapshot passed in, the
+    /// project and personal exports are unchanged.
+    static func channelCopy(of snapshot: Snapshot, sequence: Int? = nil) throws -> Snapshot {
+        let name = sequence.map(StudioChannelRendition.markAssetName(forSequence:))
+            ?? StudioChannelRendition.markAssetName(forRotationKey: snapshot.document.id.uuidString)
         var copy = snapshot
-        copy.channelMark = try StudioExportService.installedChannelMark()
+        copy.channelMark = try StudioExportService.installedChannelMark(named: name)
+        copy.channelMarkAsset = name
         copy.render.watermark = nil
         return copy
     }
@@ -145,6 +154,9 @@ final class StudioMovieExportService {
         var projectDigest: String? = nil
         /// True only for an official-channel copy carrying the SDI mark (#241).
         var channelRendition: Bool? = nil
+        /// Which rotating owner mark the channel copy carries. Nil for personal
+        /// exports and older manifests.
+        var channelMarkAsset: String? = nil
         /// Counted by decoding the finished file during verification (#213), not
         /// copied from the plan. Nil in older manifests.
         var decodedFrameCount: Int? = nil
@@ -797,6 +809,7 @@ final class StudioMovieExportService {
             manifest.heldLastFrameTicks = snapshot.heldLastFrameTicks > 0 ? snapshot.heldLastFrameTicks : nil
             manifest.movieFilename = movieFilename
             manifest.channelRendition = snapshot.channelMark != nil ? true : nil
+            manifest.channelMarkAsset = snapshot.channelMark != nil ? snapshot.channelMarkAsset : nil
             manifest.decodedFrameCount = measured.frames
             manifest.decodedDurationSeconds = measured.seconds
             // The captured editable project, before reference layers were hidden.

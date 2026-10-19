@@ -4,16 +4,44 @@ import Foundation
 //
 // Only the copy prepared for the official SDI channel carries the small
 // watercolor SDI mark in its lower-right safe area. The editable project, its
-// originals and every personal export stay unmarked. The artwork is the
-// owner-approved, rights-cleared transparent logo installed in the app's asset
-// catalogue under `markAssetName`; it is not generated or substituted. When it
-// is missing, preparation of the channel copy is refused with a truthful message.
+// originals and every personal export stay unmarked. The artwork is one of the
+// owner-approved, rights-cleared transparent logos installed in the app's asset
+// catalogue under `markAssetNames`; it is not generated or substituted. When the
+// chosen one is missing, preparation of the channel copy is refused with a
+// truthful message.
+//
+// The owner's three logos rotate across channel videos (decision 2026-10-19) so
+// consecutive uploads do not all carry the same one. The choice is a pure
+// function of a stable key (the project ID by default) or of a publication
+// sequence number, so re-rendering the same video for approval always picks the
+// same mark and the exact approved render stays reproducible.
 // This file is Foundation-only placement and contrast math; the compositing that
 // uses it lives in StudioExportService.
 
 enum StudioChannelRendition {
-    /// Asset-catalogue name of the owner-supplied transparent watercolor mark.
-    static let markAssetName = "SDIChannelWatercolorMark"
+    /// Asset-catalogue names of the owner-supplied transparent marks, in
+    /// rotation order: red SD with white infinity, white SD-skull-infinity,
+    /// StickDeath Infinity wordmark.
+    static let markAssetNames = ["SDIChannelWatercolorMark", "SDIChannelMarkSkull", "SDIChannelMarkWordmark"]
+    /// The first mark in the rotation.
+    static var markAssetName: String { markAssetNames[0] }
+
+    /// Mark for the n-th channel publication: consecutive sequence numbers never
+    /// repeat a mark. Negative numbers wrap the same way.
+    static func markAssetName(forSequence sequence: Int) -> String {
+        let count = markAssetNames.count
+        return markAssetNames[((sequence % count) + count) % count]
+    }
+
+    /// Mark for a video identified by a stable key, such as its project ID. The
+    /// same key always yields the same mark; different keys spread over all
+    /// marks. Uses 64-bit FNV-1a over the key's UTF-8 bytes, never Swift's
+    /// per-process randomized `hashValue`.
+    static func markAssetName(forRotationKey key: String) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in key.utf8 { hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3 }
+        return markAssetNames[Int(hash % UInt64(markAssetNames.count))]
+    }
 
     enum Purpose: Equatable {
         case personalExport, channelCopy
