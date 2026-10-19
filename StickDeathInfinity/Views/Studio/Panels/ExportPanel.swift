@@ -63,12 +63,21 @@ struct ExportPanel: View {
             ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 16) {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                        ForEach(ExportFormat.allCases, id: \.rawValue) { format in
-                            ExportFormatCard(format: format, isSelected: vm.exportFormat == format,
-                                onTap: { vm.exportFormat = format })
-                                .disabled(session.isRunning || session.isSharing || movie.isBusy || gif.isBusy)
-                                .accessibilityIdentifier("studio.export.format.\(format.rawValue.lowercased())")
+                    // Four fixed cards: an eager two-column grid keeps every
+                    // format button in the hierarchy after the panel scrolls,
+                    // where a lazy grid drops the off-screen row.
+                    let formats = ExportFormat.allCases
+                    VStack(spacing: 10) {
+                        ForEach(Array(stride(from: 0, to: formats.count, by: 2)), id: \.self) { row in
+                            HStack(spacing: 10) {
+                                ForEach(formats[row..<min(row + 2, formats.count)], id: \.rawValue) { format in
+                                    ExportFormatCard(format: format, isSelected: vm.exportFormat == format,
+                                        onTap: { vm.exportFormat = format })
+                                        .frame(maxWidth: .infinity)
+                                        .disabled(session.isRunning || session.isSharing || movie.isBusy || gif.isBusy)
+                                        .accessibilityIdentifier("studio.export.format.\(format.rawValue.lowercased())")
+                                }
+                            }
                         }
                     }
                     if vm.exportFormat == .mp4 {
