@@ -249,12 +249,11 @@ rooms.report.reason,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomRep
 rooms.report.submit,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomReportSheet,button -> submit,no,#228 #234,deferred
 rooms.requests.item,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,text 'Your pending requests',no,#228 #234,deferred
 rooms.room.back,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Back to rooms' -> auth.userId.flatMap,no,#228 #234,deferred
+rooms.room.blocked,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text 'Shared edit #N is waiting: reason',no,#232,deferred
+rooms.room.blocked-skip,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Skip this edit (my copy will differ)',no,#232,deferred
 rooms.room.conflict,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,-> binds 0,no,#232 #234,deferred
 rooms.room.conflict-discard,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Discard mine',no,#232 #234,deferred
 rooms.room.conflict-keep,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Keep mine on top',no,#232 #234,deferred
-rooms.room.blocked,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text 'Shared edit #N is waiting: reason',no,#232,deferred
-rooms.room.blocked-skip,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Skip this edit (my copy will differ)',no,#232,deferred
-rooms.room.studio-sync,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text 'In Studio this session: applied/queued/unsent/skipped/not shared counts',no,#232,deferred
 rooms.room.copy-code,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,label 'Copy',no,#228 #234,deferred
 rooms.room.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text,no,#228 #234,deferred
 rooms.room.invite,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Create 24-hour invite',no,#228 #234,deferred
@@ -265,6 +264,7 @@ rooms.room.refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDeta
 rooms.room.report,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Report room',no,#228 #234,deferred
 rooms.room.revoke-invites,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Revoke invites and pending requests',no,#228 #234,deferred
 rooms.room.share-code,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,label 'Share code',no,#228 #234,deferred
+rooms.room.studio-sync,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text 'In Studio this session: applied/queued/unsent/skipped/not shared counts',no,#232,deferred
 rooms.room.sync-refresh,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,button 'Refresh edit stream',no,#228 #234,deferred
 rooms.room.sync-status,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomDetailView,text 'Shared edit stream',no,#228 #234,deferred
 rooms.warRoom,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,navigation entry 'rooms.warRoom' (identifier-derived; review source),no,#221,testRoomsReplaceMessagingWithoutClaimingConnectedServices
@@ -718,6 +718,7 @@ studio.onion.next,StickDeathInfinity/Views/Studio/Panels/ProjectSettingsPanel.sw
 studio.onion.opacity,StickDeathInfinity/Views/Studio/Panels/ProjectSettingsPanel.swift,StudioOnionSettingsControls,slider 'Onion opacity' -> binds vm.onionOpacity,no,#162,deferred
 studio.onion.previous,StickDeathInfinity/Views/Studio/Panels/ProjectSettingsPanel.swift,StudioOnionSettingsControls,stepper -> binds vm.onionPreviousCount,no,#162,testGuestStudioPortraitLandscapeAndPersistedGuideControls
 studio.onion.tint,StickDeathInfinity/Views/Studio/Panels/ProjectSettingsPanel.swift,StudioOnionSettingsControls,toggle 'Red previous / blue next' -> binds vm.onionTinted,no,#162,testGuestStudioPortraitLandscapeAndPersistedGuideControls
+studio.onion.toggle,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioTimeline,image 'Onion skin' -> toggles vm.showOnionSkin,no,#162,deferred
 studio.paste,StickDeathInfinity/Views/Studio/StudioView.swift,StudioBottomBar,button 'PASTE' -> vm.pasteClipboard,yes,#155,testBottomCopyPasteUsesExplicitLinkedImageWithoutDrawingsOrFrameCopies testExplicitImageCutUndoPasteAndColdReopen testImageWandRegionCopyDeletePasteUndoAndColdReopen testMixedArtworkCopyCutPasteUndoAndColdReopen testNonActiveFrameCopyPasteUndoAndColdReopen testSelectedArtworkCopyPasteUndoAndColdReopen
 studio.project.background,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectConfigurationCard,button 'White canvas (no image)',no,#292 #167,deferred
 studio.project.validation,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectConfigurationCard,text,no,#292 #167,deferred

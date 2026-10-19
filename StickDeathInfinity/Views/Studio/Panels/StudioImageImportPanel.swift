@@ -29,6 +29,7 @@ struct StudioImageImportPanel: View {
     @State private var videoFrameCount = 1
     /// Explicit opt-in (#199): also decode the movie's soundtrack with this mapping.
     @State private var includeSoundtrack = false
+    private static let previewAnchor = "studio.image.preview.anchor"
     private static let extractSoundtrack: StudioImageImportSession.SoundtrackExtractor = { url, mapping, scratch in
         try await StudioVideoAudioImportService.shared.extract(from: url, mapping: mapping, scratchParent: scratch).audio
     }
@@ -155,6 +156,7 @@ struct StudioImageImportPanel: View {
             PanelHeader(title: videoFrameMode ? "Rotoscope / Video" : "Add Picture", icon: videoFrameMode ? "film.fill" : "photo.fill") {
                 session.close(); vm.activePanel = .none
             }
+            ScrollViewReader { reader in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(videoFrameMode ? "Trace a video frame" : "Add one picture to the current frame")
@@ -197,6 +199,7 @@ struct StudioImageImportPanel: View {
                                 .background(Color.white.opacity(0.08)).cornerRadius(10)
                                 .accessibilityLabel("Decoded image preview")
                                 .accessibilityIdentifier("studio.image.preview")
+                                .id(Self.previewAnchor)
                         }
                         Text(preview.name).font(.specialElite(15)).foregroundColor(.white)
                         if let attribution = preview.catalogueAttribution {
@@ -266,6 +269,14 @@ struct StudioImageImportPanel: View {
                 .padding(24)
             }
             .accessibilityIdentifier("studio.image.scroll")
+            // A newly decoded picture is what the creator inspects next. The
+            // timing and soundtrack options above it (#199) can push it below
+            // the fold, so bring the whole preview into view once it arrives.
+            .onChange(of: session.previewImage.map { ObjectIdentifier($0) }) { _, shown in
+                guard shown != nil else { return }
+                withAnimation { reader.scrollTo(Self.previewAnchor, anchor: .center) }
+            }
+            }
         }
         .background(Color(hex: "0A0A0F"))
         .background {
