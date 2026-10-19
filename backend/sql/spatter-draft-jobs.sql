@@ -99,7 +99,7 @@ end $$;
 create function sdi_private.spatter_draft_progress(p_job uuid,p_owner text,p_state text,p_storyboard jsonb default null,
  p_quality jsonb default null,p_sha text default null,p_error text default '',p_review jsonb default null)
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare j sdi_private.spatter_draft_jobs; review uuid; creator uuid;
+declare j sdi_private.spatter_draft_jobs; review uuid; creator uuid; retained timestamptz; preview_until timestamptz;
 begin
  select * into j from sdi_private.spatter_draft_jobs where id=p_job for update;
  if not found or j.lease_owner is distinct from p_owner or j.lease_expires_at<clock_timestamp() then
@@ -120,14 +120,33 @@ begin
    return jsonb_build_object('status','refused','reason','A review needs the render digest, storyboard, quality report, source digest, creator and private preview URL.'); end if;
   if coalesce((p_quality->>'passes')::boolean,false) is not true then
    return jsonb_build_object('status','refused','reason','The quality report did not pass; mark the job failed with the finding instead.'); end if;
+  -- Optional retained private copy (backend/spatter/draft_preview.py): object_key
+  -- <upload>.mp4, byte_count and artifact_expires_at (at most 14 days). Without it
+  -- the draft can be reviewed but not approved or have its preview renewed.
+  if p_review ? 'object_key' then
+   if (p_review->>'object_key') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$'
+    or jsonb_typeof(p_review->'byte_count') is distinct from 'number' or (p_review->>'byte_count') !~ '^[0-9]{1,10}$'
+    or (p_review->>'byte_count')::bigint not between 1 and 2147483648 or (p_review->>'artifact_expires_at') is null then
+    return jsonb_build_object('status','refused','reason','The retained draft copy needs an object key, byte count and expiry.'); end if;
+   retained:=(p_review->>'artifact_expires_at')::timestamptz;
+   if retained<=clock_timestamp() or retained>clock_timestamp()+interval '14 days' then
+    return jsonb_build_object('status','refused','reason','The retained draft copy expiry must be within 14 days.'); end if;
+  end if;
+  preview_until:=coalesce((p_review->>'preview_expires_at')::timestamptz,clock_timestamp()+interval '7 days');
+  if retained is not null then preview_until:=least(preview_until,retained); end if;
   creator:=(p_review->>'creator')::uuid;
   insert into sdi_private.render_reviews(creator,title,source_revision,render_digest,preview_url,preview_expires_at,consent_version,rights_summary,rights_cleared,
    destinations,spatter_generated,storyboard,source_project_digest)
   values(creator,left(coalesce(p_review->>'title','Spatter daily draft '||j.target_date::text),200),coalesce(p_review->>'source_revision','draft:'||j.target_date::text),
-   p_sha,p_review->>'preview_url',coalesce((p_review->>'preview_expires_at')::timestamptz,clock_timestamp()+interval '7 days'),
+   p_sha,p_review->>'preview_url',preview_until,
    coalesce(p_review->>'consent_version','spatter-draft-v1'),coalesce(p_review->>'rights_summary','Independently generated stick-figure content; no external source material.'),
    coalesce((p_review->>'rights_cleared')::boolean,true),'{}'::text[],true,p_storyboard,p_review->>'source_project_digest')
   returning id into review;
+  if retained is not null then
+   insert into sdi_private.render_artifacts(review_id,version,render_digest,object_key,byte_count,title,made_for_kids,expires_at)
+   values(review,1,p_sha,p_review->>'object_key',(p_review->>'byte_count')::bigint,
+    left(coalesce(p_review->>'title','Spatter daily draft '||j.target_date::text),100),false,retained);
+  end if;
   update sdi_private.spatter_draft_jobs set state='review_pending',storyboard=p_storyboard,quality_report=p_quality,artifact_sha256=p_sha,review_id=review,
    lease_owner=null,lease_expires_at=null,updated_at=clock_timestamp() where id=j.id;
   perform sdi_private.agent_run_finish(j.agent_run,'succeeded',1,0,'');

@@ -29,10 +29,13 @@ import CryptoKit
     static func capture(_ snapshot: StudioMovieExportService.Snapshot) throws -> StudioMuxCapture {
         // Reference layers are hidden in the captured copy so both the proof and
         // the rendered component describe the same exported picture (#200).
-        let hidden = StudioMovieExportService.Snapshot(document: snapshot.document.hidingReferenceLayers,
+        var hidden = StudioMovieExportService.Snapshot(document: snapshot.document.hidingReferenceLayers,
             retainedAudioTracks: snapshot.retainedAudioTracks, rasterDataByID: snapshot.rasterDataByID,
             imageCredits: snapshot.imageCredits, render: snapshot.render,
             heldLastFrameTicks: snapshot.heldLastFrameTicks, soundCredits: snapshot.soundCredits)
+        // An official-channel copy keeps its mark through the audio path (#241).
+        hidden.channelMark = snapshot.channelMark
+        hidden.channelMarkAsset = snapshot.channelMarkAsset
         let prepared = try holdingLastFrameForAudio(hidden)
         return StudioMuxCapture(snapshot: prepared, proof: try proofFor(prepared))
     }
@@ -63,6 +66,8 @@ import CryptoKit
             rasterDataByID: snapshot.rasterDataByID, imageCredits: snapshot.imageCredits, render: snapshot.render)
         prepared.heldLastFrameTicks = snapshot.heldLastFrameTicks + extra
         prepared.soundCredits = snapshot.soundCredits
+        prepared.channelMark = snapshot.channelMark
+        prepared.channelMarkAsset = snapshot.channelMarkAsset
         return prepared
     }
     private struct Asset: Codable {

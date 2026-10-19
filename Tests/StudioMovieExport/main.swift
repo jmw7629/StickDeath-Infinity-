@@ -170,6 +170,62 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(manifest.frameIDs == doc.frames.map(\.id) && manifest.projectID == doc.id && manifest.documentRevision == 7 && manifest.fps == 24, "Manifest lost canonical identity/timing")
             try require(!manifest.audioIncluded && !manifest.editorGuidesIncluded && manifest.encodedBytes == Data(contentsOf: output.movieURL).count, "Manifest claimed unavailable work")
         }
+        await test("official-channel copy carries the mark bottom-right; personal export and refusals stay unmarked (#241)") {
+            // The owner's asset is not bundled with this test binary: preparation is refused, not substituted.
+            do { _ = try Service.channelCopy(of: snapshot(try document())); throw Failure(message: "Channel copy prepared without the owner's mark") }
+            catch let error as StudioChannelRendition.Failure { try require(error == .markUnavailable, "Wrong refusal \(error)") }
+            for sequence in 0..<3 {
+                do { _ = try Service.channelCopy(of: snapshot(try document()), sequence: sequence); throw Failure(message: "Rotated mark \(sequence) substituted") }
+                catch let error as StudioChannelRendition.Failure { try require(error == .markUnavailable, "Wrong refusal \(error)") }
+            }
+            // Only the owner's named marks are ever loaded.
+            do { _ = try StudioExportService.installedChannelMark(named: "AppIcon"); throw Failure(message: "Non-mark asset accepted") }
+            catch let error as StudioChannelRendition.Failure { try require(error == .markUnavailable, "Wrong refusal \(error)") }
+            // A synthetic transparent test mark (not product art): opaque black core, transparent border.
+            func mark(opaque: Bool) throws -> CGImage {
+                let width = 64, height = 32
+                var bytes = [UInt8](repeating: 0, count: width * height * 4)
+                for y in 0..<height { for x in 0..<width where opaque || (x >= 16 && x < 48 && y >= 8 && y < 24) {
+                    let i = (y * width + x) * 4; bytes[i] = 0; bytes[i + 1] = 0; bytes[i + 2] = 0; bytes[i + 3] = 255 } }
+                let provider = CGDataProvider(data: Data(bytes) as CFData)!
+                return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                    space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: (opaque ? CGImageAlphaInfo.noneSkipLast : CGImageAlphaInfo.premultipliedLast).rawValue),
+                    provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)!
+            }
+            let folder = try parent(root, "channel-copy")
+            for (width, height) in [(640, 360), (360, 640), (480, 480)] {
+                var doc = try document(colors: ["#FFFFFF", "#FFFFFF"], width: width, height: height)
+                // Brush widths are limited to 512 px; white on the white background either way.
+                for f in doc.frames.indices { for e in doc.frames[f].elements.indices { doc.frames[f].elements[e].width = min(doc.frames[f].elements[e].width, 512) } }
+                let personal = try await Service().export(snapshot: snapshot(doc), outputParent: folder, background: .white)
+                var channel = snapshot(doc); channel.channelMark = try mark(opaque: false)
+                channel.channelMarkAsset = StudioChannelRendition.markAssetName(forSequence: width)
+                let marked = try await Service().export(snapshot: channel, outputParent: folder, background: .white)
+                let rect = try StudioChannelRendition.placement(outputWidth: width, outputHeight: height, markWidth: 64, markHeight: 32)
+                let plain = try await decode(personal.movieURL), copy = try await decode(marked.movieURL)
+                let cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2
+                for index in copy.frames.indices {
+                    try pixel(plain.frames[index].pixel(cx, cy), [255, 255, 255, 255])
+                    try require(copy.frames[index].pixel(cx, cy)[0] < 80, "\(width)x\(height) mark missing at its placement: \(copy.frames[index].pixel(cx, cy))")
+                    try pixel(copy.frames[index].pixel(width / 4, height / 4), [255, 255, 255, 255])
+                    try pixel(copy.frames[index].pixel(max(0, rect.x - 4), max(0, rect.y - 4)), [255, 255, 255, 255], tolerance: 24)
+                }
+                try require(personal.manifest.channelRendition == nil && marked.manifest.channelRendition == true, "Manifest did not distinguish the channel copy")
+                try require(personal.manifest.channelMarkAsset == nil && marked.manifest.channelMarkAsset == channel.channelMarkAsset,
+                            "Manifest did not record which rotating mark the channel copy carries")
+                try require(doc == channel.document, "Channel copy changed the editable document")
+            }
+            // An opaque logo or an output too small for a legible mark is refused before encoding.
+            var opaqueDoc = try document(colors: ["#FFFFFF"], width: 640, height: 360)
+            opaqueDoc.frames[0].elements[0].width = 512
+            var opaque = snapshot(opaqueDoc)
+            opaque.channelMark = try mark(opaque: true)
+            try await rejected({ _ = try await Service().export(snapshot: opaque, outputParent: folder, background: .white) },
+                               matching: { ($0 as? StudioChannelRendition.Failure) == .markNotTransparent })
+            var tiny = snapshot(try document()); tiny.channelMark = try mark(opaque: false)
+            try await rejected({ _ = try await Service().export(snapshot: tiny, outputParent: folder, background: .white) },
+                               matching: { ($0 as? StudioChannelRendition.Failure) == .outputTooSmall })
+        }
         await test("held cels encode exact variable H264 sample timing") {
             var doc = try document(); doc.schemaVersion = 21
             doc.frames[0].holdTicks = 3; doc.frames[1].holdTicks = 6

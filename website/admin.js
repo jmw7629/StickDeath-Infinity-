@@ -1,5 +1,6 @@
 'use strict';
-// Static command-center shell (issue #277). Calls the sdi_* RPCs through PostgREST
+// Static command-center shell (issue #277; finance #254, agent controls #284,
+// publishing stages #245, diagnostics #291, announcements #290, reset flags #285). Calls the sdi_* RPCs through PostgREST
 // with a GoTrue session held in page memory. Authorization is entirely server-side;
 // this script only shows what the server answers. With SDI_ADMIN_CONFIG === null it
 // renders nothing dynamic and makes no request.
@@ -80,8 +81,9 @@
     show('admin-console', false); show('admin-signin', true); show('admin-mfa-form', false); show('admin-password-form', true);
     show('admin-enrol-form', false); show('admin-newpassword-form', false);
     $('admin-panels').replaceChildren();
-    for (const id of ['admin-users-result', 'admin-history-result']) { const el = $(id); if (el) el.replaceChildren(); }
-    for (const id of ['admin-account-result', 'admin-proposal-result', 'admin-stop-result']) { const el = $(id); if (el) el.textContent = ''; }
+    for (const id of ['admin-users-result', 'admin-history-result', 'admin-publish-result', 'admin-diagnostics-result', 'admin-announce-change-result', 'admin-agent-result', 'admin-finance-result', 'admin-report-result']) { const el = $(id); if (el) el.replaceChildren(); }
+    for (const id of ['admin-account-result', 'admin-proposal-result', 'admin-stop-result', 'admin-announce-result']) { const el = $(id); if (el) el.textContent = ''; }
+    lastExport = null; capsLoaded = null; { const d = $('admin-report-download'); if (d) d.disabled = true; }
     setStatus('Signed out.', message || 'No session is held. Sign in to continue.');
     if (token) call('/auth/v1/logout', { token }).catch(() => {});
   }
@@ -353,13 +355,15 @@
     const subject = $('admin-account-subject').value.trim();
     const action = $('admin-account-action').value;
     const reason = $('admin-account-reason').value.trim();
-    if (!UUID_RE.test(subject) || !['note', 'signout', 'suspend', 'ban', 'restore'].includes(action) || !reason || reason.length > 2000 || !$('admin-account-confirm').checked) {
+    if (!UUID_RE.test(subject) || !['note', 'signout', 'suspend', 'ban', 'restore', 'reset_flags'].includes(action) || !reason || reason.length > 2000 || !$('admin-account-confirm').checked) {
       out.textContent = 'An account id, an action, a reason and the confirmation are required; nothing was sent.'; return;
     }
     try {
       const result = await rpc('sdi_users_action', { action, subject, reason });
-      if (result && result.status === 'confirmed') {
-        out.textContent = `${action} confirmed and audited.`;
+      if (result && result.status === 'unchanged') {
+        out.textContent = 'No open reports on this member\'s posts; nothing was changed or audited.';
+      } else if (result && result.status === 'confirmed') {
+        out.textContent = action === 'reset_flags' ? `Flags reset and audited: ${Number(result.dismissed) || 0} open reports dismissed.` : `${action} confirmed and audited.`;
         $('admin-account-reason').value = ''; $('admin-account-confirm').checked = false;
       } else if (result && result.code === 'step_up_required') {
         out.textContent = 'The server requires a recent second factor: sign out and sign in again with your authenticator, then retry. Nothing was changed.';
@@ -385,6 +389,276 @@
     out.replaceChildren(renderValue('Loading…'));
     try { showAnswer(out, await rpc('sdi_agent_admin', { action: kind, agent: agent || null, payload }), kind); }
     catch (_) { out.replaceChildren(renderValue('The request did not complete.')); }
+  }
+
+  // --- shared helpers for the action forms -----------------------------------------
+  const refusal = (result) => `Server answer: ${(result && (result.error || result.code)) || 'no confirmation'}.${result && result.code === 'step_up_required' ? ' Sign out and sign in again with your authenticator, then retry.' : ''} Nothing was changed.`;
+  const say = (out, text) => { out.replaceChildren(renderValue(text)); };
+  const wholeNumber = (raw, { min = 0, max = Number.MAX_SAFE_INTEGER, signed = false } = {}) => {
+    const text = String(raw).trim();
+    if (!(signed ? /^-?[0-9]{1,15}$/ : /^[0-9]{1,15}$/).test(text)) return null;
+    const n = Number(text); return n >= min && n <= max ? n : null;
+  };
+  const dayStart = (value) => (value ? `${value}T00:00:00Z` : null);
+
+  // --- publishing stages (#245) --------------------------------------------------------
+  // The stage a person reads, computed exactly as sdi_private.publish_stage(state, phase,
+  // attempts, provider_id) in upload-retention.sql, with the iOS AdminPublishStage words.
+  // The server's own state, phase and stored failure text are shown beside it, unchanged.
+  const PUBLISH_STAGE_TITLE = {
+    queued: 'Queued', transferring: 'Transferring to provider', provider_processing: 'Provider processing',
+    releasing: 'Setting visibility', published: 'Published (provider confirmed)', failed: 'Failed',
+    needs_reconciliation: 'Needs reconciliation (provider outcome uncertain)', cancelling: 'Cancelling',
+    removal_in_progress: 'Removal in progress', removed: 'Removed from provider', cancelled: 'Cancelled before upload',
+  };
+  function publishStageKey(job) {
+    const state = job.state; const phase = job.phase;
+    if (state === 'published') return 'published';
+    if (state === 'failed') return 'failed';
+    if (state === 'reconcile') return 'needs_reconciliation';
+    if (state === 'cancel_requested') return 'cancelling';
+    if (state === 'removal_pending') return 'removal_in_progress';
+    if (state === 'cancelled') return job.provider_id !== null && job.provider_id !== undefined ? 'removed' : 'cancelled';
+    if (phase === 'processing') return 'provider_processing';
+    if (phase === 'release') return 'releasing';
+    if (state === 'queued' && job.attempts === 0) return 'queued';
+    return 'transferring';
+  }
+  const publishStage = (job) => PUBLISH_STAGE_TITLE[publishStageKey(job)];
+  async function showPublishing(event) {
+    event.preventDefault();
+    const out = $('admin-publish-result');
+    const page = pageNumber($('admin-publish-page').value);
+    const job = $('admin-publish-job').value.trim();
+    if (page === null || (job && !UUID_RE.test(job))) { say(out, 'Use a page from 1 to 200 and, optionally, a job id; nothing was sent.'); return; }
+    say(out, 'Loading…');
+    try {
+      if (job) { showAnswer(out, await rpc('sdi_publishing_admin', { action: 'history', job }), 'history'); return; }
+      const result = await rpc('sdi_publishing_admin', { action: 'list', page });
+      if (result && Array.isArray(result.jobs)) result.jobs = result.jobs.map((row) => ({ stage: publishStage(row), title: row.title, destination: row.destination, link: row.result_url || '', failure: row.last_error || '', state: row.state, phase: row.phase, attempts: row.attempts, revision: row.revision, updated_at: row.updated_at, id: row.id }));
+      showAnswer(out, result, 'jobs');
+    } catch (_) { say(out, 'The request did not complete.'); }
+  }
+
+  // --- diagnostics read model (#291) ---------------------------------------------------
+  async function showDiagnostics(event) {
+    event.preventDefault();
+    const out = $('admin-diagnostics-result');
+    const days = wholeNumber($('admin-diagnostics-days').value, { min: 1, max: 90 });
+    if (days === null) { say(out, 'Choose between 1 and 90 days; nothing was sent.'); return; }
+    say(out, 'Loading…');
+    try {
+      const result = await rpc('sdi_diagnostics_admin', { action: 'summary', days });
+      if (!result || result.error || result.code) { const p = document.createElement('p'); p.className = 'note'; p.textContent = refusal(result).replace(' Nothing was changed.', ''); out.replaceChildren(p); return; }
+      out.replaceChildren(renderValue(result));
+    } catch (_) { say(out, 'The request did not complete.'); }
+  }
+
+  // --- announcements (#290) ------------------------------------------------------------
+  async function composeAnnouncement(event) {
+    event.preventDefault();
+    const out = $('admin-announce-result');
+    const title = $('admin-announce-title').value.trim(); const body = $('admin-announce-body').value.trim();
+    const category = $('admin-announce-category').value; const audience = $('admin-announce-audience').value;
+    const channels = [...($('admin-announce-inapp').checked ? ['in_app'] : []), ...($('admin-announce-push').checked ? ['push'] : [])];
+    const reason = $('admin-announce-reason').value.trim();
+    if (!title || title.length > 120 || !body || body.length > 1000 || !channels.length || !reason
+      || !['product', 'marketing', 'transactional'].includes(category) || !['all', 'subscribers'].includes(audience)) {
+      out.textContent = 'Title (120), text (1000), at least one channel and a reason are required; nothing was sent.'; return;
+    }
+    try {
+      const result = await rpc('sdi_announce_admin', { action: 'compose', payload: { title, body, category, audience, channels }, reason });
+      if (result && result.status === 'draft') {
+        out.textContent = `Draft saved: id ${result.announcement}, revision ${result.revision}. Nothing is sent until it is scheduled.`;
+        $('admin-announce-id').value = result.announcement; $('admin-announce-revision').value = String(result.revision);
+        $('admin-announce-reason').value = '';
+      } else out.textContent = refusal(result);
+    } catch (_) { out.textContent = 'The request did not complete. Refresh the Announcements panel before retrying.'; }
+  }
+  async function changeAnnouncement(event) {
+    event.preventDefault();
+    const out = $('admin-announce-change-result');
+    const change = event.submitter && event.submitter.dataset.change;
+    const announcement = $('admin-announce-id').value.trim();
+    if (!UUID_RE.test(announcement) || !['schedule', 'cancel', 'results'].includes(change)) { say(out, 'An announcement id is required; nothing was sent.'); return; }
+    try {
+      if (change === 'results') { showAnswer(out, await rpc('sdi_announce_admin', { action: 'results', announcement }), 'results'); return; }
+      const revision = wholeNumber($('admin-announce-revision').value, { min: 1 });
+      const reason = $('admin-announce-change-reason').value.trim();
+      const payload = {};
+      if (change === 'schedule' && $('admin-announce-when').value) {
+        const when = new Date($('admin-announce-when').value);
+        if (Number.isNaN(when.getTime())) { say(out, 'The send time is not a valid date; nothing was sent.'); return; }
+        payload.scheduled_for = when.toISOString();
+      }
+      if (revision === null || !reason || reason.length > 2000) { say(out, 'The revision shown and a reason are required; nothing was sent.'); return; }
+      if (change === 'schedule' && !confirm(`Schedule this announcement${payload.scheduled_for ? ` for ${new Date(payload.scheduled_for).toLocaleString()}` : ' for the next delivery run'}? It goes to every eligible member.`)) return;
+      const result = await rpc('sdi_announce_admin', { action: change, announcement, revision, payload, reason });
+      if (result && result.status === 'confirmed') {
+        $('admin-announce-revision').value = String(result.revision); $('admin-announce-change-reason').value = '';
+        say(out, change === 'schedule' ? `Scheduled and audited (revision ${result.revision}). The delivery worker sends it when due.` : `Cancelled and audited (revision ${result.revision}). Queued deliveries were suppressed.`);
+      } else say(out, refusal(result));
+    } catch (_) { say(out, 'The request did not complete. Refresh before retrying.'); }
+  }
+
+  // --- agent controls (#284) ------------------------------------------------------------
+  let capsLoaded = null;   // { agent, revision } whose current caps fill the form
+  async function agentControl(event) {
+    event.preventDefault();
+    const out = $('admin-agent-result');
+    const agent = $('admin-agent-key').value.trim(); const action = $('admin-agent-action').value;
+    if (!/^[a-z0-9_]{1,40}$/.test(agent)) { say(out, 'Enter the agent key shown in the Agents panel; nothing was sent.'); return; }
+    if (action === 'instructions') {
+      say(out, 'Loading…');
+      try { showAnswer(out, await rpc('sdi_agent_admin', { action, agent }), 'instructions'); } catch (_) { say(out, 'The request did not complete.'); }
+      return;
+    }
+    const ACTIONS = ['pause', 'resume', 'set_caps', 'set_permissions', 'publish_instructions', 'rollback_instructions'];
+    const revision = wholeNumber($('admin-agent-revision').value, { min: 1 });
+    // An empty per-run cost cap clears it on the server, so caps are sent only
+    // after the agent's current values were read into the form (as on iOS).
+    if (action === 'set_caps' && !(capsLoaded && capsLoaded.agent === agent && capsLoaded.revision === revision)) {
+      capsLoaded = null; say(out, 'Reading the current caps…');
+      try {
+        const list = await rpc('sdi_agent_admin', { action: 'list' });
+        const row = list && Array.isArray(list.agents) ? list.agents.find((a) => a && a.key === agent) : null;
+        if (!row || !Number.isInteger(row.revision)) { say(out, list && (list.error || list.code) ? refusal(list) : 'That agent is not in the registry; nothing was sent.'); return; }
+        $('admin-agent-daily').value = String(row.daily_run_cap); $('admin-agent-items').value = String(row.per_run_item_cap);
+        $('admin-agent-monthly').value = String(row.monthly_cost_cap_minor);
+        $('admin-agent-perrun').value = row.per_run_cost_cap_minor === null || row.per_run_cost_cap_minor === undefined ? '' : String(row.per_run_cost_cap_minor);
+        $('admin-agent-revision').value = String(row.revision);
+        capsLoaded = { agent, revision: row.revision };
+        say(out, `Current caps for ${agent} loaded at revision ${row.revision}. Edit them and apply again; an empty per-run cost cap means none. Nothing was sent.`);
+      } catch (_) { say(out, 'The current caps could not be read; nothing was sent.'); }
+      return;
+    }
+    const reason = $('admin-agent-reason').value.trim();
+    if (!ACTIONS.includes(action) || revision === null || !reason || reason.length > 2000) { say(out, 'The revision shown in the Agents panel and a reason are required; nothing was sent.'); return; }
+    let payload = {};
+    if (action === 'set_caps') {
+      const daily = $('admin-agent-daily').value.trim(); const items = $('admin-agent-items').value.trim();
+      const monthly = $('admin-agent-monthly').value.trim(); const perRun = $('admin-agent-perrun').value.trim();
+      if (!/^[0-9]{1,4}$/.test(daily) || !/^[0-9]{1,5}$/.test(items) || !/^[0-9]{1,12}$/.test(monthly) || !/^([0-9]{1,12})?$/.test(perRun)) { say(out, 'Caps are whole numbers (per-run cost cap may be empty); nothing was sent.'); return; }
+      payload = { daily_run_cap: daily, per_run_item_cap: items, monthly_cost_cap_minor: monthly, per_run_cost_cap_minor: perRun };
+    } else if (action === 'set_permissions') {
+      payload = { permissions: ['read', 'propose', 'write'].filter((p) => $(`admin-agent-perm-${p}`).checked) };
+    } else if (action === 'publish_instructions') {
+      const body = $('admin-agent-body').value;
+      if (!body.trim() || body.length > 20000) { say(out, 'Instruction text of 1 to 20000 characters is required; nothing was sent.'); return; }
+      payload = { body };
+    } else if (action === 'rollback_instructions') {
+      const version = wholeNumber($('admin-agent-version').value, { min: 1, max: 999999 });
+      if (version === null) { say(out, 'Enter the instruction version to restore; nothing was sent.'); return; }
+      payload = { version };
+    }
+    if (['pause', 'publish_instructions', 'rollback_instructions'].includes(action) && !confirm(`Apply "${action.replace('_', ' ')}" to ${agent}?`)) return;
+    try {
+      const result = await rpc('sdi_agent_admin', { action, agent, revision, payload, reason });
+      if (result && result.status === 'confirmed') {
+        $('admin-agent-revision').value = String(result.revision); $('admin-agent-reason').value = '';
+        capsLoaded = action === 'set_caps' ? { agent, revision: result.revision } : null;
+        say(out, `${action.replace(/_/g, ' ')} confirmed and audited; ${agent} is now at revision ${result.revision}.`);
+      } else say(out, refusal(result));
+    } catch (_) { say(out, 'The request did not complete. Refresh the Agents panel before retrying.'); }
+  }
+
+  // --- finance records and reports (#254) -------------------------------------------------
+  // CSV with optional double quotes; no formula evaluation, values are sent as text.
+  function parseCSV(text) {
+    const rows = []; let row = []; let field = ''; let quoted = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text[i];
+      if (quoted) { if (c === '"' && text[i + 1] === '"') { field += '"'; i += 1; } else if (c === '"') quoted = false; else field += c; continue; }
+      if (c === '"' && field === '') quoted = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i += 1; row.push(field); field = ''; if (row.some((v) => v.trim())) rows.push(row); row = []; }
+      else field += c;
+    }
+    row.push(field); if (row.some((v) => v.trim())) rows.push(row);
+    return rows;
+  }
+  async function recordFinance(event) {
+    event.preventDefault();
+    const out = $('admin-finance-result');
+    const action = $('admin-finance-action').value; const reason = $('admin-finance-reason').value.trim();
+    if (!reason || reason.length > 2000) { say(out, 'A reason is required; nothing was sent.'); return; }
+    const params = { action, reason };
+    const currency = $('admin-finance-currency').value.trim().toUpperCase(); const note = $('admin-finance-note').value.trim();
+    const entry = $('admin-finance-entry').value.trim();
+    if (action === 'expense') {
+      const ref = $('admin-finance-ref').value.trim(); const amount = wholeNumber($('admin-finance-amount').value, { min: 1, max: 999999999999999 }); const date = $('admin-finance-date').value;
+      if (!ref || ref.length > 200 || amount === null || !/^[A-Z]{3}$/.test(currency) || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(date) || note.length > 500) { say(out, 'A reference, a positive amount in minor units, an ISO currency and the date are required; nothing was sent.'); return; }
+      Object.assign(params, { ref, amount_minor: amount, currency, occurred_at: dayStart(date), note });
+    } else if (action === 'import') {
+      const lines = parseCSV($('admin-finance-csv').value);
+      if (lines.length && /^ref$/i.test((lines[0][0] || '').trim())) lines.shift();
+      if (lines.length < 1 || lines.length > 500) { say(out, 'Paste 1 to 500 CSV rows; nothing was sent.'); return; }
+      params.rows = lines.map(([ref = '', kind = '', amount = '', cur = '', occurred = '', rowNote = '']) => ({ ref: ref.trim(), kind: kind.trim(), amount_minor: amount.trim(), currency: cur.trim().toUpperCase(), occurred_at: occurred.trim(), note: rowNote.trim() }));
+    } else if (action === 'correct') {
+      const amount = wholeNumber($('admin-finance-amount').value, { min: -999999999999999, max: 999999999999999, signed: true });
+      if (!UUID_RE.test(entry) || amount === null || amount === 0 || !note || note.length > 500) { say(out, 'The entry id, a non-zero signed amount and a note are required; nothing was sent.'); return; }
+      Object.assign(params, { entry, amount_minor: amount, note });
+    } else if (action === 'reconcile') {
+      if (!UUID_RE.test(entry)) { say(out, 'The entry id is required; nothing was sent.'); return; }
+      params.entry = entry;
+    } else { say(out, 'Unknown record type; nothing was sent.'); return; }
+    try {
+      const result = await rpc('sdi_finance_record', params);
+      if (result && ['recorded', 'imported', 'confirmed', 'duplicate'].includes(result.status)) {
+        $('admin-finance-reason').value = '';
+        const lines = [];
+        if (result.status === 'recorded') lines.push(`Recorded and audited: entry ${result.entry}.${result.possible_duplicate ? ' An expense with the same amount, currency and day already exists: check it is not a duplicate.' : ''}`);
+        if (result.status === 'imported') lines.push(`Imported and audited: ${result.added} added, ${result.duplicates} already present, ${Array.isArray(result.rejected) ? result.rejected.length : 0} rejected.`);
+        if (result.status === 'confirmed') lines.push('Marked reconciled and audited.');
+        if (result.status === 'duplicate') lines.push('Already recorded; nothing was added.');
+        const parts = [renderValue(lines.join(' '))];
+        if (Array.isArray(result.rejected) && result.rejected.length) parts.push(renderValue(result.rejected.map((r) => ({ rejected_row: r }))));
+        out.replaceChildren(...parts);
+      } else say(out, refusal(result));
+    } catch (_) { say(out, 'The request did not complete. Check the export before retrying.'); }
+  }
+  let lastExport = null;
+  const csvCell = (value) => {
+    let text = value === null || value === undefined ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+    // Keep spreadsheet formulas inert, but leave plain numbers (negative ledger amounts) numeric.
+    if (/^[=+\-@\t\r]/.test(text) && !/^-?[0-9]+(\.[0-9]+)?$/.test(text)) text = `'${text}`;
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  async function financeReport(event) {
+    event.preventDefault();
+    const out = $('admin-report-result'); const download = $('admin-report-download');
+    const view = $('admin-report-view').value; const provider = $('admin-report-provider').value || null;
+    const currency = $('admin-report-currency').value.trim().toUpperCase() || null;
+    const start = $('admin-report-start').value; const end = $('admin-report-end').value;
+    const page = pageNumber($('admin-report-page').value);
+    lastExport = null; download.disabled = true;
+    if (!['period_summary', 'reconciliation', 'export', 'agent_costs'].includes(view) || (currency && !/^[A-Z]{3}$/.test(currency)) || page === null || page > 49
+      || (start && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(start)) || (end && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(end))) { say(out, 'Check the dates, currency and page (1 to 50); nothing was sent.'); return; }
+    say(out, 'Loading…');
+    try {
+      const result = await rpc('sdi_finance_report', { action: view, period_start: dayStart(start), period_end: dayStart(end), provider, currency, page });
+      if (!result || result.error || result.code) { const p = document.createElement('p'); p.className = 'note'; p.textContent = refusal(result).replace(' Nothing was changed.', ''); out.replaceChildren(p); return; }
+      const parts = [];
+      if (result.label) parts.push(renderValue(result.label));
+      if (view === 'agent_costs') parts.push(renderValue(result.agents || []));
+      else {
+        parts.push(renderValue(`Period ${new Date(result.period_start).toISOString().slice(0, 10)} to ${new Date(result.period_end).toISOString().slice(0, 10)} (end exclusive).`));
+        if (view === 'reconciliation') { parts.push(renderValue(result.totals || []), renderValue(`${result.discrepancy_count} discrepancies`), renderValue(result.discrepancies || [])); }
+        else parts.push(renderValue((result.rows || []).length ? result.rows : 'No entries in this period.'));
+        if (view === 'export') {
+          if (result.has_more) parts.push(renderValue('More rows exist: open the next export page.'));
+          if (Array.isArray(result.columns) && Array.isArray(result.rows) && result.rows.length) { lastExport = { columns: result.columns, rows: result.rows, name: `sdi-ledger-${(start || 'last90')}-${(end || 'now')}-p${page + 1}.csv` }; download.disabled = false; }
+        }
+      }
+      out.replaceChildren(...parts);
+    } catch (_) { say(out, 'The request did not complete.'); }
+  }
+  function downloadExport() {
+    if (!lastExport) return;
+    const lines = [lastExport.columns.map(csvCell).join(','), ...lastExport.rows.map((row) => lastExport.columns.map((c) => csvCell(row[c])).join(','))];
+    const url = URL.createObjectURL(new Blob([`${lines.join('\r\n')}\r\n`], { type: 'text/csv' }));
+    const a = document.createElement('a'); a.href = url; a.download = lastExport.name; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   // --- wire up ----------------------------------------------------------------------
@@ -413,6 +687,14 @@
   $('admin-users-form').addEventListener('submit', searchUsers);
   $('admin-account-form').addEventListener('submit', accountAction);
   $('admin-history-form').addEventListener('submit', searchHistory);
+  $('admin-publish-form').addEventListener('submit', showPublishing);
+  $('admin-diagnostics-form').addEventListener('submit', showDiagnostics);
+  $('admin-announce-form').addEventListener('submit', composeAnnouncement);
+  $('admin-announce-change-form').addEventListener('submit', changeAnnouncement);
+  $('admin-agent-form').addEventListener('submit', agentControl);
+  $('admin-finance-form').addEventListener('submit', recordFinance);
+  $('admin-finance-report-form').addEventListener('submit', financeReport);
+  $('admin-report-download').addEventListener('click', downloadExport);
   show('admin-signin', true);
   setStatus('Backend configured; not signed in.', `Sign in to ${new URL(base).hostname}. Nothing is stored in this browser; the session ends on reload or expiry.`);
   adoptFragment().catch(() => setStatus('Sign-in redirect could not be read.', 'Sign in again.'));

@@ -6,11 +6,13 @@ import Foundation
 enum StudioSharpenCapture {
     typealias Capture = StudioBlurCapture.Capture
 
-    static func capture(document: StudioDocument, selection: Set<String>, raster: Data?, rasterDataByID: [String: Data] = [:]) throws -> Capture {
+    static func capture(document: StudioDocument, selection: Set<String>, raster: Data?, rasterDataByID: [String: Data] = [:],
+                        clipsToSelection: Bool = false) throws -> Capture {
         try Task.checkCancellation()
-        guard selection.isEmpty else {
-            throw StudioDocumentError.unavailable("Sharpening within a selection is not available yet. Deselect artwork first; nothing changed.")
+        guard selection.isEmpty || clipsToSelection else {
+            throw StudioDocumentError.unavailable("Sharpening within a selection needs its selection mask. Deselect artwork or select again; nothing changed.")
         }
-        return try StudioBlurCapture.capture(document: document, selection: selection, raster: raster, rasterDataByID: rasterDataByID)
+        return try StudioBlurCapture.capture(document: document, selection: selection, raster: raster, rasterDataByID: rasterDataByID,
+                                             clipsToSelection: clipsToSelection)
     }
 }

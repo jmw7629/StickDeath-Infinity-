@@ -386,10 +386,255 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
             try require(coordinator.handoff == nil && coordinator.session == nil && coordinator.endReason?.contains("unchanged") == true, "ending clears the handoff with a truthful reason")
         }
 
+        await test("editor hook: blocked remote edits wait in order with a reason until applied or explicitly skipped") {
+            let transport = FakeTransport()
+            let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: member)
+            try require(!coordinator.isSharing(projectID: project), "no handoff means the open project is not shared")
+            coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+            try require(coordinator.isSharing(projectID: project) && !coordinator.isSharing(projectID: UUID()), "handoff binds exactly the shared project")
+            let first = UUID(), second = UUID()
+            var attempts: [Int] = [], refuse = true
+            coordinator.applyRemote = { record in
+                attempts.append(record.revision)
+                if record.op_id == first && refuse { coordinator.noteRemoteBlocked(record, reason: "Cannot replay yet."); return false }
+                return true
+            }
+            transport.replies = [.success(#"{"commands":[\#(record(1, op: first, author: owner)),\#(record(2, op: second, author: owner))],"head":2}"#)]
+            let report = await coordinator.synchronise()
+            try require(report.catchUp == .received(2) && attempts.first == 1 && !attempts.contains(2), "later edit must wait behind the blocked one")
+            try require(coordinator.blockedRemote?.revision == 1 && coordinator.blockedRemote?.reason == "Cannot replay yet." && coordinator.head == 0
+                && coordinator.pendingRemoteCount == 2, "blocked edit recorded with its reason, nothing acknowledged")
+            // Local edits are not sent past unapplied remote edits.
+            try require(coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:a")])) && coordinator.publishedLocalCount == 1, "local edit queued")
+            try require(await coordinator.drain() == .idle && transport.calls.count == 1, "nothing sent while remote edits wait")
+            // Transient block clears by itself on the next pass.
+            refuse = false
+            coordinator.applyQueued()
+            try require(coordinator.blockedRemote == nil && coordinator.appliedRemoteCount == 2 && coordinator.head == 2 && coordinator.skippedRemote.isEmpty, "retry applied both in order")
+            // An explicit skip acknowledges exactly the blocked edit and records it.
+            refuse = true
+            let third = UUID()
+            transport.replies = [.success(#"{"commands":[\#(record(3, op: third, author: owner))],"head":3}"#)]
+            coordinator.applyRemote = { record in coordinator.noteRemoteBlocked(record, reason: "Diverged."); return false }
+            _ = await coordinator.catchUp()
+            try require(coordinator.blockedRemote?.revision == 3, "third edit blocked")
+            coordinator.applyRemote = { _ in true }
+            try require(coordinator.skipBlockedRemote() && coordinator.skippedRemote == [third] && coordinator.head == 3 && coordinator.blockedRemote == nil
+                && coordinator.appliedRemoteCount == 2, "skip acknowledges without counting as applied")
+            try require(!coordinator.skipBlockedRemote(), "nothing left to skip")
+            transport.replies = [.success(#"{"status":"applied","revision":4}"#)]
+            try require(await coordinator.drain() == .sent(1) && transport.calls.last?.params["base_revision"] as? Int == 3, "local edit sent fenced on the advanced head")
+            coordinator.noteUnsharedLocalEdit("Undo is not shared yet.")
+            try require(coordinator.unsharedLocalCount == 1 && coordinator.lastUnsharedReason == "Undo is not shared yet.", "unshared local change reported")
+            coordinator.end()
+            try require(coordinator.unsharedLocalCount == 0 && coordinator.blockedRemote == nil && coordinator.publishedLocalCount == 0, "ending resets the counters")
+            coordinator.noteUnsharedLocalEdit("ignored")
+            try require(coordinator.unsharedLocalCount == 0, "no session, nothing recorded")
+        }
+
+        await test("Discard mine reverts through the editor hook only when it can, and Studio status reflects every state") {
+            let transport = FakeTransport()
+            let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+            try require(coordinator.studioSyncStatus == nil, "no session, no Studio status")
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: member)
+            try require(coordinator.studioSyncStatus == nil, "status appears only while handed off to Studio")
+            coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+            try require(coordinator.studioSyncStatus?.level == .synced && coordinator.studioSyncStatus?.label == "Room: in sync", "idle session is in sync")
+            try require(coordinator.discardHeldConflict() == .noConflict, "nothing to discard")
+            // A held conflict with a hook that reverts.
+            let mine = UUID(), theirs = UUID()
+            try require(coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:a")]), opID: mine), "local edit queued with the editor's op id")
+            try require(coordinator.studioSyncStatus?.level == .syncing && coordinator.studioSyncStatus?.label == "Room: 1 to sync", "queued edit shown as syncing")
+            transport.replies = [.success(#"{"error":"conflict","head":1,"missing":[\#(targeted(1, "frame:a", op: theirs, author: owner))]}"#)]
+            try require(await coordinator.drain() == .held(1) && coordinator.heldConflict?.opID == mine, "overlap held for the creator")
+            try require(coordinator.studioSyncStatus?.level == .conflict && coordinator.studioSyncStatus?.detail.contains("frame:a") == true, "conflict shown in Studio status")
+            var reverted: [UUID] = []
+            coordinator.revertLocalEdit = { op in reverted.append(op); return nil }
+            try require(coordinator.discardHeldConflict() == .reverted && reverted == [mine], "editor asked to revert exactly the held edit")
+            try require(coordinator.heldConflict == nil && coordinator.pendingLocalCount == 0, "discarded edit is never sent")
+            // The other creator's edit then applies and nothing is re-sent.
+            coordinator.applyRemote = { _ in true }
+            coordinator.applyQueued()
+            let afterDiscard = await coordinator.drain()
+            try require(coordinator.head == 1 && afterDiscard == .idle && transport.calls.count == 1, "their edit applied; nothing re-sent")
+            // Not the latest change: the hook says why and the edit stays local.
+            let second = UUID()
+            _ = coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:b")]), opID: second)
+            transport.replies = [.success(#"{"error":"conflict","head":2,"missing":[\#(targeted(2, "frame:b", author: owner))]}"#)]
+            try require(await coordinator.drain() == .held(1), "second overlap held")
+            coordinator.revertLocalEdit = { _ in "Not the most recent change." }
+            try require(coordinator.discardHeldConflict() == .notReverted("Not the most recent change.") && coordinator.pendingLocalCount == 0, "reason returned; edit no longer sent")
+            // No editor hook: a clear reason, never a claimed revert.
+            coordinator.applyQueued()
+            _ = coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:c")]))
+            transport.replies = [.success(#"{"error":"conflict","head":3,"missing":[\#(targeted(3, "frame:c", author: owner))]}"#)]
+            try require(await coordinator.drain() == .held(1), "third overlap held")
+            coordinator.revertLocalEdit = nil
+            if case .notReverted(let reason) = coordinator.discardHeldConflict() { try require(reason.contains("not open"), "no-hook reason") }
+            else { throw Failure(description: "discard without an editor claimed a revert") }
+            // A transport failure pauses with a reason; the next clean pass clears it.
+            coordinator.applyQueued()
+            _ = coordinator.publishLocalEdit(kind: "studio.apply", payload: .object(["target": .string("frame:d")]))
+            transport.replies = [.failure(CommunityError.transport("offline"))]
+            if case .stopped = await coordinator.drain() {} else { throw Failure(description: "offline append not stopped") }
+            try require(coordinator.studioSyncStatus?.level == .paused && coordinator.lastStopReason != nil, "paused status after a failed send")
+            transport.replies = [.success(#"{"status":"applied","revision":4}"#)]
+            try require(await coordinator.drain() == .sent(1) && coordinator.lastStopReason == nil && coordinator.studioSyncStatus?.level == .synced, "clean pass clears the pause")
+            coordinator.begin(room: room, head: 4, projectID: project, canEdit: false, account: member)
+            try require(coordinator.studioSyncStatus?.level == .paused && coordinator.studioSyncStatus?.label == "Room: view only", "view-only shown")
+            coordinator.end()
+            try require(coordinator.studioSyncStatus == nil && coordinator.lastStopReason == nil, "ending clears the status")
+        }
+
         await test("file hashing matches FIPS 180-4 known answers on every platform") {
             try require(RoomAssetPolicy.sha256Hex(Data()) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "empty input digest")
             try require(RoomAssetPolicy.sha256Hex(Data("abc".utf8)) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "abc digest")
             try require(RoomAssetPolicy.sha256Hex(Data("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".utf8)) == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", "two-block digest")
+        }
+
+        // MARK: Owner-approved project handoff (#234)
+
+        let snapshotID = UUID(uuidString: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")!
+        func portableBundle(_ count: Int) -> Data {
+            var data = RoomProjectHandoffPolicy.portableMagic
+            data.append(Data((0..<(count - data.count)).map { UInt8(($0 * 31) % 251) }))
+            return data
+        }
+        func snapshotJSON(_ digest: String, bytes: Int, chunks: Int, state: String = "available", mine: Bool = false, receivedByMe: Bool = false) -> String {
+            #"{"snapshot_id":"\#(snapshotID.uuidString)","title":"Duel","project_ref":"device-project:\#(project.uuidString.lowercased())","project_revision":2,"byte_size":\#(bytes),"chunk_count":\#(chunks),"sha256":"\#(digest)","state":"\#(state)","offered_at":"2026-10-18T20:00:00+00:00","expires_at":"2026-10-21T20:00:00+00:00","mine":\#(mine),"received_by_me":\#(receivedByMe),"received":null,"delivered":null,"awaiting":null}"#
+        }
+
+        await test("handoff policy bounds the portable backup, chunks it exactly and decides what a member is offered") {
+            try require(RoomProjectHandoffPolicy.chunkCount(bytes: 262_144) == 1 && RoomProjectHandoffPolicy.chunkCount(bytes: 262_145) == 2
+                        && RoomProjectHandoffPolicy.chunkCount(bytes: RoomProjectHandoffPolicy.maximumBytes) == RoomProjectHandoffPolicy.maximumChunks, "chunk counts mirror the SQL bounds")
+            try require(RoomProjectHandoffPolicy.validate(bundle: Data()) != nil && RoomProjectHandoffPolicy.validate(bundle: Data("PK\u{3}\u{4}zip".utf8)) != nil, "empty and foreign files refused")
+            try require(RoomProjectHandoffPolicy.validate(bundle: portableBundle(100)) == nil, "portable backup accepted")
+            var huge = RoomProjectHandoffPolicy.portableMagic; huge.append(Data(count: RoomProjectHandoffPolicy.maximumBytes))
+            try require(RoomProjectHandoffPolicy.validate(bundle: huge)?.contains("32 MB") == true, "over 32 MB refused with the reason")
+            let bundle = portableBundle(300_000)
+            let parts = (0..<2).compactMap { RoomProjectHandoffPolicy.chunk(bundle, index: $0) }
+            try require(parts.count == 2 && parts[0].count == 262_144 && parts[1].count == 300_000 - 262_144 && parts[0] + parts[1] == bundle
+                        && RoomProjectHandoffPolicy.chunk(bundle, index: 2) == nil, "exact chunks")
+            let digest = String(repeating: "a", count: 64)
+            let offered = try CommunityCoding.decode(RoomSnapshotResponse.self, from: Data(#"{"chunk_size":262144,"snapshot":\#(snapshotJSON(digest, bytes: 10, chunks: 1))}"#.utf8)).snapshot
+            let local = UUID()
+            let link = RoomProjectLink(room: room, projectRef: "device-project:\(project.uuidString.lowercased())", sha256: digest, localProjectID: local, importedAt: Date())
+            typealias P = RoomProjectHandoffPolicy
+            try require(P.memberState(isOwner: true, snapshot: offered, ownerProjectOnDevice: true, link: nil, linkedProjectExists: false) == .nothingToDo, "owner is never offered a download")
+            try require(P.memberState(isOwner: false, snapshot: offered, ownerProjectOnDevice: true, link: nil, linkedProjectExists: false) == .ownerProjectOnDevice, "same device project needs no download")
+            try require(P.memberState(isOwner: false, snapshot: offered, ownerProjectOnDevice: false, link: nil, linkedProjectExists: false) == .download, "member without the project downloads")
+            try require(P.memberState(isOwner: false, snapshot: nil, ownerProjectOnDevice: false, link: nil, linkedProjectExists: false) == .nothingToDo, "nothing offered yet")
+            try require(P.memberState(isOwner: false, snapshot: offered, ownerProjectOnDevice: false, link: link, linkedProjectExists: true) == .imported(local), "same version already imported")
+            try require(P.memberState(isOwner: false, snapshot: nil, ownerProjectOnDevice: false, link: link, linkedProjectExists: true) == .imported(local), "import remains after the server copy is deleted")
+            try require(P.memberState(isOwner: false, snapshot: offered, ownerProjectOnDevice: false, link: link, linkedProjectExists: false) == .download, "a deleted import is offered again")
+            let older = RoomProjectLink(room: room, projectRef: link.projectRef, sha256: String(repeating: "b", count: 64), localProjectID: local, importedAt: Date())
+            try require(P.memberState(isOwner: false, snapshot: offered, ownerProjectOnDevice: false, link: older, linkedProjectExists: true) == .updateAvailable(previous: local), "newer version offered without replacing the earlier import")
+        }
+
+        await test("owner sends the portable backup in verified chunks, resumes, and surfaces refusals and corruption") {
+            let transport = FakeTransport()
+            let handoff = RoomProjectHandoff(gateway: CommunityGateway(transport: transport))
+            let bundle = portableBundle(300_000)
+            guard let digest = RoomAssetPolicy.sha256Hex(bundle) else { throw Failure(description: "hashing unavailable") }
+            transport.replies = [
+                .success(#"{"status":"declared","snapshot_id":"\#(snapshotID.uuidString)","state":"receiving","chunk_size":262144,"chunk_count":2,"expires_at":"2026-10-18T21:00:00+00:00"}"#),
+                .success(#"{"status":"stored","received":1}"#), .success(#"{"status":"stored","received":2}"#),
+                .success(#"{"status":"available","snapshot_id":"\#(snapshotID.uuidString)","awaiting":2,"expires_at":"2026-10-21T20:00:00+00:00"}"#)]
+            var progress: [Int] = []
+            let outcome = try await handoff.send(room: room, bundle: bundle) { sent, _ in progress.append(sent) }
+            try require(outcome == .available(snapshotID, awaiting: 2) && progress == [1, 2], "sent then verified by the server")
+            let offer = transport.calls[0]
+            try require(offer.name == "sdi_room_snapshot" && offer.params["action"] as? String == "offer" && offer.params["sha256"] as? String == digest
+                        && offer.params["byte_size"] as? Int == 300_000 && offer.params["room"] as? String != nil, "offer payload carries size and digest only")
+            let part0 = (transport.calls[1].params["data"] as? String).flatMap { Data(base64Encoded: $0) }
+            try require(part0 == bundle.prefix(262_144) && transport.calls[2].params["chunk_index"] as? Int == 1 && transport.calls[3].params["action"] as? String == "finalize", "exact bytes in order")
+
+            transport.calls = []
+            transport.replies = [
+                .success(#"{"status":"existing","snapshot_id":"\#(snapshotID.uuidString)","state":"receiving","chunk_size":262144,"chunk_count":2,"expires_at":"2026-10-18T21:00:00+00:00","received":[0]}"#),
+                .success(#"{"status":"stored","received":2}"#),
+                .success(#"{"error":"incomplete","received":[1]}"#),
+                .success(#"{"status":"stored","received":2}"#),
+                .success(#"{"status":"available","snapshot_id":"\#(snapshotID.uuidString)","awaiting":0,"expires_at":"2026-10-21T20:00:00+00:00"}"#)]
+            try require(try await handoff.send(room: room, bundle: bundle) == .available(snapshotID, awaiting: 0), "resumed send completes")
+            try require(transport.calls.filter { $0.params["action"] as? String == "put" }.compactMap { $0.params["chunk_index"] as? Int } == [1, 0], "only missing parts sent")
+            transport.replies = [.success(#"{"status":"existing","snapshot_id":"\#(snapshotID.uuidString)","state":"available","chunk_size":262144,"chunk_count":2,"expires_at":"2026-10-21T20:00:00+00:00","received":[0,1]}"#)]
+            try require(try await handoff.send(room: room, bundle: bundle) == .alreadyAvailable(snapshotID), "same version already waiting")
+            transport.replies = [
+                .success(#"{"status":"declared","snapshot_id":"\#(snapshotID.uuidString)","state":"receiving","chunk_size":262144,"chunk_count":2,"expires_at":"2026-10-18T21:00:00+00:00"}"#),
+                .success(#"{"status":"stored","received":1}"#), .success(#"{"status":"stored","received":2}"#),
+                .success(#"{"error":"The sent project was corrupt and has been discarded. Send it again."}"#)]
+            do { _ = try await handoff.send(room: room, bundle: bundle); throw Failure(description: "corruption hidden") } catch RoomProjectHandoff.HandoffError.corrupt {}
+            transport.replies = [.success(#"{"error":"Only the room owner can send the shared project."}"#)]
+            do { _ = try await handoff.send(room: room, bundle: bundle); throw Failure(description: "refusal hidden") }
+            catch RoomProjectHandoff.HandoffError.refused(let message) { try require(message.contains("Only the room owner"), "server refusal surfaced") }
+            transport.calls = []
+            do { _ = try await handoff.send(room: room, bundle: Data("not a project".utf8)); throw Failure(description: "foreign file sent") }
+            catch RoomProjectHandoff.HandoffError.invalid {}
+            try require(transport.calls.isEmpty, "invalid backups never reach the server")
+        }
+
+        await test("member download verifies every part and the SHA-256, resumes, discards tampering, and records a receipt") {
+            let transport = FakeTransport()
+            let handoff = RoomProjectHandoff(gateway: CommunityGateway(transport: transport))
+            let bundle = portableBundle(300_000)
+            guard let digest = RoomAssetPolicy.sha256Hex(bundle) else { throw Failure(description: "hashing unavailable") }
+            transport.replies = [.success(#"{"chunk_size":262144,"snapshot":\#(snapshotJSON(digest, bytes: 300_000, chunks: 2))}"#)]
+            guard let snapshot = try await handoff.current(room: room) else { throw Failure(description: "no snapshot") }
+            try require(snapshot.sha256 == digest && snapshot.mine == false && snapshot.delivered == nil, "member sees the offer without delivery counts")
+            transport.replies = [.success(#"{"chunk_size":262144,"snapshot":null}"#)]
+            try require(try await handoff.current(room: room) == nil, "nothing waiting")
+            transport.replies = [.success(#"{"error":"Room is unavailable."}"#)]
+            do { _ = try await handoff.current(room: room); throw Failure(description: "outsider saw a snapshot") } catch RoomProjectHandoff.HandoffError.unavailable {}
+
+            func part(_ index: Int, _ bytes: Data, sha: String = digest) -> String {
+                #"{"snapshot_id":"\#(snapshotID.uuidString)","chunk_index":\#(index),"chunk_count":2,"sha256":"\#(sha)","data":"\#(bytes.base64EncodedString())"}"#
+            }
+            var download = RoomProjectHandoff.Download(snapshot: snapshot)
+            transport.replies = [.success(part(0, bundle.prefix(262_144))), .failure(CommunityError.transport("offline"))]
+            do { _ = try await handoff.receive(room: room, &download); throw Failure(description: "offline hidden") } catch CommunityError.transport {}
+            try require(download.chunks.count == 1, "verified part kept for resume")
+            transport.replies = [.success(part(1, bundle.suffix(from: 262_144)))]
+            let received = try await handoff.receive(room: room, &download)
+            try require(received == bundle && transport.calls.last?.params["chunk_index"] as? Int == 1 && transport.calls.last?.params["snapshot"] as? String == snapshotID.uuidString, "resumed and verified")
+
+            var tampered = RoomProjectHandoff.Download(snapshot: snapshot)
+            var bad = Data(bundle.suffix(from: 262_144)); bad[bad.startIndex] ^= 0xFF
+            transport.replies = [.success(part(0, bundle.prefix(262_144))), .success(part(1, bad))]
+            do { _ = try await handoff.receive(room: room, &tampered); throw Failure(description: "tampered project accepted") }
+            catch RoomProjectHandoff.HandoffError.corrupt { try require(tampered.chunks.isEmpty, "tampered download discarded") }
+            var swapped = RoomProjectHandoff.Download(snapshot: snapshot)
+            transport.replies = [.success(part(0, bundle.prefix(262_144), sha: String(repeating: "c", count: 64)))]
+            do { _ = try await handoff.receive(room: room, &swapped); throw Failure(description: "different snapshot accepted") } catch RoomProjectHandoff.HandoffError.corrupt {}
+            var own = RoomProjectHandoff.Download(snapshot: try CommunityCoding.decode(RoomSnapshotResponse.self,
+                from: Data(#"{"chunk_size":262144,"snapshot":\#(snapshotJSON(digest, bytes: 300_000, chunks: 2, mine: true))}"#.utf8)).snapshot!)
+            do { _ = try await handoff.receive(room: room, &own); throw Failure(description: "owner downloaded own project") } catch RoomProjectHandoff.HandoffError.unavailable {}
+
+            transport.calls = []
+            transport.replies = [.success(#"{"status":"recorded","server_copy":"retained"}"#)]
+            try require(try await handoff.confirmReceipt(room: room, snapshot: snapshot) == .serverCopyRetained, "copy kept for other members")
+            try require(transport.calls[0].params["action"] as? String == "receipt" && transport.calls[0].params["sha256"] as? String == digest, "receipt names the verified digest")
+            transport.replies = [.success(#"{"status":"recorded","server_copy":"deleted","verified":true}"#)]
+            try require(try await handoff.confirmReceipt(room: room, snapshot: snapshot) == .serverCopyDeleted(verified: true), "last member's receipt deletes the copy")
+            transport.replies = [.success(#"{"status":"revoked","verified":true}"#)]
+            try require(try await handoff.revoke(room: room, snapshot: snapshotID), "owner withdrawal verified")
+            transport.replies = [.success(#"{"error":"Only the room owner can withdraw the shared project."}"#)]
+            do { _ = try await handoff.revoke(room: room, snapshot: snapshotID); throw Failure(description: "member revoked") } catch RoomProjectHandoff.HandoffError.refused {}
+        }
+
+        await test("room project links record imports as new projects and never replace an earlier one") {
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-room-links-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: base) }
+            let store = RoomProjectLinkStore(directory: base)
+            let ref = "device-project:\(project.uuidString.lowercased())"
+            try require(store.all().isEmpty && store.link(room: room, projectRef: ref) == nil, "empty store")
+            let first = RoomProjectLink(room: room, projectRef: ref, sha256: String(repeating: "a", count: 64), localProjectID: UUID(), importedAt: Date(timeIntervalSince1970: 1_000))
+            let second = RoomProjectLink(room: room, projectRef: ref, sha256: String(repeating: "b", count: 64), localProjectID: UUID(), importedAt: Date(timeIntervalSince1970: 2_000))
+            try store.record(first); try store.record(second)
+            try require(store.all().count == 2 && store.link(room: room, projectRef: ref) == second, "latest import wins; earlier link kept")
+            try require(store.link(room: room, projectRef: "device-project:other") == nil && store.link(room: UUID(), projectRef: ref) == nil && store.link(room: room, projectRef: nil) == nil, "links are per room and per shared project")
+            try require(first.localProjectID != project && second.localProjectID != first.localProjectID, "every import has a fresh identity")
         }
 
         print("COMMUNITY_ROOMS_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed) passed \(failed) failed")

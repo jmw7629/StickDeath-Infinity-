@@ -457,7 +457,7 @@ revoke all on function public.sdi_feed_action(text,uuid,uuid,boolean,text,intege
 grant execute on function public.sdi_feed_action(text,uuid,uuid,boolean,text,integer,text,timestamptz) to authenticated;
 commit;
 
--- ===== admin-approval.sql (sha256 98485dfcaea66cc6) =====
+-- ===== admin-approval.sql (sha256 1a298038405d845a) =====
 -- Unapplied candidate. Provision role records through a protected owner operation,
 -- never from a client-supplied password, profile, username or email.
 begin;
@@ -515,6 +515,34 @@ begin
 end $$;
 revoke all on function sdi_private.invalidate_render_approval() from public;
 create trigger invalidate_render_approval before update on sdi_private.render_reviews for each row execute function sdi_private.invalidate_render_approval();
+-- Measured quality report a Spatter draft job attached to this review, if any
+-- (spatter-draft-jobs.sql installs the table later; absent means null).
+create function sdi_private.review_quality_report(review uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare report jsonb;
+begin
+ if to_regclass('sdi_private.spatter_draft_jobs') is null then return null; end if;
+ execute 'select quality_report from sdi_private.spatter_draft_jobs where review_id=$1 limit 1' into report using review;
+ return report;
+end $$;
+revoke all on function sdi_private.review_quality_report(uuid) from public,anon,authenticated;
+-- True only for a Spatter daily draft (spatter-draft-jobs.sql, installed later)
+-- whose exact current bytes are retained (render_artifacts, publishing-jobs.sql).
+-- Such a draft may be approved by the owner with no destinations: "approved, not
+-- scheduled". release_allowed() needs destination=any(destinations), so nothing
+-- can publish it; choosing a destination later changes the review version and
+-- returns it to pending for a fresh owner approval of the same digest.
+create function sdi_private.review_spatter_draft_retained(review uuid) returns boolean
+language plpgsql stable security definer set search_path='' as $$
+declare retained boolean;
+begin
+ if review is null or to_regclass('sdi_private.spatter_draft_jobs') is null or to_regclass('sdi_private.render_artifacts') is null then return false; end if;
+ execute 'select exists(select 1 from sdi_private.spatter_draft_jobs j join sdi_private.render_reviews r on r.id=j.review_id
+  where j.review_id=$1 and r.spatter_generated and exists(select 1 from sdi_private.render_artifacts a where a.review_id=r.id
+  and a.version=r.version and a.render_digest=r.render_digest and a.expires_at>clock_timestamp()))' into retained using review;
+ return coalesce(retained,false);
+end $$;
+revoke all on function sdi_private.review_spatter_draft_retained(uuid) from public,anon,authenticated;
 create function sdi_private.review_action(action text,review uuid default null,digest text default null,
  version bigint default null,decision text default null,note text default '') returns jsonb
 language plpgsql security definer set search_path='' as $$
@@ -523,10 +551,15 @@ begin
  if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then return jsonb_build_object('error','Current video-review permission and MFA are required.'); end if;
  select owner into is_owner from sdi_private.admin_roles where user_id=auth.uid();
  if action='list' then
+  -- Storyboard and source-project digest columns are installed by
+  -- spatter-draft-jobs.sql; read them through the row so this list keeps working
+  -- before that candidate and returns null (shown as "not supplied") when absent.
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into result from (
-   select id,title,source_revision,render_digest,preview_url,preview_expires_at,consent_version,rights_summary,
-    rights_cleared,destinations,spatter_generated,state,render_reviews.version
-   from sdi_private.render_reviews where state='pending' order by created_at limit 50
+   select rr.id,rr.title,rr.source_revision,rr.render_digest,rr.preview_url,rr.preview_expires_at,rr.consent_version,rr.rights_summary,
+    rr.rights_cleared,rr.destinations,rr.spatter_generated,rr.state,rr.version,
+    to_jsonb(rr)->'storyboard' as storyboard,to_jsonb(rr)->>'source_project_digest' as source_project_digest,
+    sdi_private.review_quality_report(rr.id) as quality_report
+   from sdi_private.render_reviews rr where rr.state='pending' order by rr.created_at limit 50
   ) item;
   return jsonb_build_object('reviews',result,'owner',is_owner);
  end if;
@@ -535,7 +568,8 @@ begin
  select * into r from sdi_private.render_reviews where id=review for update;
  if not found or r.render_digest<>digest or r.version<>version or r.state<>'pending' then
   return jsonb_build_object('error','This render changed or was already reviewed. Reload the queue.'); end if;
- if decision='approved' and (not r.rights_cleared or length(r.consent_version)=0 or cardinality(r.destinations)=0
+ if decision='approved' and (not r.rights_cleared or length(r.consent_version)=0
+  or (cardinality(r.destinations)=0 and not (coalesce(is_owner,false) and sdi_private.review_spatter_draft_retained(r.id)))
   or r.preview_expires_at<=clock_timestamp() or (r.spatter_generated and not is_owner)) then
   return jsonb_build_object('error','Approval requires current rights, consent, a playable render and owner approval for Spatter.'); end if;
  insert into sdi_private.render_decisions(review_id,actor,owner_at_decision,render_title,source_revision,rights_summary,render_digest,review_version,consent_version,destinations,decision,note)
@@ -572,9 +606,48 @@ create function public.sdi_review_history(page integer default 0) returns jsonb
 language sql security invoker set search_path='' as $$select sdi_private.review_history(page)$$;
 revoke all on function public.sdi_review_history(integer) from public,anon;
 grant execute on function public.sdi_review_history(integer) to authenticated;
+-- Service-only (#214): bind the editable project's canonical digest, declared in
+-- the upload metadata, to the review registered for that upload. Writing it goes
+-- through invalidate_render_approval, so a changed digest returns the review to
+-- pending under a new version; the same retained bytes are carried forward to
+-- that version exactly as review-rights.sql does. Idempotent for the same digest.
+create function sdi_private.review_bind_source_digest(upload uuid,review uuid,digest text) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare r sdi_private.render_reviews; declared text; found_registration boolean; next_version bigint;
+begin
+ if upload is null or review is null or digest is null or digest !~ '^[a-f0-9]{64}$' then
+  return jsonb_build_object('error','Invalid source digest binding.'); end if;
+ if to_regclass('sdi_private.upload_registrations') is null then
+  return jsonb_build_object('error','Upload registration is not installed.'); end if;
+ execute 'select true,metadata->>''source_project_digest'' from sdi_private.upload_registrations where upload_id=$1 and review_id=$2'
+  into found_registration,declared using upload,review;
+ if not coalesce(found_registration,false) then return jsonb_build_object('error','Upload registration not found.'); end if;
+ if declared is distinct from digest then
+  return jsonb_build_object('error','Source digest does not match the registered upload.'); end if;
+ select * into r from sdi_private.render_reviews where id=review for update;
+ if not found then return jsonb_build_object('error','Upload registration not found.'); end if;
+ if not (to_jsonb(r) ? 'source_project_digest') then
+  return jsonb_build_object('error','Source digest storage is not installed.'); end if;
+ if to_jsonb(r)->>'source_project_digest' is not distinct from digest then
+  return jsonb_build_object('status','confirmed','version',r.version,'changed',false); end if;
+ execute 'update sdi_private.render_reviews set source_project_digest=$1 where id=$2 returning version' into next_version using digest,r.id;
+ if next_version<>r.version and to_regclass('sdi_private.render_artifacts') is not null then
+  execute 'insert into sdi_private.render_artifacts(review_id,version,render_digest,object_key,byte_count,title,description,made_for_kids,expires_at)
+   select review_id,$2,render_digest,object_key,byte_count,title,description,made_for_kids,expires_at
+   from sdi_private.render_artifacts where review_id=$1 and version=$3 and render_digest=$4 on conflict do nothing'
+   using r.id,next_version,r.version,r.render_digest;
+ end if;
+ return jsonb_build_object('status','confirmed','version',next_version,'changed',true);
+end $$;
+revoke all on function sdi_private.review_bind_source_digest(uuid,uuid,text) from public,anon,authenticated;
+grant execute on function sdi_private.review_bind_source_digest(uuid,uuid,text) to service_role;
+create function public.sdi_review_bind_source_digest(upload uuid,review uuid,digest text) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.review_bind_source_digest(upload,review,digest)$$;
+revoke all on function public.sdi_review_bind_source_digest(uuid,uuid,text) from public,anon,authenticated;
+grant execute on function public.sdi_review_bind_source_digest(uuid,uuid,text) to service_role;
 commit;
 
--- ===== admin-users.sql (sha256 03d8663e934810c6) =====
+-- ===== admin-users.sql (sha256 a8797dfd7e8b4e15) =====
 -- Unapplied candidate. Requires admin-approval.sql and current feature candidates.
 begin;
 create table sdi_private.account_controls (
@@ -600,12 +673,12 @@ revoke all on function sdi_private.account_active() from public;
 grant execute on function sdi_private.account_active() to authenticated;
 create function sdi_private.users_action(action text,subject uuid default null,query text default '',page integer default 0,reason text default '')
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare result jsonb; before_state text; denial jsonb;
+declare result jsonb; before_state text; denial jsonb; flagged integer:=0;
 begin
  if not sdi_private.admin_can('users') or not sdi_private.account_active() then return jsonb_build_object('error','Administrator MFA authorization required.'); end if;
  -- Account-state changes need a recent second factor and are rate limited; every
  -- refusal is recorded (admin_gate in admin-hardening.sql, resolved at run time).
- if action in('suspend','ban','restore','signout','note') then
+ if action in('suspend','ban','restore','signout','note','reset_flags') then
   denial:=sdi_private.admin_gate('users_action.'||action,'users',action<>'note',30);
   if denial is not null then return denial; end if;
  end if;
@@ -632,6 +705,13 @@ begin
     case when sdi_private.admin_can('moderation') then
      (select count(*) from sdi_private.feed_reports r join sdi_private.feed_posts p on p.id=r.post where p.creator=u.id)
      else null end as feed_report_count,
+    -- Open (pending) reports only; reset_flags dismisses these (#285).
+    case when sdi_private.admin_can('moderation') then
+     (select count(*) from sdi_private.feed_reports r join sdi_private.feed_posts p on p.id=r.post where p.creator=u.id and r.state='pending')
+     else null end as open_report_count,
+    -- Sign-up source: the provider name Supabase Auth records at first sign-in
+    -- (apple, google, github, azure, email). A name only, never an identifier.
+    nullif(u.raw_app_meta_data->>'provider','') as signup_source,
     -- Plan is billing data: shown only with the finance capability (billing.sql
     -- installs later; entitlements come only from signed provider events).
     case when sdi_private.admin_can('finance') then
@@ -655,9 +735,28 @@ begin
   insert into sdi_private.account_controls(user_id,state,reason) values(subject,
    case action when 'suspend' then 'suspended' when 'ban' then 'banned' else 'active' end,trim(reason))
   on conflict(user_id) do update set state=excluded.state,reason=excluded.reason,updated_at=clock_timestamp();
+ elsif action='reset_flags' then
+  -- Dismiss every open report against the member's posts in one audited step,
+  -- e.g. after a coordinated false-report campaign. Needs the moderation
+  -- capability too; reports filed by the acting administrator stay for another
+  -- reviewer (same rule as moderation_action). Each dismissal is recorded in
+  -- moderation_audit; a reporter who changes their reason reopens the report.
+  if not sdi_private.admin_can('moderation') then
+   return jsonb_build_object('error','Resetting flags also needs the moderation capability.'); end if;
+  with dismissed as (
+   update sdi_private.feed_reports r set state='dismissed' from sdi_private.feed_posts p
+   where p.id=r.post and p.creator=users_action.subject and r.state='pending' and r.actor<>auth.uid()
+   returning r.id as report_id,p.media_id)
+  insert into sdi_private.moderation_audit(report_id,actor,action,reason,media_id,render_digest)
+  select d.report_id,auth.uid(),'dismiss','Account flags reset: '||left(trim(users_action.reason),1970),d.media_id,m.render_digest
+  from dismissed d join public.sdi_watch_media m on m.id=d.media_id;
+  get diagnostics flagged=row_count;
+  -- Nothing open: nothing changed, so nothing is audited or notified.
+  if flagged=0 then return jsonb_build_object('status','unchanged','dismissed',0); end if;
  elsif action not in('signout','note') then return jsonb_build_object('error','Unsupported account action.'); end if;
  if action in('suspend','ban','signout') then delete from auth.sessions where user_id=subject; end if;
  insert into sdi_private.admin_user_audit(actor,subject,action,reason,previous_state) values(auth.uid(),subject,action,trim(reason),coalesce(before_state,'active'));
+ if action='reset_flags' then return jsonb_build_object('status','confirmed','dismissed',flagged); end if;
  return jsonb_build_object('status','confirmed');
 end $$;
 revoke all on function sdi_private.users_action(text,uuid,text,integer,text) from public;
@@ -1695,7 +1794,7 @@ revoke all on function public.sdi_publish_status(integer) from public,anon;
 grant execute on function public.sdi_publish_status(integer) to authenticated;
 commit;
 
--- ===== preview-renewal.sql (sha256 a1a4054cf1eecb2d) =====
+-- ===== preview-renewal.sql (sha256 587eb1bc09d2299d) =====
 -- Unapplied candidate. Requires upload-registration.sql and upload-preview.sql.
 begin;
 create table sdi_private.preview_permits (
@@ -1708,6 +1807,7 @@ revoke all on sdi_private.preview_permits from public,anon,authenticated;
 create function sdi_private.preview_permit(review uuid,digest text,version bigint) returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews; a sdi_private.render_artifacts; u sdi_private.upload_registrations; permit uuid;
+ draft boolean; upload_id uuid;
 begin
  if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then
   return jsonb_build_object('error','Current review permission and MFA required.');end if;
@@ -1715,18 +1815,30 @@ begin
  delete from sdi_private.preview_permits where actor=auth.uid() and expires_at<clock_timestamp();
  if (select count(*) from sdi_private.preview_permits where actor=auth.uid())>=20 then
   return jsonb_build_object('error','Too many preview requests. Wait one minute.');end if;
+ draft:=sdi_private.review_spatter_draft_retained(review);
  select * into r from sdi_private.render_reviews where id=review;
  if not found or r.version<>version or r.render_digest<>digest or length(r.consent_version)=0
-  or cardinality(r.destinations)=0 or r.state not in('pending','approved','changes') then
+  or (cardinality(r.destinations)=0 and not draft) or r.state not in('pending','approved','changes') then
   return jsonb_build_object('error','This review changed or is unavailable.');end if;
+ -- Spatter daily drafts are previewed by the owner only.
+ if draft and not exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) then
+  return jsonb_build_object('error','Owner review is required for this render.');end if;
  select * into a from sdi_private.render_artifacts where review_id=r.id and render_artifacts.version=r.version
   and render_digest=r.render_digest and expires_at>clock_timestamp();
  if not found then return jsonb_build_object('error','The retained render has expired. Request a new upload.');end if;
- select * into u from sdi_private.upload_registrations where review_id=r.id;
- if not found then return jsonb_build_object('error','Preview renewal is unavailable for this legacy render.');end if;
+ if draft then
+  -- The worker's DraftPreviewStore keeps the copy as <upload>.mp4 in the intake directory.
+  if a.object_key !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$' then
+   return jsonb_build_object('error','Preview renewal is unavailable for this legacy render.');end if;
+  upload_id:=left(a.object_key,36)::uuid;
+ else
+  select * into u from sdi_private.upload_registrations where review_id=r.id;
+  if not found then return jsonb_build_object('error','Preview renewal is unavailable for this legacy render.');end if;
+  upload_id:=u.upload_id;
+ end if;
  insert into sdi_private.preview_permits(actor,session_id,review_id,review_version,digest,expires_at)
  values(auth.uid(),auth.jwt()->>'session_id',r.id,r.version,r.render_digest,clock_timestamp()+interval '1 minute') returning id into permit;
- return jsonb_build_object('permit',permit,'upload',u.upload_id,'creator',r.creator,'digest',r.render_digest,'byte_count',a.byte_count);
+ return jsonb_build_object('permit',permit,'upload',upload_id,'creator',r.creator,'digest',r.render_digest,'byte_count',a.byte_count);
 end $$;
 revoke all on function sdi_private.preview_permit(uuid,text,bigint) from public,anon;
 grant execute on function sdi_private.preview_permit(uuid,text,bigint) to authenticated;
@@ -1750,7 +1862,10 @@ begin
   or exists(select 1 from sdi_private.account_controls where user_id=p.actor and state<>'active') then
   return jsonb_build_object('error','Review authorization changed.');end if;
  select * into r from sdi_private.render_reviews where id=p.review_id for update;
- if r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0 or cardinality(r.destinations)=0
+ if r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0
+  or (cardinality(r.destinations)=0 and not sdi_private.review_spatter_draft_retained(r.id))
+  or (sdi_private.review_spatter_draft_retained(r.id)
+   and not exists(select 1 from sdi_private.admin_roles where user_id=p.actor and enabled and owner))
   or r.state not in('pending','approved','changes')
   or exists(select 1 from sdi_private.account_controls where user_id=r.creator and state<>'active')
   or not exists(select 1 from sdi_private.render_artifacts where review_id=r.id and version=r.version and render_digest=r.render_digest and expires_at>clock_timestamp()) then
@@ -2618,7 +2733,7 @@ grant execute on function public.sdi_feed_publish_claim(),public.sdi_feed_publis
  public.sdi_feed_removal_claim(),public.sdi_feed_removal_finish(text,uuid,uuid,boolean) to service_role;
 commit;
 
--- ===== rooms-v2.sql (sha256 3fc2e08a25799b69) =====
+-- ===== rooms-v2.sql (sha256 d8bb0f20d712961c) =====
 -- Unapplied candidate. Install after feed-publication.sql (needs room-invitations.sql,
 -- moderation.sql and admin-users.sql). Rooms remain invitation-based collaboration on
 -- an explicitly shared Studio project: no chat, calls, media streams or draft harvesting.
@@ -3198,6 +3313,255 @@ create function public.sdi_room_asset_sweep(max_items integer default 200) retur
 language sql security invoker set search_path='' as $$select sdi_private.room_asset_sweep(max_items)$$;
 revoke all on function public.sdi_room_asset_sweep(integer) from public,anon,authenticated;
 grant execute on function public.sdi_room_asset_sweep(integer) to service_role;
+commit;
+
+-- Rooms v2.2 (#234, owner decision 2026-10-18). Owner-approved project handoff:
+-- the room owner may send the shared project, as the portable .sdiproject
+-- backup bytes, to approved members through temporary server storage that is
+-- deleted afterwards. One live snapshot per room; the server recomputes its
+-- SHA-256; only approved, non-revoked members of that room (never the owner,
+-- outsiders or anonymous callers) may download it; each member records a
+-- receipt after verifying and importing it as a new device project. The copy is
+-- deleted once every current member holds a receipt, on revocation, when it is
+-- replaced, when the shared project changes, when the room closes, or after 72
+-- hours. The owner's device project is only read; nothing here edits, replaces
+-- or deletes any device project, and a member's import never overwrites one.
+-- Bounds: 32 MiB per snapshot in 256 KiB chunks (max 128), 20 offers per owner
+-- per day, 600 handoff calls per minute per account.
+begin;
+create table sdi_private.room_project_snapshots (
+ id uuid primary key default gen_random_uuid(),
+ room_id uuid not null references public.sdi_rooms(id) on delete cascade,
+ owner_id uuid not null references auth.users(id) on delete cascade,
+ project_ref text not null check(length(project_ref) between 1 and 200),
+ project_revision bigint not null,
+ title text not null check(length(title) between 1 and 100),
+ byte_size integer not null check(byte_size between 1 and 33554432),
+ chunk_count integer not null check(chunk_count between 1 and 128),
+ sha256 text not null check(sha256 ~ '^[a-f0-9]{64}$'),
+ state text not null default 'receiving' check(state in('receiving','available','deleted')),
+ end_reason text check(end_reason in('rejected','revoked','replaced','expired','room_closed','project_changed','delivered')),
+ created_at timestamptz not null default clock_timestamp(),
+ offered_at timestamptz,
+ expires_at timestamptz not null,
+ deleted_at timestamptz,
+ delete_verified boolean not null default false,
+ check((state='deleted')=(end_reason is not null))
+);
+create unique index room_project_snapshots_one_live on sdi_private.room_project_snapshots(room_id) where state<>'deleted';
+create table sdi_private.room_project_snapshot_chunks (
+ snapshot_id uuid not null references sdi_private.room_project_snapshots(id) on delete cascade,
+ idx integer not null check(idx between 0 and 127),
+ data bytea not null check(octet_length(data) between 1 and 262144),
+ primary key(snapshot_id,idx)
+);
+-- One receipt per member per snapshot: the member verified the SHA-256 and
+-- imported the project as a new device project.
+create table sdi_private.room_project_snapshot_receipts (
+ snapshot_id uuid not null references sdi_private.room_project_snapshots(id) on delete cascade,
+ member uuid not null references auth.users(id) on delete cascade,
+ received_at timestamptz not null default clock_timestamp(),
+ primary key(snapshot_id,member)
+);
+create table sdi_private.room_snapshot_budget (
+ user_id uuid primary key references auth.users(id) on delete cascade, window_start timestamptz not null, attempts integer not null
+);
+-- Append-only evidence (guarded by security-audit-integrity.sql): offers,
+-- downloads and every deletion with its verified chunk count.
+create table sdi_private.room_snapshot_audit (
+ id uuid primary key default gen_random_uuid(), snapshot_id uuid not null, room_id uuid not null, actor uuid,
+ event text not null check(event in('offered','downloaded','rejected','revoked','replaced','expired','room_closed','project_changed','delivered')),
+ chunks_removed integer, verified boolean, created_at timestamptz not null default clock_timestamp()
+);
+alter table sdi_private.room_project_snapshots enable row level security;
+alter table sdi_private.room_project_snapshot_chunks enable row level security;
+alter table sdi_private.room_project_snapshot_receipts enable row level security;
+alter table sdi_private.room_snapshot_budget enable row level security;
+alter table sdi_private.room_snapshot_audit enable row level security;
+revoke all on sdi_private.room_project_snapshots,sdi_private.room_project_snapshot_chunks,sdi_private.room_project_snapshot_receipts,
+ sdi_private.room_snapshot_budget,sdi_private.room_snapshot_audit from public,anon,authenticated;
+
+-- Approved, non-revoked members other than the owner who hold no receipt yet.
+create function sdi_private.room_snapshot_awaiting(s uuid) returns integer
+language sql stable security definer set search_path='' as $$
+ select count(*)::integer from sdi_private.room_project_snapshots x join public.sdi_rooms room on room.id=x.room_id
+  join public.sdi_room_members m on m.room_id=x.room_id and m.user_id<>room.owner_id
+  where x.id=s and m.owner_approved and m.member_accepted and not m.revoked
+  and not exists(select 1 from sdi_private.room_project_snapshot_receipts r where r.snapshot_id=x.id and r.member=m.user_id)
+$$;
+revoke all on function sdi_private.room_snapshot_awaiting(uuid) from public,anon,authenticated;
+-- Receipts held by members who are still active in the room.
+create function sdi_private.room_snapshot_delivered(s uuid) returns integer
+language sql stable security definer set search_path='' as $$
+ select count(*)::integer from sdi_private.room_project_snapshot_receipts r join sdi_private.room_project_snapshots x on x.id=r.snapshot_id
+  where r.snapshot_id=s and sdi_private.room_member_active(x.room_id,r.member)
+$$;
+revoke all on function sdi_private.room_snapshot_delivered(uuid) from public,anon,authenticated;
+
+-- Delete a snapshot's bytes and record verified evidence. Never touches a device.
+create function sdi_private.room_snapshot_discard(snapshot uuid,reason text,actor uuid default null) returns boolean
+language plpgsql security definer set search_path='' as $$
+declare removed integer; remaining boolean; s sdi_private.room_project_snapshots;
+begin
+ select * into s from sdi_private.room_project_snapshots where id=snapshot for update;
+ if not found or s.state='deleted' then return false; end if;
+ delete from sdi_private.room_project_snapshot_chunks where snapshot_id=snapshot;
+ get diagnostics removed=row_count;
+ remaining:=exists(select 1 from sdi_private.room_project_snapshot_chunks where snapshot_id=snapshot);
+ update sdi_private.room_project_snapshots set state='deleted',end_reason=reason,deleted_at=clock_timestamp(),delete_verified=not remaining where id=snapshot;
+ insert into sdi_private.room_snapshot_audit(snapshot_id,room_id,actor,event,chunks_removed,verified) values(snapshot,s.room_id,actor,reason,removed,not remaining);
+ return not remaining;
+end $$;
+revoke all on function sdi_private.room_snapshot_discard(uuid,text,uuid) from public,anon,authenticated;
+
+create function sdi_private.room_snapshot(action text,room uuid default null,snapshot uuid default null,byte_size bigint default null,
+ sha256 text default null,chunk_index integer default null,data text default null) returns jsonb
+language plpgsql security definer set search_path='' as $$
+#variable_conflict use_column
+declare actor uuid:=auth.uid(); target public.sdi_rooms; s sdi_private.room_project_snapshots; n integer; raw bytea; whole bytea;
+ expected integer; chunk_size constant integer:=262144; chunks integer; created uuid; is_owner boolean; verified boolean;
+begin
+ if actor is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor and not is_anonymous) then
+  return jsonb_build_object('error','Sign in with a full account.'); end if;
+ insert into sdi_private.room_snapshot_budget values(actor,clock_timestamp(),1)
+ on conflict(user_id) do update set
+ attempts=case when room_snapshot_budget.window_start<clock_timestamp()-interval '1 minute' then 1 else room_snapshot_budget.attempts+1 end,
+ window_start=case when room_snapshot_budget.window_start<clock_timestamp()-interval '1 minute' then clock_timestamp() else room_snapshot_budget.window_start end
+ returning attempts into n;
+ if n>600 then return jsonb_build_object('error','Too many handoff requests. Wait a minute.'); end if;
+ if room is null or not sdi_private.room_access(room) then return jsonb_build_object('error','Room is unavailable.'); end if;
+ select * into target from public.sdi_rooms where id=room and not closed;
+ if not found then return jsonb_build_object('error','Room is unavailable.'); end if;
+ is_owner:=target.owner_id=actor;
+ -- The live snapshot of this room only; another room's snapshot id never resolves here.
+ select * into s from sdi_private.room_project_snapshots x where x.room_id=target.id and x.state<>'deleted'
+  and (snapshot is null or x.id=snapshot) for update;
+ if found and (s.expires_at<=clock_timestamp() or s.project_ref is distinct from target.project_ref) then
+  perform sdi_private.room_snapshot_discard(s.id,case when s.expires_at<=clock_timestamp() then 'expired' else 'project_changed' end);
+  s:=null;
+ end if;
+ if action='current' then
+  if s.id is null or (s.state<>'available' and not is_owner) then return jsonb_build_object('snapshot',null,'chunk_size',chunk_size); end if;
+  return jsonb_build_object('chunk_size',chunk_size,'snapshot',jsonb_build_object('snapshot_id',s.id,'title',s.title,'project_ref',s.project_ref,
+   'project_revision',s.project_revision,'byte_size',s.byte_size,'chunk_count',s.chunk_count,'sha256',s.sha256,'state',s.state,
+   'offered_at',s.offered_at,'expires_at',s.expires_at,'mine',is_owner,
+   'received_by_me',exists(select 1 from sdi_private.room_project_snapshot_receipts r where r.snapshot_id=s.id and r.member=actor),
+   'received',case when is_owner then (select coalesce(jsonb_agg(c.idx order by c.idx),'[]'::jsonb) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id) end,
+   'delivered',case when is_owner then sdi_private.room_snapshot_delivered(s.id) end,
+   'awaiting',case when is_owner then sdi_private.room_snapshot_awaiting(s.id) end));
+ end if;
+ if action='offer' then
+  if not is_owner then return jsonb_build_object('error','Only the room owner can send the shared project.'); end if;
+  if target.project_ref is null or target.project_title is null then return jsonb_build_object('error','Share a project in this room before sending it.'); end if;
+  if byte_size is null or byte_size not between 1 and 33554432 or sha256 is null or sha256 !~ '^[a-f0-9]{64}$' then
+   return jsonb_build_object('error','A project backup up to 32 MB and its SHA-256 are required.'); end if;
+  if s.id is not null then
+   if s.sha256=room_snapshot.sha256 and s.byte_size=room_snapshot.byte_size and s.project_revision=target.project_revision then
+    return jsonb_build_object('status','existing','snapshot_id',s.id,'state',s.state,'chunk_size',chunk_size,'chunk_count',s.chunk_count,'expires_at',s.expires_at,
+     'received',(select coalesce(jsonb_agg(c.idx order by c.idx),'[]'::jsonb) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id));
+   end if;
+   perform sdi_private.room_snapshot_discard(s.id,'replaced',actor);
+  end if;
+  if (select count(*) from sdi_private.room_project_snapshots x where x.owner_id=actor and x.created_at>clock_timestamp()-interval '1 day')>=20 then
+   return jsonb_build_object('error','Daily project handoff limit reached.'); end if;
+  chunks:=((byte_size+chunk_size-1)/chunk_size)::integer;
+  insert into sdi_private.room_project_snapshots(room_id,owner_id,project_ref,project_revision,title,byte_size,chunk_count,sha256,expires_at)
+  values(target.id,actor,target.project_ref,target.project_revision,target.project_title,byte_size,chunks,sha256,clock_timestamp()+interval '1 hour')
+  returning id into created;
+  return jsonb_build_object('status','declared','snapshot_id',created,'state','receiving','chunk_size',chunk_size,'chunk_count',chunks,
+   'expires_at',(select expires_at from sdi_private.room_project_snapshots where id=created));
+ end if;
+ if s.id is null then return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+ if action='put' then
+  if not is_owner or s.state<>'receiving' then return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+  if chunk_index is null or chunk_index<0 or chunk_index>=s.chunk_count or data is null or length(data)>360000 then
+   return jsonb_build_object('error','Chunk index or size is invalid.'); end if;
+  begin raw:=decode(data,'base64'); exception when others then return jsonb_build_object('error','Chunk is not valid base64.'); end;
+  expected:=case when chunk_index=s.chunk_count-1 then s.byte_size-chunk_index*chunk_size else chunk_size end;
+  if octet_length(raw)<>expected then return jsonb_build_object('error','Chunk length does not match the declared size.'); end if;
+  insert into sdi_private.room_project_snapshot_chunks(snapshot_id,idx,data) values(s.id,chunk_index,raw)
+  on conflict(snapshot_id,idx) do update set data=excluded.data;
+  return jsonb_build_object('status','stored','received',(select count(*) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id));
+ elsif action='finalize' then
+  if not is_owner or s.state<>'receiving' then return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+  if (select count(*) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id)<>s.chunk_count then
+   return jsonb_build_object('error','incomplete','received',(select coalesce(jsonb_agg(c.idx order by c.idx),'[]'::jsonb) from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id));
+  end if;
+  select string_agg(c.data,''::bytea order by c.idx) into whole from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id;
+  if octet_length(whole)<>s.byte_size or encode(extensions.digest(whole,'sha256'),'hex')<>s.sha256 then
+   perform sdi_private.room_snapshot_discard(s.id,'rejected',actor);
+   return jsonb_build_object('error','The sent project was corrupt and has been discarded. Send it again.');
+  end if;
+  update sdi_private.room_project_snapshots set state='available',offered_at=clock_timestamp(),expires_at=clock_timestamp()+interval '72 hours' where id=s.id;
+  insert into sdi_private.room_snapshot_audit(snapshot_id,room_id,actor,event) values(s.id,target.id,actor,'offered');
+  return jsonb_build_object('status','available','snapshot_id',s.id,'awaiting',sdi_private.room_snapshot_awaiting(s.id),
+   'expires_at',(select expires_at from sdi_private.room_project_snapshots where id=s.id));
+ elsif action='get' then
+  if is_owner or s.state<>'available' or not sdi_private.room_member_active(target.id,actor) then
+   return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+  if chunk_index is null or chunk_index<0 or chunk_index>=s.chunk_count then return jsonb_build_object('error','Chunk index is invalid.'); end if;
+  return jsonb_build_object('snapshot_id',s.id,'chunk_index',chunk_index,'chunk_count',s.chunk_count,'sha256',s.sha256,
+   'data',(select encode(c.data,'base64') from sdi_private.room_project_snapshot_chunks c where c.snapshot_id=s.id and c.idx=chunk_index));
+ elsif action='receipt' then
+  -- The member verified the SHA-256 and imported a new device project.
+  if is_owner or s.state<>'available' or not sdi_private.room_member_active(target.id,actor) then
+   return jsonb_build_object('error','No shared project is waiting in this room.'); end if;
+  if sha256 is distinct from s.sha256 then return jsonb_build_object('error','The receipt does not match the shared project.'); end if;
+  insert into sdi_private.room_project_snapshot_receipts(snapshot_id,member) values(s.id,actor) on conflict do nothing;
+  if found then insert into sdi_private.room_snapshot_audit(snapshot_id,room_id,actor,event) values(s.id,target.id,actor,'downloaded'); end if;
+  if sdi_private.room_snapshot_awaiting(s.id)=0 then
+   verified:=sdi_private.room_snapshot_discard(s.id,'delivered',actor);
+   return jsonb_build_object('status','recorded','server_copy','deleted','verified',verified);
+  end if;
+  return jsonb_build_object('status','recorded','server_copy','retained');
+ elsif action='revoke' then
+  if not is_owner then return jsonb_build_object('error','Only the room owner can withdraw the shared project.'); end if;
+  return jsonb_build_object('status','revoked','verified',sdi_private.room_snapshot_discard(s.id,'revoked',actor));
+ end if;
+ return jsonb_build_object('error','Unsupported handoff operation.');
+end $$;
+revoke all on function sdi_private.room_snapshot(text,uuid,uuid,bigint,text,integer,text) from public,anon;
+grant execute on function sdi_private.room_snapshot(text,uuid,uuid,bigint,text,integer,text) to authenticated;
+create function public.sdi_room_snapshot(action text,room uuid default null,snapshot uuid default null,byte_size bigint default null,
+ sha256 text default null,chunk_index integer default null,data text default null) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.room_snapshot(action,room,snapshot,byte_size,sha256,chunk_index,data)$$;
+revoke all on function public.sdi_room_snapshot(text,uuid,uuid,bigint,text,integer,text) from public,anon;
+grant execute on function public.sdi_room_snapshot(text,uuid,uuid,bigint,text,integer,text) to authenticated;
+
+-- The service sweep now also deletes project snapshots that expired, whose room
+-- closed, whose shared project changed, or that every current member received.
+create or replace function sdi_private.room_asset_sweep(max_items integer default 200) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare item record; done integer:=0; verified integer:=0; snap_done integer:=0; snap_verified integer:=0; cap integer;
+begin
+ cap:=least(greatest(coalesce(max_items,200),1),1000);
+ for item in
+  select x.id,case when room.closed then 'room_closed'
+   when not sdi_private.room_member_active(x.room_id,x.uploader) then 'membership_ended' else 'expired' end as reason
+  from sdi_private.room_assets x join public.sdi_rooms room on room.id=x.room_id
+  where x.state<>'deleted' and (x.expires_at<=clock_timestamp() or room.closed or not sdi_private.room_member_active(x.room_id,x.uploader))
+  order by x.expires_at limit cap
+ loop
+  done:=done+1;
+  if sdi_private.room_asset_discard(item.id,item.reason) then verified:=verified+1; end if;
+ end loop;
+ for item in
+  select x.id,case when room.closed then 'room_closed' when x.expires_at<=clock_timestamp() then 'expired'
+   when x.project_ref is distinct from room.project_ref or room.owner_id<>x.owner_id then 'project_changed' else 'delivered' end as reason
+  from sdi_private.room_project_snapshots x join public.sdi_rooms room on room.id=x.room_id
+  where x.state<>'deleted' and (room.closed or x.expires_at<=clock_timestamp() or x.project_ref is distinct from room.project_ref
+   or room.owner_id<>x.owner_id
+   or (x.state='available' and sdi_private.room_snapshot_delivered(x.id)>0 and sdi_private.room_snapshot_awaiting(x.id)=0))
+  order by x.expires_at limit cap
+ loop
+  snap_done:=snap_done+1;
+  if sdi_private.room_snapshot_discard(item.id,item.reason) then snap_verified:=snap_verified+1; end if;
+ end loop;
+ return jsonb_build_object('discarded',done,'verified',verified,
+  'unverified_total',(select count(*) from sdi_private.room_assets where state='deleted' and not delete_verified),
+  'snapshots_discarded',snap_done,'snapshots_verified',snap_verified,
+  'snapshots_unverified_total',(select count(*) from sdi_private.room_project_snapshots where state='deleted' and not delete_verified));
+end $$;
 commit;
 
 -- ===== challenges.sql (sha256 98ab811c7c89c120) =====
@@ -5056,7 +5420,7 @@ revoke all on function public.sdi_consent_verify(uuid,text) from public,anon,aut
 grant execute on function public.sdi_consent_verify(uuid,text) to service_role;
 commit;
 
--- ===== notifications.sql (sha256 4cc2ee009f32999b) =====
+-- ===== notifications.sql (sha256 635975526ab91184) =====
 -- Unapplied candidate. Install after consent-versions.sql (needs admin-hardening.sql,
 -- billing.sql for the subscriber audience and pgcrypto in extensions).
 -- Notification preferences, device registrations, admin-composed announcements and
@@ -5155,9 +5519,10 @@ begin
   if not found then return jsonb_build_object('error','Device unavailable.'); end if;
   return jsonb_build_object('status','confirmed');
  elsif action='inbox' then
-  select coalesce(jsonb_agg(jsonb_build_object('delivery',d.id,'title',a.title,'body',a.body,'category',a.category,'state',d.state,'delivered_at',d.updated_at) order by d.updated_at desc),'[]'::jsonb)
-   into items from sdi_private.announcement_deliveries d join sdi_private.announcements a on a.id=d.announcement_id
-   where d.user_id=actor and d.channel='in_app' and d.state in('sent','read') and a.state<>'cancelled' limit 50;
+  -- The limit belongs to the rows, not to the single aggregate row (clients refuse more than 50).
+  select coalesce(jsonb_agg(jsonb_build_object('delivery',t.id,'title',t.title,'body',t.body,'category',t.category,'state',t.state,'delivered_at',t.updated_at) order by t.updated_at desc,t.id),'[]'::jsonb)
+   into items from (select d.id,a.title,a.body,a.category,d.state,d.updated_at from sdi_private.announcement_deliveries d join sdi_private.announcements a on a.id=d.announcement_id
+   where d.user_id=actor and d.channel='in_app' and d.state in('sent','read') and a.state<>'cancelled' order by d.updated_at desc,d.id limit 50) t;
   return jsonb_build_object('notices',items,'unread',(select count(*) from sdi_private.announcement_deliveries d where d.user_id=actor and d.channel='in_app' and d.state='sent'));
  elsif action='mark_read' then
   update sdi_private.announcement_deliveries set state='read',updated_at=clock_timestamp() where id=(payload->>'delivery')::uuid and user_id=actor and channel='in_app' and state='sent';
@@ -5330,9 +5695,76 @@ create function public.sdi_email_suppress(address_hash text,reason text) returns
 create function public.sdi_email_recipients(category text,batch integer default 500,page integer default 0) returns jsonb language sql security invoker set search_path='' as $$select sdi_private.email_recipients(category,batch,page)$$;
 revoke all on function public.sdi_announcement_claim(integer),public.sdi_announcement_finish(jsonb),public.sdi_email_suppress(text,text),public.sdi_email_recipients(text,integer,integer) from public,anon,authenticated;
 grant execute on function public.sdi_announcement_claim(integer),public.sdi_announcement_finish(jsonb),public.sdi_email_suppress(text,text),public.sdi_email_recipients(text,integer,integer) to service_role;
+
+-- Account notices (#285): when an administrator changes a member's account
+-- (suspend, ban, restore, sign out, reset flags) or rejects an appeal, the member
+-- gets a fixed-text transactional notice. The text never repeats the
+-- administrator's internal reason; it says what changed and where to appeal.
+-- Notes are internal and produce no notice. Restricted members cannot pass
+-- account_active(), so the notices have their own reader that needs only a
+-- current signed-in session (as account_appeal_action does). The newest 50 per
+-- member are kept; account deletion cascades.
+create table sdi_private.account_notices (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null references auth.users(id) on delete cascade,
+ kind text not null check(kind in('suspended','banned','restored','signed_out','flags_reset','appeal_rejected')),
+ title text not null check(length(title) between 1 and 120), body text not null check(length(body) between 1 and 1000),
+ created_at timestamptz not null default clock_timestamp(), read_at timestamptz
+);
+alter table sdi_private.account_notices enable row level security;
+revoke all on sdi_private.account_notices from public,anon,authenticated;
+create index account_notices_member on sdi_private.account_notices(user_id,created_at desc,id desc);
+create function sdi_private.account_notice_from_audit() returns trigger language plpgsql security definer set search_path='' as $$
+declare kind text; title text; body text;
+begin
+ case new.action
+  when 'suspend' then kind:='suspended'; title:='Your account is suspended';
+   body:='An administrator suspended your account and ended your sessions. Sign in to read the restriction and appeal it.';
+  when 'ban' then kind:='banned'; title:='Your account is banned';
+   body:='An administrator banned your account and ended your sessions. Sign in to read the restriction and appeal it.';
+  when 'restore' then kind:='restored'; title:='Your account is active again';
+   body:='An administrator lifted the restriction on your account. Everything you can normally do is available again.';
+  when 'signout' then kind:='signed_out'; title:='You were signed out';
+   body:='An administrator ended your sessions on every device. Sign in again to continue.';
+  when 'reset_flags' then kind:='flags_reset'; title:='Reports about your posts were reviewed';
+   body:='An administrator reviewed the open reports about your posts and dismissed them. Nothing was removed.';
+  when 'appeal_rejected' then kind:='appeal_rejected'; title:='Your appeal was decided';
+   body:='An administrator reviewed your appeal and kept the restriction. Sign in to read the decision.';
+  else return new;
+ end case;
+ insert into sdi_private.account_notices(user_id,kind,title,body) values(new.subject,kind,title,body);
+ delete from sdi_private.account_notices n where n.user_id=new.subject and n.id not in(
+  select k.id from sdi_private.account_notices k where k.user_id=new.subject order by k.created_at desc,k.id desc limit 50);
+ return new;
+end $$;
+revoke all on function sdi_private.account_notice_from_audit() from public,anon,authenticated;
+create trigger account_notice_from_audit after insert on sdi_private.admin_user_audit
+ for each row execute function sdi_private.account_notice_from_audit();
+create function sdi_private.account_notices_action(action text,notice uuid default null) returns jsonb language plpgsql security definer set search_path='' as $$
+declare actor uuid:=auth.uid(); items jsonb;
+begin
+ if actor is null or not exists(select 1 from auth.users where id=actor and not is_anonymous)
+ or not exists(select 1 from auth.sessions where user_id=actor and id::text=auth.jwt()->>'session_id') then
+  return jsonb_build_object('error','A current signed-in account is required.'); end if;
+ if action='list' then
+  select coalesce(jsonb_agg(jsonb_build_object('id',n.id,'kind',n.kind,'title',n.title,'body',n.body,'created_at',n.created_at,'read',n.read_at is not null)
+   order by n.created_at desc,n.id desc),'[]'::jsonb) into items
+  from (select * from sdi_private.account_notices where user_id=actor order by created_at desc,id desc limit 50) n;
+  return jsonb_build_object('notices',items,'unread',(select count(*) from sdi_private.account_notices where user_id=actor and read_at is null));
+ elsif action='mark_read' then
+  update sdi_private.account_notices set read_at=clock_timestamp() where id=notice and user_id=actor and read_at is null;
+  return jsonb_build_object('status',case when found then 'confirmed' else 'unchanged' end);
+ end if;
+ return jsonb_build_object('error','Unsupported notice operation.');
+end $$;
+revoke all on function sdi_private.account_notices_action(text,uuid) from public,anon;
+grant execute on function sdi_private.account_notices_action(text,uuid) to authenticated;
+create function public.sdi_account_notices(action text,notice uuid default null) returns jsonb language sql security invoker set search_path='' as $$
+ select sdi_private.account_notices_action(action,notice)$$;
+revoke all on function public.sdi_account_notices(text,uuid) from public,anon;
+grant execute on function public.sdi_account_notices(text,uuid) to authenticated;
 commit;
 
--- ===== marketing-workspace.sql (sha256 d3badbef1f9a859f) =====
+-- ===== marketing-workspace.sql (sha256 d23f37c6e601c2a0) =====
 -- Unapplied candidate. Install after notifications.sql (needs consent-versions.sql,
 -- publishing-jobs.sql, admin-hardening.sql, feed-publication.sql).
 -- Approval-based marketing workspace for #274 and #283: campaigns, drafts per
@@ -5572,7 +6004,11 @@ begin
   update sdi_private.marketing_drafts set state='failed',last_error=left(failure,500),lease=null,lease_expires=null,updated_at=clock_timestamp() where id=d.id;
   return true;
  end if;
- if marketing_finish.result_url is null or marketing_finish.result_url !~ '^https://' or length(marketing_finish.result_url)>2048 then return false; end if;
+ if d.destination='email' then
+  -- An email blast has no public URL: success is the count the worker actually
+  -- enqueued for opted-in, unsuppressed recipients (backend/mail/queue.py).
+  if marketing_finish.result_url is not null or coalesce(marketing_finish.provider_ref,'') !~ '^email-queue:[1-9][0-9]{0,6}$' then return false; end if;
+ elsif marketing_finish.result_url is null or marketing_finish.result_url !~ '^https://' or length(marketing_finish.result_url)>2048 then return false; end if;
  update sdi_private.marketing_drafts set state='published',result_url=marketing_finish.result_url,provider_ref=left(coalesce(marketing_finish.provider_ref,''),200),last_error='',lease=null,lease_expires=null,updated_at=clock_timestamp() where id=d.id;
  return true;
 end $$;
@@ -5610,7 +6046,7 @@ revoke all on function public.sdi_marketing_claim(),public.sdi_marketing_finish(
 grant execute on function public.sdi_marketing_claim(),public.sdi_marketing_finish(uuid,uuid,text,text,text),public.sdi_marketing_cadence_due() to service_role;
 commit;
 
--- ===== spatter-draft-jobs.sql (sha256 d378eb6fb156c612) =====
+-- ===== spatter-draft-jobs.sql (sha256 ff1c5be31b460690) =====
 -- Unapplied deployment candidate (#212, #214). Install after agent-controls.sql
 -- and admin-approval.sql. Spatter's daily original-draft queue: one durable job
 -- per calendar day, bounded retries and leases, private drafts only, and the
@@ -5712,7 +6148,7 @@ end $$;
 create function sdi_private.spatter_draft_progress(p_job uuid,p_owner text,p_state text,p_storyboard jsonb default null,
  p_quality jsonb default null,p_sha text default null,p_error text default '',p_review jsonb default null)
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare j sdi_private.spatter_draft_jobs; review uuid; creator uuid;
+declare j sdi_private.spatter_draft_jobs; review uuid; creator uuid; retained timestamptz; preview_until timestamptz;
 begin
  select * into j from sdi_private.spatter_draft_jobs where id=p_job for update;
  if not found or j.lease_owner is distinct from p_owner or j.lease_expires_at<clock_timestamp() then
@@ -5733,14 +6169,33 @@ begin
    return jsonb_build_object('status','refused','reason','A review needs the render digest, storyboard, quality report, source digest, creator and private preview URL.'); end if;
   if coalesce((p_quality->>'passes')::boolean,false) is not true then
    return jsonb_build_object('status','refused','reason','The quality report did not pass; mark the job failed with the finding instead.'); end if;
+  -- Optional retained private copy (backend/spatter/draft_preview.py): object_key
+  -- <upload>.mp4, byte_count and artifact_expires_at (at most 14 days). Without it
+  -- the draft can be reviewed but not approved or have its preview renewed.
+  if p_review ? 'object_key' then
+   if (p_review->>'object_key') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$'
+    or jsonb_typeof(p_review->'byte_count') is distinct from 'number' or (p_review->>'byte_count') !~ '^[0-9]{1,10}$'
+    or (p_review->>'byte_count')::bigint not between 1 and 2147483648 or (p_review->>'artifact_expires_at') is null then
+    return jsonb_build_object('status','refused','reason','The retained draft copy needs an object key, byte count and expiry.'); end if;
+   retained:=(p_review->>'artifact_expires_at')::timestamptz;
+   if retained<=clock_timestamp() or retained>clock_timestamp()+interval '14 days' then
+    return jsonb_build_object('status','refused','reason','The retained draft copy expiry must be within 14 days.'); end if;
+  end if;
+  preview_until:=coalesce((p_review->>'preview_expires_at')::timestamptz,clock_timestamp()+interval '7 days');
+  if retained is not null then preview_until:=least(preview_until,retained); end if;
   creator:=(p_review->>'creator')::uuid;
   insert into sdi_private.render_reviews(creator,title,source_revision,render_digest,preview_url,preview_expires_at,consent_version,rights_summary,rights_cleared,
    destinations,spatter_generated,storyboard,source_project_digest)
   values(creator,left(coalesce(p_review->>'title','Spatter daily draft '||j.target_date::text),200),coalesce(p_review->>'source_revision','draft:'||j.target_date::text),
-   p_sha,p_review->>'preview_url',coalesce((p_review->>'preview_expires_at')::timestamptz,clock_timestamp()+interval '7 days'),
+   p_sha,p_review->>'preview_url',preview_until,
    coalesce(p_review->>'consent_version','spatter-draft-v1'),coalesce(p_review->>'rights_summary','Independently generated stick-figure content; no external source material.'),
    coalesce((p_review->>'rights_cleared')::boolean,true),'{}'::text[],true,p_storyboard,p_review->>'source_project_digest')
   returning id into review;
+  if retained is not null then
+   insert into sdi_private.render_artifacts(review_id,version,render_digest,object_key,byte_count,title,made_for_kids,expires_at)
+   values(review,1,p_sha,p_review->>'object_key',(p_review->>'byte_count')::bigint,
+    left(coalesce(p_review->>'title','Spatter daily draft '||j.target_date::text),100),false,retained);
+  end if;
   update sdi_private.spatter_draft_jobs set state='review_pending',storyboard=p_storyboard,quality_report=p_quality,artifact_sha256=p_sha,review_id=review,
    lease_owner=null,lease_expires_at=null,updated_at=clock_timestamp() where id=j.id;
   perform sdi_private.agent_run_finish(j.agent_run,'succeeded',1,0,'');

@@ -161,8 +161,11 @@ struct StudioTimeline: View {
                     .foregroundColor(.white.opacity(0.5))
                     .frame(width: 32, height: 32)
                     .background(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                    // The drawn circle stays 32 pt; the touch target is 44 pt.
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
-
+            .accessibilityLabel("Add frame")
             .accessibilityIdentifier("studio.add-frame")
 
             // Onion skin toggle
@@ -170,7 +173,12 @@ struct StudioTimeline: View {
                 Image(systemName: "circle.dashed")
                     .font(.system(size: 14))
                     .foregroundColor(vm.showOnionSkin ? .red : .white.opacity(0.3))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .accessibilityLabel("Onion skin")
+            .accessibilityValue(vm.showOnionSkin ? "On" : "Off")
+            .accessibilityIdentifier("studio.onion.toggle")
 
             Spacer()
 

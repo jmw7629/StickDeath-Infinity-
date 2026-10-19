@@ -138,6 +138,14 @@ begin
  perform sdi_test.check((r->>'unread')::integer=1 and r->'notices'->0->>'title'='Service notice','member inbox has the notice');
  perform sdi_private.notify_action('mark_read',jsonb_build_object('delivery',(r->'notices'->0->>'delivery')::uuid));
  perform sdi_test.check((sdi_private.notify_action('inbox')->>'unread')::integer=0,'notice marked read');
+ -- The inbox returns the newest 50 notices, not every one (clients refuse more than 50).
+ insert into sdi_private.announcements(title,body,category,audience,channels,created_by,state)
+  select 'Bulk '||g,'Body.','product','all',array['in_app'],agent,'sent' from generate_series(1,55) g;
+ insert into sdi_private.announcement_deliveries(announcement_id,user_id,channel,state)
+  select id,a,'in_app','sent' from sdi_private.announcements where title like 'Bulk %';
+ r:=sdi_private.notify_action('inbox');
+ perform sdi_test.check(jsonb_array_length(r->'notices')=50 and (r->>'unread')::integer=55,'inbox bounded to 50 notices: '||jsonb_array_length(r->'notices'));
+ delete from sdi_private.announcements where title like 'Bulk %';
  -- Marketing push respects the opt-in and can be cancelled while sending.
  perform sdi_test.login(c);
  perform sdi_private.notify_action('register_device','{"platform":"android","environment":"production","token":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}');
@@ -261,5 +269,15 @@ begin
  update sdi_private.render_reviews set state='pending' where id=review2;
  perform sdi_test.check((select state from sdi_private.marketing_drafts where id=draft2)='invalidated','render change invalidates marketing approval');
  perform sdi_test.check((select count(*) from sdi_private.marketing_audit)>=12,'marketing actions audited');
+ -- An email blast finishes with the enqueued count, never with a URL or a zero count.
+ r:=sdi_private.marketing_action('create_draft',campaign,payload=>jsonb_build_object('destination','email','copy','Weekly plug.'),reason=>'Draft.'); draft4:=(r->>'draft')::uuid; rev:=(r->>'revision')::bigint;
+ r:=sdi_private.marketing_action('approve',draft=>draft4,revision=>rev,reason=>'Approved copy.'); rev:=(r->>'revision')::bigint;
+ r:=sdi_private.marketing_action('queue',draft=>draft4,revision=>rev,reason=>'Go.');
+ claimed:=sdi_private.marketing_claim(); token:=(claimed->>'lease')::uuid;
+ perform sdi_test.check((claimed->>'draft')::uuid=draft4 and claimed->>'destination'='email','email draft claimed: '||claimed::text);
+ perform sdi_test.check(not sdi_private.marketing_finish(draft4,token,'https://example.com/x','email-queue:3'),'email blast refuses a url');
+ perform sdi_test.check(not sdi_private.marketing_finish(draft4,token,null,'email-queue:0'),'email blast refuses a zero count');
+ perform sdi_test.check(sdi_private.marketing_finish(draft4,token,null,'email-queue:3'),'email blast published with its enqueued count');
+ perform sdi_test.check((select state='published' and provider_ref='email-queue:3' and result_url is null from sdi_private.marketing_drafts where id=draft4),'email result recorded');
 end $$;
 rollback;

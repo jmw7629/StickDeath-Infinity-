@@ -498,7 +498,9 @@ private final class NetworkTrap: URLProtocol {
                              "USD 4.99 per month and USD 9.99 per month", "Preview plan", "Revert Spatter edit"] {
                     try require(SpatterAIViewModel.currentStudioCapabilities.contains(fact), "Capability text missing: \(fact)")
                 }
-                try require(SpatterInstructionCatalog.version == 3 && SpatterInstructionCatalog.grammars.count == 37 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                try require(SpatterInstructionCatalog.version == 4 && SpatterInstructionCatalog.grammars.count == 40 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                    && SpatterInstructionCatalog.commandNames.contains("fillAtPoint") && SpatterInstructionCatalog.commandNames.contains("selectElements")
+                    && SpatterInstructionCatalog.commandNames.contains("setSourceReference")
                     && SpatterInstructionCatalog.commandNames.contains("updateText") && SpatterInstructionCatalog.commandNames.contains("appendFrames")
                     && SpatterInstructionCatalog.commandNames.contains("tweenFrames"), "Catalog does not list the reachable commands")
                 // Pricing (#207): planned price points only, no live prices, annual not configured, nothing charged.

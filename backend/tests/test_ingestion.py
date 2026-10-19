@@ -94,6 +94,26 @@ class UploadStoreTests(unittest.TestCase):
         with self.assertRaises(IntakeError):
             self.store.begin(self.actor, str(uuid.uuid4()), bad)
 
+    def test_content_rules_refuse_metadata_before_any_upload_row(self):
+        bad = metadata(len(self.payload), self.digest)
+        bad["title"] = "Call 555-123-4567"
+        with self.assertRaises(IntakeError) as refused:
+            self.store.begin(self.actor, str(uuid.uuid4()), bad)
+        self.assertEqual(refused.exception.status, 422)
+        self.assertIn("content_rule.personal_data", str(refused.exception))
+        self.assertNotIn("555", str(refused.exception))
+        ok = metadata(len(self.payload), self.digest)
+        ok["rights_summary"] = "Music licensed; licensor contact licensing@example.com"
+        self.assertEqual(self.store.begin(self.actor, str(uuid.uuid4()), ok)["state"], "receiving")
+
+    def test_optional_project_digest_is_validated_and_kept(self):
+        good = {**metadata(len(self.payload), self.digest), "source_project_digest": "d" * 64}
+        upload = self.store.begin(self.actor, str(uuid.uuid4()), good)["id"]
+        self.assertEqual(self.store.metadata(self.actor, upload)["source_project_digest"], "d" * 64)
+        for bad in ("D" * 64, "d" * 63, 7, None):
+            with self.assertRaises(IntakeError):
+                self.store.begin(self.actor, str(uuid.uuid4()), {**metadata(len(self.payload), self.digest), "source_project_digest": bad})
+
     def test_chunks_verify_checksum_offset_and_duplicates(self):
         upload = self.store.begin(self.actor, str(uuid.uuid4()), metadata(len(self.payload), self.digest))["id"]
         half = len(self.payload) // 2
@@ -249,6 +269,39 @@ class RegistrarTests(unittest.TestCase):
             self.assertEqual(body["object_key"], self.upload + ".mp4")
             self.assertTrue(body["preview_url"].startswith("https://intake.example.test/v1/render-previews/"))
             self.assertEqual(opener.requests[1].full_url, "https://backend.example.test/rest/v1/rpc/sdi_register_upload")
+        finally:
+            registration_module.urllib.request.build_opener = original
+
+    def test_registration_binds_the_declared_project_digest_and_fails_closed(self):
+        review = str(uuid.uuid4())
+        meta = {**metadata(10, "b" * 64), "source_project_digest": "c" * 64}
+        opener = FakeOpener([FakeResponse(json.dumps({"allowed": True}).encode()), FakeResponse(json.dumps({"review_id": review}).encode()),
+                             FakeResponse(json.dumps({"status": "confirmed", "version": 2, "changed": True}).encode())])
+        original = install_opener(registration_module, opener)
+        try:
+            self.assertEqual(self.registrar()(self.upload, str(uuid.uuid4()), self.path, meta, 1_800_000_000), review)
+            self.assertEqual(json.loads(opener.requests[1].data)["metadata"]["source_project_digest"], "c" * 64)
+            self.assertEqual(opener.requests[2].full_url, "https://backend.example.test/rest/v1/rpc/sdi_review_bind_source_digest")
+            self.assertEqual(json.loads(opener.requests[2].data), {"upload": self.upload, "review": review, "digest": "c" * 64})
+        finally:
+            registration_module.urllib.request.build_opener = original
+        # A refused or unreachable binding is never reported as a submitted review.
+        for answer, status in ((FakeResponse(json.dumps({"error": "Source digest does not match the registered upload."}).encode()), 409),
+                               (urllib.error.URLError("down"), 503), (FakeResponse(b"garbage"), 503)):
+            opener = FakeOpener([FakeResponse(json.dumps({"allowed": True}).encode()), FakeResponse(json.dumps({"review_id": review}).encode()), answer])
+            original = install_opener(registration_module, opener)
+            try:
+                with self.assertRaises(IntakeError) as refusal:
+                    self.registrar()(self.upload, str(uuid.uuid4()), self.path, meta, 1_800_000_000)
+                self.assertEqual(refusal.exception.status, status)
+            finally:
+                registration_module.urllib.request.build_opener = original
+        # Without a declared digest nothing extra is sent.
+        opener = FakeOpener([FakeResponse(json.dumps({"allowed": True}).encode()), FakeResponse(json.dumps({"review_id": review}).encode())])
+        original = install_opener(registration_module, opener)
+        try:
+            self.registrar()(self.upload, str(uuid.uuid4()), self.path, metadata(10, "b" * 64), 1_800_000_000)
+            self.assertEqual(len(opener.requests), 2)
         finally:
             registration_module.urllib.request.build_opener = original
 

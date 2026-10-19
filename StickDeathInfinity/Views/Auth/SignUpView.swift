@@ -251,15 +251,29 @@ struct SignUpView: View {
                         .padding(.horizontal, 24)
                         .padding(.top, 24)
 
-                        // Terms
-                        Text("By creating an account, you agree to our Terms of Service")
-                            .font(.system(size: 12))
-                            .foregroundColor(.sdTextMuted)
-                            .multilineTextAlignment(.center)
-                            .lineSpacing(2)
-                            .padding(.horizontal, 40)
-                            .padding(.top, 16)
-                            .padding(.bottom, 32)
+                        // Policies (#273). Reading them here records nothing; the
+                        // current versions are accepted after sign-up in the guide
+                        // or Profile → Privacy and policies, recorded by the server.
+                        VStack(spacing: 6) {
+                            Text("Review the Terms of Service and Privacy Policy. After your account is created you can accept their current versions; Studio works without an account either way.")
+                                .font(.system(size: 12))
+                                .foregroundColor(.sdTextMuted)
+                                .multilineTextAlignment(.center)
+                                .lineSpacing(2)
+                            HStack(spacing: 16) {
+                                Link("Terms of Service", destination: PolicyLinks.terms)
+                                    .frame(minHeight: 44)
+                                    .accessibilityIdentifier("auth.signup.policy.terms")
+                                Link("Privacy Policy", destination: PolicyLinks.privacy)
+                                    .frame(minHeight: 44)
+                                    .accessibilityIdentifier("auth.signup.policy.privacy")
+                            }
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.sdRed)
+                        }
+                        .padding(.horizontal, 40)
+                        .padding(.top, 16)
+                        .padding(.bottom, 32)
                     }
                 }
             }

@@ -62,6 +62,8 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
             policy.recordVerification(at: now)
             policy.recordRefusal()
             if case .reverify = policy.decision(for: "users.ban", now: now) {} else { throw Failure(description: "server refusal did not clear the window") }
+            // The server gates reset_flags behind step-up (admin-users.sql), so the client must too.
+            if case .reverify = AdminStepUpPolicy().decision(for: "users.reset_flags", now: now) {} else { throw Failure(description: "reset_flags is not step-up protected") }
         }
 
         await test("admin access parses step-up state and server step-up refusals flip the local policy") {
@@ -243,6 +245,103 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
             transport.replies = [.success(#"{"agents":[{"key":"support_triage","title":"Support","paused":true,"permissions":["read"],"per_run_cost_cap_minor":100,"last_error":"Cost cap exceeded; agent paused for owner review.","last_started":"2026-10-12T20:00:00Z","pending_proposals":0}],"emergency_stop":false}"#)]
             let console = try await client.agentConsole()
             try require(console.first?.per_run_cost_cap_minor == 100 && console.first?.pending_proposals == 0 && console.first?.last_error?.contains("Cost cap") == true, "console extras decoded")
+        }
+
+        await test("typed agent commands mirror the server's actions, bounds and step-up names") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let all: [AdminAgentCommand] = [.pause, .resume, .setCaps(daily: 3, perRunItems: 1, monthlyCostMinor: 100, perRunCostMinor: 25),
+                .setPermissions(["write", "read"]), .publishInstructions("One private draft per day."), .rollbackInstructions(version: 2)]
+            try require(all.map(\.action) == ["pause", "resume", "set_caps", "set_permissions", "publish_instructions", "rollback_instructions"], "action names")
+            for command in all {
+                if case .reverify = AdminStepUpPolicy().decision(for: command.stepUpAction, now: now) {} else { throw Failure(description: "\(command.action) is not step-up protected") }
+            }
+            // Invalid input is refused before anything is sent.
+            for (command, reason) in [(AdminAgentCommand.pause, " "), (.setCaps(daily: 10_000, perRunItems: 1, monthlyCostMinor: 0, perRunCostMinor: nil), "r"),
+                                      (.setCaps(daily: 1, perRunItems: 1, monthlyCostMinor: -1, perRunCostMinor: nil), "r"),
+                                      (.setCaps(daily: 1, perRunItems: 1, monthlyCostMinor: 1, perRunCostMinor: 1_000_000_000_000), "r"),
+                                      (.setPermissions(["admin"]), "r"), (.publishInstructions("  "), "r"),
+                                      (.publishInstructions(String(repeating: "x", count: 20_001)), "r"), (.rollbackInstructions(version: 0), "r")] {
+                do { _ = try await client.runAgentCommand(command, agent: "spatter_daily_video", revision: 4, reason: reason); throw Failure(description: "\(command) sent") }
+                catch let error as CommunityError { if case .server = error {} else { throw Failure(description: "\(command) wrong refusal \(error)") } }
+            }
+            do { _ = try await client.runAgentCommand(.pause, agent: "Spatter Daily", revision: 4, reason: "r"); throw Failure(description: "bad agent key sent") } catch CommunityError.invalidResponse {}
+            try require(transport.calls.isEmpty, "nothing sent for invalid commands")
+            // Caps carry every server field, including the per-run cost cap, so saving never erases it.
+            transport.replies = [.success(#"{"status":"confirmed","revision":5}"#)]
+            try require(try await client.runAgentCommand(all[2], agent: "spatter_daily_video", revision: 4, reason: " Caps ") == 5, "caps confirmed")
+            let caps = transport.calls.last?.params["payload"] as? [String: String]
+            try require(caps == ["daily_run_cap": "3", "per_run_item_cap": "1", "monthly_cost_cap_minor": "100", "per_run_cost_cap_minor": "25"]
+                && transport.calls.last?.params["action"] as? String == "set_caps" && transport.calls.last?.params["revision"] as? Int == 4
+                && transport.calls.last?.params["reason"] as? String == "Caps", "caps payload: \(String(describing: caps))")
+            transport.replies = [.success(#"{"status":"confirmed","revision":6}"#)]
+            _ = try await client.runAgentCommand(all[3], agent: "spatter_daily_video", revision: 5, reason: "Perms")
+            try require((transport.calls.last?.params["payload"] as? [String: Any])?["permissions"] as? [String] == ["read", "write"], "sorted permissions")
+            transport.replies = [.success(#"{"status":"confirmed","revision":7}"#)]
+            _ = try await client.runAgentCommand(all[5], agent: "spatter_daily_video", revision: 6, reason: "Back")
+            try require((transport.calls.last?.params["payload"] as? [String: Any])?["version"] as? String == "2", "rollback version")
+            // A confirmation at an unexpected revision is not reported as success.
+            transport.replies = [.success(#"{"status":"confirmed","revision":9}"#)]
+            do { _ = try await client.runAgentCommand(.resume, agent: "spatter_daily_video", revision: 7, reason: "Go"); throw Failure(description: "skipped revision accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"error":"Publish instructions before resuming this agent."}"#)]
+            do { _ = try await client.runAgentCommand(.resume, agent: "spatter_daily_video", revision: 7, reason: "Go"); throw Failure(description: "server refusal accepted") } catch CommunityError.server {}
+            // Text-field parsing: empty per-run clears it, anything non-numeric refuses.
+            try require(AdminAgentCommand.caps(daily: "3", perRunItems: "1", monthlyCostMinor: "100", perRunCostMinor: "") == .setCaps(daily: 3, perRunItems: 1, monthlyCostMinor: 100, perRunCostMinor: nil), "empty per-run")
+            try require(AdminAgentCommand.caps(daily: "3", perRunItems: "1", monthlyCostMinor: "1e3", perRunCostMinor: "") == nil
+                && AdminAgentCommand.caps(daily: "-1", perRunItems: "1", monthlyCostMinor: "1", perRunCostMinor: "") == nil
+                && AdminAgentCommand.caps(daily: "1", perRunItems: "1", monthlyCostMinor: "1", perRunCostMinor: "2.5") == nil, "non-numeric caps refused")
+        }
+
+        await test("publish stages match the server's publish_stage mapping") {
+            let cases: [(String, String, Int, String?, AdminPublishStage)] = [
+                ("published", "release", 1, "v1", .published), ("failed", "transfer", 5, nil, .failed), ("reconcile", "transfer", 1, nil, .needsReconciliation),
+                ("cancel_requested", "transfer", 1, nil, .cancelling), ("removal_pending", "release", 1, "v1", .removalInProgress),
+                ("cancelled", "release", 1, "v1", .removed), ("cancelled", "transfer", 0, nil, .cancelled), ("leased", "processing", 1, "v1", .providerProcessing),
+                ("leased", "release", 1, "v1", .releasing), ("queued", "transfer", 0, nil, .queued), ("queued", "transfer", 2, nil, .transferring),
+                ("leased", "transfer", 1, nil, .transferring)]
+            for (state, phase, attempts, provider, expected) in cases {
+                let stage = AdminPublishStage(state: state, phase: phase, attempts: attempts, providerID: provider)
+                try require(stage == expected, "\(state)/\(phase)/\(attempts) → \(stage), expected \(expected)")
+            }
+            try require(AdminPublishStage.published.rawValue == "published" && AdminPublishStage.needsReconciliation.rawValue == "needs_reconciliation"
+                && AdminPublishStage.providerProcessing.rawValue == "provider_processing" && AdminPublishStage.removalInProgress.rawValue == "removal_in_progress", "wire names")
+            try require(AdminPublishStage.published.completedSteps == AdminPublishStage.releasePath.count && AdminPublishStage.queued.completedSteps == 2
+                && !AdminPublishStage.releasing.isOffPath && AdminPublishStage.failed.isOffPath, "release path progress")
+        }
+
+        await test("diagnostics summary decodes the stored contract and fails closed on identifiers or free text") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let good = #"{"since":"2026-10-04","latest_complete_day":"2026-10-17","reports":3,"totals":[{"day":"2026-10-17","platform":"ios","app_version":"1.2.3","build":"45","counter":"crash","total":7,"reports":2},{"day":"2026-10-16","platform":"android","app_version":"unknown","build":"unknown","counter":"app_launch","total":40,"reports":1}],"crash_spikes":[{"platform":"ios","build":"45","latest_total":7,"prior_daily_mean":0.29}],"agent_runs_failed_24h":1,"retention_days":90}"#
+            transport.replies = [.success(good)]
+            let summary = try await client.diagnostics(days: 14)
+            try require(transport.calls.last?.name == "sdi_diagnostics_admin" && transport.calls.last?.params["action"] as? String == "summary" && transport.calls.last?.params["days"] as? Int == 14, "request")
+            try require(summary.crash_spikes?.first?.latest_total == 7 && summary.agent_runs_failed_24h == 1 && summary.counterTotals(platform: "ios").first?.total == 7
+                && summary.counterTotals().count == 2, "summary decoded")
+            do { _ = try await client.diagnostics(days: 91); throw Failure(description: "out-of-range window sent") } catch CommunityError.invalidResponse {}
+            for bad in [good.replacingOccurrences(of: #""build":"45","counter""#, with: #""build":"device-a1","counter""#),
+                        good.replacingOccurrences(of: #""counter":"crash""#, with: #""counter":"user_email""#),
+                        good.replacingOccurrences(of: #""platform":"ios","app_version""#, with: #""platform":"web","app_version""#),
+                        good.replacingOccurrences(of: #","agent_runs_failed_24h":1"#, with: "")] {
+                transport.replies = [.success(bad)]
+                do { _ = try await client.diagnostics(); throw Failure(description: "unexpected reply accepted") } catch CommunityError.invalidResponse {}
+            }
+            transport.replies = [.success(#"{"error":"Current administrator MFA session required.","code":"forbidden"}"#)]
+            do { _ = try await client.diagnostics(); throw Failure(description: "refusal accepted") } catch CommunityError.server {}
+        }
+
+        await test("review evidence shows the real storyboard, digest and quality report, and says not supplied only for null") {
+            try require(AdminReviewEvidence.storyboardLines(nil).isEmpty && AdminReviewEvidence.storyboardLines(.null).isEmpty && AdminReviewEvidence.qualityLines(nil).isEmpty, "null is not supplied")
+            try require(AdminReviewEvidence.digestLine(nil).contains("not supplied") && AdminReviewEvidence.digestLine(String(repeating: "ab", count: 32)).hasSuffix(String(repeating: "ab", count: 32))
+                && AdminReviewEvidence.digestLine("../../etc").contains("unrecognized"), "digest line")
+            let story = try JSONDecoder().decode(CommunityJSONValue.self, from: Data(##"{"schema":"spatter_storyboard","version":1,"brief":"A red stick figure walks left to right, then falls; 3 seconds.","seed":11,"fps":24,"totalTicks":72,"poseHoldTicks":2,"frameCount":36,"generatedElementCount":360,"actors":[{"index":1,"color":"#FF0000","layerName":"Actor 1","startXPercent":10,"facing":1,"clauses":[{"action":"walk","direction":"left to right","startTick":0,"ticks":48,"travelPercent":40},{"action":"fall","startTick":48,"ticks":24,"travelPercent":0}]}]}"##.utf8))
+            let lines = AdminReviewEvidence.storyboardLines(story)
+            try require(lines.first == "Script: A red stick figure walks left to right, then falls; 3 seconds." && lines.contains { $0.contains("24 FPS") && $0.contains("72 ticks") && $0.contains("seed 11") }
+                && lines.contains("Actor 1 #FF0000: walk left to right @0+48t → fall @48+24t"), "storyboard lines: \(lines)")
+            let quality = try JSONDecoder().decode(CommunityJSONValue.self, from: Data(#"{"schema":"spatter_quality_report","version":1,"passes":false,"failures":["1 blank frame(s); limit 0."],"findings":[],"unmeasured":["audioOffsetSeconds"],"frameCount":36,"fps":24,"actualTicks":72,"requestedTicks":72,"movie":{"decodedFrameCount":36,"decodedDurationSeconds":3,"expectedFrameCount":36,"expectedDurationSeconds":3},"note":"n"}"#.utf8))
+            let q = AdminReviewEvidence.qualityLines(quality)
+            try require(q.first == "Quality gates FAILED." && q.contains("• 1 blank frame(s); limit 0.") && q.contains("Decoded movie: 36/36 frames, 3/3 s.") && q.contains("Not measured: audioOffsetSeconds."), "quality lines: \(q)")
+            try require(AdminReviewEvidence.qualityLines(.string("ok")) == ["Quality report: unrecognized format (not shown)."], "malformed quality")
         }
 
         print("COMMUNITY_ADMIN_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed) passed \(failed) failed")

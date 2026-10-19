@@ -63,8 +63,8 @@ AI key + server-funded prompts per billing period of
 3 490 000 (USD 4.99 net of a 30% store commission, rounded down; the budget can
 never exceed the 4 990 000 gross price) / 20 000 (USD 0.02, an owner-editable
 conservative estimate per prompt) = 174; Pro $9.99 = unlimited (still under the
-safety, rate and global caps and the emergency stop) + own AI key; **the free
-trial applies to both paid plans** (Creator and Pro). Actual provider cost is not
+safety, rate and global caps and the emergency stop) + own AI key; **there is no
+free trial on any plan** (owner decision 2026-10-15). Actual provider cost is not
 recorded (the provider contract returns usage units only). Background:
 `docs/SPATTER_BILLING_DECISIONS_2026_10_14.md`.
 
@@ -133,13 +133,13 @@ if you want." Implemented server side (unapplied candidates, tested locally):
   plan screens show the plan line without a count. Free shows its credit
   balance and offers Creator, Pro or credits; Creator at zero offers Pro or
   credits.
-- Trial: applies to both paid plans (`BillingPlanDefinition.offersTrial` is
-  true for Creator and Pro, false for Free). Copy is shown only when the loaded
-  `Product` has a free-trial introductory offer and `isEligibleForIntroOffer` is
-  true (`BillingCopy.trial(for:days:eligible:)`). Trial length is App Store
-  Connect configuration; no trial is hard-coded. Server side, a `trialing`
-  subscription maps to its own tier (`backend/billing/contract.py`
-  `TRIAL_TIERS`, `sdi_private.entitlements`).
+- Trial: none on any plan (owner decision 2026-10-15). `BillingPlanDefinition.offersTrial`
+  is false for every tier and `BillingCopy.trial(for:days:eligible:)` returns nil
+  even if a store introductory offer were left configured, so the apps never show
+  trial copy. Do not configure introductory offers in App Store Connect or Stripe.
+  Server side, a `trialing` status from a provider still maps to its tier
+  (`backend/billing/contract.py` `TRIAL_TIERS`) so a misconfigured store offer
+  cannot strand a paying member.
 - Bring-your-own AI key (#209): listed as a pending entitlement on Creator and
   Pro. The key is stored only in the device Keychain
   (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, not synchronizable), is sent
@@ -206,21 +206,24 @@ file; the client calls no Stripe API).
 - `sendTip(...)` — tips are not in the current contract. "No new paid service
   is authorized."
 
-### Entitlement reconciliation (owner-gated stub)
+### Entitlement reconciliation (server read, 2026-10-18)
 
-`StripeService.reconcileEntitlementsWithServer()` throws
-`PaymentError.entitlementReconciliationNotConfigured`. After a successful
-purchase or restore the service attempts it and publishes the error text in
-`reconciliationNotice`, which the Subscription view shows. The real
-implementation belongs on the server: verify Apple's signed transaction
+`StripeService.reconcileEntitlementsWithServer()` reads the signed-in member's
+plan with the `sdi_my_entitlement` RPC (`ServerEntitlementClient`) and compares
+it with Apple's entitlement. A match is reported as verified; no server record
+yet, or a different tier, is reported as deferred with both tiers named; not
+configured, signed out and offline each have their own notice. The client never
+writes a tier. A paid plan the server applied (for example a website
+subscription) counts toward Studio limits for that account. Granting the
+entitlement itself stays on the server: verify Apple's signed transaction
 (App Store Server API / Server Notifications keyed by `appAccountToken`) and
-write the entitlement there.
+write it there.
 
 ## Views
 
-Both views are compiled by the Xcode target but are **not mounted** anywhere in
-the app flow (no call site constructs `SubscriptionView()` or
-`ChoosePlanView(onSelected:)`).
+`SubscriptionView` opens from Profile (Subscription row and card), the legacy
+Settings "Current Plan" row, Spatter and Studio. `ChoosePlanView(onSelected:)`
+is still not opened from any screen.
 
 - `StickDeathInfinity/Views/Settings/SubscriptionView.swift`
   - Shows the actual entitlement from Apple (`Active`, purchase date, period end
@@ -235,7 +238,7 @@ the app flow (no call site constructs `SubscriptionView()` or
     "Price shown when configured". The CTA is disabled while no product exists.
   - Feature pills come from `BillingPlanCatalog` (owner-stated entitlements of
     2026-10-07); everything the server does not enforce yet is marked `*` with the
-    pending note. Trial copy appears only from an eligible store offer. No
+    pending note. No trial copy (no plan has a trial). No
     "Commercial license", project counts, coins or sale claims. (Updated #259,
     2026-10-14; earlier this list was "Extras pending owner configuration".)
   - A failed purchase shows the error and stays on the screen; it no longer
@@ -304,12 +307,10 @@ Apple proceeds (App Store Connect financial reports) have no parser yet.
    configuration.
 2. Decide annual amounts and entitlements, if any. Nothing annual ships until
    then.
-3. Entitlement questions answered 2026-10-14 (free prompts monthly and
-   suggested-only; own AI key on Creator and Pro; trial on both paid plans).
-   Remaining: configure the trial as an App Store introductory offer on **both**
-   subscriptions (and, if web checkout is used, the Stripe trial settings for
-   both prices), deploy the Spatter metering SQL and handler, then bind the
-   native client to `sdi_my_entitlement` and replace the throwing stub.
+3. Entitlement rules are in `docs/PLAN_DECISIONS_2026_10_15.md` (no free trial
+   on any plan; Free previews Spatter; Creator break-even allowance; credits).
+   Remaining: deploy the Spatter metering and billing SQL and handlers. The
+   native client already reads `sdi_my_entitlement`.
 4. Verify the existing Stripe account before any reuse. Stripe has no
    client-side role in the current contract; any server-side use (web
    payments) must be verified separately and must not be a new paid service.

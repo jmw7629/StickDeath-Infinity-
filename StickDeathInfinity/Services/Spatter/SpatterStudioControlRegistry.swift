@@ -60,7 +60,7 @@ enum SpatterStudioControlRegistry {
         // Primary toolbar, in the toolbar's order.
         .init(id: "tool.move", surface: .toolbar, title: "Move", route: .instructions([
             "selectionTranslate", "selectionTransform", "selectionReflect", "drawingDuplicate", "artworkOrder",
-            "imageReflection", "imageRotation", "imageCrop", "imagePlacement", "textUpdate"])),
+            "imageReflection", "imageRotation", "imageCrop", "imagePlacement", "textUpdate", "selectByID"])),
         .init(id: "tool.lasso", surface: .toolbar, title: "Lasso", route: .manual(selectionNote)),
         .init(id: "tool.wand", surface: .toolbar, title: "Wand", route: .manual(selectionNote)),
         .init(id: "tool.brush", surface: .toolbar, title: "Brush", route: .instructions(["brushStroke"])),
@@ -71,7 +71,8 @@ enum SpatterStudioControlRegistry {
         .init(id: "tool.line", surface: .toolbar, title: "Line", route: .manual("Draw single lines directly. Spatter's stick-figure and brief instructions generate whole frames of lines on new layers instead.")),
         .init(id: "tool.rectangle", surface: .toolbar, title: "Rect", route: .manual("Draw rectangles directly; Spatter has no rectangle instruction.")),
         .init(id: "tool.circle", surface: .toolbar, title: "Circle", route: .manual("Draw single circles directly. Spatter's circle-motion instruction appends whole frames of a moving circle on a new layer instead.")),
-        .init(id: "tool.fill", surface: .toolbar, title: "Fill", route: .manual(pixelToolNote)),
+        .init(id: "tool.fill", surface: .toolbar, title: "Fill", route: .instructions(["fill"])),
+        .init(id: "tool.gradient", surface: .toolbar, title: "Gradient", route: .manual(pixelToolNote)),
         .init(id: "tool.eyedropper", surface: .toolbar, title: "Dropper", route: .manual("Sampling a color reads the canvas under your finger; give colors to Spatter as #RRGGBB instead.")),
         .init(id: "tool.eraser", surface: .toolbar, title: "Eraser", route: .instructions(["selectedErasure"])),
         .init(id: "tool.smudge", surface: .toolbar, title: "Smudge", route: .manual(pixelToolNote)),
@@ -86,7 +87,6 @@ enum SpatterStudioControlRegistry {
         .init(id: "tool.arrow", surface: .hiddenTool, title: "Arrow", route: .manual("Not on the Studio toolbar; existing arrow drawings stay editable with Move.")),
         .init(id: "tool.image", surface: .hiddenTool, title: "Image", route: .manual("Pictures are added from Add Picture; Spatter can only open that picker for you to choose.")),
         .init(id: "tool.ruler", surface: .hiddenTool, title: "Ruler", route: .manual("Not on the Studio toolbar.")),
-        .init(id: "tool.gradient", surface: .hiddenTool, title: "Gradient", route: .instructions(["brushStroke"])),
         .init(id: "tool.airbrush", surface: .hiddenTool, title: "Airbrush", route: .instructions(["brushStroke"])),
         .init(id: "tool.watercolor", surface: .hiddenTool, title: "Watercolor", route: .instructions(["brushStroke"])),
         .init(id: "tool.neon", surface: .hiddenTool, title: "Neon", route: .instructions(["brushStroke"])),
@@ -111,7 +111,7 @@ enum SpatterStudioControlRegistry {
         .init(id: "panel.menu", surface: .panel, title: "Studio menu", route: .manual("Menu commands such as saving copies are performed by you.")),
         .init(id: "panel.aiVoice", surface: .panel, title: "Voice", route: .manual("Voice recording and import are started by you; Spatter edits the resulting clip only after it is on the timeline.")),
         .init(id: "panel.spatterAI", surface: .panel, title: "Spatter", route: .instructions([
-            "batch", "multiClauseBrief", "sceneBrief", "twoActorBrief", "stickFigure", "circleMotion"])),
+            "batch", "multiClauseBrief", "sceneBrief", "twoActorBrief", "stickFigure", "circleMotion", "sourceReference"])),
         .init(id: "panel.magicCut", surface: .panel, title: "Magic Cut", route: .manual("Background removal runs from its own panel after you review the preview.")),
         .init(id: "panel.rotoscope", surface: .panel, title: "Rotoscope", route: .manual("Video frame import is chosen and confirmed by you.")),
         // Header and timeline controls.
@@ -297,6 +297,10 @@ struct SpatterContextSnapshot: Codable, Equatable {
             guard selectedAudioClipKnown else { return .needs("Select an audio clip on the timeline first.") }
         case "frameAction", "frameCut":
             guard activeFrameNumber != nil, displayedFrameNumber == activeFrameNumber else { return .needs("Select the frame you want to change.") }
+        case "fill":
+            guard activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "position" else { return .needs("Show the active layer and unlock it (free or position lock).") }
+        case "selectByID":
+            guard activeFrameNumber != nil else { return .needs("Select the frame whose drawings you want first.") }
         case "brushStroke":
             guard activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "alpha" else { return .needs("Show and unlock the active layer.") }
         default: break

@@ -29,6 +29,10 @@ struct FloatingToolSettingsPanel: View {
     @FocusState private var imageFocusedField: StudioImagePlacementField?
 
     static func hasSettings(_ tool: DrawingTool) -> Bool { true }
+    /// Selecting the Eyedropper does not open its popup: the popup would cover
+    /// the canvas the creator is about to sample. Its sample size and layer
+    /// mode open by tapping the selected Eyedropper again.
+    static func opensOnSelect(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
     
     var toolDef: ToolDef? {
         StudioToolStrip.tools.first { $0.tool == vm.selectedTool }
@@ -170,7 +174,7 @@ struct FloatingToolSettingsPanel: View {
     func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             toolSpecificSettings(def, compactHeight: compactHeight)
-            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text, .fill, .move, .lasso, .wand].contains(def.tool) {
+            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text, .fill, .gradient, .move, .lasso, .wand].contains(def.tool) {
                 Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
                     .font(.specialElite(10))
                     .foregroundColor(.sdStudioSecondaryText)
@@ -257,6 +261,43 @@ struct FloatingToolSettingsPanel: View {
             }
             
         // ── FILL TOOL (GREEN THEME) ──
+        // ── GRADIENT (#149) ──
+        case .gradient:
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Shape", selection: $vm.gradientShape) {
+                    Text("Linear").tag(StudioGradientDescriptor.Shape.linear)
+                    Text("Radial").tag(StudioGradientDescriptor.Shape.radial)
+                }.pickerStyle(.segmented).accessibilityIdentifier("studio.gradient.shape")
+                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                SettingsToggle(label: "Fade to transparent", isOn: $vm.gradientFadeToTransparent, accent: accentColor)
+                    .accessibilityIdentifier("studio.gradient.fade")
+                if !vm.gradientFadeToTransparent {
+                    Button { vm.activePanel = .gradientEndColor } label: {
+                        HStack {
+                            Text("End Color")
+                            Spacer()
+                            Circle().fill(vm.brushGradientEndColor).frame(width: 28, height: 28)
+                        }.contentShape(Rectangle()).frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.specialElite(11)).foregroundColor(.white)
+                    .accessibilityIdentifier("studio.gradient.end-color")
+                    .accessibilityLabel("Gradient end color")
+                    .accessibilityValue(vm.brushGradientEndColorHex.uppercased())
+                }
+                Picker("Blend colors", selection: $vm.gradientInterpolation) {
+                    Text("Classic").tag(StudioGradientDescriptor.Interpolation.sRGB)
+                    Text("Linear light").tag(StudioGradientDescriptor.Interpolation.linearLight)
+                }.pickerStyle(.segmented).accessibilityIdentifier("studio.gradient.interpolation")
+                SettingsToggle(label: "Dither (reduces banding)", isOn: $vm.gradientDither, accent: accentColor)
+                    .accessibilityIdentifier("studio.gradient.dither")
+                Text(vm.selectedElementIDs.isEmpty
+                     ? "Drag on the canvas from the drawing color to the end color. Radial uses the drag as its radius. Fills the active layer on release; Undo removes it and the artwork below stays editable."
+                     : "Drag on the canvas from the drawing color to the end color. Only the selected area of the active layer is filled; Undo removes it.")
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.gradient.instructions")
+            }
+
         case .fill:
             VStack(alignment: .leading, spacing: 8) {
                 if vm.hasFillImageTarget {
@@ -336,7 +377,7 @@ struct FloatingToolSettingsPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...256, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                Text("Drag existing color on the active layer. The effect is applied when you release. Deselect artwork first.")
+                Text("Drag existing color on the active layer. The effect is applied when you release. With a selection, only the selected area changes.")
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.smudge.instructions")
             }
@@ -347,7 +388,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Strength", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Hardness", value: Binding(get: { vm.blurHardness * 100 }, set: { vm.blurHardness = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Radius", value: $vm.blurRadius, range: 0.5...32, unit: "px", accent: accentColor, fractionDigits: 1)
-                Text("Soften existing artwork on the active layer. Radius controls the blur; Hardness controls its edge. Applied on release. Deselect artwork first.")
+                Text("Soften existing artwork on the active layer. Radius controls the blur; Hardness controls its edge. Applied on release. With a selection, only the selected area changes.")
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.blur.instructions")
             }
@@ -360,7 +401,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Radius", value: $vm.sharpenRadius, range: 0.5...32, unit: "px", accent: accentColor, fractionDigits: 1)
                 SettingsSlider(label: "Amount", value: Binding(get: { vm.sharpenAmount * 100 }, set: { vm.sharpenAmount = $0 / 100 }), range: 0...200, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Threshold", value: Binding(get: { vm.sharpenThreshold * 100 }, set: { vm.sharpenThreshold = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
-                Text("Increase contrast at existing edges on this layer. Radius sets detail size; Amount sets contrast. Threshold protects subtle texture. Applied on release. Deselect artwork first.")
+                Text("Increase contrast at existing edges on this layer. Radius sets detail size; Amount sets contrast. Threshold protects subtle texture. Applied on release. With a selection, only the selected area changes.")
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.sharpen.instructions")
             }
@@ -381,8 +422,8 @@ struct FloatingToolSettingsPanel: View {
                 Toggle("Protect tones", isOn: $vm.dodgeBurnProtectTones)
                     .accessibilityIdentifier("studio.dodge-burn.protect-tones")
                 Text(vm.selectedTool == .dodge
-                    ? "Lighten existing color on the active layer. Exposure sets up to two stops; tonal range targets brightness. Applied on release. Deselect artwork first."
-                    : "Darken existing color on the active layer. Exposure sets up to two stops; tonal range targets brightness. Applied on release. Deselect artwork first.")
+                    ? "Lighten existing color on the active layer. Exposure sets up to two stops; tonal range targets brightness. Applied on release. With a selection, only the selected area changes."
+                    : "Darken existing color on the active layer. Exposure sets up to two stops; tonal range targets brightness. Applied on release. With a selection, only the selected area changes.")
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.dodge-burn.instructions")
             }
@@ -830,6 +871,29 @@ struct FloatingToolSettingsPanel: View {
                     .accessibilityIdentifier("studio.wand.move")
                 Button("Cancel selection") { vm.clearImageRegion() }.frame(minHeight: 44)
                     .accessibilityIdentifier("studio.wand.cancel")
+                Divider().overlay(Color.white.opacity(0.2))
+                Text("Drawing layers").font(.specialElite(16))
+                Text("On a drawing layer, tap to select the color region under your finger, using the Region, Tolerance, Sample and Connected settings above. Every drawing it touches is selected for Move, Copy, Cut and Delete. Smudge, Blur, Sharpen, Dodge, Burn and Gradient then change only the selected pixels, with a soft edge when feathered.")
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                SettingsSlider(label: "Feather", value: $vm.wandFeather, range: 0...Double(StudioSelectionMask.maximumFeatherRadius), unit: "px", accent: accentColor)
+                    .accessibilityIdentifier("studio.wand.feather")
+                if vm.hasDrawingWandSelection {
+                    Text("\(vm.selectedElementIDs.count) drawing\(vm.selectedElementIDs.count == 1 ? "" : "s") selected through \(vm.drawingWandSelectedPixels) pixels")
+                        .font(.specialElite(11)).foregroundColor(.sdStudioActionText)
+                        .accessibilityIdentifier("studio.wand.drawing-count")
+                    HStack(spacing: 4) {
+                        Button("Copy") { _ = vm.copySelected() }.frame(maxWidth: .infinity, minHeight: 44)
+                            .accessibilityIdentifier("studio.wand.drawing-copy")
+                        Button("Cut") { _ = vm.cutSelected() }.frame(maxWidth: .infinity, minHeight: 44)
+                            .disabled(!vm.canCutSelected)
+                            .accessibilityIdentifier("studio.wand.drawing-cut")
+                        Button("Delete") { vm.deleteSelected() }.frame(maxWidth: .infinity, minHeight: 44)
+                            .accessibilityIdentifier("studio.wand.drawing-delete")
+                        Button("Deselect") { vm.clearElementSelection() }.frame(maxWidth: .infinity, minHeight: 44)
+                            .accessibilityIdentifier("studio.wand.drawing-deselect")
+                    }.font(.specialElite(11))
+                }
+                if vm.wandWorking { ProgressView("Selecting drawings") }
             }
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
@@ -940,7 +1004,7 @@ struct FloatingToolSettingsPanel: View {
                             .accessibilityIdentifier("studio.selection.polygon.cancel")
                     }.font(.specialElite(11)).buttonStyle(.bordered).frame(minHeight: 44)
                 }
-                Text("Magnetic, Smart and feathered pixel selection are unavailable.")
+                Text("Magnetic and Smart selection are unavailable. For a feathered pixel selection on a drawing layer, use Wand.")
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             }
 

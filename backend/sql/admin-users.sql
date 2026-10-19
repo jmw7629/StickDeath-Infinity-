@@ -23,12 +23,12 @@ revoke all on function sdi_private.account_active() from public;
 grant execute on function sdi_private.account_active() to authenticated;
 create function sdi_private.users_action(action text,subject uuid default null,query text default '',page integer default 0,reason text default '')
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare result jsonb; before_state text; denial jsonb;
+declare result jsonb; before_state text; denial jsonb; flagged integer:=0;
 begin
  if not sdi_private.admin_can('users') or not sdi_private.account_active() then return jsonb_build_object('error','Administrator MFA authorization required.'); end if;
  -- Account-state changes need a recent second factor and are rate limited; every
  -- refusal is recorded (admin_gate in admin-hardening.sql, resolved at run time).
- if action in('suspend','ban','restore','signout','note') then
+ if action in('suspend','ban','restore','signout','note','reset_flags') then
   denial:=sdi_private.admin_gate('users_action.'||action,'users',action<>'note',30);
   if denial is not null then return denial; end if;
  end if;
@@ -55,6 +55,13 @@ begin
     case when sdi_private.admin_can('moderation') then
      (select count(*) from sdi_private.feed_reports r join sdi_private.feed_posts p on p.id=r.post where p.creator=u.id)
      else null end as feed_report_count,
+    -- Open (pending) reports only; reset_flags dismisses these (#285).
+    case when sdi_private.admin_can('moderation') then
+     (select count(*) from sdi_private.feed_reports r join sdi_private.feed_posts p on p.id=r.post where p.creator=u.id and r.state='pending')
+     else null end as open_report_count,
+    -- Sign-up source: the provider name Supabase Auth records at first sign-in
+    -- (apple, google, github, azure, email). A name only, never an identifier.
+    nullif(u.raw_app_meta_data->>'provider','') as signup_source,
     -- Plan is billing data: shown only with the finance capability (billing.sql
     -- installs later; entitlements come only from signed provider events).
     case when sdi_private.admin_can('finance') then
@@ -78,9 +85,28 @@ begin
   insert into sdi_private.account_controls(user_id,state,reason) values(subject,
    case action when 'suspend' then 'suspended' when 'ban' then 'banned' else 'active' end,trim(reason))
   on conflict(user_id) do update set state=excluded.state,reason=excluded.reason,updated_at=clock_timestamp();
+ elsif action='reset_flags' then
+  -- Dismiss every open report against the member's posts in one audited step,
+  -- e.g. after a coordinated false-report campaign. Needs the moderation
+  -- capability too; reports filed by the acting administrator stay for another
+  -- reviewer (same rule as moderation_action). Each dismissal is recorded in
+  -- moderation_audit; a reporter who changes their reason reopens the report.
+  if not sdi_private.admin_can('moderation') then
+   return jsonb_build_object('error','Resetting flags also needs the moderation capability.'); end if;
+  with dismissed as (
+   update sdi_private.feed_reports r set state='dismissed' from sdi_private.feed_posts p
+   where p.id=r.post and p.creator=users_action.subject and r.state='pending' and r.actor<>auth.uid()
+   returning r.id as report_id,p.media_id)
+  insert into sdi_private.moderation_audit(report_id,actor,action,reason,media_id,render_digest)
+  select d.report_id,auth.uid(),'dismiss','Account flags reset: '||left(trim(users_action.reason),1970),d.media_id,m.render_digest
+  from dismissed d join public.sdi_watch_media m on m.id=d.media_id;
+  get diagnostics flagged=row_count;
+  -- Nothing open: nothing changed, so nothing is audited or notified.
+  if flagged=0 then return jsonb_build_object('status','unchanged','dismissed',0); end if;
  elsif action not in('signout','note') then return jsonb_build_object('error','Unsupported account action.'); end if;
  if action in('suspend','ban','signout') then delete from auth.sessions where user_id=subject; end if;
  insert into sdi_private.admin_user_audit(actor,subject,action,reason,previous_state) values(auth.uid(),subject,action,trim(reason),coalesce(before_state,'active'));
+ if action='reset_flags' then return jsonb_build_object('status','confirmed','dismissed',flagged); end if;
  return jsonb_build_object('status','confirmed');
 end $$;
 revoke all on function sdi_private.users_action(text,uuid,text,integer,text) from public;

@@ -103,6 +103,62 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   try policy.advance(revision: 3, quarantined: [])
   try require(try governed.checkedPNG(selected) == catalogue.checkedPNG(selected), "Explicit new release failed to restore verified bytes")
   pass("legacy and new catalogue revisions preserve IDs; trusted quarantine blocks direct use and stale manifests")
+  // #198: versioned manifest revisions quarantine, remove and correct metadata
+  // offline, without changing stable IDs, verified bytes or a project's copy.
+  typealias Policy = StudioImageCatalogue.ReleasePolicy
+  let versioned = try Policy(Policy.Revision(revision: 1))
+  let live = try StudioImageCatalogue(directory: source, releasePolicy: versioned)
+  let held = live.images[1], dropped = live.images[2]
+  guard let corrected = live.images.first(where: { $0.contentAdvisory == .none && $0.id != held.id && $0.id != dropped.id }) else { throw TestFailure(message: "No unflagged fixture") }
+  let projectCopy = try live.checkedPNG(held), correctedBytes = try live.checkedPNG(corrected)
+  let revision2 = Policy.Revision(revision: 2,
+    quarantined: [.init(assetID: held.id, sha256: held.sha256, reason: "Isolated test rights review")],
+    removed: [.init(assetID: dropped.id, sha256: dropped.sha256, reason: "Isolated test withdrawal")],
+    metadata: [.init(assetID: corrected.id, sha256: corrected.sha256, title: "Revised test title", tags: ["revisedtesttag"], contentAdvisory: .cartoonWeapons)])
+  try versioned.advance(to: revision2)
+  try require(versioned.currentRevision == 2 && live.images == catalogue.images && live.availableImages.count == 205, "Revision changed inventory or availability count")
+  try require(live.removedImages == [dropped], "Removal not reported")
+  guard let shown = live.availableImages.first(where: { $0.id == corrected.id }) else { throw TestFailure(message: "Corrected asset hidden") }
+  try require(shown.title == "Revised test title" && shown.tags == ["revisedtesttag"] && shown.contentAdvisory == .cartoonWeapons
+              && shown.sha256 == corrected.sha256 && shown.byteCount == corrected.byteCount && shown.licenseID == corrected.licenseID, "Metadata correction changed identity or bytes")
+  try require(live.search("revisedtesttag").map(\.id) == [corrected.id] && live.search("revisedtesttag", includeCartoonWeapons: false).isEmpty, "Search ignored corrected tags or advisory")
+  try require(try live.checkedPNG(shown) == correctedBytes && live.attribution(for: shown)["assetID"] == corrected.id && live.contains(shown), "Displayed record not accepted by importer path")
+  let forged = StudioImageCatalogue.Image(id: shown.id, title: shown.title, category: shown.category, tags: shown.tags, contentAdvisory: shown.contentAdvisory,
+    licenseID: shown.licenseID, originalSHA256: shown.originalSHA256, sha256: shown.sha256, pixelSHA256: shown.pixelSHA256,
+    filename: shown.filename, byteCount: shown.byteCount + 1, width: shown.width, height: shown.height)
+  try require(!live.contains(forged), "Forged byte count accepted")
+  do { _ = try live.checkedPNG(forged); throw TestFailure(message: "Forged record decoded") } catch StudioImageCatalogue.CatalogueError.invalid { }
+  for asset in [held, dropped] {
+   do { _ = try live.checkedPNG(asset); throw TestFailure(message: "Withdrawn asset usable") } catch StudioImageCatalogue.CatalogueError.quarantined { }
+  }
+  try require(projectCopy == (try Data(contentsOf: source.appendingPathComponent(held.filename))), "Revision changed an original")
+  for stale in [Policy.Revision(revision: 2), Policy.Revision(revision: 1)] {
+   do { try versioned.advance(to: stale); throw TestFailure(message: "Stale revision \(stale.revision) accepted") } catch StudioImageCatalogue.CatalogueError.invalid { }
+  }
+  try require(versioned.current == revision2, "Refused revision changed state")
+  let invalidRevisions = [
+   Policy.Revision(revision: 3, removed: [.init(assetID: dropped.id, sha256: dropped.sha256, reason: "a"), .init(assetID: dropped.id, sha256: dropped.sha256, reason: "b")]),
+   Policy.Revision(revision: 3, metadata: [.init(assetID: corrected.id, sha256: corrected.sha256)]),
+   Policy.Revision(revision: 3, metadata: [.init(assetID: corrected.id, sha256: corrected.sha256, tags: ["dup", "dup"])]),
+   Policy.Revision(revision: 3, metadata: [.init(assetID: "../escape", sha256: corrected.sha256, title: "x")]),
+   Policy.Revision(revision: 3, removed: [.init(assetID: dropped.id, sha256: "not-a-digest", reason: "x")])]
+  for invalid in invalidRevisions {
+   do { try versioned.advance(to: invalid); throw TestFailure(message: "Invalid revision accepted") } catch StudioImageCatalogue.CatalogueError.invalid { }
+  }
+  try require(versioned.currentRevision == 2, "Invalid revision advanced policy")
+  pass("versioned manifest revision quarantines removes and corrects metadata with stable IDs and refuses stale or malformed revisions")
+  // A removed asset's library file may be absent offline; nothing else breaks.
+  let offline = root.appendingPathComponent("offline"); try fm.copyItem(at: source, to: offline)
+  try fm.removeItem(at: offline.appendingPathComponent(dropped.filename))
+  let offlineCatalogue = try StudioImageCatalogue(directory: offline, releasePolicy: versioned)
+  try require(offlineCatalogue.images.count == 207 && offlineCatalogue.availableImages.count == 205, "Missing removed file broke offline load")
+  do { _ = try offlineCatalogue.checkedPNG(dropped); throw TestFailure(message: "Missing removed asset reported available") } catch StudioImageCatalogue.CatalogueError.quarantined { }
+  try require(try offlineCatalogue.checkedPNG(shown) == correctedBytes, "Other assets failed after removal")
+  try versioned.advance(to: Policy.Revision(revision: 3))
+  try require(try live.checkedPNG(held) == projectCopy && live.availableImages.first(where: { $0.id == corrected.id }) == corrected, "Newer release did not restore manifest metadata or availability")
+  do { _ = try offlineCatalogue.checkedPNG(dropped); throw TestFailure(message: "Deleted file decoded") } catch StudioImageCatalogue.CatalogueError.invalid { }
+  try require(try Data(contentsOf: source.appendingPathComponent(dropped.filename)).count == dropped.byteCount, "Source asset changed by removal")
+  pass("offline removal of a withdrawn cached file leaves other assets and every original intact; later revisions apply in order")
   print("STUDIO_IMAGE_CATALOGUE_TESTS=PASS \(groups)/\(groups), 207 original PNGs")
  }
 }

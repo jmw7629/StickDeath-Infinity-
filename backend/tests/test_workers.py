@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from backend.notifications.push import AnnouncementAPI, PushBatchWorker, SinkTransport
+from backend.ops import report as ops_report
 from backend.ops import sweeps
 from backend.publishing import destinations
 from backend.publishing.destinations import DestinationConfig, MarketingWorker, Post, default_registry
@@ -294,6 +295,16 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(api.calls[-1][1]["note"], "failed: support_retention")
         self.assertNotIn("secret", json.dumps(report))
 
+    def test_room_sweep_reports_asset_and_project_handoff_counts(self):
+        api = FakeAPI({"room_asset_sweep": [{"discarded": 1, "verified": 1, "unverified_total": 0, "snapshots_discarded": 2,
+                                             "snapshots_verified": 2, "snapshots_unverified_total": 0}], "worker_heartbeat": [True]})
+        report = sweeps.run_sweeps(api, ["room_asset_sweep"])
+        self.assertEqual(report["room_asset_sweep"]["state"], "ok")
+        self.assertEqual(report["room_asset_sweep"]["result"]["snapshots_discarded"], 2)
+        self.assertEqual(report["room_asset_sweep"]["result"]["snapshots_unverified_total"], 0)
+        self.assertEqual(api.calls[0], ("room_asset_sweep", {}))
+        self.assertIn("room_asset_sweep", sweeps.SweepAPI.PERMITTED)
+
     def test_configuration_report_sends_presence_booleans_only(self):
         env = {"SDI_BACKEND_URL": "https://backend.example.test", "SDI_SERVICE_KEY": "service-secret-value",
                "SDI_YOUTUBE_CLIENT_FILE": "/run/secrets/yt", "SDI_MAIL_SENDER_DOMAIN": ""}
@@ -313,12 +324,92 @@ class SweepTests(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             self.assertEqual(sweeps.main(["--all"], environment={}), 2)
             self.assertEqual(sweeps.main(["--list", "--all"], environment={}), 0)
-            api = FakeAPI({"billing_reconcile": [{"expired_now": 0}], "worker_heartbeat": [True], "worker_configuration": [True]})
+            api = FakeAPI({"billing_reconcile": [{"expired_now": 0}], "worker_heartbeat": [True], "worker_configuration": [True],
+                           "ops_report": [{"status": "recorded", "id": "x"}]})
             self.assertEqual(sweeps.main(["--only", "billing_reconcile"], environment={}, api_factory=lambda: api), 0)
+            self.assertEqual(api.calls[-1], ("ops_report", {"kind": "retention_sweep", "outcome": "succeeded", "label": "",
+                                                            "metrics": {"sweeps_run": 1, "sweeps_failed": 0}}))
         self.assertIn("not configured", err.getvalue())
         self.assertIn("billing_reconcile", out.getvalue())
         self.assertEqual(sweeps.SweepAPI.PREFIX, "sdi_")
         self.assertTrue(set(sweeps.SWEEPS.values()) <= sweeps.SweepAPI.PERMITTED)
+
+
+    def test_draft_preview_expiry_is_scheduled_locally(self):
+        self.assertIn("draft_preview_expire", sweeps.LOCAL_SWEEPS)
+        api = FakeAPI({"worker_heartbeat": [True, True]})
+        report = sweeps.run_sweeps(api, ["draft_preview_expire"], environment={})
+        self.assertEqual(report["draft_preview_expire"], {"state": "skipped", "reason": "not configured"})
+        base = Path(tempfile.mkdtemp())
+        root = base / "intake"; root.mkdir(mode=0o700)
+        key = base / "signing.key"; key.write_bytes(b"s" * 32); os.chmod(key, 0o600)
+        env = {"SDI_DRAFT_PREVIEW_OWNER_ID": str(uuid.uuid4()), "SDI_INTAKE_ORIGIN": "https://intake.example.test",
+               "SDI_PREVIEW_SIGNING_KEY_FILE": str(key), "SDI_INTAKE_DIRECTORY": str(root), "SDI_INTAKE_TOTAL_BYTES": str(1 << 20)}
+        upload = str(uuid.uuid4())
+        (root / (upload + ".mp4")).write_bytes(b"x")
+        (root / (upload + ".draft.json")).write_text(json.dumps({"schema": "sdi_spatter_draft_preview", "upload": upload, "expires": 1, "byte_count": 1}))
+        report = sweeps.run_sweeps(api, ["draft_preview_expire"], environment=env)
+        self.assertEqual(report["draft_preview_expire"], {"state": "ok", "iterations": 1, "result": {"removed": 1, "retained_bytes": 0}})
+        self.assertFalse((root / (upload + ".mp4")).exists())
+        self.assertEqual([c[0] for c in api.calls], ["worker_heartbeat", "worker_heartbeat"], "no RPC for a local sweep")
+
+    def test_room_asset_sweep_is_scheduled_and_service_only(self):
+        self.assertEqual(sweeps.SWEEPS["room_asset_sweep"], "room_asset_sweep")
+        self.assertIn("room_asset_sweep", sweeps.SweepAPI.PERMITTED)
+        api = FakeAPI({"room_asset_sweep": [{"discarded": 2, "verified": 2, "unverified_total": 0}], "worker_heartbeat": [True]})
+        report = sweeps.run_sweeps(api, ["room_asset_sweep"])
+        self.assertEqual(report["room_asset_sweep"], {"state": "ok", "iterations": 1,
+                                                      "result": {"discarded": 2, "verified": 2, "unverified_total": 0}})
+        self.assertEqual(api.calls[0], ("room_asset_sweep", {}))
+
+    def test_run_outcome_is_reported_as_counts_only(self):
+        api = FakeAPI({"ops_report": [{"status": "recorded", "id": "x"}, {"error": "Metrics are named whole numbers only."},
+                                      RuntimeError("Job service response unavailable; secret=abc")]})
+        report = {"a": {"state": "ok"}, "b": {"state": "failed", "error": "RuntimeError"}, "c": {"state": "skipped"},
+                  "_heartbeat": {"state": "ok"}}
+        self.assertEqual(sweeps.report_outcome(api, report), {"state": "recorded"})
+        self.assertEqual(api.calls[-1][1], {"kind": "retention_sweep", "outcome": "failed", "label": "",
+                                            "metrics": {"sweeps_run": 2, "sweeps_failed": 1}})
+        self.assertEqual(sweeps.report_outcome(api, report)["state"], "refused")
+        self.assertEqual(sweeps.report_outcome(api, report), {"state": "failed", "error": "RuntimeError"})
+        self.assertEqual(sweeps.report_outcome(api, {"x": {"state": "skipped"}})["state"], "skipped")
+        self.assertEqual(len(api.calls), 3)
+
+    def test_failed_ops_report_does_not_fail_the_run(self):
+        out = io.StringIO()
+        api = FakeAPI({"support_retention": [{"deleted": 0}], "worker_heartbeat": [True], "worker_configuration": [True],
+                       "ops_report": [RuntimeError("Job service response unavailable")]})
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(sweeps.main(["--only", "support_retention"], environment={}, api_factory=lambda: api), 0)
+        self.assertEqual(json.loads(out.getvalue())["_ops_report"], {"state": "failed", "error": "RuntimeError"})
+
+
+class OpsReportCommandTests(unittest.TestCase):
+    def test_metrics_are_named_whole_numbers(self):
+        self.assertEqual(ops_report.parse_metrics(["bytes=12", "duration_seconds=3"]), {"bytes": 12, "duration_seconds": 3})
+        for bad in (["Bytes=1"], ["bytes=-1"], ["bytes=1.5"], ["host=db.internal"], ["bytes"]):
+            with self.assertRaises(ValueError):
+                ops_report.parse_metrics(bad)
+
+    def test_unconfigured_report_is_skipped_with_a_message(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(ops_report.main(["backup", "succeeded"], environment={}), ops_report.NOT_CONFIGURED)
+            self.assertEqual(ops_report.main(["backup", "succeeded"], environment={"SDI_BACKEND_URL": "http://insecure.test",
+                                                                                    "SDI_SERVICE_KEY": "k"}), ops_report.NOT_CONFIGURED)
+        self.assertIn("not configured", err.getvalue())
+
+    def test_report_is_sent_and_refusals_fail_the_command(self):
+        out = io.StringIO()
+        api = FakeAPI({"ops_report": [{"status": "recorded", "id": "x"}, {"error": "Labels are a version number or a commit hash only."}]})
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(ops_report.main(["restore_drill", "succeeded", "--label", "3f2a9c1", "--metric", "tables=40"],
+                                             environment={}, api_factory=lambda: api), 0)
+            self.assertEqual(ops_report.main(["release", "failed", "--label", "not a version"], environment={}, api_factory=lambda: api), 1)
+        self.assertEqual(api.calls[0], ("ops_report", {"kind": "restore_drill", "outcome": "succeeded", "label": "3f2a9c1",
+                                                       "metrics": {"tables": 40}}))
+        self.assertEqual(ops_report.OpsReportAPI.PREFIX, "sdi_")
+        self.assertEqual(ops_report.OpsReportAPI.PERMITTED, frozenset({"ops_report"}))
 
 
 class PushWorkerTests(unittest.TestCase):

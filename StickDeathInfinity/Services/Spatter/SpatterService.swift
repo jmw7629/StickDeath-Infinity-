@@ -186,6 +186,9 @@ extension SpatterAIViewModel {
             try await SpatterService.shared.chatReply(
                 messages: request.messages.map { (role: $0.role.rawValue, content: $0.content) }, context: request.context,
                 suggestedPromptID: request.suggestedPromptID, ownKeyEligible: request.ownKeyEligible)
-        }, usageLoader: { try await SpatterService.shared.myUsage() })
+        // Without a configured Spatter backend there is no cloud plan to check:
+        // cloud advice reports "not configured" and the field stays free text
+        // for the local guide instead of waiting on a plan that cannot load.
+        }, usageLoader: AppConfig.backendURL == nil ? nil : { try await SpatterService.shared.myUsage() })
     }
 }

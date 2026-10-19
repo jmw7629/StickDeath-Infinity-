@@ -96,7 +96,7 @@ struct OnboardingView: View {
                 // Page content (swipeable)
                 TabView(selection: $currentPage) {
                     ForEach(Array(pages.enumerated()), id: \.offset) { index, pg in
-                        pageContent(pg)
+                        pageContent(pg, showsPolicies: index == pages.count - 1)
                             .tag(index)
                             .accessibilityIdentifier("onboarding.page.\(index)")
                     }
@@ -175,7 +175,7 @@ struct OnboardingView: View {
 
     // MARK: - Page Content
     @ViewBuilder
-    private func pageContent(_ pg: OnboardingPage) -> some View {
+    private func pageContent(_ pg: OnboardingPage, showsPolicies: Bool) -> some View {
         ScrollView {
             VStack(spacing: 0) {
                 // Icon with glow circle
@@ -247,6 +247,12 @@ struct OnboardingView: View {
                 .frame(maxWidth: 320)
                 .padding(.horizontal, 32)
 
+                // Current policy versions (#273). Never blocks Open Studio or Skip.
+                if showsPolicies {
+                    OnboardingPolicyConsentView()
+                        .padding(.horizontal, 24)
+                        .padding(.top, 24)
+                }
             }
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity)

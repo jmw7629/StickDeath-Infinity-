@@ -16,7 +16,9 @@ import com.stickdeath.studio.billing.StudioPlanLimits
  * last MP4/GIF render, since single-file pickers cannot deliver a sidecar. */
 enum class ExportKind { PNG, SEQUENCE, SPRITESHEET, PROJECT, MP4, GIF, CREDITS, SDI, MANIFEST }
 /** [manifest] holds the iOS-layout manifest text for MP4/GIF renders; the caller offers it separately. */
-data class ExportArtifact(val file: File, val kind: ExportKind, val name: String, val share: Boolean = false, val manifest: String? = null)
+/** [targetPackages]: quick-share destination apps to try (in order) before the system chooser. */
+data class ExportArtifact(val file: File, val kind: ExportKind, val name: String, val share: Boolean = false, val manifest: String? = null,
+                          val targetPackages: List<String> = emptyList())
 /** Render choices beyond the kind. [transparent] applies to PNG, sequence and spritesheet only. */
 data class ExportOptions(val transparent: Boolean = false, val manifestText: String? = null, val manifestName: String? = null,
     /** Plan cap on the MP4/GIF long edge (Free: 1280); null keeps the canvas size. */

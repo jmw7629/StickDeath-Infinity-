@@ -5,7 +5,10 @@ is the single, auditable place a host cron or systemd timer calls:
 
     python3 -m backend.ops.sweeps --all          # or --only billing_reconcile,...
 
-Each sweep is one named RPC. The runner never deletes files, never retries a sweep
+Each sweep is one named RPC, except the local ``draft_preview_expire`` sweep, which
+deletes only expired Spatter draft preview copies through
+``backend.spatter.draft_preview.DraftPreviewStore.expire`` (and is skipped when draft
+previews are not configured). The runner deletes no other files, never retries a sweep
 that raised, records one worker heartbeat with a terse summary, and returns a
 report whose failures carry an exception class name only (payloads could contain
 member data). ``account_deletion_run`` loops until the database answers ``idle``
@@ -20,6 +23,7 @@ import sys
 from typing import Callable, Dict, Iterable, Mapping, Optional
 
 from ..publishing.worker import JobAPI
+from .report import send_report
 
 SWEEPS: Dict[str, str] = {
     "billing_reconcile": "billing_reconcile",
@@ -30,8 +34,24 @@ SWEEPS: Dict[str, str] = {
     "award_achievements": "award_achievements",
     "account_deletion_run": "account_deletion_run",
     "marketing_cadence_due": "marketing_cadence_due",
+    # Room asset copies and project handoff snapshots (rooms-v2.sql): expired,
+    # closed-room, ended-membership, changed-project and fully delivered copies.
+    "room_asset_sweep": "room_asset_sweep",
 }
 LOOPING = {"account_deletion_run": ("action", {"idle", "waiting", "blocked"})}
+
+
+def _draft_preview_expire(environment: Mapping[str, str]):
+    """Delete expired owner-only draft preview copies (#212); None when unconfigured."""
+    from ..spatter.draft_preview import draft_previews_from_env
+    drafts = draft_previews_from_env(environment)
+    if drafts is None:
+        return None
+    return {"removed": drafts.expire(), "retained_bytes": drafts.retained_bytes()}
+
+
+# Sweeps that run on this host's files rather than through an RPC.
+LOCAL_SWEEPS: Dict[str, Callable[[Mapping[str, str]], object]] = {"draft_preview_expire": _draft_preview_expire}
 MAX_LOOP = 20
 
 
@@ -43,7 +63,7 @@ REPORTED_SETTINGS = ("SDI_BACKEND_URL", "SDI_SERVICE_KEY", "SDI_YOUTUBE_CLIENT_F
 
 class SweepAPI(JobAPI):
     PREFIX = "sdi_"
-    PERMITTED = frozenset(SWEEPS.values()) | {"worker_heartbeat", "worker_configuration"}
+    PERMITTED = frozenset(SWEEPS.values()) | {"worker_heartbeat", "worker_configuration", "ops_report"}
 
 
 def configuration_presence(environment: Mapping[str, str], names: Iterable[str] = REPORTED_SETTINGS) -> Dict[str, bool]:
@@ -60,9 +80,17 @@ def report_configuration(api: SweepAPI, environment: Mapping[str, str], worker_n
 
 
 def run_sweeps(api: SweepAPI, names: Iterable[str], worker_name: str = "service-sweeps",
-               heartbeat: bool = True) -> dict:
+               heartbeat: bool = True, environment: Optional[Mapping[str, str]] = None) -> dict:
     report: Dict[str, dict] = {}
     for name in names:
+        if name in LOCAL_SWEEPS:
+            try:
+                result = LOCAL_SWEEPS[name](os.environ if environment is None else environment)
+                report[name] = ({"state": "skipped", "reason": "not configured"} if result is None
+                                else {"state": "ok", "iterations": 1, "result": _summarize(result)})
+            except Exception as error:
+                report[name] = {"state": "failed", "iterations": 0, "error": type(error).__name__}
+            continue
         if name not in SWEEPS:
             report[name] = {"state": "skipped", "reason": "unknown sweep"}
             continue
@@ -89,6 +117,21 @@ def run_sweeps(api: SweepAPI, names: Iterable[str], worker_name: str = "service-
     return report
 
 
+def report_outcome(api: SweepAPI, report: Mapping[str, dict]) -> dict:
+    """Record the run through ``sdi_ops_report`` as a retention sweep (#257).
+
+    Only whole-number counts are sent: how many sweeps ran and how many failed.
+    Unknown (skipped) names are not counted. A refused or failed report is
+    returned for printing and never changes the run's exit status.
+    """
+    ran = [v for k, v in report.items() if not k.startswith("_") and v.get("state") in ("ok", "failed")]
+    if not ran:
+        return {"state": "skipped", "reason": "no sweep ran"}
+    failed = sum(1 for v in ran if v["state"] == "failed")
+    return send_report(api, "retention_sweep", "failed" if failed else "succeeded", "",
+                       {"sweeps_run": len(ran), "sweeps_failed": failed})
+
+
 def _summarize(result) -> object:
     """Keep counts and small scalars; drop lists and nested member data."""
     if isinstance(result, Mapping):
@@ -106,20 +149,21 @@ def main(argv: Optional[list] = None, environment: Optional[Mapping[str, str]] =
     parser.add_argument("--list", action="store_true", help="print the known sweeps and exit")
     args = parser.parse_args(argv)
     if args.list:
-        print("\n".join(sorted(SWEEPS)))
+        print("\n".join(sorted(set(SWEEPS) | set(LOCAL_SWEEPS))))
         return 0
-    names = sorted(SWEEPS) if args.all else [n.strip() for n in args.only.split(",") if n.strip()]
+    names = sorted(set(SWEEPS) | set(LOCAL_SWEEPS)) if args.all else [n.strip() for n in args.only.split(",") if n.strip()]
     environment = os.environ if environment is None else environment
     try:
         api = api_factory() if api_factory else SweepAPI(environment["SDI_BACKEND_URL"], environment["SDI_SERVICE_KEY"])
     except (KeyError, ValueError):
         print("Backend URL and service key are not configured; no sweep ran.", file=sys.stderr)
         return 2
-    report = run_sweeps(api, names)
+    report = run_sweeps(api, names, environment=environment)
     # Informational: a refused or failed presence report is printed, never fatal.
     report["_configuration"] = report_configuration(api, environment)
+    report["_ops_report"] = report_outcome(api, report)
     print(json.dumps(report, sort_keys=True))
-    return 0 if all(v["state"] != "failed" for k, v in report.items() if k != "_configuration") else 1
+    return 0 if all(v["state"] != "failed" for k, v in report.items() if k not in ("_configuration", "_ops_report")) else 1
 
 
 if __name__ == "__main__":

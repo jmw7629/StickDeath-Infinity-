@@ -72,7 +72,34 @@ final class SpatterStudioEditSession: ObservableObject {
         /// apply, so a typed revert can prove they are still untouched later.
         var createdFrames: [AnimationFrame] = []
         var createdLayers: [CanvasLayer] = []
+        // Fill, select-by-ID and source-reference grammars (#204, #279).
+        var fill: SpatterFillInstruction? = nil
+        var selectByID: SpatterSelectByIDInstruction? = nil
+        var source: SpatterSourceInstruction? = nil
+        var recordedSource: SpatterSourceReference? = nil
+        /// The explicit 20–60 s length receipt for a source-referenced generation.
+        var sourceReceipt: String? = nil
         var summary: String {
+            if let source {
+                guard case .record = source.action, let recordedSource else {
+                    return receipt.outcome == .unchanged ? "No reference source was recorded. Nothing changed."
+                        : "Cleared the reference source in one undoable local edit. Later briefs are treated as original text."
+                }
+                let decision = SpatterSourceRightsGate.evaluate(recordedSource)
+                return "Recorded \(recordedSource.url.absoluteString) as a \(recordedSource.rightsBasis.label) reference in one undoable local edit; nothing was downloaded. \(decision.allowed ? "20–60 s briefs may now generate from it." : "Generation stays refused:") \(decision.reason)"
+            }
+            if let selectByID {
+                return selectByID.elementIDs.isEmpty ? "Cleared the drawing selection. The project did not change."
+                    : "Selected \(selectByID.elementIDs.count) drawing\(selectByID.elementIDs.count == 1 ? "" : "s") on the active frame by ID. The project did not change; use Move or a selection instruction next."
+            }
+            if fill != nil {
+                return receipt.outcome == .unchanged ? "The fill matched the current artwork. Nothing changed."
+                    : "Filled the region at the requested point on the active layer with Studio's Fill tool in one undoable local edit. Original artwork remains editable."
+            }
+            let base = baseSummary
+            return sourceReceipt.map { base + " " + $0 } ?? base
+        }
+        private var baseSummary: String {
             if let batchSummary {
                 return receipt.outcome == .unchanged ? "The batch matched the current project. Nothing changed."
                     : "Applied \(batchSummary) as one revision and one Undo step. Frame numbers were resolved against the project as captured when Spatter opened."
@@ -428,8 +455,48 @@ final class SpatterStudioEditSession: ObservableObject {
                 var audioTrackInstruction: SpatterAudioTrackInstruction?
                 var artworkOrderForward: Bool?
                 var imageReflectionAxis: StudioReflectionAxis?
+                let isSource = SpatterSourceInstruction.isInstruction(draft)
+                let isSelectByID = SpatterSelectByIDInstruction.isInstruction(draft)
+                let isFill = SpatterFillInstruction.isInstruction(draft)
+                var fillInstruction: SpatterFillInstruction?
+                var selectByIDInstruction: SpatterSelectByIDInstruction?
+                var sourceInstruction: SpatterSourceInstruction?
                 let preparedRequest: StudioCommandRequest
-                if isBatch {
+                if !isBatch && isSource {
+                    // Metadata only: the URL text, stated rights basis and time. Nothing is fetched.
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before recording a reference source.") }
+                    let instruction = try SpatterSourceInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    sourceInstruction = instruction
+                } else if !isBatch && isSelectByID {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before selecting drawings.") }
+                    let instruction = try SpatterSelectByIDInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    selectByIDInstruction = instruction
+                } else if !isBatch && isFill {
+                    // The same capture and region computation as the Fill tool. A
+                    // selection-clipped fill stays with the Fill tool itself.
+                    guard !captured.isPlaying, captured.selectedElementIDs.isEmpty, captured.selectedImage == nil else {
+                        throw SessionError.unavailable("Stop playback and clear the selection before a Spatter fill; selection-clipped fills use the Fill tool. Nothing changed.")
+                    }
+                    let instruction = try SpatterFillInstruction.parse(draft)
+                    let elementID = UUID().uuidString
+                    let command = try instruction.command(in: document, elementID: elementID)
+                    guard let frame = studio.document.frames.first(where: { $0.id == captured.activeFrameID }) else { throw SessionError.contextChanged }
+                    let capture = try StudioFillService.capture(document: studio.document, frameID: captured.activeFrameID,
+                        layerID: captured.activeLayerID, point: CGPoint(x: command.x, y: command.y), color: command.color,
+                        opacity: command.opacity, settings: .init(tolerance: command.tolerance, contiguous: command.contiguous,
+                            expand: 0, gapClose: 0, antiAlias: true),
+                        sampleAllLayers: command.sampleAllLayers, rasterData: studio.rasterData(frame.rasterAssetID),
+                        rasterDataByID: studio.rasterSources(for: frame))
+                    let worker = Task.detached(priority: .userInitiated) { try StudioFillService.element(from: capture, id: elementID) }
+                    let element = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+                    try check()
+                    preparedRequest = StudioCommandRequest(requestID: submissionID, projectID: document.projectID,
+                        expectedRevision: document.revision, action: .apply([.fillAtPoint(command)]),
+                        preparedFills: [elementID: .init(projectID: document.projectID, revision: document.revision, command: command, element: element)])
+                    fillInstruction = instruction
+                } else if isBatch {
                     // Several context-only lines become one typed request: one revision,
                     // one Undo step, nothing applied if any line fails to prepare.
                     guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before applying a batch of instructions.") }
@@ -681,7 +748,12 @@ final class SpatterStudioEditSession: ObservableObject {
                     storyboard: storyboard, batchSummary: batchSummary, tween: tweenInstruction, frameClipboard: frameClipboardInstruction,
                     projectSettings: projectSettingsInstruction, brushStroke: brushStrokeInstruction,
                     createdFrames: studio.document.frames.filter { newIDs.contains($0.id) },
-                    createdLayers: studio.document.layers.filter { Set(receipt.createdLayerIDs).contains($0.id) })
+                    createdLayers: studio.document.layers.filter { Set(receipt.createdLayerIDs).contains($0.id) },
+                    fill: fillInstruction, selectByID: selectByIDInstruction, source: sourceInstruction,
+                    recordedSource: sourceInstruction == nil ? nil : studio.document.spatterSource,
+                    sourceReceipt: storyboard != nil ? studio.document.spatterSource.map {
+                        SpatterSourceVideoBounds.receipt(seconds: Double(addedTicks) / Double(studio.fps), fps: studio.fps, reference: $0)
+                    } : nil)
                 self.appliedAccountID = captured.accountID
                 self.appliedEdit = result; self.status = .applied; self.notice = result.summary
             } catch is CancellationError {

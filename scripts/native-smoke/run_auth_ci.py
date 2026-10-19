@@ -45,6 +45,9 @@ def main():
     result = evidence / "AuthState.xcresult"
     command = ["xcodebuild", "test", "-project", "StickDeathInfinity.xcodeproj",
                "-scheme", "StickDeathInfinityAuthTests", "-configuration", "Debug",
+               # The bundle also hosts ServiceJourneyTests, which the separate
+               # native-ios-journeys job runs; this gate stays the 20 auth cases.
+               "-only-testing:StickDeathInfinityAuthTests/AuthStateTests",
                "-destination", f"platform=iOS Simulator,id={udid}",
                "-derivedDataPath", str(derived), "-clonedSourcePackagesDirPath", str(packages),
                "-disableAutomaticPackageResolution", "-skipPackageUpdates", "-jobs", "2",

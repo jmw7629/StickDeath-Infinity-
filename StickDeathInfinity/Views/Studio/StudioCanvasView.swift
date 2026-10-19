@@ -9,6 +9,13 @@ struct StudioCanvasView: View {
     @State private var gestureActive = false
     @State private var startedAsWand = false
     @State private var wandCapture: StudioViewModel.ImageRegionCapture?
+    /// Wand on a drawing layer (#153) when the active layer holds no image.
+    @State private var drawingWandCapture: StudioViewModel.DrawingWandCapture?
+    @State private var startedAsGradient = false
+    @State private var gradientCapture: StudioViewModel.GradientCapture?
+    @State private var gradientLayout: StudioColorSampleGesture.Layout?
+    @State private var gradientStart: CGPoint?
+    @State private var gradientEnd: CGPoint?
     @State private var wandLayout: StudioColorSampleGesture.Layout?
     @State private var input: StudioStrokeInput?
     @State private var eraserCapture: StudioViewModel.EraserInputCapture?
@@ -50,6 +57,7 @@ struct StudioCanvasView: View {
     @State private var smudgeSubmission: UUID?
     @State private var smudgeTask: Task<Void, Never>?
     @StateObject private var blurSession = StudioBlurSession()
+    @StateObject private var gradientSession = StudioGradientSession()
     @State private var blurInput: StudioBlurInput?
     @State private var startedAsBlur = false
     @State private var blurSubmission: UUID?
@@ -253,6 +261,19 @@ struct StudioCanvasView: View {
                             context.stroke(Path(ellipseIn: rect), with: .color(.red),
                                 style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [3, 2]))
                         }
+                        if startedAsGradient, gradientCapture != nil, let start = gradientStart, let end = gradientEnd {
+                            // The drag line and endpoints; pixels are computed on release.
+                            func view(_ p: CGPoint) -> CGPoint {
+                                CGPoint(x: p.x / documentSize.width * actual.width, y: p.y / documentSize.height * actual.height)
+                            }
+                            var line = Path(); line.move(to: view(start)); line.addLine(to: view(end))
+                            let width = 2 / max(0.01, vm.canvasScale)
+                            context.stroke(line, with: .color(.red), style: StrokeStyle(lineWidth: width, dash: [4, 3]))
+                            for point in [view(start), view(end)] {
+                                context.stroke(Path(ellipseIn: CGRect(x: point.x - 4 * width, y: point.y - 4 * width,
+                                    width: 8 * width, height: 8 * width)), with: .color(.red), lineWidth: width)
+                            }
+                        }
                         if let blurInput, !blurInput.isCancelled, let point = blurInput.points.last {
                             // This ring shows the real brush footprint, not fabricated preview pixels.
                             let diameter = blurInput.context.settings.diameter
@@ -408,7 +429,7 @@ struct StudioCanvasView: View {
                 // Completed regions use source-image coordinates, so a banner,
                 // popup or viewport resize must not discard them. Only revoke
                 // in-flight work whose touch-to-canvas mapping just changed.
-                vm.cancelImageRegionWork(); wandCapture = nil
+                vm.cancelImageRegionWork(); wandCapture = nil; drawingWandCapture = nil; gradientCapture = nil
                 colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelDodgeBurn(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
                 if input?.tool == .eraser { interruptInput("Erasing cancelled because the canvas moved.") }
             }
@@ -428,8 +449,30 @@ struct StudioCanvasView: View {
                     startedAsWand = vm.selectedTool == .wand
                     if startedAsWand {
                         wandLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
+                        drawingWandCapture = nil
                         do { wandCapture = try vm.captureImageRegion() }
-                        catch { vm.message = error.localizedDescription; wandCapture = nil }
+                        catch {
+                            wandCapture = nil
+                            let imageFailure = error.localizedDescription
+                            // A drawing layer selects its drawings instead (#153).
+                            do { drawingWandCapture = try vm.captureDrawingWand() }
+                            catch {
+                                vm.message = vm.currentFrame.rasterInstance(on: vm.activeLayerID) == nil
+                                    ? error.localizedDescription : imageFailure
+                            }
+                        }
+                        return
+                    }
+                    startedAsGradient = vm.selectedTool == .gradient
+                    if startedAsGradient {
+                        gradientLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
+                        gradientCapture = vm.captureGradient()
+                        if gradientCapture == nil {
+                            vm.message = gradientSession.isApplying ? "The previous gradient is still being applied."
+                                : "Choose a visible, unlocked layer with a Free lock before dragging a gradient."
+                        }
+                        gradientStart = documentPoint(value.startLocation, size: size)
+                        gradientEnd = gradientStart
                         return
                     }
                     startedAsImageMove = vm.selectedTool == .move && vm.isMovingImageOnCanvas && !vm.isSelectingMixedArtwork
@@ -490,6 +533,7 @@ struct StudioCanvasView: View {
                     }
                 }
                 if startedAsWand { return }
+                if startedAsGradient { gradientEnd = documentPoint(value.location, size: size); return }
                 if startedAsSmudge { _ = updateSmudge(location: value.location, size: size); return }
                 if startedAsBlur { _ = updateBlur(location: value.location, size: size); return }
                 if startedAsSharpen { _ = updateSharpen(location: value.location, size: size); return }
@@ -593,11 +637,19 @@ struct StudioCanvasView: View {
                 defer { clearInput() }
                 guard !strokeInputCancelled, vm.pendingBrushStroke == nil else { return }
                 if startedAsWand {
-                    guard scenePhase == .active, let capture = wandCapture,
+                    guard scenePhase == .active,
                           wandLayout == StudioColorSampleGesture.Layout(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
                           hypot(value.location.x - value.startLocation.x, value.location.y - value.startLocation.y) <= 8 else { return }
                     let point = documentPoint(value.location, size: size)
-                    Task { await vm.selectImageRegion(capture, at: point) }
+                    if let capture = wandCapture { Task { await vm.selectImageRegion(capture, at: point) } }
+                    else if let capture = drawingWandCapture { Task { await vm.selectDrawingRegion(capture, at: point) } }
+                    return
+                }
+                if startedAsGradient {
+                    guard scenePhase == .active, let capture = gradientCapture, let start = gradientStart,
+                          gradientLayout == StudioColorSampleGesture.Layout(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset) else { return }
+                    let end = documentPoint(value.location, size: size)
+                    Task { await gradientSession.apply(vm, capture: capture, from: start, to: end) }
                     return
                 }
                 if startedAsSmudge {
@@ -770,6 +822,18 @@ struct StudioCanvasView: View {
                     Text("Release to sharpen the active layer")
                         .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
                         .accessibilityIdentifier("studio.sharpen.release-hint")
+                } else if gradientSession.isApplying {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Applying gradient…").font(.specialElite(12))
+                        Button("Cancel") { gradientSession.cancel() }
+                            .accessibilityIdentifier("studio.gradient.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.gradient.progress")
+                } else if startedAsGradient, gradientCapture != nil {
+                    Text(vm.selectedElementIDs.isEmpty ? "Release to fill the active layer with this gradient" : "Release to fill the selected area with this gradient")
+                        .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .accessibilityIdentifier("studio.gradient.release-hint")
                 } else if blurSession.isApplying {
                     HStack(spacing: 12) {
                         ProgressView().tint(.red)
@@ -821,7 +885,7 @@ struct StudioCanvasView: View {
 
     private func updateSmudge(location: CGPoint, size: CGSize) -> Bool {
         guard var captured = smudgeInput else {
-            vm.message = "Choose a visible unlocked layer and deselect artwork before smudging."
+            vm.message = "Choose a visible layer with a Free lock before smudging."
             return false
         }
         do {
@@ -842,7 +906,7 @@ struct StudioCanvasView: View {
     }
     private func updateBlur(location: CGPoint, size: CGSize) -> Bool {
         guard var captured = blurInput else {
-            vm.message = "Choose a visible unlocked layer and deselect artwork before blurring."
+            vm.message = "Choose a visible layer with a Free lock before blurring."
             return false
         }
         do {
@@ -863,7 +927,7 @@ struct StudioCanvasView: View {
     }
     private func updateSharpen(location: CGPoint, size: CGSize) -> Bool {
         guard var captured = sharpenInput else {
-            vm.message = "Choose a visible unlocked layer and deselect artwork before sharpening."
+            vm.message = "Choose a visible layer with a Free lock before sharpening."
             return false
         }
         do {
@@ -884,7 +948,7 @@ struct StudioCanvasView: View {
     }
     private func updateDodgeBurn(location: CGPoint, size: CGSize) -> Bool {
         guard var captured = dodgeBurnInput else {
-            vm.message = "Choose a visible unlocked layer and deselect artwork before adjusting exposure."
+            vm.message = "Choose a visible layer with a Free lock before adjusting exposure."
             return false
         }
         do {
@@ -1010,7 +1074,8 @@ struct StudioCanvasView: View {
         input = nil; eraserCapture = nil; panOrigin = nil; strokePreviewFrame = nil; liveElement = nil; livePrepared = nil
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
         if endingTouch {
-            startedAsWand = false; wandCapture = nil; wandLayout = nil
+            startedAsWand = false; wandCapture = nil; wandLayout = nil; drawingWandCapture = nil
+            startedAsGradient = false; gradientCapture = nil; gradientLayout = nil; gradientStart = nil; gradientEnd = nil
             strokeInputCancelled = false
             colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
             smudgeInput = nil; startedAsSmudge = false
@@ -1030,7 +1095,8 @@ struct StudioCanvasView: View {
         // the captured input alone would let its next move recapture new targets.
         if gestureActive { strokeInputCancelled = true }
         vm.cancelPolygonSelection()
-        vm.clearImageRegion(); wandCapture = nil
+        vm.clearImageRegion(); wandCapture = nil; drawingWandCapture = nil
+        gradientCapture = nil; gradientSession.cancel()
         fillSession.cancel(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelDodgeBurn()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
         colorInput.invalidate()

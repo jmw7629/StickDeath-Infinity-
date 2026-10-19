@@ -51,6 +51,32 @@ struct ExportPanel: View {
             : "No watermark is added. "
     }
 
+    /// Four fixed cards: an eager two-column grid keeps every format button in
+    /// the hierarchy after the panel scrolls, where a lazy grid drops the
+    /// off-screen row. Kept out of `body` so the compiler checks it separately.
+    private var formatGrid: some View {
+        let formats = ExportFormat.allCases
+        let rows = Array(stride(from: 0, to: formats.count, by: 2))
+        let busy = session.isRunning || session.isSharing || movie.isBusy || gif.isBusy
+        return VStack(spacing: 10) {
+            ForEach(rows, id: \.self) { row in
+                HStack(spacing: 10) {
+                    ForEach(Array(formats[row..<min(row + 2, formats.count)]), id: \.rawValue) { (format: ExportFormat) in
+                        formatCard(format, busy: busy)
+                    }
+                }
+            }
+        }
+    }
+
+    private func formatCard(_ format: ExportFormat, busy: Bool) -> some View {
+        ExportFormatCard(format: format, isSelected: vm.exportFormat == format,
+            onTap: { vm.exportFormat = format })
+            .frame(maxWidth: .infinity)
+            .disabled(busy)
+            .accessibilityIdentifier("studio.export.format.\(format.rawValue.lowercased())")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Capsule().fill(Color.white.opacity(0.2)).frame(width: 36, height: 4).padding(.top, 8)
@@ -63,14 +89,7 @@ struct ExportPanel: View {
             ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 16) {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                        ForEach(ExportFormat.allCases, id: \.rawValue) { format in
-                            ExportFormatCard(format: format, isSelected: vm.exportFormat == format,
-                                onTap: { vm.exportFormat = format })
-                                .disabled(session.isRunning || session.isSharing || movie.isBusy || gif.isBusy)
-                                .accessibilityIdentifier("studio.export.format.\(format.rawValue.lowercased())")
-                        }
-                    }
+                    formatGrid
                     if vm.exportFormat == .mp4 {
                         StudioMovieExportControls(vm: vm, movie: movie, directRequest: directRequest, onDirectRequestConsumed: onDirectRequestConsumed, onReady: {
                             proxy.scrollTo("studio.export.movie.result", anchor: .top)

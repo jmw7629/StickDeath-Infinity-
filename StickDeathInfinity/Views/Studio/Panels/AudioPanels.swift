@@ -43,6 +43,7 @@ private struct StudioAudioWorkspace: View {
     /// Track whose volume/pan/solo strip is open without a selected clip (#179).
     @State private var mixerTrack: Int?
     private let selectionMemory = StudioAudioSelectionMemory()
+    @State private var searchMemo = StudioSoundSearchMemo()
     private let background = Color(hex: "0D0D12")
 
     var body: some View {
@@ -51,9 +52,15 @@ private struct StudioAudioWorkspace: View {
             // same view hierarchy so the active search field retains focus.
             ScrollViewReader { workspaceScroll in
                 ScrollView(.vertical) {
-                    workspace(height: geometry.size.height)
-                        .frame(minHeight: geometry.size.height, alignment: .top)
-                        .id("studio.audio.workspace.top")
+                    // Scroll targets are zero-height markers, not the content
+                    // itself: asking a ScrollViewReader to position a view that
+                    // contains the nested library ScrollView and its lazy rows
+                    // makes SwiftUI resolve that whole subtree's geometry.
+                    VStack(spacing: 0) {
+                        Self.scrollMarker("studio.audio.workspace.top")
+                        workspace(height: geometry.size.height)
+                    }
+                    .frame(minHeight: geometry.size.height, alignment: .top)
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .accessibilityIdentifier("studio.audio.compact.scroll")
@@ -81,8 +88,10 @@ private struct StudioAudioWorkspace: View {
                     // Keyboard avoidance can scroll the entire workspace above
                     // the screen. Restore its library header after submission;
                     // the inner catalogue retains its own scroll position.
+                    // Wait one run-loop turn so the keyboard's focus transaction
+                    // finishes before the viewport moves.
                     if !focused {
-                        workspaceScroll.scrollTo("studio.audio.workspace.top", anchor: .top)
+                        DispatchQueue.main.async { workspaceScroll.scrollTo("studio.audio.workspace.top", anchor: .top) }
                     }
                 }
             }
@@ -149,6 +158,10 @@ private struct StudioAudioWorkspace: View {
         StudioAudioClipOverlap.overlappingIDs(vm.audioClips.map {
             .init(id: $0.id, track: $0.track, start: $0.startTime, end: $0.startTime + $0.duration)
         })
+    }
+    /// A zero-height scroll target at the top of a scroll view's content.
+    private static func scrollMarker(_ id: String) -> some View {
+        Color.clear.frame(height: 0).id(id).accessibilityHidden(true)
     }
     private func workspace(height: CGFloat) -> some View {
             VStack(spacing: 0) {
@@ -325,6 +338,8 @@ private struct StudioAudioWorkspace: View {
                 .accessibilityIdentifier("studio.audio.search")
             ScrollViewReader { libraryScroll in
             ScrollView {
+                VStack(spacing: 0) {
+                Self.scrollMarker("studio.audio.library.start")
                 VStack(spacing: 10) {
                     // Stable section IDs reorder these stateful controls without
                     // recreating import drafts or the active clip audition.
@@ -363,7 +378,7 @@ private struct StudioAudioWorkspace: View {
                                         VStack(alignment: .leading, spacing: 12) {
                                             Image(systemName: "waveform").font(.title2).foregroundColor(.sdStudioActionText)
                                             Text(name).font(.specialElite(15)).multilineTextAlignment(.leading)
-                                            Text("\(catalogue.search("", category: name).count) sounds")
+                                            Text("\(catalogue.categoryCounts[name] ?? 0) sounds")
                                                 .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
                                         }.frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
                                             .padding(14).background(Color.sdRed.opacity(0.06)).cornerRadius(18)
@@ -384,7 +399,8 @@ private struct StudioAudioWorkspace: View {
                     }
                     }
                     }
-                }.padding(.bottom, 12).id("studio.audio.library.start")
+                }.padding(.bottom, 12)
+                }
             }
             .accessibilityIdentifier("studio.audio.library.scroll")
             // A new filter is a new result list. Keeping the category grid's
@@ -404,10 +420,24 @@ private struct StudioAudioWorkspace: View {
             AudioProjectClips(vm: vm, audio: audio, timeline: timeline)
         }
     }
+    /// Result lists up to this size lay out eagerly. A LazyVStack whose few rows
+    /// make the library content about as tall as its viewport can keep
+    /// re-measuring after the keyboard closes and never let the app go idle
+    /// (single-title searches froze the library; 0 and 128+ results did not).
+    private static let eagerResultLimit = 64
     private func catalogueRows(_ catalogue: StudioSoundCatalogue) -> some View {
-        let results = catalogue.search(search, category: category, duration: soundDuration, sort: soundSort)
+        let results: [StudioSoundCatalogue.Sound] = searchMemo.results(catalogue, query: search, category: category, duration: soundDuration, sort: soundSort)
             .filter { !favoritesOnly || favoriteSounds.contains($0.id) }
-        return LazyVStack(spacing: 8) {
+        return Group {
+            if results.count <= Self.eagerResultLimit {
+                VStack(spacing: 8) { catalogueRowsContent(results, catalogue: catalogue) }
+            } else {
+                LazyVStack(spacing: 8) { catalogueRowsContent(results, catalogue: catalogue) }
+            }
+        }
+    }
+    @ViewBuilder
+    private func catalogueRowsContent(_ results: [StudioSoundCatalogue.Sound], catalogue: StudioSoundCatalogue) -> some View {
             HStack {
                 Text("\(results.count) matching sounds").font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.audio.search.count")
@@ -482,7 +512,6 @@ private struct StudioAudioWorkspace: View {
                 }.padding(.horizontal, 16)
                 Divider().opacity(0.15)
             }
-        }
     }
     private var timelineControls: some View {
         HStack(spacing: 8) {
@@ -1410,9 +1439,13 @@ private struct AudioFilesImportControls: View {
                 let prepare: StudioAudioPreviewSession.AudioPreparation? = mapping.map { captured in
                     { progress in try await StudioVideoAudioImportService.shared.extract(from: url, mapping: captured, progress: progress).audio }
                 }
+                // The clip persists the exact trim/speed mapping it was cut with (#201).
+                let persisted = mapping.map { StudioVideoSourceMapping(sourceStartSeconds: $0.sourceStartSeconds,
+                    sourceEndSeconds: $0.sourceEndSeconds, projectStartSeconds: $0.projectStartSeconds, speed: $0.speed) }
                 _ = audio.importFile(url, prepare: prepare, stillCurrent: { target.isCurrent(vm) }, attach: { imported in
                     try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
-                        expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track, atPlayhead: target.playhead)
+                        expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track, atPlayhead: target.playhead,
+                        videoMapping: persisted)
                 })
             }
             lease = nil; capturedMovieMapping = nil

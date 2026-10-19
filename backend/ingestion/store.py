@@ -19,6 +19,8 @@ import time
 import uuid
 from typing import Callable
 
+from ..spatter.content_rules import check_submission
+
 CHUNK_BYTES = 4 * 1024 * 1024
 MAX_BYTES = 2 * 1024 * 1024 * 1024
 DIGEST = re.compile(r"^[a-f0-9]{64}$")
@@ -59,6 +61,9 @@ class UploadStore:
         self.account_quota = account_quota
         self.lifetime = lifetime
         self.clock = clock
+        # Bytes held in this directory outside the upload table (Spatter draft
+        # preview copies, backend/spatter/draft_preview.py) that share the quota.
+        self.reserved_bytes: Callable[[], int] = lambda: 0
         with self._connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS uploads (
                 id TEXT PRIMARY KEY, actor TEXT NOT NULL, request TEXT NOT NULL,
@@ -123,8 +128,13 @@ class UploadStore:
     def begin(self, actor: str, request: str, metadata: dict):
         actor, request = identifier(actor), identifier(request)
         allowed = {"size", "sha256", "title", "source_revision", "destinations", "rights_summary", "consent_version", "made_for_kids"}
-        if not isinstance(metadata, dict) or set(metadata) - {"asset_credits"} != allowed:
+        if not isinstance(metadata, dict) or set(metadata) - {"asset_credits", "source_project_digest"} != allowed:
             raise IntakeError("Complete render metadata required.")
+        # Optional canonical digest of the editable project the render came from
+        # (#214). Bound to the review so a revised project invalidates approval.
+        if "source_project_digest" in metadata and (not isinstance(metadata["source_project_digest"], str)
+                                                    or not DIGEST.fullmatch(metadata["source_project_digest"])):
+            raise IntakeError("Invalid source project digest.")
         if "asset_credits" in metadata:
             if self.licensed_assets is None:
                 raise IntakeError("Asset licence checks are not configured on this service. Submission refused.", 503)
@@ -143,6 +153,11 @@ class UploadStore:
                 any(not isinstance(x, str) or x not in ("feed", "youtube", "social") for x in destinations) or
                 len(destinations) != len(set(destinations))):
             raise IntakeError("Choose supported destinations explicitly.")
+        # Deterministic content rules (#261) on the text metadata; a refusal names the
+        # category, never repeats the text. Passing is not approval: review still decides.
+        verdict = check_submission(metadata)
+        if not verdict.allowed:
+            raise IntakeError("Submission %s refused by content rules (%s). %s" % (verdict.field, verdict.code, verdict.explanation), 422)
         encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -154,6 +169,7 @@ class UploadStore:
                 return self._response(prior)
             # Completed files remain charged until retention removes their owned copy.
             used = db.execute("SELECT coalesce(sum(size),0) FROM uploads WHERE state NOT IN ('cancelled','expired','invalid')").fetchone()[0]
+            used += self.reserved_bytes()
             own = db.execute("SELECT coalesce(sum(size),0),count(*) FROM uploads WHERE actor=? AND state NOT IN ('cancelled','expired','invalid')", (actor,)).fetchone()
             if used + size > self.total_quota or own[0] + size > self.account_quota or own[1] >= 5:
                 raise IntakeError("Upload capacity reached. Cancel unused uploads or retry later.", 429)
@@ -161,6 +177,11 @@ class UploadStore:
             db.execute("INSERT INTO uploads(id,actor,request,metadata,digest,size,expires,created) VALUES(?,?,?,?,?,?,?,?)",
                        (upload, actor, request, encoded, metadata["sha256"], size, now+self.lifetime, now))
             return self._response(self._owned(db, actor, upload))
+
+    def charged_bytes(self) -> int:
+        """Bytes the upload table charges against the total quota."""
+        with self._connect() as db:
+            return int(db.execute("SELECT coalesce(sum(size),0) FROM uploads WHERE state NOT IN ('cancelled','expired','invalid')").fetchone()[0])
 
     def status(self, actor: str, upload: str):
         with self._connect() as db:

@@ -953,6 +953,46 @@ private final class NetworkTrap: URLProtocol {
                 "Pack removal changed project-managed original/rights")
             try require(try await exported(reopened) == pixels, "Pack removal changed actual export")
         }
+        try await test("manifest revision removes withdrawn cached tiles, keeps project-used files and never the saved original (#198)") {
+            let policy = try StudioImageCatalogue.ReleasePolicy(revision: 1, quarantined: [])
+            let cacheRoot = root.appendingPathComponent("revision-pack-cache")
+            let cache = StudioImagePackCache(root: cacheRoot, releasePolicy: policy)
+            let descriptor = try StudioImagePackCache.descriptor(directory: source)
+            let archive = try Data(contentsOf: URL(fileURLWithPath: "Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip"))
+            let installed = try await cache.download(descriptor, fetch: { _ in archive })
+            let used = installed.images[0], withdrawn = installed.images[1], renamed = installed.images[2]
+            let usedBytes = try installed.checkedPNG(used)
+            let (editor, storage) = try await fixture()
+            let session = try await prepare(editor, installed, selectedImage: used)
+            try require(session.apply(currentScope: scope), "Pack Add failed")
+            let assetID = session.appliedImage!.assetID
+            try require(await editor.save(), "Pack project save failed")
+            try require(editor.catalogueOriginalDigests.contains(used.sha256), "Project-used digest not reported")
+            try policy.advance(to: .init(revision: 2,
+                removed: [.init(assetID: used.id, sha256: used.sha256, reason: "Isolated test withdrawal"),
+                          .init(assetID: withdrawn.id, sha256: withdrawn.sha256, reason: "Isolated test withdrawal")],
+                metadata: [.init(assetID: renamed.id, sha256: renamed.sha256, title: "Revised test tile")]))
+            let report = try await cache.applyRevision(descriptor, retaining: editor.catalogueOriginalDigests)
+            try require(report.revision == 2 && report.deletedAssetIDs == [withdrawn.id] && report.retainedAssetIDs == [used.id]
+                && report.absentAssetIDs.isEmpty, "Wrong revision report")
+            let target = cacheRoot.appendingPathComponent(descriptor.id)
+            try require(!fm.fileExists(atPath: target.appendingPathComponent(withdrawn.filename).path)
+                && fm.fileExists(atPath: target.appendingPathComponent(used.filename).path), "Revision removed the wrong cached files")
+            let updated = try await cache.installed(descriptor)
+            try require(updated?.availableImages.count == 456
+                && updated?.availableImages.first(where: { $0.id == renamed.id })?.title == "Revised test tile"
+                && updated?.images == installed.images, "Revised pack failed verification or changed stable IDs")
+            // Without a project reference the cached copy is disposable; the
+            // project's own verified original is what reopens.
+            let again = try await cache.applyRevision(descriptor, retaining: [])
+            try require(again.deletedAssetIDs == [used.id] && again.absentAssetIDs == [withdrawn.id], "Repeat revision not idempotent")
+            try require(try await cache.installed(descriptor)?.availableImages.count == 456, "Pack unverifiable after removals")
+            let stored = try storage.loadAnimation(id: editor.document.id)!, reopened = StudioViewModel(storage: storage)
+            try require(await reopened.openProject(stored.metadata), "Revision broke real cold reopen")
+            try require(reopened.originalImageSource(assetID)?.originalData == usedBytes, "Revision changed the project's original")
+            do { try policy.advance(to: .init(revision: 2)); throw Failure(message: "Stale revision accepted") }
+            catch StudioImageCatalogue.CatalogueError.invalid { }
+        }
         try await test("legacy records decode with nil provenance and tampered provenance rejects atomically") {
             let (editor, _) = try await fixture(), session = try await prepare(editor)
             try require(session.apply(currentScope: scope), "Fixture Add failed")

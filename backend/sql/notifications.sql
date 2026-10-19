@@ -96,9 +96,10 @@ begin
   if not found then return jsonb_build_object('error','Device unavailable.'); end if;
   return jsonb_build_object('status','confirmed');
  elsif action='inbox' then
-  select coalesce(jsonb_agg(jsonb_build_object('delivery',d.id,'title',a.title,'body',a.body,'category',a.category,'state',d.state,'delivered_at',d.updated_at) order by d.updated_at desc),'[]'::jsonb)
-   into items from sdi_private.announcement_deliveries d join sdi_private.announcements a on a.id=d.announcement_id
-   where d.user_id=actor and d.channel='in_app' and d.state in('sent','read') and a.state<>'cancelled' limit 50;
+  -- The limit belongs to the rows, not to the single aggregate row (clients refuse more than 50).
+  select coalesce(jsonb_agg(jsonb_build_object('delivery',t.id,'title',t.title,'body',t.body,'category',t.category,'state',t.state,'delivered_at',t.updated_at) order by t.updated_at desc,t.id),'[]'::jsonb)
+   into items from (select d.id,a.title,a.body,a.category,d.state,d.updated_at from sdi_private.announcement_deliveries d join sdi_private.announcements a on a.id=d.announcement_id
+   where d.user_id=actor and d.channel='in_app' and d.state in('sent','read') and a.state<>'cancelled' order by d.updated_at desc,d.id limit 50) t;
   return jsonb_build_object('notices',items,'unread',(select count(*) from sdi_private.announcement_deliveries d where d.user_id=actor and d.channel='in_app' and d.state='sent'));
  elsif action='mark_read' then
   update sdi_private.announcement_deliveries set state='read',updated_at=clock_timestamp() where id=(payload->>'delivery')::uuid and user_id=actor and channel='in_app' and state='sent';
@@ -271,4 +272,71 @@ create function public.sdi_email_suppress(address_hash text,reason text) returns
 create function public.sdi_email_recipients(category text,batch integer default 500,page integer default 0) returns jsonb language sql security invoker set search_path='' as $$select sdi_private.email_recipients(category,batch,page)$$;
 revoke all on function public.sdi_announcement_claim(integer),public.sdi_announcement_finish(jsonb),public.sdi_email_suppress(text,text),public.sdi_email_recipients(text,integer,integer) from public,anon,authenticated;
 grant execute on function public.sdi_announcement_claim(integer),public.sdi_announcement_finish(jsonb),public.sdi_email_suppress(text,text),public.sdi_email_recipients(text,integer,integer) to service_role;
+
+-- Account notices (#285): when an administrator changes a member's account
+-- (suspend, ban, restore, sign out, reset flags) or rejects an appeal, the member
+-- gets a fixed-text transactional notice. The text never repeats the
+-- administrator's internal reason; it says what changed and where to appeal.
+-- Notes are internal and produce no notice. Restricted members cannot pass
+-- account_active(), so the notices have their own reader that needs only a
+-- current signed-in session (as account_appeal_action does). The newest 50 per
+-- member are kept; account deletion cascades.
+create table sdi_private.account_notices (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null references auth.users(id) on delete cascade,
+ kind text not null check(kind in('suspended','banned','restored','signed_out','flags_reset','appeal_rejected')),
+ title text not null check(length(title) between 1 and 120), body text not null check(length(body) between 1 and 1000),
+ created_at timestamptz not null default clock_timestamp(), read_at timestamptz
+);
+alter table sdi_private.account_notices enable row level security;
+revoke all on sdi_private.account_notices from public,anon,authenticated;
+create index account_notices_member on sdi_private.account_notices(user_id,created_at desc,id desc);
+create function sdi_private.account_notice_from_audit() returns trigger language plpgsql security definer set search_path='' as $$
+declare kind text; title text; body text;
+begin
+ case new.action
+  when 'suspend' then kind:='suspended'; title:='Your account is suspended';
+   body:='An administrator suspended your account and ended your sessions. Sign in to read the restriction and appeal it.';
+  when 'ban' then kind:='banned'; title:='Your account is banned';
+   body:='An administrator banned your account and ended your sessions. Sign in to read the restriction and appeal it.';
+  when 'restore' then kind:='restored'; title:='Your account is active again';
+   body:='An administrator lifted the restriction on your account. Everything you can normally do is available again.';
+  when 'signout' then kind:='signed_out'; title:='You were signed out';
+   body:='An administrator ended your sessions on every device. Sign in again to continue.';
+  when 'reset_flags' then kind:='flags_reset'; title:='Reports about your posts were reviewed';
+   body:='An administrator reviewed the open reports about your posts and dismissed them. Nothing was removed.';
+  when 'appeal_rejected' then kind:='appeal_rejected'; title:='Your appeal was decided';
+   body:='An administrator reviewed your appeal and kept the restriction. Sign in to read the decision.';
+  else return new;
+ end case;
+ insert into sdi_private.account_notices(user_id,kind,title,body) values(new.subject,kind,title,body);
+ delete from sdi_private.account_notices n where n.user_id=new.subject and n.id not in(
+  select k.id from sdi_private.account_notices k where k.user_id=new.subject order by k.created_at desc,k.id desc limit 50);
+ return new;
+end $$;
+revoke all on function sdi_private.account_notice_from_audit() from public,anon,authenticated;
+create trigger account_notice_from_audit after insert on sdi_private.admin_user_audit
+ for each row execute function sdi_private.account_notice_from_audit();
+create function sdi_private.account_notices_action(action text,notice uuid default null) returns jsonb language plpgsql security definer set search_path='' as $$
+declare actor uuid:=auth.uid(); items jsonb;
+begin
+ if actor is null or not exists(select 1 from auth.users where id=actor and not is_anonymous)
+ or not exists(select 1 from auth.sessions where user_id=actor and id::text=auth.jwt()->>'session_id') then
+  return jsonb_build_object('error','A current signed-in account is required.'); end if;
+ if action='list' then
+  select coalesce(jsonb_agg(jsonb_build_object('id',n.id,'kind',n.kind,'title',n.title,'body',n.body,'created_at',n.created_at,'read',n.read_at is not null)
+   order by n.created_at desc,n.id desc),'[]'::jsonb) into items
+  from (select * from sdi_private.account_notices where user_id=actor order by created_at desc,id desc limit 50) n;
+  return jsonb_build_object('notices',items,'unread',(select count(*) from sdi_private.account_notices where user_id=actor and read_at is null));
+ elsif action='mark_read' then
+  update sdi_private.account_notices set read_at=clock_timestamp() where id=notice and user_id=actor and read_at is null;
+  return jsonb_build_object('status',case when found then 'confirmed' else 'unchanged' end);
+ end if;
+ return jsonb_build_object('error','Unsupported notice operation.');
+end $$;
+revoke all on function sdi_private.account_notices_action(text,uuid) from public,anon;
+grant execute on function sdi_private.account_notices_action(text,uuid) to authenticated;
+create function public.sdi_account_notices(action text,notice uuid default null) returns jsonb language sql security invoker set search_path='' as $$
+ select sdi_private.account_notices_action(action,notice)$$;
+revoke all on function public.sdi_account_notices(text,uuid) from public,anon;
+grant execute on function public.sdi_account_notices(text,uuid) to authenticated;
 commit;

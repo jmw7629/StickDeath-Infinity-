@@ -79,8 +79,13 @@ class MainActivity : ComponentActivity() {
             vm.markExportPickerRequested()
             try {
                 if (artifact.share) {
-                    context.startActivity(ShareExports.chooser(context, artifact))
-                    vm.shareSheetOpened(artifact)
+                    // Quick share: try each destination package; a missing app falls back to the chooser.
+                    val direct = artifact.targetPackages.any { target ->
+                        try { context.startActivity(ShareExports.direct(context, artifact, target)); true }
+                        catch (_: android.content.ActivityNotFoundException) { false }
+                    }
+                    if (!direct) context.startActivity(ShareExports.chooser(context, artifact))
+                    vm.shareSheetOpened(artifact, directApp = direct)
                 } else when (artifact.kind) {
                     ExportKind.MP4 -> moviePicker.launch(artifact.name)
                     ExportKind.GIF -> gifPicker.launch(artifact.name)
@@ -258,6 +263,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     var fitArtwork by remember(doc.id) { mutableStateOf(true) }
     var playing by remember { mutableStateOf(false) }
     LaunchedEffect(vm.sceneStopGeneration) { playing = false }
+    LaunchedEffect(playing) { vm.notePlayback(playing) }
     var selectedLayerAction by remember(doc.id) { mutableStateOf<String?>(null) }
     var layerName by remember(doc.id) { mutableStateOf("") }
     var previewIndex by remember(doc.id) { mutableIntStateOf(0) }
@@ -439,6 +445,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                         Button({ if (vm.requirePlan(vm.planLimits.pngSequenceExport)) { vm.prepareExport(ExportKind.SEQUENCE); panel = null } }) { Text(if (vm.planLimits.pngSequenceExport) "PNG sequence ZIP" else "PNG sequence ZIP (Creator and Pro)") }
                         Button({ vm.prepareExport(ExportKind.SPRITESHEET); panel = null }) { Text("Spritesheet PNG + timing ZIP") }
                         Text("Spritesheets preserve every frame at original size, up to 8 megapixels and an 8192-pixel edge. Larger projects can use PNG sequence.")
+                        QuickShareSection(vm) { panel = null }
                         Text("Share a freshly rendered file with an installed app. No automatic channel upload or publication occurs. Share copies are bounded and become eligible for cleanup after 24 hours.")
                         Button({ vm.prepareExport(ExportKind.MP4, share = true); panel = null }) { Text("Share MP4…") }
                         Button({ vm.prepareExport(ExportKind.GIF, share = true); panel = null }) { Text("Share GIF…") }
@@ -908,6 +915,7 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                 var overflow = false
                 if (tool != Tool.Move && tool != Tool.Fill && tool != Tool.Eyedropper && tool != Tool.Text && !tool.isShape) pending = points.toList()
                 down.consume()
+                vm.noteGesture(true)
                 try {
                     while (true) {
                         val event = awaitPointerEvent()
@@ -953,7 +961,7 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                             break
                         }
                     }
-                } finally { pending = emptyList(); transformed = null }
+                } finally { pending = emptyList(); transformed = null; vm.noteGesture(false) }
             }
         }) {
             val canvas = drawContext.canvas.nativeCanvas

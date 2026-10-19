@@ -28,7 +28,11 @@ DEPENDENCIES = {
         "StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift",
         "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
         "StickDeathInfinity/Models/StudioCommands.swift",
+        # Brief-scope quality report and its draft-submission record (#213).
+        "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
     },
+    # The official-channel mark compositor uses the placement/contrast rules (#241).
+    "StickDeathInfinity/Services/StudioExportService.swift": {"StickDeathInfinity/Services/StudioChannelRendition.swift"},
     "StickDeathInfinity/Services/StudioAudioPreviewSession.swift": {
         "StickDeathInfinity/Services/StudioSoundCatalogue.swift",
         "StickDeathInfinity/Services/StudioAudioImportService.swift",
@@ -59,6 +63,19 @@ DEPENDENCIES = {
     },
     "StickDeathInfinity/Services/StudioAudioVideoMuxService.swift": {
         "StickDeathInfinity/Services/StudioSoundCredits.swift",
+    },
+    # Headless daily-draft renderer (#212): the job/planning half and the
+    # macOS export half compile together with the production planner and exporter.
+    "Tools/SpatterDraftRenderer/main.swift": {
+        "Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift",
+        "Tools/SpatterDraftRenderer/MacPlatform.swift",
+        "StickDeathInfinity/Services/StudioMovieExportService.swift",
+    },
+    "Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift": {
+        "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
+        "StickDeathInfinity/Models/StudioCommands.swift",
+        "StickDeathInfinity/Models/StudioDocument.swift",
     },
     "StickDeathInfinity/Services/StudioMovieExportSession.swift": {
         "StickDeathInfinity/Services/StudioSoundCredits.swift",

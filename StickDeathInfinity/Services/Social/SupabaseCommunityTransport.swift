@@ -11,17 +11,22 @@ import Supabase
 
 @MainActor
 final class SupabaseCommunityTransport: CommunityTransport {
-    static let shared = SupabaseCommunityTransport()
-    private init() {}
+    static let shared = SupabaseCommunityTransport(provider: { try SupabaseManager.shared.client })
+    /// Production passes the app's configured client. The hosted native journey
+    /// tests (Tests/AuthState/ServiceJourneyTests.swift) pass an SDK client
+    /// whose URLSession is a local fixture, so the same request, session and
+    /// decoding path runs without contacting any host.
+    private let provider: @MainActor () throws -> SupabaseClient
+    init(provider: @escaping @MainActor () throws -> SupabaseClient) { self.provider = provider }
 
     private var client: SupabaseClient {
         get throws {
-            do { return try SupabaseManager.shared.client }
+            do { return try provider() }
             catch { throw CommunityError.notConfigured }
         }
     }
     nonisolated var hasSession: Bool {
-        MainActor.assumeIsolated { (try? SupabaseManager.shared.client.auth.currentSession) != nil }
+        MainActor.assumeIsolated { (try? provider().auth.currentSession) != nil }
     }
 
     func rpc<P: Encodable & Sendable>(_ name: String, params: P) async throws -> CommunityReply {

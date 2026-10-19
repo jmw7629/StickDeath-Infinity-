@@ -3,6 +3,11 @@ import SwiftUI
 import ImageIO
 import UniformTypeIdentifiers
 import CoreText
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// Image export of the same canonical document/compositor as the live Studio.
 /// PNG has no audio; FPS and frame order are recorded in the adjacent manifest.
@@ -668,6 +673,90 @@ extension StudioExportService {
         CTLineDraw(line, context)
         context.restoreGState()
         guard let marked = context.makeImage() else { throw ExportError.renderFailed }
+        return marked
+    }
+}
+
+// MARK: - Official-channel mark (#241)
+
+extension StudioExportService {
+    /// The owner-approved watercolor mark from the app's asset catalogue. Throws
+    /// `StudioChannelRendition.Failure.markUnavailable` when the asset is not
+    /// installed; nothing is drawn in its place.
+    static func installedChannelMark(named name: String = StudioChannelRendition.markAssetName) throws -> CGImage {
+        guard StudioChannelRendition.markAssetNames.contains(name) else { throw StudioChannelRendition.Failure.markUnavailable }
+        #if canImport(UIKit)
+        guard let mark = UIImage(named: name)?.cgImage else { throw StudioChannelRendition.Failure.markUnavailable }
+        #elseif canImport(AppKit)
+        guard let mark = NSImage(named: name)?.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            throw StudioChannelRendition.Failure.markUnavailable
+        }
+        #else
+        throw StudioChannelRendition.Failure.markUnavailable
+        #endif
+        try validateChannelMark(mark)
+        return mark
+    }
+
+    /// A channel mark must be a readable image with real transparency, so it
+    /// sits over the picture instead of covering a rectangle of it.
+    nonisolated static func validateChannelMark(_ mark: CGImage) throws {
+        guard mark.width > 0, mark.height > 0, mark.width <= 4096, mark.height <= 4096 else { throw StudioChannelRendition.Failure.markInvalid }
+        switch mark.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast: throw StudioChannelRendition.Failure.markNotTransparent
+        default: break
+        }
+        let pixels = try rgba(mark, width: min(mark.width, 256), height: min(mark.height, 256))
+        let alpha = stride(from: 3, to: pixels.count, by: 4).map { pixels[$0] }
+        guard StudioChannelRendition.hasTransparency(alpha: alpha) else { throw StudioChannelRendition.Failure.markNotTransparent }
+    }
+
+    /// Draws `image` scaled to `width` × `height` into premultiplied RGBA8 bytes.
+    nonisolated private static func rgba(_ image: CGImage, width: Int, height: Int) throws -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { throw ExportError.renderFailed }
+        let drawn: Bool = bytes.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                          space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { throw ExportError.renderFailed }
+        return bytes
+    }
+
+    /// Composites the channel mark into a new copy of one rendered frame at the
+    /// lower-right safe-area placement. The input frame, the editable project
+    /// and personal exports are untouched. When the picture under the mark is
+    /// too close in luminance, a soft translucent plate is drawn behind it.
+    nonisolated static func channelMarked(_ image: CGImage, mark: CGImage) throws -> CGImage {
+        let width = image.width, height = image.height
+        let rect = try StudioChannelRendition.placement(outputWidth: width, outputHeight: height, markWidth: mark.width, markHeight: mark.height)
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ExportError.renderFailed }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        // CoreGraphics uses a bottom-left origin; the placement is top-left.
+        let target = CGRect(x: rect.x, y: height - rect.maxY, width: rect.width, height: rect.height)
+        guard let under = image.cropping(to: CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)) else { throw ExportError.renderFailed }
+        let background = StudioChannelRendition.meanLuminance(rgba: try rgba(under, width: rect.width, height: rect.height), premultiplied: true) ?? 1
+        guard let markLuminance = StudioChannelRendition.meanLuminance(rgba: try rgba(mark, width: rect.width, height: rect.height), premultiplied: true) else {
+            throw StudioChannelRendition.Failure.markNotTransparent
+        }
+        context.saveGState()
+        if StudioChannelRendition.needsBackingPlate(markLuminance: markLuminance, backgroundLuminance: background) {
+            let inset = max(2, CGFloat(rect.height) * 0.12)
+            let plate = target.insetBy(dx: -inset, dy: -inset)
+            let tone: CGFloat = StudioChannelRendition.plateIsDark(markLuminance: markLuminance) ? 0 : 1
+            context.setFillColor(CGColor(srgbRed: tone, green: tone, blue: tone, alpha: 0.45))
+            context.addPath(CGPath(roundedRect: plate, cornerWidth: inset, cornerHeight: inset, transform: nil))
+            context.fillPath()
+        }
+        context.interpolationQuality = .high
+        context.draw(mark, in: target)
+        context.restoreGState()
+        guard let marked = context.makeImage(), marked.width == width, marked.height == height else { throw ExportError.renderFailed }
         return marked
     }
 }

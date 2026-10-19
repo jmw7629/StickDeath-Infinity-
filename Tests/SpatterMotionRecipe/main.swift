@@ -814,7 +814,7 @@ private final class NetworkTrap: URLProtocol {
                     try require(SpatterInstructionRouter.classify(example)?.rawValue == grammar.name, "Router classified \(grammar.name) example as \(String(describing: SpatterInstructionRouter.classify(example)))")
                 }
             }
-            try require(SpatterInstructionCatalog.grammars.count == 37 && SpatterInstructionCatalog.version == 3, "Catalog size drifted")
+            try require(SpatterInstructionCatalog.grammars.count == 40 && SpatterInstructionCatalog.version == 4, "Catalog size drifted")
             try require(try SpatterTweenInstruction.parse(SpatterTweenInstruction.example) == .init(inbetweens: 4, firstFrame: 1, easing: .easeInOut), "Tween capture wrong")
             try require(try SpatterProjectSettingsInstruction.parse(SpatterProjectSettingsInstruction.bothExample) == .init(width: 640, height: 480, fps: 24), "Settings capture wrong")
             try require(try SpatterBrushStrokeInstruction.parse(SpatterBrushStrokeInstruction.gradientExample).endColor == "#0000FF", "Gradient end color lost")

@@ -204,7 +204,10 @@ struct StudioEditorWorkspace: View {
             }
         }
         .onChange(of: vm.selectedTool) { _, tool in
-            if vm.activePanel == .toolSettings && !FloatingToolSettingsPanel.hasSettings(tool) { vm.activePanel = .none }
+            if vm.activePanel == .toolSettings
+                && !(FloatingToolSettingsPanel.hasSettings(tool) && FloatingToolSettingsPanel.opensOnSelect(tool)) {
+                vm.activePanel = .none
+            }
         }
     }
 

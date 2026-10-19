@@ -131,6 +131,57 @@ exception text is never propagated (it can contain key material). An empty
 router reports `configured == False` and the handler answers 503 without
 touching any allowance.
 
+## Daily-draft renderer (#212): headless macOS CLI
+
+`draft_queue.run_once` renders through `draft_queue.configured_renderer()`,
+which returns `renderer_cli.CLIRenderer` only when `SDI_DRAFT_RENDERER_CLI` is
+the absolute path of the compiled `Tools/SpatterDraftRenderer` binary (macOS;
+built from the production planner, command executor, movie exporter and quality
+report). Unset, every job still fails with the OWNER-GATED capacity message.
+Optional: `SDI_DRAFT_RENDER_DIR` (private output root), `SDI_DRAFT_RENDER_FPS`/
+`_WIDTH`/`_HEIGHT` (default 24 FPS, 640×360) and
+`SDI_DRAFT_RENDER_TIMEOUT_SECONDS` (default 600, at most 840 so a render ends
+inside the 15-minute lease; the lease is renewed every 60 s while it runs).
+
+The adapter re-hashes the movie, manifest and editable project named by the
+receipt, requires `private_draft: true` / `published: false`, matches brief,
+seed and size to the job, and fails a passing verdict whose decoded frame count
+or duration disagrees with the plan. A `publish_preview(movie, sha256, plan)`
+callable must return the private HTTPS preview URL for the owner's review row;
+without one the render fails before running. Drafts stay in the output root for
+review; failed runs are deleted. Nothing is uploaded, released or scheduled:
+release still needs the owner's approval of the exact render digest.
+Daily plans use `briefs.v3`: `plan_brief` shortens a plan (never below 2 s)
+until it fits the app planner's element budget at 24 FPS (`fits_element_budget`
+mirrors `SpatterMultiClauseBrief.prepare`), so the renderer FPS is capped at 24.
+
+Private previews (`draft_preview.py`): with `SDI_DRAFT_PREVIEW_OWNER_ID`,
+`SDI_INTAKE_ORIGIN`, `SDI_PREVIEW_SIGNING_KEY_FILE` and `SDI_INTAKE_DIRECTORY`
+set, `renderer_from_env` uses `DraftPreviewStore`: it copies the verified MP4
+into the intake directory, records owner, digest, size and retention (default
+7 days, at most 14; `SDI_DRAFT_PREVIEW_RETENTION_SECONDS`) and signs a
+`PreviewLinks` URL (at most 15 minutes). The intake host's `PreviewApplication`
+serves it only to a link signed for that owner while the record is live (the
+same owner variable enables `combined_authority` in `ingestion/application.py`).
+`DraftPreviewStore.link()` re-signs a fresh link; `expire()` deletes expired
+copies. Without the owner id the renderer fails with the OWNER-GATED preview
+message. `SDI_INTAKE_TOTAL_BYTES` is required too: draft copies share the intake
+disk quota (`UploadStore.reserved_bytes`), and a full quota refuses the copy.
+
+Owner review path: the worker's `review_pending` call records the retained copy
+(`object_key`, `byte_count`, `artifact_expires_at`) as a `render_artifacts` row.
+For such a retained draft the existing preview route
+(`POST /v1/review-previews/<review>/renew` → `sdi_preview_permit` →
+`DraftPreviewStore.signer` → `link()` → `sdi_preview_renew`) works for the owner
+only, and the owner may approve the exact digest and version with no
+destinations: approved, not scheduled. `release_allowed` needs a destination, so
+nothing publishes; adding one later returns the review to pending for a fresh
+owner approval. `python3 -m backend.ops.sweeps --all` includes the local
+`draft_preview_expire` sweep (skipped when draft previews are not configured).
+`test_renderer_cli.py` and `test_draft_preview.py` drive fake executables; the macOS CI step
+"Render one daily brief with the headless draft renderer" runs the real binary
+through `scripts/backend/verify_draft_renderer_cli.py`.
+
 ## Tests
 
 `python3 -I -m pytest backend/spatter -q` (or `python3 -m unittest
