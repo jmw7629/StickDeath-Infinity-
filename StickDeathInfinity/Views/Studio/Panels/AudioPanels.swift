@@ -52,9 +52,15 @@ private struct StudioAudioWorkspace: View {
             // same view hierarchy so the active search field retains focus.
             ScrollViewReader { workspaceScroll in
                 ScrollView(.vertical) {
-                    workspace(height: geometry.size.height)
-                        .frame(minHeight: geometry.size.height, alignment: .top)
-                        .id("studio.audio.workspace.top")
+                    // Scroll targets are zero-height markers, not the content
+                    // itself: asking a ScrollViewReader to position a view that
+                    // contains the nested library ScrollView and its lazy rows
+                    // makes SwiftUI resolve that whole subtree's geometry.
+                    VStack(spacing: 0) {
+                        Self.scrollMarker("studio.audio.workspace.top")
+                        workspace(height: geometry.size.height)
+                    }
+                    .frame(minHeight: geometry.size.height, alignment: .top)
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .accessibilityIdentifier("studio.audio.compact.scroll")
@@ -82,8 +88,10 @@ private struct StudioAudioWorkspace: View {
                     // Keyboard avoidance can scroll the entire workspace above
                     // the screen. Restore its library header after submission;
                     // the inner catalogue retains its own scroll position.
+                    // Wait one run-loop turn so the keyboard's focus transaction
+                    // finishes before the viewport moves.
                     if !focused {
-                        workspaceScroll.scrollTo("studio.audio.workspace.top", anchor: .top)
+                        DispatchQueue.main.async { workspaceScroll.scrollTo("studio.audio.workspace.top", anchor: .top) }
                     }
                 }
             }
@@ -150,6 +158,10 @@ private struct StudioAudioWorkspace: View {
         StudioAudioClipOverlap.overlappingIDs(vm.audioClips.map {
             .init(id: $0.id, track: $0.track, start: $0.startTime, end: $0.startTime + $0.duration)
         })
+    }
+    /// A zero-height scroll target at the top of a scroll view's content.
+    private static func scrollMarker(_ id: String) -> some View {
+        Color.clear.frame(height: 0).id(id).accessibilityHidden(true)
     }
     private func workspace(height: CGFloat) -> some View {
             VStack(spacing: 0) {
@@ -326,6 +338,8 @@ private struct StudioAudioWorkspace: View {
                 .accessibilityIdentifier("studio.audio.search")
             ScrollViewReader { libraryScroll in
             ScrollView {
+                VStack(spacing: 0) {
+                Self.scrollMarker("studio.audio.library.start")
                 VStack(spacing: 10) {
                     // Stable section IDs reorder these stateful controls without
                     // recreating import drafts or the active clip audition.
@@ -385,7 +399,8 @@ private struct StudioAudioWorkspace: View {
                     }
                     }
                     }
-                }.padding(.bottom, 12).id("studio.audio.library.start")
+                }.padding(.bottom, 12)
+                }
             }
             .accessibilityIdentifier("studio.audio.library.scroll")
             // A new filter is a new result list. Keeping the category grid's
