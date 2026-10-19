@@ -1112,7 +1112,7 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForButton("Profile", in: app).tap()
         XCTAssertTrue(app.staticTexts["Guest"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["On-device guest"].exists)
-        XCTAssertTrue(app.staticTexts["Projects counts saved animations on this device. Published, followers and likes are unavailable."].exists,
+        XCTAssertTrue(app.staticTexts["Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall; a dash means the total was not loaded, never an estimate."].exists,
             "Profile must identify actual device inventory and unavailable connected totals")
         XCTAssertFalse(app.staticTexts["StickMaster"].exists, "Guest profile displayed a fabricated sample identity")
         capture(app, name: "owner-guest-profile-reference")
@@ -1979,7 +1979,7 @@ final class StudioSmokeUITests: XCTestCase {
         try tapWelcomeAction("welcome.guide", in: app)
         app.buttons["onboarding.dot.2"].tap()
         XCTAssertEqual(app.staticTexts["onboarding.position"].label, "3 of 5")
-        XCTAssertTrue(app.staticTexts["Planned next · not connected in this build"].exists)
+        XCTAssertTrue(app.staticTexts["Invitation-based rooms · sign-in required"].exists)
         capture(app, name: "onboarding-collaboration-status")
         XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertTrue(app.buttons["onboarding.next"].waitForExistence(timeout: 5))
@@ -4422,7 +4422,7 @@ final class StudioSmokeUITests: XCTestCase {
     func testPNGExportPreviewAndNativeShareCancellation() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        _ = try createProjectIfLibraryIsShown(app)
+        let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 8))
 
@@ -4450,7 +4450,8 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertGreaterThan(exportInkMask(drawnPixels).count, 12, "The actual PNG preview contains no red stroke")
         XCTAssertGreaterThan(try changedPixelCount(blankPixels, drawnPixels), 12,
                              "Drawing did not change the preview decoded from the actual exported PNG")
-        XCTAssertTrue(app.staticTexts["frame_000000.png"].exists)
+        // Exports are named after the project (#185): "Native smoke X" → "Native-smoke-X".
+        XCTAssertTrue(app.staticTexts[projectName.replacingOccurrences(of: " ", with: "-") + "_000000.png"].exists)
         capture(app, name: "png-export-drawn-preview")
         let share = try exportControl("studio.export.share", app: app)
         XCTAssertTrue(share.isEnabled); share.tap()
@@ -4627,7 +4628,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(reopenedAudio.waitForExistence(timeout: 5)); reopenedAudio.tap()
         XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
-        reopened.buttons["studio.audio.timelinePlay"].tap()
+        try disableDefaultAudioLoop(reopened); reopened.buttons["studio.audio.timelinePlay"].tap()
         XCTAssertTrue(reopened.staticTexts["00:09.22"].waitForExistence(timeout: 15), "Saved auditioned sound failed real playback after cold reopen")
         capture(reopened, name: "audio-tag-selected-sound-cold-reopen")
     }
@@ -5103,7 +5104,7 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["studio.audio.close"].tap();app.buttons["studio.redo"].tap()
         openAudio(app);clipCount("2 clips", in: app)
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled);play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled); try disableDefaultAudioLoop(app); play.tap()
         XCTAssertTrue(app.staticTexts["00:00.25"].waitForExistence(timeout: 12), "Actual mixed player did not reach the unchanged clip end")
         app.buttons["studio.audio.close"].tap()
         let save = app.buttons["studio.save"];XCTAssertTrue(save.isHittable);save.tap()
@@ -5140,7 +5141,7 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "audio-bundled-library-two-clips")
         app.buttons["studio.audio.library.close"].tap()
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled); play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled); try disableDefaultAudioLoop(app); play.tap()
         // This is the real AVAudioPlayer completion time for the integrity-pinned
         // 3.063492-second file, not a sleep followed by a fabricated success label.
         XCTAssertTrue(app.staticTexts["00:03.06"].waitForExistence(timeout: 12), "Mixed playback never reached the actual source end")
@@ -7632,7 +7633,8 @@ final class StudioSmokeUITests: XCTestCase {
         try localFilesRoot()
         let savedFolder = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", folderName)).firstMatch
         XCTAssertTrue(savedFolder.waitForExistence(timeout: 8)); XCTAssertTrue(savedFolder.isHittable); savedFolder.tap()
-        let movie = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", "animation")).firstMatch
+        let movie = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@",
+            projectName.replacingOccurrences(of: " ", with: "-"))).firstMatch
         XCTAssertTrue(movie.waitForExistence(timeout: 8)); XCTAssertTrue(movie.isHittable); movie.tap()
         let preview = try imageControl("studio.image.preview", app: app)
         XCTAssertTrue(app.staticTexts["studio.image.dimensions"].label.hasPrefix("1,080 × 1,920 pixels"))
