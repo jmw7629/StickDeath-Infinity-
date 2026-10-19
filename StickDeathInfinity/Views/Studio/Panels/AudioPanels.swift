@@ -420,10 +420,24 @@ private struct StudioAudioWorkspace: View {
             AudioProjectClips(vm: vm, audio: audio, timeline: timeline)
         }
     }
+    /// Result lists up to this size lay out eagerly. A LazyVStack whose few rows
+    /// make the library content about as tall as its viewport can keep
+    /// re-measuring after the keyboard closes and never let the app go idle
+    /// (single-title searches froze the library; 0 and 128+ results did not).
+    private static let eagerResultLimit = 64
     private func catalogueRows(_ catalogue: StudioSoundCatalogue) -> some View {
-        let results = searchMemo.results(catalogue, query: search, category: category, duration: soundDuration, sort: soundSort)
+        let results: [StudioSoundCatalogue.Sound] = searchMemo.results(catalogue, query: search, category: category, duration: soundDuration, sort: soundSort)
             .filter { !favoritesOnly || favoriteSounds.contains($0.id) }
-        return LazyVStack(spacing: 8) {
+        return Group {
+            if results.count <= Self.eagerResultLimit {
+                VStack(spacing: 8) { catalogueRowsContent(results, catalogue: catalogue) }
+            } else {
+                LazyVStack(spacing: 8) { catalogueRowsContent(results, catalogue: catalogue) }
+            }
+        }
+    }
+    @ViewBuilder
+    private func catalogueRowsContent(_ results: [StudioSoundCatalogue.Sound], catalogue: StudioSoundCatalogue) -> some View {
             HStack {
                 Text("\(results.count) matching sounds").font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.audio.search.count")
@@ -498,7 +512,6 @@ private struct StudioAudioWorkspace: View {
                 }.padding(.horizontal, 16)
                 Divider().opacity(0.15)
             }
-        }
     }
     private var timelineControls: some View {
         HStack(spacing: 8) {
