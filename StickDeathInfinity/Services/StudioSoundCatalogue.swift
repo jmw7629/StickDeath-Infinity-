@@ -36,6 +36,14 @@ struct StudioSoundCatalogue: Sendable {
     private struct Manifest: Decodable { let schemaVersion: Int; let sounds: [Sound] }
     let sounds: [Sound]
     private let directory: URL
+    /// Computed once at load: the text each sound is searched by, the sorted
+    /// categories and their sizes. The library re-renders on every timeline
+    /// tick while audio plays, so none of this may be rebuilt per render.
+    private let searchText: [String]
+    let categories: [String]
+    let categoryCounts: [String: Int]
+    /// Distinguishes reloaded catalogues for result memoization.
+    let loadID = UUID()
     static let maximumManifestBytes = 16 * 1024 * 1024
 
     init(directory: URL) throws {
@@ -68,6 +76,9 @@ struct StudioSoundCatalogue: Sendable {
                   source.password == nil, let host = source.host, ["kenney.nl", "opengameart.org"].contains(host) else { throw CatalogueError.invalid }
         }
         sounds = manifest.sounds
+        searchText = manifest.sounds.map { $0.title + " " + $0.category + " " + $0.author + " " + ($0.tags ?? []).joined(separator: " ") }
+        categoryCounts = Dictionary(manifest.sounds.map { ($0.category, 1) }, uniquingKeysWith: +)
+        categories = categoryCounts.keys.sorted()
     }
 
     static func bundled(in bundle: Bundle = .main) throws -> Self {
@@ -97,7 +108,6 @@ struct StudioSoundCatalogue: Sendable {
         guard let directory = bundle.url(forResource: "StudioSounds", withExtension: nil) else { throw CatalogueError.unavailable }
         return try await load(directory: directory)
     }
-    var categories: [String] { Array(Set(sounds.map(\.category))).sorted() }
     /// Library attribution for the shipped file with this SHA-256, or nil for
     /// audio that did not come from the catalogue (#191).
     func attribution(forSHA256 digest: String) -> StudioSoundAttribution? {
@@ -125,11 +135,12 @@ struct StudioSoundCatalogue: Sendable {
     }
     func search(_ query: String, category: String?, duration: DurationFilter = .any, sort: Sort = .catalogue) -> [Sound] {
         let terms = query.prefix(256).split(whereSeparator: \.isWhitespace).map(String.init)
-        let matches = sounds.filter { sound in
-            duration.includes(sound.duration) && (category == nil || sound.category == category) && terms.allSatisfy {
-                (sound.title + " " + sound.category + " " + sound.author + " " + (sound.tags ?? []).joined(separator: " ")).localizedCaseInsensitiveContains($0)
+        let matches = sounds.indices.filter { index in
+            let sound = sounds[index]
+            return duration.includes(sound.duration) && (category == nil || sound.category == category) && terms.allSatisfy {
+                searchText[index].localizedCaseInsensitiveContains($0)
             }
-        }
+        }.map { sounds[$0] }
         guard sort != .catalogue else { return matches }
         return matches.sorted { first, second in
             if sort == .shortest && first.duration != second.duration { return first.duration < second.duration }
@@ -230,5 +241,27 @@ struct StudioSoundFavorites {
         guard let data = try? JSONEncoder().encode(next.sorted()), data.count <= 65_536 else { return false }
         defaults.set(data, forKey: key)
         return true
+    }
+}
+
+/// The last library result list, kept so re-rendering the sound library (for
+/// example on every audio-timeline tick) does not search the catalogue again.
+@MainActor
+final class StudioSoundSearchMemo {
+    private struct Key: Equatable {
+        let catalogue: UUID, query: String, category: String?
+        let duration: StudioSoundCatalogue.DurationFilter, sort: StudioSoundCatalogue.Sort
+    }
+    private var key: Key?
+    private var cached: [StudioSoundCatalogue.Sound] = []
+
+    func results(_ catalogue: StudioSoundCatalogue, query: String, category: String?,
+                 duration: StudioSoundCatalogue.DurationFilter, sort: StudioSoundCatalogue.Sort) -> [StudioSoundCatalogue.Sound] {
+        let next = Key(catalogue: catalogue.loadID, query: query, category: category, duration: duration, sort: sort)
+        if next != key {
+            cached = catalogue.search(query, category: category, duration: duration, sort: sort)
+            key = next
+        }
+        return cached
     }
 }

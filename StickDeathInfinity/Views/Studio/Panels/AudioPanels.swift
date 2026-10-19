@@ -43,6 +43,7 @@ private struct StudioAudioWorkspace: View {
     /// Track whose volume/pan/solo strip is open without a selected clip (#179).
     @State private var mixerTrack: Int?
     private let selectionMemory = StudioAudioSelectionMemory()
+    @State private var searchMemo = StudioSoundSearchMemo()
     private let background = Color(hex: "0D0D12")
 
     var body: some View {
@@ -363,7 +364,7 @@ private struct StudioAudioWorkspace: View {
                                         VStack(alignment: .leading, spacing: 12) {
                                             Image(systemName: "waveform").font(.title2).foregroundColor(.sdStudioActionText)
                                             Text(name).font(.specialElite(15)).multilineTextAlignment(.leading)
-                                            Text("\(catalogue.search("", category: name).count) sounds")
+                                            Text("\(catalogue.categoryCounts[name] ?? 0) sounds")
                                                 .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
                                         }.frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
                                             .padding(14).background(Color.sdRed.opacity(0.06)).cornerRadius(18)
@@ -405,7 +406,7 @@ private struct StudioAudioWorkspace: View {
         }
     }
     private func catalogueRows(_ catalogue: StudioSoundCatalogue) -> some View {
-        let results = catalogue.search(search, category: category, duration: soundDuration, sort: soundSort)
+        let results = searchMemo.results(catalogue, query: search, category: category, duration: soundDuration, sort: soundSort)
             .filter { !favoritesOnly || favoriteSounds.contains($0.id) }
         return LazyVStack(spacing: 8) {
             HStack {
