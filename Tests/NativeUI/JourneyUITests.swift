@@ -247,7 +247,7 @@ final class JourneyUITests: XCTestCase {
                                     "Canvas collapsed to \(visible.size) on \(idiom)")
         let available = availableCanvasArea(app)
         XCTAssertTrue(visible.width >= available.width * 0.75 || visible.height >= available.height * 0.75,
-                      "Canvas \(visible.size) does not fill the available \(available.size) on \(idiom)")
+                      "Canvas \(visible.size) does not fill the available \(available) on \(idiom)")
         return canvas
     }
 
