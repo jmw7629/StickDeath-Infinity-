@@ -2581,6 +2581,7 @@ jobs:
             StickDeathInfinity/Services/StudioVideoAudioImportService.swift \
             StickDeathInfinity/Services/StudioVideoFrameImportService.swift \
             StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            StickDeathInfinity/Models/StudioVideoFraming.swift \
             Tests/SDIInterchange/main.swift \
             -o "$RUNNER_TEMP/sdi-interchange-tests"
           "$RUNNER_TEMP/sdi-interchange-tests" Tests/SDIFixtures
