@@ -41,12 +41,15 @@ permanent votes. Native UI includes real video playback, selection and errors.
 Still required: moderation/appeals UI, finalized records/badges, publication service
 integration, account directory picker, abuse analysis and final service verification.
 
-`video-feed.sql` implements an approved-video wall, bounded25-item pages (40-page
-cap), Recent/Following/Featured/Trending ranking, idempotent likes/follows, creator
+`video-feed.sql` implements an approved-video wall, bounded 25-item pages,
+Recent/Following/Featured/Trending ranking, idempotent likes/follows, creator
 blocks and categorized reports. Only the publishing service inserts feed posts;
 metadata and media ownership/approval/digest are checked on reads and reactions.
-Trending uses7-day likes; pages use offset ranking and native identity deduplication,
-so concurrent ranking changes require refresh rather than a snapshot guarantee.
+Trending uses 7-day likes. Paging is keyset-only (#220): `sdi_feed_page` in
+`feed-integrity.sql` orders every ranking by (score, published_at, id) and continues
+strictly after an opaque cursor under the page-0 snapshot instant, so equal
+timestamps tie-break on id and nothing repeats or skips; there is no offset path and
+no server page cap. `sdi_feed_action('list')` answers only the first page.
 Native UI uses actual AVPlayer playback and public URL sharing; no text post/comment
 composer is exposed. Creator-permitted file export, moderation processing and
 publication ingestion remain implementation work. Nothing has been deployed.
@@ -194,6 +197,11 @@ transaction; if approval lapsed or cancellation raced the copy, the job becomes
 export permission is the new `render_reviews.allow_export` field with the
 `sdi_export_consent` setter (default off, not part of approval evidence). Creators
 queue the feed destination through `sdi_creator_review('publish_feed', ...)`.
+Poster thumbnails (#217): finish optionally records `poster_url`, `poster_digest`
+(SHA-256) and `poster_bytes` (1..262144) on `sdi_watch_media`, all three or none;
+the worker extracts one JPEG frame from the digest-verified copy. `sdi_feed_page`
+returns `poster_url` (null when absent; clients show a placeholder) and both removal
+claims return the poster so it is deleted with its video.
 
 `rooms-v2.sql` adds the shared project reference, title and `view`/`edit` permissions
 to `sdi_rooms` (owner-set, revisioned), `editor`/`viewer` member roles with an

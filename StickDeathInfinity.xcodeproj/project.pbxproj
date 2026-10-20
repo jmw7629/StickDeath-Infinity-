@@ -211,6 +211,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		38E99945C7E5CE4F588CEC7F /* OnboardingPolicyConsentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B14ED7A1B3901E426FC6AA67 /* OnboardingPolicyConsentView.swift */; };
 		86C15CBA2C1094034295E61A /* AdminProviderHealthSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CB674439D891170F920A0AF /* AdminProviderHealthSection.swift */; };
 		F2DCD53E449052CB0DBAE469 /* StudioVideoFraming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */; };
+		94531CF7ECA8D1C404FEAEBA /* FeedPosterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D94A7E702172A69FAED3A451 /* FeedPosterView.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -431,6 +432,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		B14ED7A1B3901E426FC6AA67 /* OnboardingPolicyConsentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift"; sourceTree = SOURCE_ROOT; };
 		0CB674439D891170F920A0AF /* AdminProviderHealthSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Admin/AdminProviderHealthSection.swift"; sourceTree = SOURCE_ROOT; };
 		648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioVideoFraming.swift"; sourceTree = SOURCE_ROOT; };
+		D94A7E702172A69FAED3A451 /* FeedPosterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Home/FeedPosterView.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -801,6 +803,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		CC02A86D43D4A1535D0F82CE /* Home */ = {
 			isa = PBXGroup;
 			children = (
+				D94A7E702172A69FAED3A451 /* FeedPosterView.swift */,
 				B32B62FCB6CB5F06F86A8E1C /* CreatePostView.swift */,
 				8342660DAF7FA877D246B033 /* HomeFeedView.swift */,
 			);
@@ -1116,6 +1119,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				94531CF7ECA8D1C404FEAEBA /* FeedPosterView.swift in Sources */,
 				F2DCD53E449052CB0DBAE469 /* StudioVideoFraming.swift in Sources */,
 				86C15CBA2C1094034295E61A /* AdminProviderHealthSection.swift in Sources */,
 				38E99945C7E5CE4F588CEC7F /* OnboardingPolicyConsentView.swift in Sources */,

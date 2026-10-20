@@ -113,7 +113,7 @@ Daily generation, if enabled, produces **private drafts** that require the owner
 
 ### 5.1 Feed (Candidate)
 
-Approved renders become visible feed posts only through the service-role feed publication path after `release_allowed(review, version, digest, 'feed')` succeeds; the host adapter is `backend/publishing/feed_publisher.py` (verifies the bytes' digest before copying, removals first). Likes (no self-likes), follows, blocks and categorized reports are idempotent; suspended creators are excluded from listings. File export of a post requires the creator's explicit export permission (default off). Paging is offset-based with a 40-page cap; cursor paging remains open (#220).
+Approved renders become visible feed posts only through the service-role feed publication path after `release_allowed(review, version, digest, 'feed')` succeeds; the host adapter is `backend/publishing/feed_publisher.py` (verifies the bytes' digest before copying, removals first). Likes (no self-likes), follows, blocks and categorized reports are idempotent; suspended creators are excluded from listings. File export of a post requires the creator's explicit export permission (default off). Paging is keyset-based (`sdi_feed_page`, opaque cursor under a snapshot instant, id tiebreak; #220). Each published copy carries a worker-extracted, digest-recorded poster thumbnail when one could be produced (#217).
 
 ### 5.2 Challenges (Candidate)
 

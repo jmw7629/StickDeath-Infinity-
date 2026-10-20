@@ -102,6 +102,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         is Load.Loaded -> {
             if (feed.value.posts.isEmpty()) Text("No approved videos here yet.")
             feed.value.posts.forEach { post ->
+                FeedPosterImage(post)
                 Text("${post.title.ifBlank { "Untitled" }} — ${post.creatorName}")
                 if (post.caption.isNotBlank()) Text(post.caption, style = MaterialTheme.typography.bodySmall)
                 Row(verticalAlignment = Alignment.CenterVertically) {

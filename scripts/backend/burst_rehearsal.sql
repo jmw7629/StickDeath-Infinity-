@@ -103,3 +103,42 @@ begin
  select count(*) into stored from sdi_private.upload_registrations where upload_registrations.creator=creator;
  insert into sdi_burst.results values('upload duplicate retries','sequential',10,dup_ok,0,dup_other,'stored registrations for creator: '||stored);
 end $$;
+
+-- Publication requests: daily quota (resource_quotas.publish_requests, default 30)
+-- through the service insert path, then 10 duplicate enqueues of one approved render.
+do $$
+#variable_conflict use_variable
+declare creator uuid; reviewer uuid; review uuid; digest text; r jsonb; i integer; ok integer:=0; lim integer:=0; oth integer:=0; message text;
+ dup_ok integer:=0; dup_other integer:=0; stored integer;
+begin
+ creator:=sdi_test.user('burst-publisher'); reviewer:=sdi_test.admin('burst-reviewer',false,array['reviews']);
+ for i in 1..40 loop
+  digest:=encode(sha256(convert_to('burst-publish-'||i,'UTF8')),'hex');
+  insert into sdi_private.render_reviews(creator,title,source_revision,render_digest,preview_url,preview_expires_at,consent_version,rights_summary,rights_cleared,destinations)
+  values(creator,'Burst '||i,'rev1',digest,'https://intake.example.test/b'||i,clock_timestamp()+interval '1 day','terms-v1','Own work',true,array['feed']) returning id into review;
+  insert into sdi_private.render_artifacts(review_id,version,render_digest,object_key,byte_count,title,description,made_for_kids,expires_at)
+  values(review,1,digest,'burst'||i||'.mp4',1024,'Burst '||i,'',false,clock_timestamp()+interval '24 hours');
+  begin
+   insert into sdi_private.publish_jobs(review_id,review_version,render_digest,creator,destination,state) values(review,1,digest,creator,'feed','published');
+   ok:=ok+1;
+  exception when raise_exception then
+   get stacked diagnostics message=message_text;
+   if message='Daily publishing limit reached. Try again tomorrow.' then lim:=lim+1; else oth:=oth+1; end if;
+  end;
+ end loop;
+ insert into sdi_burst.results values('publish requests','sequential',40,ok,lim,oth,'quota per_day='||sdi_private.quota('publish_requests'));
+ -- Duplicates of a render that already has its job (the first one) never add a row.
+ select r2.id,r2.render_digest into review,digest from sdi_private.render_reviews r2 where r2.creator=creator order by r2.created_at,r2.id limit 1;
+ perform sdi_test.login(reviewer,'aal2');
+ r:=sdi_private.review_action('decide',review,digest,1,'approved','Burst rehearsal approval.');
+ perform sdi_test.login(creator);
+ for i in 1..10 loop
+  begin
+   r:=sdi_private.publish_action('enqueue',review,'feed');
+   if r->>'status'='queued' then dup_ok:=dup_ok+1; else dup_other:=dup_other+1; end if;
+  exception when raise_exception then dup_other:=dup_other+1;
+  end;
+ end loop;
+ select count(*) into stored from sdi_private.publish_jobs j where j.review_id=review;
+ insert into sdi_burst.results values('publish duplicate enqueues','sequential',10,dup_ok,0,dup_other,'stored jobs for the render: '||stored);
+end $$;

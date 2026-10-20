@@ -5,10 +5,13 @@ network, no provider, no device.
     python3 -m unittest discover -s backend/tests -t .
 """
 import contextlib
+import fcntl
 import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -19,7 +22,7 @@ from backend.ops import report as ops_report
 from backend.ops import sweeps
 from backend.publishing import destinations
 from backend.publishing.destinations import DestinationConfig, MarketingWorker, Post, default_registry
-from backend.publishing.feed_publisher import FeedJobAPI, FeedPublisher
+from backend.publishing.feed_publisher import MAX_POSTER_BYTES, FeedJobAPI, FeedPublisher, ffmpeg_poster, poster_instant
 from backend.publishing.worker import JobAPI
 
 
@@ -91,8 +94,105 @@ class FeedPublisherTests(unittest.TestCase):
         job.update(overrides)
         return job
 
-    def publisher(self, api, host=None, duration=12.5):
-        return FeedPublisher(api, self.root, host or FakeHost(), lambda path: duration)
+    def publisher(self, api, host=None, duration=12.5, poster=None):
+        def no_poster(source, seconds, destination):
+            raise FileNotFoundError("no extractor in this fixture")
+        return FeedPublisher(api, self.root, host or FakeHost(), lambda path: duration, extract_poster=poster or no_poster)
+
+    @staticmethod
+    def jpeg_writer(body=b"\x00" * 64, calls=None):
+        def write(source, seconds, destination):
+            if calls is not None:
+                calls.append((Path(source).read_bytes(), seconds))
+            Path(destination).write_bytes(b"\xff\xd8\xff\xe0" + body + b"\xff\xd9")
+        return write
+
+    def test_poster_is_extracted_from_the_verified_copy_hashed_and_reported(self):
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})
+        host, calls = FakeHost(), []
+        result = self.publisher(api, host, duration=0.8, poster=self.jpeg_writer(calls=calls)).run_once()
+        self.assertEqual(result["state"], "published")
+        self.assertEqual(calls, [(self.payload, 0.8)])   # the verified file, measured duration
+        poster_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 64 + b"\xff\xd9"
+        self.assertEqual([p[0] for p in host.puts], ["%s.mp4" % self.digest, "%s.poster.jpg" % self.digest])
+        self.assertEqual(host.puts[1][1:], (poster_bytes, hashlib.sha256(poster_bytes).hexdigest()))
+        finish = api.calls[-1][1]
+        self.assertEqual(finish["poster_url"], "https://cdn.example.test/feed/%s.poster.jpg" % self.digest)
+        self.assertEqual(finish["poster_digest"], hashlib.sha256(poster_bytes).hexdigest())
+        self.assertEqual(finish["poster_bytes"], len(poster_bytes))
+        self.assertEqual(result["poster"]["url"], finish["poster_url"])
+        self.assertEqual([p.name for p in (self.root / ".feed-worker").iterdir()], ["worker.lock"])   # staging removed
+
+    def test_missing_oversized_or_invalid_poster_publishes_the_video_without_one(self):
+        def oversize(source, seconds, destination):
+            Path(destination).write_bytes(b"\xff\xd8\xff" + b"\x00" * (256 * 1024) + b"\xff\xd9")
+        def truncated(source, seconds, destination):
+            Path(destination).write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 10)
+        def nothing(source, seconds, destination):
+            pass
+        for extractor, fragment in ((oversize, "size"), (truncated, "complete JPEG"), (nothing, "could not be extracted"), (None, "could not be extracted")):
+            api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})
+            host = FakeHost()
+            result = self.publisher(api, host, poster=extractor).run_once()
+            self.assertEqual(result["state"], "published", fragment)
+            self.assertIsNone(result["poster"])
+            self.assertIn(fragment, result["poster_reason"])
+            self.assertEqual(len(host.puts), 1)
+            self.assertNotIn("poster_url", api.calls[-1][1])
+
+    def test_lost_lease_removes_the_orphan_poster_too(self):
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [False]})
+        host = FakeHost()
+        result = self.publisher(api, host, poster=self.jpeg_writer()).run_once()
+        self.assertEqual(result["state"], "reconcile")
+        self.assertTrue(result["orphan_removed"])
+        self.assertEqual(host.deletes, [result["url"], "https://cdn.example.test/feed/%s.poster.jpg" % self.digest])
+
+    def test_removal_deletes_the_poster_and_needs_both_confirmed(self):
+        removal = {"source": "removal_job", "job": str(uuid.uuid4()), "lease": str(uuid.uuid4()), "url": "https://cdn.example.test/feed/x.mp4",
+                   "poster_url": "https://cdn.example.test/feed/x.poster.jpg", "digest": self.digest}
+        api = FakeAPI({"removal_claim": [removal], "removal_finish": [True]})
+        host = FakeHost()
+        self.assertEqual(self.publisher(api, host).run_once()["state"], "removed")
+        self.assertEqual(host.deletes, [removal["url"], removal["poster_url"]])
+
+        class PosterStuck(FakeHost):
+            def delete(self, url):
+                self.deletes.append(url)
+                return not url.endswith(".jpg")
+        api = FakeAPI({"removal_claim": [removal], "removal_finish": [True]})
+        self.assertEqual(self.publisher(api, PosterStuck()).run_once()["state"], "removal_unconfirmed")
+        self.assertFalse(api.calls[-1][1]["confirmed"])
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    def test_real_ffmpeg_poster_is_deterministic_and_bounded(self):
+        video = self.root / "real.mp4"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=12:duration=3",
+                        "-pix_fmt", "yuv420p", "-c:v", "mpeg4", "-y", str(video)], check=True)
+        first, second = self.root / ".a.jpg", self.root / ".b.jpg"
+        ffmpeg_poster(video, 3.0, first)
+        ffmpeg_poster(video, 3.0, second)
+        data = first.read_bytes()
+        self.assertEqual(data, second.read_bytes())
+        self.assertTrue(data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"))
+        self.assertLessEqual(len(data), MAX_POSTER_BYTES)
+        self.assertEqual(poster_instant(3.0), 1.0)
+        self.assertEqual(poster_instant(0.5), 0.25)
+        # Bounded to 640 px on the long edge: the SOF0 frame header holds height then width.
+        sof = data.index(b"\xff\xc0")
+        height, width = int.from_bytes(data[sof + 5:sof + 7], "big"), int.from_bytes(data[sof + 7:sof + 9], "big")
+        self.assertEqual((width, height), (640, 360))
+
+    def test_second_executor_is_busy_and_claims_nothing(self):
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [{"empty": True}]})
+        publisher = self.publisher(api)
+        state = self.root / ".feed-worker"
+        state.mkdir(mode=0o700)
+        with (state / "worker.lock").open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(publisher.run_once(), {"state": "busy"})
+            self.assertEqual(api.calls, [])
+        self.assertEqual(publisher.run_once(), {"state": "idle"})
 
     def test_publishes_verified_bytes_and_reports_the_hosted_url(self):
         api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})

@@ -223,6 +223,35 @@ private let cursorA = "0|2026-10-12T20:33:11.123456Z|11111111-1111-4111-8111-111
             try require(timeline.nextCursor == nil && timeline.asOf == nil, "reset clears cursor")
         }
 
+        await test("poster thumbnails decode from the page and fall back to a placeholder when absent or unsafe") {
+            let transport = FakeTransport()
+            let client = FeedClient(gateway: CommunityGateway(transport: transport), cache: .init(name: "feed-poster", directory: root.appendingPathComponent("feed-poster")))
+            let withPoster = postJSON(postA, creator: creatorA, likes: 0).dropLast() + #","poster_url":"https://cdn.example/feed/a.poster.jpg"}"#
+            let nullPoster = postJSON(postB, creator: creatorB, likes: 0).dropLast() + #","poster_url":null}"#
+            transport.replies = [.success(#"{"posts":[\#(withPoster),\#(nullPoster)],"has_more":true,"next_cursor":"\#(cursorA)","as_of":"2026-10-13T01:00:00.123456+00:00","download_requires_plan":true}"#)]
+            let page = try await client.page(.recent, page: 0, account: creatorA)
+            try require(page.posts[0].poster == .image(URL(string: "https://cdn.example/feed/a.poster.jpg")!), "recorded poster shown")
+            try require(page.posts[1].poster == .placeholder, "null poster shows the placeholder")
+            try require(page.cursor == cursorA, "keyset cursor carried with posters")
+            try require(FeedPoster.resolve("http://cdn.example/a.jpg") == .placeholder, "insecure poster refused")
+            try require(FeedPoster.resolve("https://user:pw@cdn.example/a.jpg") == .placeholder, "credentialed poster refused")
+            try require(FeedPoster.resolve("https://cdn.example/" + String(repeating: "a", count: 2048)) == .placeholder, "oversized poster URL refused")
+            let legacy = try CommunityCoding.decoder().decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0).utf8))
+            try require(legacy.poster == .placeholder, "older listing without the field shows the placeholder")
+        }
+
+        await test("later pages send only the opaque cursor and snapshot, never a page offset") {
+            let transport = FakeTransport()
+            let client = FeedClient(gateway: CommunityGateway(transport: transport), cache: .init(name: "feed-keyset", directory: root.appendingPathComponent("feed-keyset")))
+            transport.replies = [.success(#"{"posts":[\#(postJSON(postB, creator: creatorB, likes: 0))],"has_more":false,"next_cursor":null,"as_of":"s0","download_requires_plan":true}"#)]
+            _ = try await client.page(.trending, page: 1, account: creatorA, asOf: "s0", cursor: cursorA)
+            let params = transport.calls.last?.params ?? [:]
+            try require(transport.calls.last?.name == "sdi_feed_page", "keyset RPC")
+            try require(params["page_cursor"] as? String == cursorA && params["as_of"] as? String == "s0" && params["category"] as? String == "trending", "cursor and snapshot sent")
+            try require(params["page"] == nil && params["offset"] == nil, "no offset paging parameter")
+            do { _ = try await client.page(.recent, page: 2, account: creatorA, asOf: "s0", cursor: nil); throw Failure(description: "page without cursor sent") } catch CommunityError.stale {}
+        }
+
         await test("creator totals come only from a complete server reply") {
             let transport = FakeTransport()
             let profile = ProfileClient(gateway: CommunityGateway(transport: transport))

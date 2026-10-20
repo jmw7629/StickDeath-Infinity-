@@ -336,7 +336,7 @@ revoke all on function public.sdi_war_action(text,uuid,uuid,uuid,text) from publ
 grant execute on function public.sdi_war_action(text,uuid,uuid,uuid,text) to authenticated;
 commit;
 
--- ===== video-feed.sql (sha256 cb00907937a0bc7e) =====
+-- ===== video-feed.sql (sha256 304c783b4e229418) =====
 -- Unapplied candidate. Requires war-room.sql approved-media ownership columns.
 begin;
 create table sdi_private.feed_posts (
@@ -381,11 +381,9 @@ alter table sdi_private.feed_reports enable row level security;
 alter table sdi_private.feed_budget enable row level security;
 revoke all on sdi_private.feed_posts,sdi_private.feed_likes,sdi_private.feed_follows,sdi_private.feed_blocks,sdi_private.feed_reports,sdi_private.feed_budget from public,anon,authenticated;
 -- Publication service alone inserts approved posts. API returns only eligible video.
--- Paging is snapshot-stable (#217, #220): page 0 returns an `as_of` instant and
--- later pages sent with that instant exclude posts published after it, so new
--- publications shift nothing until the member refreshes. A snapshot older than a
--- day is refused. Trending's like-based rank is computed at request time and is
--- documented as refresh-based, not frozen.
+-- This base listing answers the first page only (no offset paging, #220); the
+-- install replaces it in feed-integrity.sql, whose sdi_feed_page pages by keyset
+-- cursor under a snapshot instant. A snapshot older than a day is refused.
 create function sdi_private.feed_action(action text, post_id uuid default null, target uuid default null,
  enabled boolean default true, category text default 'recent', page integer default 0, reason text default null,
  as_of timestamptz default null)
@@ -399,7 +397,7 @@ begin
  started_at=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then clock_timestamp() else feed_budget.started_at end returning attempts into n;
  if n>60 then return jsonb_build_object('error','Please wait before trying again.'); end if;
  if action='list' then
-  if page<0 or page>39 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
+  if page is distinct from 0 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
   snapshot:=least(coalesce(as_of,clock_timestamp()),clock_timestamp());
   if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
@@ -415,7 +413,7 @@ begin
    and (category<>'featured' or p.featured)
    and (category<>'following' or exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator))
    order by case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id and l.created_at>clock_timestamp()-interval '7 days') else 0 end desc,
-    p.published_at desc,p.id desc limit 25 offset page*25
+    p.published_at desc,p.id desc limit 25
   ) item;
   return jsonb_build_object('posts',items,'has_more',jsonb_array_length(items)=25,'as_of',snapshot);
  end if;
@@ -2214,7 +2212,7 @@ revoke all on function public.sdi_admin_overview() from public,anon;
 grant execute on function public.sdi_admin_overview() to authenticated;
 commit;
 
--- ===== feed-integrity.sql (sha256 0713701e1fbfaccb) =====
+-- ===== feed-integrity.sql (sha256 06e1e699c2a6e065) =====
 -- Unapplied candidate. Install after admin-overview.sql (needs video-feed, moderation,
 -- war-room, admin-users, publishing-jobs and upload-registration).
 -- Closes feed/War Room integrity gaps: self-likes, restricted creators in listings,
@@ -2237,41 +2235,28 @@ begin
  return new;
 end $$;
 
--- Same signature as video-feed.sql (snapshot-stable paging through `as_of`, #217/#220).
+-- Same signature as video-feed.sql. 'list' is a first-page alias of feed_page below
+-- (keyset paging, #217/#220); reactions, follows, blocks and reports are unchanged.
 create or replace function sdi_private.feed_action(action text, post_id uuid default null, target uuid default null,
  enabled boolean default true, category text default 'recent', page integer default 0, reason text default null,
  as_of timestamptz default null)
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare actor_id uuid:=auth.uid(); entry sdi_private.feed_posts; n integer; items jsonb; snapshot timestamptz;
+declare actor_id uuid:=auth.uid(); entry sdi_private.feed_posts; n integer;
 begin
  if actor_id is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor_id and not is_anonymous) then
   return jsonb_build_object('error','Sign in with a full account.'); end if;
+ -- Listing is keyset-only (#220): the offset path and its 40-page cap are gone.
+ -- 'list' answers the first page through feed_page (which meters the call once);
+ -- every later page must use sdi_feed_page with the returned cursor.
+ if action='list' then
+  if page is distinct from 0 then
+   return jsonb_build_object('error','Feed pages after the first use sdi_feed_page with the returned cursor.'); end if;
+  return sdi_private.feed_page(category,null,as_of);
+ end if;
  insert into sdi_private.feed_budget values(actor_id,clock_timestamp(),1)
  on conflict(actor) do update set attempts=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then 1 else feed_budget.attempts+1 end,
  started_at=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then clock_timestamp() else feed_budget.started_at end returning attempts into n;
  if n>60 then return jsonb_build_object('error','Please wait before trying again.'); end if;
- if action='list' then
-  if page<0 or page>39 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
-  snapshot:=least(coalesce(as_of,clock_timestamp()),clock_timestamp());
-  if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
-  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
-   select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,
-    (select count(*) from sdi_private.feed_likes l where l.post=p.id) as likes,
-    exists(select 1 from sdi_private.feed_likes l where l.post=p.id and l.actor=actor_id) as liked,
-    exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator) as following
-   from sdi_private.feed_posts p join public.sdi_watch_media m on m.id=p.media_id
-   where p.visible and m.approved and m.owner_id=p.creator and m.render_digest is not null
-   and p.published_at<=snapshot
-   and (m.expires_at is null or m.expires_at>clock_timestamp())
-   and not sdi_private.creator_restricted(p.creator)
-   and not exists(select 1 from sdi_private.feed_blocks b where (b.actor=actor_id and b.creator=p.creator) or (b.actor=p.creator and b.creator=actor_id))
-   and (category<>'featured' or p.featured)
-   and (category<>'following' or exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator))
-   order by case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id and l.created_at>clock_timestamp()-interval '7 days') else 0 end desc,
-    p.published_at desc,p.id desc limit 25 offset page*25
-  ) item;
-  return jsonb_build_object('posts',items,'has_more',jsonb_array_length(items)=25,'as_of',snapshot);
- end if;
  if action in('follow','block') then
   if target is null or target=actor_id or not exists(select 1 from auth.users where id=target) then return jsonb_build_object('error','Creator unavailable.'); end if;
   if action='block' then
@@ -2450,6 +2435,8 @@ for each row execute function sdi_private.retain_artifact_after_approval();
 -- instant; likes recorded after the snapshot do not move rows. An unlike or a
 -- moderation removal can still lower or drop a row: that row is simply absent or
 -- appears once more further down, which the client de-duplicates by identity.
+-- `poster_url` is the worker-extracted thumbnail of the hosted copy (columns added
+-- by feed-publication.sql, #217) or null, in which case clients show a placeholder.
 -- `can_download` is the creator's export permission AND a current paid
 -- entitlement of the viewer (billing.sql); the Free plan cannot download (#219).
 create index if not exists feed_posts_recent on sdi_private.feed_posts(published_at desc,id desc) where visible;
@@ -2480,7 +2467,7 @@ begin
  if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
  paid:=exists(select 1 from sdi_private.entitlements e where e.user_id=actor_id);
  with eligible as (
-  select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,
+  select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,m.poster_url,
    case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id
     and l.created_at>snapshot-interval '7 days' and l.created_at<=snapshot) else 0 end::bigint as score
   from sdi_private.feed_posts p join public.sdi_watch_media m on m.id=p.media_id
@@ -2501,7 +2488,7 @@ begin
  select count(*)::integer,
   coalesce(jsonb_agg(jsonb_build_object('id',x.id,'creator',x.creator,'creator_name',x.creator_name,'caption',x.caption,
    'published_at',x.published_at,'allow_export',x.allow_export,'can_download',x.allow_export and paid,'title',x.title,'url',x.url,
-   'score',x.score,
+   'poster_url',x.poster_url,'score',x.score,
    'likes',(select count(*) from sdi_private.feed_likes l where l.post=x.id),
    'liked',exists(select 1 from sdi_private.feed_likes l where l.post=x.id and l.actor=actor_id),
    'following',exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=x.creator))
@@ -2549,7 +2536,7 @@ revoke all on function public.sdi_creator_stats(uuid) from public,anon;
 grant execute on function public.sdi_creator_stats(uuid) to authenticated;
 commit;
 
--- ===== feed-publication.sql (sha256 947055bb143f9ac2) =====
+-- ===== feed-publication.sql (sha256 7f3b4fddcf47e4ea) =====
 -- Unapplied candidate. Install after feed-integrity.sql.
 -- Publication path for the 'feed' destination. Only the publishing service claims
 -- and finishes feed jobs; every claim, renewal and finish re-evaluates
@@ -2562,6 +2549,15 @@ begin;
 alter table sdi_private.render_reviews add column allow_export boolean not null default false;
 alter table public.sdi_watch_media add column review_id uuid references sdi_private.render_reviews(id);
 create unique index watch_media_render_digest on public.sdi_watch_media(render_digest) where render_digest is not null;
+-- Poster thumbnail (#217): one JPEG frame the publishing worker extracts from the
+-- digest-verified copy, hosted beside it. All three fields or none; bounded size.
+-- A post without a poster shows the client's placeholder; nothing is invented.
+alter table public.sdi_watch_media add column poster_url text check(poster_url ~ '^https://' and length(poster_url)<=2048),
+ add column poster_digest text check(poster_digest ~ '^[0-9a-f]{64}$'),
+ add column poster_bytes integer check(poster_bytes between 1 and 262144),
+ add constraint watch_media_poster_complete check((poster_url is null)=(poster_digest is null) and (poster_url is null)=(poster_bytes is null));
+-- A hosted poster that must be removed with its video before the media row exists.
+alter table sdi_private.publish_jobs add column poster_url text check(poster_url ~ '^https://' and length(poster_url)<=2048);
 create function sdi_private.export_consent(review uuid,version bigint,allowed boolean) returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews;
@@ -2638,7 +2634,10 @@ end $$;
 -- Finish inserts the approved public rendition and the visible post atomically.
 -- If approval lapsed or cancellation raced the copy, the hosted copy is already
 -- public, so the job becomes removal_pending for the feed removal worker.
-create function sdi_private.feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null) returns boolean
+-- The optional poster (#217) is all three of URL, SHA-256 and byte count or none;
+-- a partial or out-of-bounds poster is refused like an invalid video URL.
+create function sdi_private.feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null,
+ poster_url text default null,poster_digest text default null,poster_bytes integer default null) returns boolean
 language plpgsql security definer set search_path='' as $$
 declare j sdi_private.publish_jobs; a sdi_private.render_artifacts; r sdi_private.render_reviews; media uuid; name text;
 begin
@@ -2652,25 +2651,29 @@ begin
   return true;
  end if;
  if url is null or url !~ '^https://' or length(url)>2048 or duration is null or duration<=0 or duration>3600 then return false;end if;
+ if not coalesce((poster_url is null and poster_digest is null and poster_bytes is null)
+  or (poster_url ~ '^https://' and length(poster_url)<=2048 and poster_url<>url and poster_digest ~ '^[0-9a-f]{64}$' and poster_bytes between 1 and 262144),false) then
+  return false;end if;
  if j.state='cancel_requested' or not sdi_private.release_allowed(j.review_id,j.review_version,j.render_digest,'feed') then
   -- The copy step is over, so the lease is released and removal may start at once.
-  update sdi_private.publish_jobs set state='removal_pending',provider_id='feed:'||j.render_digest,result_url=url,lease=null,lease_expires=null,
+  update sdi_private.publish_jobs set state='removal_pending',provider_id='feed:'||j.render_digest,result_url=url,poster_url=feed_publish_finish.poster_url,lease=null,lease_expires=null,
    last_error='Hosted copy must be removed: approval or consent changed before release.',updated_at=clock_timestamp() where id=j.id;
   return true;
  end if;
  select * into a from sdi_private.render_artifacts where review_id=j.review_id and version=j.review_version;
  select * into r from sdi_private.render_reviews where id=j.review_id;
  select left(coalesce(nullif(trim(raw_user_meta_data->>'username'),''),'Member'),100) into name from auth.users where id=j.creator;
- insert into public.sdi_watch_media(title,url,duration,approved,owner_id,render_digest,review_id)
- values(left(a.title,200),url,duration,true,j.creator,j.render_digest,j.review_id)
+ insert into public.sdi_watch_media(title,url,duration,approved,owner_id,render_digest,review_id,poster_url,poster_digest,poster_bytes)
+ values(left(a.title,200),url,duration,true,j.creator,j.render_digest,j.review_id,poster_url,poster_digest,poster_bytes)
  on conflict(render_digest) where render_digest is not null do update set title=excluded.title,url=excluded.url,duration=excluded.duration,
-  approved=true,owner_id=excluded.owner_id,review_id=excluded.review_id,expires_at=null
+  approved=true,owner_id=excluded.owner_id,review_id=excluded.review_id,expires_at=null,
+  poster_url=excluded.poster_url,poster_digest=excluded.poster_digest,poster_bytes=excluded.poster_bytes
  returning id into media;
  insert into sdi_private.feed_posts(media_id,creator,creator_name,caption,visible,allow_export)
  values(media,j.creator,name,left(a.description,2000),true,r.allow_export)
  on conflict(media_id) do update set creator=excluded.creator,creator_name=excluded.creator_name,caption=excluded.caption,
   visible=true,allow_export=excluded.allow_export,published_at=clock_timestamp();
- update sdi_private.publish_jobs set state='published',provider_id='feed:'||media::text,result_url=url,phase='release',updated_at=clock_timestamp() where id=j.id;
+ update sdi_private.publish_jobs set state='published',provider_id='feed:'||media::text,result_url=url,poster_url=feed_publish_finish.poster_url,phase='release',updated_at=clock_timestamp() where id=j.id;
  return true;
 end $$;
 -- Removal worker for hosted feed copies: moderation removals (removal_jobs) and
@@ -2679,7 +2682,7 @@ alter table sdi_private.removal_jobs add column attempts integer not null defaul
 alter table sdi_private.removal_jobs add column lease uuid;
 alter table sdi_private.removal_jobs add column lease_expires timestamptz;
 create function sdi_private.feed_removal_claim() returns jsonb language plpgsql security definer set search_path='' as $$
-declare j sdi_private.publish_jobs; d sdi_private.removal_jobs; target text;
+declare j sdi_private.publish_jobs; d sdi_private.removal_jobs; target text; poster text;
 begin
  select * into j from sdi_private.publish_jobs where state='removal_pending' and destination='feed' and result_url is not null
   and removal_attempts<5 and (lease_expires is null or lease_expires<clock_timestamp()-interval '60 seconds')
@@ -2687,17 +2690,17 @@ begin
  if found then
   update sdi_private.publish_jobs set lease=gen_random_uuid(),lease_expires=clock_timestamp()+interval '2 minutes',
    removal_attempts=removal_attempts+1,updated_at=clock_timestamp() where id=j.id returning * into j;
-  return jsonb_build_object('source','publish_job','job',j.id,'lease',j.lease,'url',j.result_url,'digest',j.render_digest);
+  return jsonb_build_object('source','publish_job','job',j.id,'lease',j.lease,'url',j.result_url,'poster_url',j.poster_url,'digest',j.render_digest);
  end if;
  select rj.* into d from sdi_private.removal_jobs rj join public.sdi_watch_media m on m.id=rj.media_id
   where rj.state in('pending','failed') and rj.attempts<5 and m.review_id is not null
   and (rj.lease_expires is null or rj.lease_expires<clock_timestamp()-interval '60 seconds')
   order by rj.created_at for update of rj skip locked limit 1;
  if not found then return jsonb_build_object('empty',true);end if;
- select url into target from public.sdi_watch_media where id=d.media_id;
+ select url,poster_url into target,poster from public.sdi_watch_media where id=d.media_id;
  update sdi_private.removal_jobs set state='running',lease=gen_random_uuid(),lease_expires=clock_timestamp()+interval '2 minutes',attempts=attempts+1
   where id=d.id returning * into d;
- return jsonb_build_object('source','removal_job','job',d.id,'lease',d.lease,'url',target,'digest',d.render_digest);
+ return jsonb_build_object('source','removal_job','job',d.id,'lease',d.lease,'url',target,'poster_url',poster,'digest',d.render_digest);
 end $$;
 create function sdi_private.feed_removal_finish(source text,job uuid,token uuid,confirmed boolean) returns boolean
 language plpgsql security definer set search_path='' as $$
@@ -2705,7 +2708,7 @@ begin
  if confirmed is null then return false;end if;
  if source='publish_job' then
   update sdi_private.publish_jobs set state=case when confirmed then 'cancelled' else 'removal_pending' end,
-   result_url=case when confirmed then null else result_url end,
+   result_url=case when confirmed then null else result_url end,poster_url=case when confirmed then null else poster_url end,
    last_error=case when confirmed then 'Hosted feed copy removed; originals preserved.' else 'Feed copy removal not confirmed; bounded retry pending.' end,
    lease=null,lease_expires=null,updated_at=clock_timestamp()
   where id=job and lease=token and state='removal_pending' and destination='feed';
@@ -2717,19 +2720,20 @@ begin
  end if;
  return false;
 end $$;
-revoke all on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text),
+revoke all on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  sdi_private.feed_removal_claim(),sdi_private.feed_removal_finish(text,uuid,uuid,boolean) from public,anon,authenticated;
-grant execute on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text),
+grant execute on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  sdi_private.feed_removal_claim(),sdi_private.feed_removal_finish(text,uuid,uuid,boolean) to service_role;
 create function public.sdi_feed_publish_claim() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.feed_publish_claim()$$;
-create function public.sdi_feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null) returns boolean
-language sql security invoker set search_path='' as $$select sdi_private.feed_publish_finish(job,token,url,duration,failure)$$;
+create function public.sdi_feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null,
+ poster_url text default null,poster_digest text default null,poster_bytes integer default null) returns boolean
+language sql security invoker set search_path='' as $$select sdi_private.feed_publish_finish(job,token,url,duration,failure,poster_url,poster_digest,poster_bytes)$$;
 create function public.sdi_feed_removal_claim() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.feed_removal_claim()$$;
 create function public.sdi_feed_removal_finish(source text,job uuid,token uuid,confirmed boolean) returns boolean
 language sql security invoker set search_path='' as $$select sdi_private.feed_removal_finish(source,job,token,confirmed)$$;
-revoke all on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text),
+revoke all on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  public.sdi_feed_removal_claim(),public.sdi_feed_removal_finish(text,uuid,uuid,boolean) from public,anon,authenticated;
-grant execute on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text),
+grant execute on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  public.sdi_feed_removal_claim(),public.sdi_feed_removal_finish(text,uuid,uuid,boolean) to service_role;
 commit;
 
