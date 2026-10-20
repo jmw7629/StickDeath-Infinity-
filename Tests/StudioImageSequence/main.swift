@@ -116,7 +116,18 @@ import ImageIO
         // #199/#200: the movie behind a reference sequence is project-managed
         // media; its measured metadata and trim/speed mapping persist with it.
         let movieID = UUID(), movieBytes = Data((0..<4096).map { UInt8($0 % 251) })
-        let mapping = StudioVideoSourceMapping(sourceStartSeconds: 1, sourceEndSeconds: 3, projectStartSeconds: 0, speed: 0.5)
+        let mapping = StudioVideoSourceMapping(sourceStartSeconds: 1, sourceEndSeconds: 3, projectStartSeconds: 0, speed: 0.5,
+            rotationDegrees: 270, aspect: .portrait9x16)
+        // #201: framing is persisted only when chosen; earlier mappings keep their bytes and decode unframed.
+        let legacyMapping = StudioVideoSourceMapping(sourceStartSeconds: 1, sourceEndSeconds: 3, projectStartSeconds: 0, speed: 0.5)
+        let legacyJSON = try JSONEncoder().encode(legacyMapping)
+        try require(!String(decoding: legacyJSON, as: UTF8.self).contains("rotation") && !String(decoding: legacyJSON, as: UTF8.self).contains("aspect"),
+            "Unframed mapping gained framing keys")
+        let legacyDecoded = try JSONDecoder().decode(StudioVideoSourceMapping.self, from: Data(#"{"sourceStartSeconds":1,"sourceEndSeconds":3,"projectStartSeconds":0,"speed":0.5}"#.utf8))
+        try require(legacyDecoded == legacyMapping && legacyDecoded.rotationDegrees == 0 && legacyDecoded.aspect == .original, "Earlier mapping decoded with framing")
+        try require(try JSONDecoder().decode(StudioVideoSourceMapping.self, from: JSONEncoder().encode(mapping)) == mapping, "Framing lost in mapping roundtrip")
+        var turned = mapping; turned.rotationDegrees = 45
+        try require(mapping.isValid && !turned.isValid, "Invalid rotation accepted by the persisted mapping")
         let video = StudioViewModel.ImportedVideoSource(
             reference: StudioVideoReference(id: movieID, name: "Phone clip", container: "mov",
                 metadata: .init(durationSeconds: 4, byteCount: movieBytes.count, orientedWidth: 1080, orientedHeight: 1920,
@@ -146,6 +157,8 @@ import ImageIO
         let cold = StudioViewModel(storage: storage), coldOpened = await cold.openProject(storedVideo.metadata)
         try require(coldOpened && cold.document.videoReferences == reopened.document.videoReferences &&
             cold.videoSource(forReferenceID: movieID)?.data == movieBytes, "Cold reopen lost the retained movie or mapping")
+        try require(cold.document.videoReferences?.first?.mapping.rotationDegrees == 270 &&
+            cold.document.videoReferences?.first?.mapping.aspect == .portrait9x16, "Cold reopen lost the panel rotation or aspect")
         reopened.undo()
         try require(reopened.document.videoReferences == nil && reopened.videoSource(forReferenceID: movieID) != nil,
             "Undo must drop the reference but keep bytes for Redo")

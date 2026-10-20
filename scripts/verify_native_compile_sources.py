@@ -41,6 +41,11 @@ DEPENDENCIES = {
     "StickDeathInfinity/Models/Models.swift": {
         "StickDeathInfinity/Models/StudioCraftAudio.swift",
         "StickDeathInfinity/Models/StudioCraftLayers.swift",
+        # Video import framing (#201) shared with the frame decoder.
+        "StickDeathInfinity/Models/StudioVideoFraming.swift",
+    },
+    "StickDeathInfinity/Services/StudioVideoFrameImportService.swift": {
+        "StickDeathInfinity/Models/StudioVideoFraming.swift",
     },
     "StickDeathInfinity/Services/StudioSoundCatalogue.swift": {
         "StickDeathInfinity/Services/StudioAudioImportService.swift",
