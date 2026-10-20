@@ -24,8 +24,14 @@ class SpatterUsageTest {
         assertEquals(12, payg.credits); assertEquals(true, payg.available)
         val creator = SpatterUsageDecoder.decode("""{"plan":"creator","unlimited":false,"limit":174,"used":10,"remaining":164,"resets_at":"2026-11-01T00:00:00Z","service":"paused"}""")
         assertEquals(174, creator.limit); assertEquals(164, creator.remaining); assertEquals("2026-11-01T00:00:00Z", creator.resetsAt); assertTrue(creator.paused)
-        val pro = SpatterUsageDecoder.decode("""{"plan":"pro","unlimited":true,"limit":null,"remaining":null}""")
-        assertTrue(pro.unlimited); assertNull(pro.remaining)
+        val pro = SpatterUsageDecoder.decode("""{"plan":"pro","unlimited":false,"limit":500,"remaining":480}""")
+        assertFalse(pro.unlimited); assertEquals(500, pro.limit); assertEquals(480, pro.remaining); assertNull(pro.inTrial)
+        val unlimited = SpatterUsageDecoder.decode("""{"plan":"unlimited","unlimited":true,"limit":null,"remaining":null}""")
+        assertTrue(unlimited.unlimited); assertNull(unlimited.remaining); assertNull(unlimited.limit)
+        assertEquals(true, SpatterUsageDecoder.decode("""{"plan":"creator","in_trial":true}""").inTrial)
+        assertEquals(true, SpatterUsageDecoder.decode("""{"plan":"unlimited","status":"trialing"}""").inTrial)
+        assertEquals(false, SpatterUsageDecoder.decode("""{"plan":"pro","status":"active"}""").inTrial)
+        assertEquals(false, SpatterUsageDecoder.decode("""{"plan":"free","in_trial":true}""").inTrial) // Free has no trial
     }
 
     @Test fun neverInventsCountsAndRefusesUnknownPlans() {

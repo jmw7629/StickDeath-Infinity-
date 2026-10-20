@@ -159,6 +159,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
     Text(com.stickdeath.studio.billing.PlanCopy.usage(usage), style = MaterialTheme.typography.bodySmall)
     if (account.spatterUsage is Load.Failed) TextButton({ account.refreshSpatterUsage() }) { Text("Check my Spatter plan again") }
     val gate = account.spatterGate
+    if (gate is com.stickdeath.studio.billing.SpatterGate.TrialPreview) Text(com.stickdeath.studio.billing.PlanCopy.SPATTER_TRIAL_PREVIEW, style = MaterialTheme.typography.bodySmall)
     if (gate is com.stickdeath.studio.billing.SpatterGate.Send && gate.payAsYouGo) Text("Pay as you go: the server spends 1 Spatter credit per prompt.", style = MaterialTheme.typography.bodySmall)
     OutlinedTextField(question, { question = it.take(4000) }, label = { Text("Ask Spatter for guidance") }, maxLines = 4, modifier = Modifier.fillMaxWidth())
     Button({ account.askSpatter(question) }, enabled = question.isNotBlank() && account.spatterReply !is Load.Loading) { Text("Ask") }

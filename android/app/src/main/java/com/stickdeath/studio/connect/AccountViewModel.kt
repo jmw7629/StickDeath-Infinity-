@@ -159,16 +159,18 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
         if (state !is AccountState.SignedIn || spatterUsage is Load.Loading) return
         fetch<SpatterUsage>({ result ->
             spatterUsage = result
-            if (result is Load.Loaded) PlanRuntime.reportServerPlan(result.value.plan)
+            if (result is Load.Loaded) PlanRuntime.reportServerPlan(result.value.plan, result.value.inTrial == true)
         }) { usageClient.myUsage() }
     }
-    /** What a Spatter send does now (Free without credits gets the upgrade note on the device). */
-    val spatterGate: SpatterGate get() = SpatterGate.decide(PlanRuntime.limits, (spatterUsage as? Load.Loaded)?.value, spatterUsage is Load.Loading)
+    /** What a Spatter send does now (Free without credits gets the upgrade note and a free trial the
+     * preview note, both on the device; nothing is sent). */
+    val spatterGate: SpatterGate get() = SpatterGate.decide(PlanRuntime.limits, (spatterUsage as? Load.Loaded)?.value, spatterUsage is Load.Loading, PlanRuntime.inTrial)
 
     fun askSpatter(question: String) {
         when (spatterGate) {
             SpatterGate.UpgradeNote -> { spatterReply = Load.Failed(PlanCopy.SPATTER_UPGRADE_NOTE); return }
             SpatterGate.AllowanceUsed -> { spatterReply = Load.Failed(PlanCopy.SPATTER_ALLOWANCE_USED); return }
+            SpatterGate.TrialPreview -> { spatterReply = Load.Failed(PlanCopy.SPATTER_TRIAL_PREVIEW); return }
             SpatterGate.Checking -> { spatterReply = Load.Failed(PlanCopy.SPATTER_CHECKING); refreshSpatterUsage(); return }
             is SpatterGate.Send -> Unit
         }
