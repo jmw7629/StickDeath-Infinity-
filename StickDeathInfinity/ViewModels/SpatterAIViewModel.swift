@@ -470,7 +470,8 @@ final class SpatterAIViewModel: ObservableObject {
             return "I can explain the app, but I cannot inspect your billing account, issue refunds, change subscriptions or confirm a payment. Live billing and configured entitlements are not verified here. Do not share passwords, card details or verification codes in this conversation. Use the support or subscription-management route shown by the store or service that actually processed your purchase; I cannot claim a support ticket was sent.\n\n" + pricingGuide
         }
         // "plan" and "tier" alone describe animation planning; pair them with a money word.
-        if mentions("price", "prices", "pricing", "subscribe", "subscriptions") ||
+        // A trial question gets the plan facts, which say no plan starts with a trial (#207).
+        if mentions("price", "prices", "pricing", "subscribe", "subscriptions", "trial", "trials") ||
             (mentions("plan", "plans", "tier", "tiers", "premium", "annual", "yearly") &&
              mentions("cost", "costs", "pay", "paid", "month", "monthly", "year", "yearly", "annual", "usd", "dollar", "dollars", "much", "fee", "fees")) {
             return pricingGuide

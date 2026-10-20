@@ -504,13 +504,20 @@ private final class NetworkTrap: URLProtocol {
                     && SpatterInstructionCatalog.commandNames.contains("updateText") && SpatterInstructionCatalog.commandNames.contains("appendFrames")
                     && SpatterInstructionCatalog.commandNames.contains("tweenFrames"), "Catalog does not list the reachable commands")
                 // Pricing (#207): planned price points only, no live prices, annual not configured, nothing charged.
-                for question in ["How much does the pro plan cost?", "Is there an annual price?", "What are the subscription tiers?"] {
+                // No free trial (owner decision 2026-10-15, docs/PLAN_DECISIONS_2026_10_15.md): the
+                // answer says so and never offers one, including when asked directly.
+                for question in ["How much does the pro plan cost?", "Is there an annual price?", "What are the subscription tiers?",
+                                 "Is there a free trial?"] {
                     try require(vm.submit(question, context: .general), "Pricing request rejected")
                     try await idle(vm)
                     let answer = vm.messages.last!.content
                     try require(answer.contains("USD 4.99 per month and USD 9.99 per month") && answer.contains("Annual pricing is not configured")
                         && answer.contains("cannot see live store prices") && !answer.contains("$3") && answer.contains("Guidance only"), "Pricing answer invented or incomplete: \(question)")
+                    try require(answer.contains("Neither plan starts with a trial period") && !answer.localizedCaseInsensitiveContains("free trial")
+                        && !answer.contains("A trial applies"), "Pricing answer offers a trial: \(question)")
                 }
+                try require(!SpatterAIViewModel.pricingGuide.localizedCaseInsensitiveContains("free trial")
+                    && !SpatterAIViewModel.pricingGuide.localizedCaseInsensitiveContains("trial applies"), "Pricing guide mentions a trial offer")
                 try require(calls == 0, "Pricing guidance used the cloud")
                 // Library context (#203): no document is shared and the guide says so.
                 try require(vm.submit("How do I export an MP4?", context: .library), "Library request rejected")
