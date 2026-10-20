@@ -183,10 +183,17 @@
   }
 
   async function stepUp() {
-    // Administrators need aal2: list verified TOTP factors and challenge the first one.
-    const factors = await call('/auth/v1/factors', { method: 'GET', token: session.access_token });
-    const totp = factors.ok && factors.data && Array.isArray(factors.data.totp) ? factors.data.totp.find((f) => f.status === 'verified') : null;
-    if (!totp) { await beginEnrolment(); return; }
+    // Administrators need aal2: GoTrue lists factors on the user record (there is no
+    // GET /factors); challenge the first verified TOTP factor.
+    const user = await call('/auth/v1/user', { method: 'GET', token: session.access_token });
+    if (!user.ok || !user.data) { setStatus('Account lookup failed.', `The backend answered ${user.status}. Signed out.`); signOut(); return; }
+    const factors = Array.isArray(user.data.factors) ? user.data.factors.filter((f) => f && f.factor_type === 'totp') : [];
+    const totp = factors.find((f) => f.status === 'verified');
+    if (!totp) {
+      // An abandoned enrolment leaves an unverified factor whose friendly name blocks a new one.
+      for (const stale of factors) await call(`/auth/v1/factors/${encodeURIComponent(stale.id)}`, { method: 'DELETE', token: session.access_token });
+      await beginEnrolment(); return;
+    }
     const challenge = await call(`/auth/v1/factors/${encodeURIComponent(totp.id)}/challenge`, { token: session.access_token });
     if (!challenge.ok || !challenge.data || typeof challenge.data.id !== 'string') { setStatus('MFA challenge failed.', 'The backend did not start a challenge. Signed out.'); signOut(); return; }
     pendingFactor = { factorId: totp.id, challengeId: challenge.data.id };
