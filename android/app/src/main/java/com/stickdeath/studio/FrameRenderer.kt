@@ -12,12 +12,12 @@ object FrameRenderer {
     /** Linear Burn (max(0, cb + cs - 1)) has no native BlendMode/PorterDuff equivalent and this
      * renderer cannot read its backdrop for a software pass, so it is refused on every API level
      * rather than drawn as Normal. */
-    fun supports(blend: LayerBlend): Boolean =
-        blend != LayerBlend.LinearBurn && (!blend.needsModernBlend || android.os.Build.VERSION.SDK_INT >= 29)
+    fun supports(blend: LayerBlend, sdkInt: Int = android.os.Build.VERSION.SDK_INT): Boolean =
+        blend != LayerBlend.LinearBurn && (!blend.needsModernBlend || sdkInt >= 29)
     /** Honest user-facing reason a blend cannot be drawn here, or null when it can. */
-    fun unavailableReason(blend: LayerBlend): String? = when {
+    fun unavailableReason(blend: LayerBlend, sdkInt: Int = android.os.Build.VERSION.SDK_INT): String? = when {
         blend == LayerBlend.LinearBurn -> "Linear Burn layers have no exact Android compositing mode yet. The original project is preserved."
-        !supports(blend) -> "${blend.label} layers require Android 10 or later. The original project is preserved."
+        !supports(blend, sdkInt) -> "${blend.label} layers require Android 10 or later. The original project is preserved."
         else -> null
     }
     private fun layerPaint(layer: Layer): Paint = Paint().apply {
