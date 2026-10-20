@@ -692,6 +692,8 @@ private struct AdminDiagnosticsContent: View {
                     ForEach(Array(spikes.enumerated()), id: \.offset) { _, spike in
                         Text("\(spike.platform) build \(spike.build): \(spike.latest_total) crashes on the latest day vs \(String(format: "%.2f", spike.prior_daily_mean))/day before").font(.caption)
                     }
+                } else if (summary.reports ?? 0) == 0 {
+                    Text("No opt-in reports in this window, so no crash-spike alert can be computed.").font(.caption)
                 } else {
                     Text("No crash spike on the latest complete day (rule: at least 5 and over five times the prior 7-day mean).").font(.caption)
                 }

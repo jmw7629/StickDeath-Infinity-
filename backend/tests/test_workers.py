@@ -311,13 +311,36 @@ class SweepTests(unittest.TestCase):
         presence = sweeps.configuration_presence(env)
         self.assertEqual(presence, {"sdi_backend_url": True, "sdi_service_key": True, "sdi_youtube_client_file": True,
                                     "sdi_youtube_token_file": False, "sdi_stripe_webhook_secret_file": False,
-                                    "sdi_mail_sender_domain": False, "sdi_mail_credentials_file": False})
+                                    "sdi_mail_sender_domain": False, "sdi_mail_credentials_file": False,
+                                    "sdi_apns_key_id": False, "sdi_apns_team_id": False, "sdi_apns_key_file": False,
+                                    "sdi_apns_topic": False, "sdi_fcm_project_id": False, "sdi_fcm_service_account_file": False,
+                                    "sdi_draft_renderer_cli": False})
         api = FakeAPI({"worker_configuration": [True, False, RuntimeError("Job service response unavailable")]})
         self.assertEqual(sweeps.report_configuration(api, env), {"state": "ok"})
         self.assertEqual(api.calls[-1], ("worker_configuration", {"worker": "service-sweeps", "settings": presence}))
         self.assertNotIn("service-secret-value", json.dumps(api.calls))
         self.assertEqual(sweeps.report_configuration(api, env), {"state": "refused"})
         self.assertEqual(sweeps.report_configuration(api, env), {"state": "failed", "error": "RuntimeError"})
+
+    def test_provider_outcome_sends_closed_classes_only(self):
+        import smtplib
+        from backend.ops import provider_health
+        api = FakeAPI({"provider_outcome": [True, True, False, RuntimeError("Job service response unavailable")]})
+        self.assertEqual(provider_health.report_outcome(api, "email", True, "network"), {"state": "ok"})
+        self.assertEqual(api.calls[-1], ("provider_outcome", {"provider": "email", "succeeded": True, "error_class": None}))
+        self.assertEqual(provider_health.report_outcome(api, "email", False, "535 bad password for owner@example.test"), {"state": "ok"})
+        self.assertEqual(api.calls[-1][1]["error_class"], "other")
+        self.assertEqual(provider_health.report_outcome(api, "email", False, "timeout"), {"state": "refused"})
+        self.assertEqual(provider_health.report_outcome(api, "email", True), {"state": "failed", "error": "RuntimeError"})
+        self.assertEqual(provider_health.report_outcome(api, "openai", True), {"state": "skipped", "reason": "unknown provider"})
+        self.assertNotIn("owner@example.test", json.dumps(api.calls))
+        self.assertEqual(provider_health.classify_exception(smtplib.SMTPAuthenticationError(535, b"secret")), "authentication")
+        self.assertEqual(provider_health.classify_exception(TimeoutError()), "timeout")
+        self.assertEqual(provider_health.classify_exception(ConnectionRefusedError()), "network")
+        self.assertEqual(provider_health.classify_exception(smtplib.SMTPDataError(554, b"no")), "rejected")
+        self.assertEqual(provider_health.classify_exception(ValueError("x")), "configuration")
+        self.assertEqual(provider_health.ProviderOutcomeAPI.PERMITTED, frozenset({"provider_outcome"}))
+        self.assertTrue(provider_health.ERROR_CLASSES >= {"authentication", "network", "timeout", "other"})
 
     def test_main_refuses_to_run_without_configuration(self):
         out, err = io.StringIO(), io.StringIO()

@@ -117,6 +117,11 @@ final class AdminOperationsClient {
     func configuration() async throws -> AdminConfigurationResponse {
         try await gateway.call("sdi_admin_configuration", params: [String: String](), as: AdminConfigurationResponse.self).validated()
     }
+    /// Per-integration health (#248): presence, last success/failure and a closed
+    /// error class. No key, token, URL or provider message is ever part of the reply.
+    func providerHealth() async throws -> AdminProviderHealthResponse {
+        try await gateway.call("sdi_admin_provider_health", params: [String: String](), as: AdminProviderHealthResponse.self).validated()
+    }
 
     // MARK: Backups, releases and retention (#257)
     func operations() async throws -> AdminOperationsStatus {
@@ -315,6 +320,55 @@ struct AdminConfigurationResponse: CommunityCodedResponse {
                   worker.settings.keys.allSatisfy({ AdminIdentifier.isBounded($0) }),
                   worker.missing.allSatisfy({ worker.settings[$0] == false }) else {
                 throw CommunityError.invalidResponse("Configuration reply contained an unexpected identifier.")
+            }
+        }
+        return self
+    }
+}
+
+/// One integration in the masked provider health view (worker-configuration.sql).
+struct AdminProviderHealth: Decodable, Identifiable, Equatable {
+    var id: String { provider }
+    let provider: String
+    let title: String
+    let configured: String
+    let missing: [String]
+    let configuration_reported_at: Date?
+    let configuration_stale: Bool
+    let last_success_at: Date?
+    let last_failure_at: Date?
+    let last_error_class: String?
+    let consecutive_failures: Int
+    let health: String
+
+    static let providers: Set<String> = ["spatter", "apns", "fcm", "email", "stripe", "youtube"]
+    /// The setting names sdi_private.provider_settings() can list as missing.
+    static let settingNames: Set<String> = ["sdi_draft_renderer_cli", "sdi_apns_key_id", "sdi_apns_team_id", "sdi_apns_key_file", "sdi_apns_topic",
+                                            "sdi_fcm_project_id", "sdi_fcm_service_account_file", "sdi_mail_sender_domain", "sdi_mail_credentials_file",
+                                            "sdi_stripe_webhook_secret_file", "sdi_youtube_client_file", "sdi_youtube_token_file"]
+    static let configuredStates: Set<String> = ["yes", "no", "unreported"]
+    static let healthStates: Set<String> = ["healthy", "failing", "unconfigured", "unreported", "no_activity"]
+    static let errorClasses: Set<String> = ["configuration", "authentication", "rate_limited", "network", "timeout", "rejected",
+                                            "provider_error", "invalid_response", "event_error", "job_failed", "render_failed", "other"]
+    var isAlert: Bool { health == "failing" || health == "unconfigured" }
+}
+struct AdminProviderHealthResponse: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let providers: [AdminProviderHealth]?
+    let note: String?
+    let measured_at: Date?
+    /// Fail closed on anything outside the closed vocabularies, so a value that
+    /// looks like a key, host or provider message is never displayed.
+    func validated() throws -> AdminProviderHealthResponse {
+        guard let providers, providers.count <= 20 else { throw CommunityError.invalidResponse("Provider health reply incomplete.") }
+        for item in providers {
+            guard AdminProviderHealth.providers.contains(item.provider), item.title.count <= 60,
+                  AdminProviderHealth.configuredStates.contains(item.configured), AdminProviderHealth.healthStates.contains(item.health),
+                  item.missing.count <= 10, item.missing.allSatisfy({ AdminProviderHealth.settingNames.contains($0) }),
+                  item.last_error_class.map({ AdminProviderHealth.errorClasses.contains($0) }) ?? true,
+                  item.consecutive_failures >= 0 else {
+                throw CommunityError.invalidResponse("Provider health reply contained an unexpected value.")
             }
         }
         return self

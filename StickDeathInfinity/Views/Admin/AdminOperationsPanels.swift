@@ -63,6 +63,8 @@ struct AdminOperationsStatusContent: View {
                     }.accessibilityElement(children: .combine).accessibilityIdentifier("admin.configuration.worker")
                 }
             }
+            Divider()
+            AdminProviderHealthSection()
         }
         .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
             clear(); if auth.isAuthenticated && phase == .active { await load() }
