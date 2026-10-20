@@ -1112,7 +1112,9 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForButton("Profile", in: app).tap()
         XCTAssertTrue(app.staticTexts["Guest"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["On-device guest"].exists)
-        XCTAssertTrue(app.staticTexts["Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall; a dash means the total was not loaded, never an estimate."].exists,
+        // XCUIElementQuery string subscripts reject identifiers over 128 characters.
+        let inventoryNote = "Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall; a dash means the total was not loaded, never an estimate."
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", inventoryNote)).firstMatch.exists,
             "Profile must identify actual device inventory and unavailable connected totals")
         XCTAssertFalse(app.staticTexts["StickMaster"].exists, "Guest profile displayed a fabricated sample identity")
         capture(app, name: "owner-guest-profile-reference")
