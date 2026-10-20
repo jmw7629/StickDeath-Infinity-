@@ -51,8 +51,24 @@ the single source for plans, periods, purchase state and plan copy. Both views a
 | Plan | Product | Owner-stated entitlements (2026-10-07, #250/#259) | Enforced today |
 | --- | --- | --- | --- |
 | Free | none | Full Studio on device; no video upload/download; **Spatter visible with its suggested prompts; works only on purchased Spatter credits** (pay as you go; with no credits every request is refused with `upgrade_required`; the server funds nothing) | Studio only |
-| Creator | USD 4.99 monthly | No watermark; upload/download; **own AI key** (prompts sent with it are not counted) plus a **server-funded Spatter allowance per billing period within break-even** (default 174, reset at renewal) | none (pending) |
-| Pro | USD 9.99 monthly | Everything in Creator; **unlimited Spatter prompts**; **own AI key** | none (pending) |
+| Creator | USD 4.99 monthly (`com.willisbmb.StickDeathInfinity.creator.monthly`) | No watermark; upload/download; **own AI key** (prompts sent with it are not counted) plus **250 server-funded Spatter prompts per billing period** (reset at renewal) | server: Spatter meter (candidate) |
+| Pro | USD 9.99 monthly (`com.willisbmb.StickDeathInfinity.pro.monthly`) | Everything in Creator; **500 server-funded Spatter prompts per billing period**; **own AI key** | server: Spatter meter (candidate) |
+| Unlimited | USD 19.99 monthly (`com.willisbmb.StickDeathInfinity.unlimited.monthly`) | Everything in Pro; **unlimited Spatter prompts** (still under the per-user daily safety cap, per-minute rate, the owner's global daily ceiling and the emergency stop); **own AI key** | server: Spatter meter (candidate) |
+
+**Owner decision 2026-10-20 (backend):** three monthly tiers, ranked unlimited >
+pro > creator, each with a **3-day free trial** (App Store introductory offer,
+configured in App Store Connect). During the trial the Studio is fully unlocked
+but Spatter is preview-only: the server funds no prompt and spends no credit
+while an account's only entitlements are in a free-trial period, and answers
+with Free's refusal shape (`upgrade_required`, plan = the trial tier,
+`trial: true`, `upgrade: after_trial`, `resets_at` = trial end). The first paid
+period converts the trial to the tier's normal allowance. This supersedes the
+break-even Creator allowance, "Pro unlimited" and "no free trial" below; the
+native clients are not changed by this backend batch. Server objects:
+`billing_products.tier` accepts `unlimited`; `subscriptions.in_trial` /
+`entitlements.in_trial`; `spatter_usage_controls.creator_period_prompts` (250) /
+`pro_period_prompts` (500); live projects apply
+`backend/sql/upgrades/2026-10-20-three-tiers.sql`.
 
 Owner decisions 2026-10-14 (#209/#259), Spatter metering revised 2026-10-15:
 Free = Spatter visible but not active (no server-funded prompts; requests are
@@ -89,12 +105,14 @@ if you want." Implemented server side (unapplied candidates, tested locally):
   `finance_ledger` rows (live Stripe pack charges are recorded by the webhook's
   normal ledger path; sandbox never).
 - **Metering**: caps first (emergency stop, global, per-minute, daily safety),
-  then the plan allowance (Pro unlimited never spends credits; Creator's period
-  allowance), then one credit per prompt. Free with credits pays as it goes;
-  Free with none gets `upgrade_required` ("Spatter is part of Creator and Pro,
-  or buy Spatter credits to pay as you go."); Creator with neither allowance nor
-  credits gets `plan_allowance_exhausted` with `upgrade: pro` and `buyCredits`.
-  A released (failed) prompt refunds its credit.
+  then the plan allowance (Unlimited never spends credits; Creator's and Pro's
+  period allowance), then one credit per prompt. Free with credits pays as it
+  goes; Free with none gets `upgrade_required` ("Spatter is part of Creator, Pro
+  and Unlimited, or buy Spatter credits to pay as you go."); Creator or Pro with
+  neither allowance nor credits gets `plan_allowance_exhausted` with
+  `upgrade: pro` (Creator) or `upgrade: unlimited` (Pro) and `buyCredits`. A
+  trial-only account is refused before credits are considered. A released
+  (failed) prompt refunds its credit.
 - **Purchases**: Apple consumables are not announced by App Store Server
   Notifications at purchase, so the app posts the StoreKit 2 signed transaction
   to `backend/billing/appstore_credits.py` (member JWT + the same pinned-root
@@ -116,14 +134,19 @@ if you want." Implemented server side (unapplied candidates, tested locally):
   ```json
   {"plan": "free", "unlimited": false, "limit": 0, "used": 0, "remaining": 0, "period": "none",
    "resets_at": null, "credits": 12, "available": true, "upgrade": "creator_or_pro", "service": "metered"}
-  {"plan": "creator", "unlimited": false, "limit": 174, "used": 174, "remaining": 0, "period": "billing_period",
+  {"plan": "creator", "trial": false, "unlimited": false, "limit": 250, "used": 250, "remaining": 0, "period": "billing_period",
    "resets_at": "2026-11-01T00:00:00+00:00", "credits": 5, "available": true, "service": "metered"}
-  {"plan": "pro", "unlimited": true, "limit": null, "used": null, "remaining": null, "period": "none",
+  {"plan": "pro", "trial": false, "unlimited": false, "limit": 500, "used": 12, "remaining": 488, "period": "billing_period",
+   "resets_at": "2026-11-01T00:00:00+00:00", "credits": 0, "available": true, "service": "metered"}
+  {"plan": "unlimited", "trial": false, "unlimited": true, "limit": null, "used": null, "remaining": null, "period": "none",
    "resets_at": null, "credits": 0, "available": true, "service": "metered"}
+  {"plan": "pro", "trial": true, "unlimited": false, "limit": 0, "used": 0, "remaining": 0, "period": "trial",
+   "resets_at": "2026-10-23T12:00:00+00:00", "credits": 0, "available": false, "upgrade": "after_trial", "service": "metered"}
   ```
 
   `available` is true when the plan allowance or credits remain (always for
-  Pro); `service` is `paused` under the emergency stop.
+  Unlimited; never during a free trial); `service` is `paused` under the
+  emergency stop.
 
 - Every paid entitlement carries `isLive = false` and is shown with a pending marker
   and the note that it turns on when the server applies the plan from Apple's
@@ -137,9 +160,10 @@ if you want." Implemented server side (unapplied candidates, tested locally):
   is false for every tier and `BillingCopy.trial(for:days:eligible:)` returns nil
   even if a store introductory offer were left configured, so the apps never show
   trial copy. Do not configure introductory offers in App Store Connect or Stripe.
-  Server side, a `trialing` status from a provider still maps to its tier
-  (`backend/billing/contract.py` `TRIAL_TIERS`) so a misconfigured store offer
-  cannot strand a paying member.
+  Server side (superseded 2026-10-20, see above): a provider-reported trial maps
+  to `trialing` with `in_trial` (`backend/billing/contract.py` `TRIAL_TIERS` =
+  all three tiers); the entitlement grants the tier, but Spatter is
+  preview-only until the first paid period.
 - Bring-your-own AI key (#209): listed as a pending entitlement on Creator and
   Pro. The key is stored only in the device Keychain
   (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, not synchronizable), is sent
