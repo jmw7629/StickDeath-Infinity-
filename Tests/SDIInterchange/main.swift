@@ -1,5 +1,12 @@
 import Foundation
 import CryptoKit
+import AppKit
+import SwiftUI
+
+// Only the platform image container is adapted, as in Tests/StudioMovieExport:
+// the production decoders and exporters compile unchanged on macOS.
+typealias UIImage = NSImage
+extension Image { init(uiImage: NSImage) { self.init(nsImage: uiImage) } }
 
 // iOS half of the both-client `.sdi` interchange comparison (#286).
 //
