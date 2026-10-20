@@ -2425,9 +2425,10 @@ private final class NetworkTrap: URLProtocol {
         try await test("catalog v5 typed Lasso and Wand selection, Image Library picture and export routes are validated and reversible") {
             // Lasso rules: only drawings fully inside the outline; selection never changes the document.
             let (vm, _) = try await fixture("v5-routes")
+            let layerID = vm.activeLayerID
             func rect(_ id: String, _ x0: CGFloat, _ x1: CGFloat, fill: Bool) -> DrawnElement {
                 .init(id: id, tool: .rectangle, points: [.init(x: x0, y: 30), .init(x: x1, y: 66)], color: "#FF0000", width: 2, opacity: 1,
-                      layerID: vm.activeLayerID, shape: .init(fillColor: fill ? "#FF0000" : nil))
+                      layerID: layerID, shape: .init(fillColor: fill ? "#FF0000" : nil))
             }
             try require(vm.commitElement(rect("left", 8, 56, fill: true)) && vm.commitElement(rect("right", 72, 120, fill: false)), "Drawing fixtures rejected")
             await vm.flush()
