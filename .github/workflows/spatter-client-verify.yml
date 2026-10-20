@@ -1985,9 +1985,13 @@ jobs:
             -o "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
           "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
       - name: Verify Spatter brief evaluation suite against production Studio commands
+        id: spatter-eval
         shell: bash
+        env:
+          SPATTER_EVAL_RESULTS: ${{ runner.temp }}/spatter-eval/spatter-eval-results.json
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/spatter-eval"
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Services/StudioGradientFill.swift \
@@ -2030,6 +2034,14 @@ jobs:
             Tests/SpatterEval/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-eval-tests"
           "$RUNNER_TEMP/sdi-spatter-eval-tests"
+      - name: Preserve Spatter evaluation report
+        if: ${{ always() && steps.spatter-eval.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: spatter-eval-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/spatter-eval/spatter-eval-results.json
+          retention-days: 14
+          if-no-files-found: warn
       - name: Verify real artwork color sampling and gesture context
         shell: bash
         run: |
