@@ -1454,7 +1454,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity;
+				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -1483,8 +1483,14 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity;
+				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDI_OAUTH_PROVIDERS = "google,github";
+				SDI_STOREKIT_PLAN_19_99_PRODUCT_ID = com.willisbmb.StickDeathInfinity.unlimited.monthly;
+				SDI_STOREKIT_PLAN_4_99_PRODUCT_ID = com.willisbmb.StickDeathInfinity.creator.monthly;
+				SDI_STOREKIT_PLAN_9_99_PRODUCT_ID = com.willisbmb.StickDeathInfinity.pro.monthly;
+				SUPABASE_PUBLISHABLE_KEY = sb_publishable_ESTaBouCYQb8AzPKGfS_5w_GNWI-otv;
+				SUPABASE_URL = "https://gwcqlbjdvxebkxizfxsx.supabase.co";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1499,7 +1505,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
-				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1515,7 +1521,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
-				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1531,7 +1537,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
                 GENERATE_INFOPLIST_FILE = YES;
                 IPHONEOS_DEPLOYMENT_TARGET = 17.0;
                 LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
-                PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.authtests;
+                PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity.authtests;
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 SWIFT_VERSION = 5.0;
                 TARGETED_DEVICE_FAMILY = "1,2";
@@ -1547,7 +1553,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
                 GENERATE_INFOPLIST_FILE = YES;
                 IPHONEOS_DEPLOYMENT_TARGET = 17.0;
                 LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
-                PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.authtests;
+                PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity.authtests;
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 SWIFT_VERSION = 5.0;
                 TARGETED_DEVICE_FAMILY = "1,2";

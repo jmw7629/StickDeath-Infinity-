@@ -46,7 +46,7 @@ class NativeReviewPackagingTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.app = self.root / "StickDeathInfinity.app"
         self.app.mkdir()
-        self.info = {"CFBundleIdentifier": "com.willisnmb.stickdeathinfinity",
+        self.info = {"CFBundleIdentifier": "com.willisbmb.StickDeathInfinity",
                      "CFBundleSupportedPlatforms": ["iPhoneSimulator"], "CFBundleExecutable": "Fixture"}
         self.write_info()
         shutil.copy2(self.binary, self.app / "Fixture")

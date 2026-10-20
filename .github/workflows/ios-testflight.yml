@@ -114,7 +114,7 @@ jobs:
             <key>teamID</key><string>$TEAM_ID</string>
             <key>uploadSymbols</key><true/>
             <key>provisioningProfiles</key><dict>
-              <key>com.willisnmb.stickdeathinfinity</key><string>$PROFILE_NAME</string>
+              <key>com.willisbmb.StickDeathInfinity</key><string>$PROFILE_NAME</string>
             </dict>
           </dict></plist>
           PLIST

@@ -69,7 +69,7 @@ def package(app: Path, output: Path, commit: str) -> dict:
     if not info_path.is_file() or info_path.stat().st_size > 1024 * 1024:
         raise ValueError("Missing or oversized built Info.plist")
     info = plistlib.loads(info_path.read_bytes())
-    if info.get("CFBundleIdentifier") != "com.willisnmb.stickdeathinfinity":
+    if info.get("CFBundleIdentifier") != "com.willisbmb.StickDeathInfinity":
         raise ValueError("Unexpected app identity")
     if info.get("CFBundleSupportedPlatforms") != ["iPhoneSimulator"]:
         raise ValueError("Only simulator builds can be preserved here")

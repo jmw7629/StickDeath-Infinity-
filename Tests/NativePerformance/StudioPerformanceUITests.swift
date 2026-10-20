@@ -12,7 +12,7 @@ import XCTest
 /// Release build; simulator runs are recorded as "simulator" and never compared
 /// with device numbers. Nothing here is a pass until a device run exists.
 final class StudioPerformanceUITests: XCTestCase {
-    private let bundleIdentifier = "com.willisnmb.stickdeathinfinity"
+    private let bundleIdentifier = "com.willisbmb.StickDeathInfinity"
 
     override func setUpWithError() throws { continueAfterFailure = false }
 

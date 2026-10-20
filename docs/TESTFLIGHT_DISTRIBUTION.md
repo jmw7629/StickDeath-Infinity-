@@ -21,7 +21,7 @@ without that identity.
 One-time owner setup, all outside this repository:
 
 1. Apple Developer Program membership for the team that owns bundle id
-   `com.willisnmb.stickdeathinfinity`.
+   `com.willisbmb.StickDeathInfinity`.
 2. App Store Connect → Apps → create the app record for that bundle id
    (name "StickDeath Infinity", primary language, SKU).
 3. Certificates, Identifiers & Profiles:

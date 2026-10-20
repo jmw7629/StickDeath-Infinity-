@@ -165,7 +165,7 @@ final class JourneyUITests: XCTestCase {
         let source = try XCTUnwrap(env["SDI_SMOKE_SOURCE_COMMIT"])
         XCTAssertNotNil(source.range(of: "^[0-9a-f]{40}$", options: .regularExpression))
         XCUIDevice.shared.orientation = .portrait
-        let app = XCUIApplication(bundleIdentifier: "com.willisnmb.stickdeathinfinity")
+        let app = XCUIApplication(bundleIdentifier: "com.willisbmb.StickDeathInfinity")
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
                                "-sdi.guest.chosen.v1", "NO", "-tutorial_completed", "NO"]
         app.launch()
