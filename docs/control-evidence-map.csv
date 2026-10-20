@@ -61,6 +61,8 @@ admin.operations.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swif
 admin.operations.refresh,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,button 'Refresh' -> load,n-a,#257 #210,deferred
 admin.operations.release,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminOperationsStatusContent,"text -> binds 0.label.isEmpty, binds 0.label, binds 0.at.formatted",n-a,#257 #210,deferred
 admin.overview.status,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDashboardContent,text 'Recent activity is not connected.',n-a,#210 #285,deferred
+admin.providers.error,StickDeathInfinity/Views/Admin/AdminProviderHealthSection.swift,AdminProviderHealthSection,text,n-a,#248 #210,deferred
+admin.providers.refresh,StickDeathInfinity/Views/Admin/AdminProviderHealthSection.swift,AdminProviderHealthSection,button 'Refresh' -> load,n-a,#248 #210,deferred
 admin.publishing.stage,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminPublishingContent,text 'Administrator action history',n-a,#245,deferred
 admin.publishing.stages,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminPublishStageView,text,n-a,#245,deferred
 admin.review.history,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,text 'Spatter video — owner approval required',n-a,#210 #285,deferred
