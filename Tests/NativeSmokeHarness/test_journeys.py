@@ -42,7 +42,7 @@ class JourneyReceiptTests(unittest.TestCase):
         smoke = (ROOT / 'Tests/NativeUI/StudioSmokeUITests.swift').read_text()
         # The smoke budget still parses exactly one class from its own file.
         self.assertEqual(test_budget.build_test_budget(smoke, ['xcodebuild', 'test-without-building', '-test-timeouts-enabled', 'YES',
-            '-default-test-execution-time-allowance', '180', '-maximum-test-execution-time-allowance', '240',
+            '-default-test-execution-time-allowance', '300', '-maximum-test-execution-time-allowance', '360',
             '-parallel-testing-enabled', 'NO', '-maximum-concurrent-test-simulator-destinations', '1'])['testCount'], test_budget.MAXIMUM_CASES)
         self.assertFalse(set(INVENTORY['ui']) & set(test_budget.EXTENDED_CASE_SECONDS))
         self.assertEqual(journey.selector('ui'), '-only-testing:StickDeathInfinityUITests/JourneyUITests')

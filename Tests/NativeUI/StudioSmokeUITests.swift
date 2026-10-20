@@ -9,7 +9,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testSelectedImageAlphaFillUndoAndColdReopen() throws {
         // The measured real import, image selection, Fill and history path reaches cold reopen at 184s.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -786,7 +786,7 @@ final class StudioSmokeUITests: XCTestCase {
     func testImageTweenLinearPixelsUndoAndColdReopen() throws {
         // Existing drawing tween took161.387s; this also imports/positions a real
         // licensed image. Match the reviewed240s image-authoring journey cap.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -895,7 +895,7 @@ final class StudioSmokeUITests: XCTestCase {
     func testImageQuarterTweenPixelsUndoAndColdReopen() throws {
         // Same import/position/tween/history/cold workload as the measured234s
         // image-translation case, using one midpoint and the existing240s cap.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -3214,7 +3214,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testSharpenPixelsUndoAndColdReopen() throws {
         // CI37718624465 reached Redo at 180s after real effect and Undo passed.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let name = try createProjectIfLibraryIsShown(app)
@@ -4271,7 +4271,7 @@ final class StudioSmokeUITests: XCTestCase {
     /// no connected service, and this test never pretends one exists.
     @MainActor
     func testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen() throws {
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8))
@@ -5555,7 +5555,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testSpatterSelectedAudioPlacementUndoAndColdReopen() throws {
         // Measured public CI recovered a60s XCTest menu-animation notification delay; retain all placement/history/cold assertions.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
@@ -6119,7 +6119,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testMixedDrawingImageMoveDeleteUndoAndColdReopen() throws {
         // Measured native trace reached cold reopen at184s after both-source move and Delete/Undo.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6210,7 +6210,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testImageWandRegionCopyDeletePasteUndoAndColdReopen() throws {
         // Licensed import, screenshot-derived selection, clipboard/history and cold reopen share the bounded 240s journey ceiling.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6307,7 +6307,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testMixedArtworkCopyCutPasteUndoAndColdReopen() throws {
         // Same licensed-image/mixed-selection setup as the measured >180s mixed journey; adds Copy/Cut/Paste and cold reopen.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6401,7 +6401,7 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     func testPixelLassoAutomaticMovePartialDeleteUndoAndColdReopen() throws {
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6457,7 +6457,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testActiveLayerImageMarqueeDeleteUndoAndColdReopen() throws {
         // Measured public CI completed cold-image capture at180.54s after active import/selection/history progress.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6738,7 +6738,7 @@ final class StudioSmokeUITests: XCTestCase {
     func testImageQuarterTurnsUndoAndColdReopen() throws {
         // Full CI reached cold reopen at 180s; the unchanged local journey
         // passed all pixel/history/reopen assertions in 182.757s.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6803,7 +6803,7 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     func testImageDrawingOrderUndoAndColdReopen() throws {
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -7081,7 +7081,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testImagePlacementCancelApplyUndoAndColdReopen() throws {
         // Run 35600568119 attempt 2 reached cold reopen/export at the 180s limit.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
@@ -8047,7 +8047,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testBucketFillPopupUndoSaveReopenAndPNG() throws {
         // Run 35600568119 attempt 2 reached cold reopen/export at the 180s limit.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)

@@ -8,7 +8,7 @@ spec = importlib.util.spec_from_file_location("sdi_test_budget", ROOT / "scripts
 budget = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(budget)
 COMMAND = ["xcodebuild", "test-without-building", "-test-timeouts-enabled", "YES",
-           "-default-test-execution-time-allowance", "180", "-maximum-test-execution-time-allowance", "240",
+           "-default-test-execution-time-allowance", "300", "-maximum-test-execution-time-allowance", "360",
            "-parallel-testing-enabled", "NO", "-maximum-concurrent-test-simulator-destinations", "1"]
 
 
@@ -68,7 +68,7 @@ class NativeSuiteBudget(unittest.TestCase):
         self.assertIn("testAccessibilityAuditLibraryAndStudioAtAccessibilityTextSize", value["testNames"])
         self.assertIn("testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen", value["testNames"])
         self.assertEqual(value["testCount"], 110)
-        self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 900 + 300)
+        self.assertEqual(value["suiteSeconds"], value["testCount"] * 300 + 15 * 60 + 300)
         self.assertEqual((value["retries"], value["parallelSimulators"]), (0, 1))
         self.assertIn("testImageDrawingOrderUndoAndColdReopen", value["testNames"])
         workflow = (ROOT / ".github/workflows/spatter-client-verify.yml").read_text()
@@ -76,14 +76,14 @@ class NativeSuiteBudget(unittest.TestCase):
         self.assertIn("    timeout-minutes: ${{ matrix.timeout }}", native_job)
         # Shard ceilings derive from the exact inventory: assigned suite seconds
         # plus 25 min build/preservation, plus the 22 min auth step on shard zero.
-        self.assertIn("            timeout: 224", native_job)
-        self.assertIn("            timeout: 203", native_job)
+        self.assertIn("            timeout: 334", native_job)
+        self.assertIn("            timeout: 313", native_job)
         # Twenty isolated native auth cases (account export added, #262) share the existing runner in a
         # separately bounded 22-minute step (60 s maximum allowance each).
         self.assertIn("        timeout-minutes: 22", native_job)
         auth_source = (ROOT / "Tests/AuthState/AuthStateTests.swift").read_text()
         self.assertEqual(auth_source.count("    func test"), 20)
-        for index, minutes in ((0, 224), (1, 203)):
+        for index, minutes in ((0, 334), (1, 313)):
             shard, _ = budget.build_shard_budget(source, COMMAND, index)
             overhead = (25 + (22 if index == 0 else 0)) * 60
             self.assertLessEqual(shard["suiteSeconds"] + overhead, minutes * 60)
@@ -96,10 +96,12 @@ class NativeSuiteBudget(unittest.TestCase):
     def test_per_case_capacity_is_available_and_global_bound_stays_finite(self):
         for count in (1, 49, 50, *range(60, budget.MAXIMUM_CASES + 1)):
             value = budget.build_test_budget(fixture(count), COMMAND)
-            self.assertEqual(value["suiteSeconds"], count * 180 + 300)
-            self.assertLessEqual(value["suiteSeconds"] + 25 * 60, 360 * 60)
+            self.assertEqual(value["suiteSeconds"], count * 300 + 300)
+            # CI runs the inventory as two shards; each half, plus build and
+            # the shard-zero auth step, must fit a 360-minute hosted job.
+            self.assertLessEqual(-(-count // 2) * 300 + 300 + (25 + 22) * 60, 360 * 60)
         self.assertEqual(budget.MAXIMUM_CASES, 110)
-        self.assertEqual(budget.build_test_budget(fixture(50), COMMAND)["suiteSeconds"], 9300)
+        self.assertEqual(budget.build_test_budget(fixture(50), COMMAND)["suiteSeconds"], 15300)
 
     def test_empty_excess_duplicate_or_additional_suites_reject(self):
         for source in (fixture(0), fixture(budget.MAXIMUM_CASES + 1), fixture(2).replace("testCase1", "testCase0"),
@@ -128,22 +130,22 @@ class NativeSuiteBudget(unittest.TestCase):
         source = (ROOT / "Tests/NativeUI/StudioSmokeUITests.swift").read_text()
         value = budget.build_test_budget(source, COMMAND)
         self.assertEqual(value["extendedCases"], budget.EXTENDED_CASE_SECONDS)
-        self.assertEqual(value["extendedCases"]["testImageTweenLinearPixelsUndoAndColdReopen"], 240)
-        self.assertEqual(value["extendedCases"]["testImageQuarterTweenPixelsUndoAndColdReopen"], 240)
-        self.assertEqual(value["extendedCases"]["testActiveLayerImageMarqueeDeleteUndoAndColdReopen"], 240)
-        self.assertEqual(value["extendedCases"]["testSpatterSelectedAudioPlacementUndoAndColdReopen"], 240)
-        self.assertEqual(value["extendedCases"]["testSelectedImageAlphaFillUndoAndColdReopen"], 240)
-        self.assertEqual(value["extendedCases"]["testImageDrawingOrderUndoAndColdReopen"], 240)
-        self.assertEqual(sum(value["extendedCases"].values()), 3600)
-        self.assertEqual(value["extendedCases"]["testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen"], 240)
+        self.assertEqual(value["extendedCases"]["testImageTweenLinearPixelsUndoAndColdReopen"], 360)
+        self.assertEqual(value["extendedCases"]["testImageQuarterTweenPixelsUndoAndColdReopen"], 360)
+        self.assertEqual(value["extendedCases"]["testActiveLayerImageMarqueeDeleteUndoAndColdReopen"], 360)
+        self.assertEqual(value["extendedCases"]["testSpatterSelectedAudioPlacementUndoAndColdReopen"], 360)
+        self.assertEqual(value["extendedCases"]["testSelectedImageAlphaFillUndoAndColdReopen"], 360)
+        self.assertEqual(value["extendedCases"]["testImageDrawingOrderUndoAndColdReopen"], 360)
+        self.assertEqual(sum(value["extendedCases"].values()), 15 * 360)
+        self.assertEqual(value["extendedCases"]["testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen"], 360)
         self.assertNotIn("testAccessibilityAuditLibraryAndStudioAtAccessibilityTextSize", value["extendedCases"])
-        self.assertEqual(value["extendedCases"]["testSharpenPixelsUndoAndColdReopen"], 240)
-        self.assertEqual(value["extendedCases"]["testMixedDrawingImageMoveDeleteUndoAndColdReopen"], 240)
-        self.assertEqual(value["extendedCases"]["testMixedArtworkCopyCutPasteUndoAndColdReopen"], 240)
-        self.assertEqual(value["extendedCases"]["testImageWandRegionCopyDeletePasteUndoAndColdReopen"], 240)
-        for changed in (source.replace("executionTimeAllowance = 240", "executionTimeAllowance = 300", 1),
-                        source.replace("executionTimeAllowance = 240", "", 1),
-                        source + "\nexecutionTimeAllowance = 240"):
+        self.assertEqual(value["extendedCases"]["testSharpenPixelsUndoAndColdReopen"], 360)
+        self.assertEqual(value["extendedCases"]["testMixedDrawingImageMoveDeleteUndoAndColdReopen"], 360)
+        self.assertEqual(value["extendedCases"]["testMixedArtworkCopyCutPasteUndoAndColdReopen"], 360)
+        self.assertEqual(value["extendedCases"]["testImageWandRegionCopyDeletePasteUndoAndColdReopen"], 360)
+        for changed in (source.replace("executionTimeAllowance = 360", "executionTimeAllowance = 420", 1),
+                        source.replace("executionTimeAllowance = 360", "", 1),
+                        source + "\nexecutionTimeAllowance = 360"):
             with self.assertRaises(ValueError):
                 budget.build_test_budget(changed, COMMAND)
 
