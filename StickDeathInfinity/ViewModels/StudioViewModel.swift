@@ -2221,30 +2221,7 @@ final class StudioViewModel: ObservableObject {
                 activateMoveAfterAreaSelection()
                 return true
             }
-            guard currentFrame.elements.count <= 2_000_000 / region.points.count else {
-                throw StudioDocumentError.unavailable("This lasso is too complex for the current frame. Use Rectangle or a simpler outline.")
-            }
-            // The lasso hands its result directly to Move. Position/alpha-locked
-            // drawings cannot join that group: one such identity would prevent
-            // captureArtworkSelection from displaying handles for every object.
-            let eligibleLayers = Set(layers.filter {
-                $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
-            }.map(\.id))
-            var found = Set<String>()
-            var selectionWork = 2_000_000
-            for element in currentFrame.elements {
-                try checkCancellation()
-                guard let layerID = element.layerID, eligibleLayers.contains(layerID), element.opacity > 0,
-                      element.tool != .eraser, let bounds = try StudioSelectionRegion.drawingBounds(element) else { continue }
-                let visibleBounds = bounds.intersection(CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight))
-                guard !visibleBounds.isNull else { continue }
-                let enclosed: Bool
-                if region.contains(visibleBounds) { enclosed = true }
-                else { enclosed = try region.enclosesArtwork(element,
-                    workRemaining: &selectionWork, checkCancellation: checkCancellation) }
-                guard enclosed else { continue }
-                found.insert(element.id)
-            }
+            let found = try drawingIDsEnclosed(by: region, checkCancellation: checkCancellation)
             var selected = capture.selectedIDs
             switch capture.mode {
             case .new: selected = found
@@ -2274,6 +2251,37 @@ final class StudioViewModel: ObservableObject {
             activateMoveAfterAreaSelection()
             return true
         } catch { message = error.localizedDescription; return false }
+    }
+    /// Drawings on the current frame that `region` fully encloses, under the
+    /// Lasso's rules. Shared by the Lasso tool and Spatter's typed area
+    /// selection (#204); it reads the editor only and selects nothing.
+    func drawingIDsEnclosed(by region: StudioSelectionRegion,
+                            checkCancellation: () throws -> Void) throws -> Set<String> {
+        guard currentFrame.elements.count <= 2_000_000 / region.points.count else {
+            throw StudioDocumentError.unavailable("This lasso is too complex for the current frame. Use Rectangle or a simpler outline.")
+        }
+        // The lasso hands its result directly to Move. Position/alpha-locked
+        // drawings cannot join that group: one such identity would prevent
+        // captureArtworkSelection from displaying handles for every object.
+        let eligibleLayers = Set(layers.filter {
+            $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
+        }.map(\.id))
+        var found = Set<String>()
+        var selectionWork = 2_000_000
+        for element in currentFrame.elements {
+            try checkCancellation()
+            guard let layerID = element.layerID, eligibleLayers.contains(layerID), element.opacity > 0,
+                  element.tool != .eraser, let bounds = try StudioSelectionRegion.drawingBounds(element) else { continue }
+            let visibleBounds = bounds.intersection(CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight))
+            guard !visibleBounds.isNull else { continue }
+            let enclosed: Bool
+            if region.contains(visibleBounds) { enclosed = true }
+            else { enclosed = try region.enclosesArtwork(element,
+                workRemaining: &selectionWork, checkCancellation: checkCancellation) }
+            guard enclosed else { continue }
+            found.insert(element.id)
+        }
+        return found
     }
     /// A pixel lasso lifts the masked fragment as one reversible edit, then
     /// reuses the normal image Move handles. Original source bytes are retained.
@@ -4349,14 +4357,8 @@ final class StudioViewModel: ObservableObject {
             let x = sample.x, y = sample.y, width = sample.width, height = sample.height, rgba = sample.rgba
             wandWorking = true
             let worker = Task.detached(priority: .userInitiated) { () throws -> DrawingWandResult in
-                let coverage = try StudioWandRegion.select(rgba: rgba, width: width, height: height, x: x, y: y,
-                                                           settings: settings, previous: previous)
-                var ids = try StudioSelectionElementHitTest.elements(intersecting: coverage, width: width, height: height,
-                                                                    candidates: candidates.strokes)
-                for fill in candidates.fills where !ids.contains(fill.id) {
-                    if try fill.touches(coverage, width: width, height: height) { ids.append(fill.id) }
-                }
-                return .init(coverage: coverage, ids: ids)
+                try Self.drawingWandResult(rgba: rgba, width: width, height: height, x: x, y: y,
+                                           settings: settings, previous: previous, candidates: candidates)
             }
             drawingWandWorker = worker
             defer { drawingWandWorker = nil; wandWorking = imageRegionWorker != nil }
@@ -4386,6 +4388,53 @@ final class StudioViewModel: ObservableObject {
             }
             return false
         }
+    }
+
+    /// The Wand's region and drawing hit test, off the main actor.
+    private nonisolated static func drawingWandResult(rgba: Data, width: Int, height: Int, x: Int, y: Int,
+                                                      settings: StudioWandRegion.Settings, previous: [UInt8]?,
+                                                      candidates: DrawingWandCandidates) throws -> DrawingWandResult {
+        let coverage = try StudioWandRegion.select(rgba: rgba, width: width, height: height, x: x, y: y,
+                                                   settings: settings, previous: previous)
+        var ids = try StudioSelectionElementHitTest.elements(intersecting: coverage, width: width, height: height,
+                                                            candidates: candidates.strokes)
+        for fill in candidates.fills where !ids.contains(fill.id) {
+            if try fill.touches(coverage, width: width, height: height) { ids.append(fill.id) }
+        }
+        return .init(coverage: coverage, ids: ids)
+    }
+
+    /// Wand drawing selection for Spatter's typed instruction (#204): the same
+    /// Fill-renderer sample, wand region and hit test as a Wand tap on the
+    /// active drawing layer, as a fresh selection with no feather. It reads the
+    /// editor only; the caller commits the IDs through selectElements, so no
+    /// pixel coverage is kept and effects use the drawings' own pixels.
+    func wandDrawingIDs(at point: CGPoint, tolerance: Int, sampleAllLayers: Bool,
+                        checkCancellation: () throws -> Void) async throws -> [String] {
+        guard (0...128).contains(tolerance), activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              currentFrame.id == document.activeFrameID, currentFrame.rasterInstance(on: activeLayerID) == nil,
+              let layer = layers.first(where: { $0.id == activeLayerID }), layer.visible, layer.opacity > 0,
+              !layer.isFullyLocked, ["free", "position"].contains(layer.lockMode) else {
+            throw StudioDocumentError.unavailable("Wand selects drawings on a visible drawing layer whose lock is Free or Position. Nothing was selected.")
+        }
+        let frame = currentFrame, layerID = activeLayerID
+        let sample = try StudioFillService.capture(document: document, frameID: frame.id, layerID: layerID,
+            point: point, color: "#000000", opacity: 1,
+            settings: .init(tolerance: tolerance, contiguous: true, expand: 0, gapClose: 0, antiAlias: false),
+            sampleAllLayers: sampleAllLayers, rasterData: rasterData(frame.rasterAssetID), rasterDataByID: rasterSources(for: frame))
+        let candidates = try drawingWandCandidates(frame: frame, layerID: layerID)
+        let settings = StudioWandRegion.Settings(tolerance: tolerance, contiguous: true, feather: 0,
+                                                 mode: .replace, rejectTransparentSeed: !sampleAllLayers)
+        let x = sample.x, y = sample.y, width = sample.width, height = sample.height, rgba = sample.rgba
+        try checkCancellation()
+        let worker = Task.detached(priority: .userInitiated) { () throws -> DrawingWandResult in
+            try Self.drawingWandResult(rgba: rgba, width: width, height: height, x: x, y: y,
+                                       settings: settings, previous: nil, candidates: candidates)
+        }
+        let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+        try checkCancellation()
+        guard currentFrame == frame, activeLayerID == layerID else { throw StudioCommandError.staleRevision }
+        return result.ids
     }
 
     // MARK: Selection-limited effects (#149)

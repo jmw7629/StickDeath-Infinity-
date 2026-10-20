@@ -10,7 +10,20 @@ final class SpatterStudioEditSession: ObservableObject {
         /// Nil is the current local guest identity, not cloud authentication.
         let accountID: String?
     }
-    enum Status: Equatable { case idle, preparing, applied, cancelled, timedOut, stale, rejected, closed }
+    /// `handedOff`: a projectExport instruction was accepted and its request is
+    /// waiting in `exportHandoff`; the project did not change.
+    enum Status: Equatable { case idle, preparing, applied, handedOff, cancelled, timedOut, stale, rejected, closed }
+    /// A direct export of the saved current revision to a device file (#204).
+    /// The presenting panel hands it to Studio's MP4 or GIF exporter, which
+    /// rechecks project, revision, saved state and account before starting.
+    struct ExportHandoff: Equatable {
+        let request: StudioMovieExportRequest
+        let format: SpatterProjectExportInstruction.Format
+    }
+    /// Resolves a libraryPicture instruction to a verified import. The Studio
+    /// panel supplies the bundled Image Library; nil means no library here.
+    typealias LibraryPictureResolver = @MainActor (SpatterLibraryPictureInstruction) async throws -> StudioImageImportService.ImportedImage
+    enum SelectionRoute: Equatable { case area, wand }
     enum SaveState: Equatable {
         case unavailable, projectChanged, unsaved, saving, saved
         var text: String {
@@ -79,7 +92,19 @@ final class SpatterStudioEditSession: ObservableObject {
         var recordedSource: SpatterSourceReference? = nil
         /// The explicit 20–60 s length receipt for a source-referenced generation.
         var sourceReceipt: String? = nil
+        // Catalog v5 (#204): typed Lasso/Wand selection and Image Library pictures.
+        var selectionRoute: SelectionRoute? = nil
+        var selectedDrawingCount: Int = 0
+        var libraryPictureName: String? = nil
         var summary: String {
+            if let selectionRoute {
+                let rule = selectionRoute == .area ? "fully inside the outline under the Lasso's rules"
+                    : "touched by the Wand's color region (no feather; effects use the drawings' own pixels)"
+                return "Selected \(selectedDrawingCount) drawing\(selectedDrawingCount == 1 ? "" : "s") on the active frame \(rule). The project did not change; use Move or a selection instruction next."
+            }
+            if let libraryPictureName {
+                return "Added the Image Library picture \u{201C}\(libraryPictureName)\u{201D} to the active frame on a new layer behind the drawings in one Undo step, with its verified original bytes and license record. Drawings are unchanged."
+            }
             if let source {
                 guard case .record = source.action, let recordedSource else {
                     return receipt.outcome == .unchanged ? "No reference source was recorded. Nothing changed."
@@ -274,6 +299,8 @@ final class SpatterStudioEditSession: ObservableObject {
     @Published private(set) var notice: String?
     @Published private(set) var submittedDraft: String?
     @Published private(set) var appliedEdit: AppliedEdit?
+    @Published private(set) var exportHandoff: ExportHandoff?
+    var libraryPictureResolver: LibraryPictureResolver?
     @Published private(set) var isClosed = false
     var isWorking: Bool { status == .preparing }
 
@@ -349,7 +376,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 submissionID: UUID = UUID(), currentScope: @escaping ScopeProvider) -> Bool {
         guard !isWorking else { return false }
         guard !isClosed else { notice = "This local edit session is closed. Open a new session to create another recipe."; return false }
-        appliedEdit = nil; appliedAccountID = nil
+        appliedEdit = nil; appliedAccountID = nil; exportHandoff = nil
         guard draft.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else {
             status = .rejected; notice = SpatterMotionRecipe.RecipeError.instructionTooLong.localizedDescription; return false
         }
@@ -461,8 +488,60 @@ final class SpatterStudioEditSession: ObservableObject {
                 var fillInstruction: SpatterFillInstruction?
                 var selectByIDInstruction: SpatterSelectByIDInstruction?
                 var sourceInstruction: SpatterSourceInstruction?
+                // Catalog v5 (#204).
+                let isAreaSelect = SpatterAreaSelectInstruction.isInstruction(draft)
+                let isWandSelect = SpatterWandSelectInstruction.isInstruction(draft)
+                let isLibraryPicture = SpatterLibraryPictureInstruction.isInstruction(draft)
+                let isProjectExport = SpatterProjectExportInstruction.isInstruction(draft)
+                var selectionRoute: SelectionRoute?
+                var selectedCount = 0
                 let preparedRequest: StudioCommandRequest
-                if !isBatch && isSource {
+                if !isBatch && isProjectExport {
+                    let format = try Self.exportFormat(draft, captured: captured, studio: studio)
+                    try await self.checkpoint()
+                    try check()
+                    try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                    _ = try Self.exportFormat(draft, captured: captured, studio: studio)
+                    self.exportHandoff = .init(request: .init(editRequestID: submissionID, projectID: document.projectID,
+                                                              revision: document.revision, accountID: captured.accountID), format: format)
+                    self.status = .handedOff
+                    self.notice = "Starting Studio's direct \(format.rawValue.uppercased()) export of saved revision \(document.revision) to a file on this device. The project did not change; nothing is uploaded, shared or published."
+                    return
+                } else if !isBatch && isLibraryPicture {
+                    let result = try await self.addLibraryPicture(draft, document: document, captured: captured, studio: studio,
+                                                                  submissionID: submissionID, check: check, currentScope: currentScope)
+                    self.appliedAccountID = captured.accountID
+                    self.appliedEdit = result; self.status = .applied; self.notice = result.summary
+                    return
+                } else if !isBatch && isAreaSelect {
+                    // The Lasso's own enclosure rules on the captured active frame.
+                    guard !captured.isPlaying, studio.currentFrame.id == document.activeFrameID else {
+                        throw SessionError.unavailable("Stop playback and show the active frame before selecting drawings. Nothing was selected.")
+                    }
+                    let instruction = try SpatterAreaSelectInstruction.parse(draft)
+                    let region = try StudioSelectionRegion(points: instruction.canvasPoints(width: document.width, height: document.height),
+                                                           kind: instruction.isRectangle ? .rectangle : .polygon, smoothing: 0)
+                    let ids = try studio.drawingIDsEnclosed(by: region, checkCancellation: check)
+                    guard !ids.isEmpty else {
+                        throw SessionError.unavailable("No drawings on visible layers with Free lock are fully inside that outline. Nothing was selected.")
+                    }
+                    preparedRequest = try instruction.prepare(in: document, elementIDs: ids.sorted(), requestID: submissionID, checkCancellation: check)
+                    selectionRoute = .area; selectedCount = ids.count
+                } else if !isBatch && isWandSelect {
+                    // The Wand's own sample, region and hit test on the active drawing layer.
+                    guard !captured.isPlaying, studio.currentFrame.id == document.activeFrameID else {
+                        throw SessionError.unavailable("Stop playback and show the active frame before selecting drawings. Nothing was selected.")
+                    }
+                    let instruction = try SpatterWandSelectInstruction.parse(draft)
+                    let point = try instruction.canvasPoint(width: document.width, height: document.height)
+                    let ids = try await studio.wandDrawingIDs(at: point, tolerance: instruction.tolerance,
+                                                              sampleAllLayers: instruction.sampleAllLayers, checkCancellation: check)
+                    guard !ids.isEmpty else {
+                        throw SessionError.unavailable("The color region at that point touches no drawings on the active layer. Nothing was selected.")
+                    }
+                    preparedRequest = try instruction.prepare(in: document, elementIDs: ids, requestID: submissionID, checkCancellation: check)
+                    selectionRoute = .wand; selectedCount = ids.count
+                } else if !isBatch && isSource {
                     // Metadata only: the URL text, stated rights basis and time. Nothing is fetched.
                     guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before recording a reference source.") }
                     let instruction = try SpatterSourceInstruction.parse(draft)
@@ -753,7 +832,8 @@ final class SpatterStudioEditSession: ObservableObject {
                     recordedSource: sourceInstruction == nil ? nil : studio.document.spatterSource,
                     sourceReceipt: storyboard != nil ? studio.document.spatterSource.map {
                         SpatterSourceVideoBounds.receipt(seconds: Double(addedTicks) / Double(studio.fps), fps: studio.fps, reference: $0)
-                    } : nil)
+                    } : nil,
+                    selectionRoute: selectionRoute, selectedDrawingCount: selectedCount)
                 self.appliedAccountID = captured.accountID
                 self.appliedEdit = result; self.status = .applied; self.notice = result.summary
             } catch is CancellationError {
@@ -767,6 +847,45 @@ final class SpatterStudioEditSession: ObservableObject {
         return true
     }
 
+    /// projectExport (#204): a file of the saved current revision only.
+    private static func exportFormat(_ draft: String, captured: Capture, studio: StudioViewModel) throws -> SpatterProjectExportInstruction.Format {
+        let instruction = try SpatterProjectExportInstruction.parse(draft)
+        guard !captured.isPlaying, !studio.isPlaying, !studio.isDirty, !studio.isSaving, studio.textDraft == nil else {
+            throw SessionError.unavailable("Save the project and stop playback before Spatter starts an export; export uses the saved revision. Nothing was exported.")
+        }
+        return instruction.format
+    }
+    /// libraryPicture (#204): the panel's resolver verifies and imports the
+    /// bundled picture, then Studio's own attach transaction adds it as one
+    /// Undo step. The receipt describes exactly the revision and new layer.
+    private func addLibraryPicture(_ draft: String, document: StudioCommandContext, captured: Capture, studio: StudioViewModel,
+                                   submissionID: UUID, check: () throws -> Void,
+                                   currentScope: ScopeProvider) async throws -> AppliedEdit {
+        let instruction = try SpatterLibraryPictureInstruction.parse(draft)
+        guard !captured.isPlaying, studio.textDraft == nil else {
+            throw SessionError.unavailable("Stop playback and finish any text draft before adding a library picture. Nothing was added.")
+        }
+        guard let resolve = libraryPictureResolver else { throw SpatterLibraryPictureInstruction.Failure.unavailable }
+        let imported = try await resolve(instruction)
+        try await checkpoint()
+        try check()
+        try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+        let before = studio.document
+        _ = try studio.attachImportedImage(imported, expectedProjectID: document.projectID, expectedRevision: document.revision,
+                                           frameID: document.activeFrameID, layerID: document.activeLayerID, checkCancellation: check)
+        let after = studio.document
+        let oldLayers = Set(before.layers.map(\.id))
+        let receipt = StudioCommandReceipt(requestID: submissionID, projectID: after.id, previousRevision: before.revision,
+            revision: after.revision, outcome: after == before ? .unchanged : .applied, created: [:],
+            createdFrameIDs: [], deletedFrameIDs: [], createdLayerIDs: after.layers.map(\.id).filter { !oldLayers.contains($0) },
+            deletedLayerIDs: [], createdElementIDs: [], deletedElementIDs: [], changedAudioClipIDs: [],
+            clipboardElementCount: 0, clipboardID: nil)
+        return AppliedEdit(receipt: receipt, selectedErasureMaskCount: 0, gridInstruction: nil, onionInstruction: nil,
+            frameExposureTicks: nil, frameAction: nil, isLayerGlowEdit: false, isLayerDuplicate: false, isLayerUpdate: false,
+            layerVisibility: nil, layerOrderUp: nil, artworkOrderForward: nil, imageReflectionAxis: nil, isAudioEdit: false,
+            renamedProjectName: nil, addedAudioClipCount: 0, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
+            addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, libraryPictureName: imported.name)
+    }
     private static func requireEligible(_ studio: StudioViewModel, screen: StudioViewModel.CommandScreenContext) throws {
         guard screen.route == .editor, screen.document != nil, studio.isEditing else { throw SessionError.outsideStudio }
         guard studio.activeStrokeID == nil else { throw SessionError.unavailable("Finish the current touch stroke before creating a local recipe.") }
@@ -820,6 +939,13 @@ final class SpatterStudioEditSession: ObservableObject {
         exportedEditIDs.insert(edit.receipt.requestID)
         return .init(editRequestID: edit.receipt.requestID, projectID: edit.receipt.projectID,
             revision: edit.receipt.revision, accountID: currentScope.accountID)
+    }
+    /// Consumed once by the presenting panel; a later read returns nil, so a
+    /// re-render can never start a second export from one instruction.
+    func takeExportHandoff() -> ExportHandoff? {
+        guard let handoff = exportHandoff, !isClosed else { return nil }
+        exportHandoff = nil
+        return handoff
     }
     /// Typed revert for generative edits (#205): offered as long as every frame
     /// and layer the edit created still exists unchanged and the created layers

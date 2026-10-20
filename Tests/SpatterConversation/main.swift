@@ -495,10 +495,11 @@ private final class NetworkTrap: URLProtocol {
                 for fact in ["catalog v\(SpatterInstructionCatalog.version)", "selectionTranslate", "imagePlacement", "textUpdate", "pan L100–R100 and solo",
                              "SHA-256", "In-app account deletion is not available yet", "revocable, expiring code",
                              "multiClauseBrief", "tween", "frameClipboard", "projectSettings", "brushStroke", "batch",
-                             "USD 4.99 per month and USD 9.99 per month", "Preview plan", "Revert Spatter edit"] {
+                             "USD 4.99 per month and USD 9.99 per month", "Preview plan", "Revert Spatter edit",
+                             "areaSelection", "wandSelection", "libraryPicture", "projectExport"] {
                     try require(SpatterAIViewModel.currentStudioCapabilities.contains(fact), "Capability text missing: \(fact)")
                 }
-                try require(SpatterInstructionCatalog.version == 4 && SpatterInstructionCatalog.grammars.count == 40 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                try require(SpatterInstructionCatalog.version == 5 && SpatterInstructionCatalog.grammars.count == 44 && SpatterInstructionCatalog.commandNames.contains("translateElements")
                     && SpatterInstructionCatalog.commandNames.contains("fillAtPoint") && SpatterInstructionCatalog.commandNames.contains("selectElements")
                     && SpatterInstructionCatalog.commandNames.contains("setSourceReference")
                     && SpatterInstructionCatalog.commandNames.contains("updateText") && SpatterInstructionCatalog.commandNames.contains("appendFrames")
