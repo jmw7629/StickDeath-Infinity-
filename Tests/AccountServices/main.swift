@@ -248,6 +248,23 @@ private let device = UUID(uuidString: "44444444-4444-4444-8444-444444444444")!
             for _ in 0..<2 { do { _ = try await client.current(); throw Failure(description: "incomplete accepted") } catch CommunityError.invalidResponse {} }
             do { _ = try await client.current(); throw Failure(description: "server error hidden") } catch CommunityError.server {}
             try require(transport.calls.allSatisfy { $0.name == "sdi_my_entitlement" }, "rpc name")
+            try require(!free.inTrial && !pro.inTrial, "a missing trial flag is false")
+        }
+        await test("server entitlement accepts Unlimited and reads the optional trial flag (owner decision 2026-10-20)") {
+            let (_, gateway) = fixture([#"{"tier":"unlimited","status":"active","paid_through":"2026-11-01T00:00:00+00:00","provider":"apple"}"#,
+                                        #"{"tier":"creator","status":"active","paid_through":"2026-10-23T00:00:00+00:00","provider":"apple","in_trial":true}"#,
+                                        #"{"tier":"pro","status":"active","paid_through":"2026-10-23T00:00:00+00:00","provider":"apple","trial":true}"#,
+                                        #"{"tier":"pro","status":"trialing","paid_through":"2026-10-23T00:00:00+00:00","provider":"stripe"}"#,
+                                        #"{"tier":"free","status":"none","paid_through":null,"provider":null,"in_trial":true}"#])
+            let client = ServerEntitlementClient(gateway: gateway)
+            let unlimited = try await client.current()
+            try require(unlimited.tier == .unlimited && !unlimited.inTrial, "unlimited")
+            for label in ["in_trial", "trial", "trialing"] {
+                let trial = try await client.current()
+                try require(trial.inTrial, "trial from \(label)")
+            }
+            let free = try await client.current()
+            try require(free.tier == .free && !free.inTrial, "Free has no trial")
         }
         await test("reconciliation verifies matches, defers when the server has no record and keeps the server's paid tier") {
             func server(_ tier: BillingPlanTier) -> ServerEntitlement {
@@ -260,6 +277,8 @@ private let device = UUID(uuidString: "44444444-4444-4444-8444-444444444444")!
             } else { throw Failure(description: "mismatch not deferred") }
             try require(ServerEntitlementReconciliation.verification(storeTier: .free, server: server(.pro)) == .verified, "web plan accepted")
             try require(ServerEntitlementReconciliation.grantedTier(server(.pro)) == .pro && ServerEntitlementReconciliation.grantedTier(nil) == .free, "granted tier")
+            try require(ServerEntitlementReconciliation.grantedTier(server(.unlimited)) == .unlimited
+                        && ServerEntitlementReconciliation.verification(storeTier: .unlimited, server: server(.unlimited)) == .verified, "unlimited granted")
         }
         await test("reconciliation failures are worded honestly: not configured, signed out and offline") {
             if case .deferred(let text) = ServerEntitlementReconciliation.verification(for: CommunityError.notConfigured) { try require(text.contains("not configured"), "nc") } else { throw Failure(description: "nc") }
