@@ -31,6 +31,12 @@ DEPENDENCIES = {
         # Brief-scope quality report and its draft-submission record (#213).
         "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
     },
+    # Both-client .sdi interchange harness (#286): production portable bundle and editable archive.
+    "Tests/SDIInterchange/main.swift": {
+        "StickDeathInfinity/Storage/DeviceStorageManager.swift",
+        "StickDeathInfinity/Models/StudioDocument.swift",
+        "StickDeathInfinity/Models/Models.swift",
+    },
     # The official-channel mark compositor uses the placement/contrast rules (#241).
     "StickDeathInfinity/Services/StudioExportService.swift": {"StickDeathInfinity/Services/StudioChannelRendition.swift"},
     "StickDeathInfinity/Services/StudioAudioPreviewSession.swift": {

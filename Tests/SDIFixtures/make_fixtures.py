@@ -99,7 +99,7 @@ def fixtures():
                     "audioData": base64.b64encode(b"RIFF").decode("ascii"), "startTime": 0, "duration": 0.5}]
     return {
         "swift-schema35-studio.sdi": (envelope(golden), {
-            "android": "accept", "schemaVersion": 35, "layers": 2, "frames": 2, "elements": 4,
+            "android": "accept", "ios": "accept", "schemaVersion": 35, "layers": 2, "frames": 2, "elements": 4,
             "notes": "Position/alpha lock modes, a PhotoCraft label, multiply + linear-dodge blends, a 3-tick hold, "
                      "a pressure-sampled round brush, a legacy line and the four-track mixer (volume, mute, pan, solo)."}),
         "swift-schema35-text.sdi": (envelope(text), {
@@ -115,8 +115,64 @@ def fixtures():
     }
 
 
+def interchange_projection(document):
+    """What both production clients must preserve when they open the golden fixture and re-export it.
+
+    Each client re-exports the `.sdi`, reads the editable document JSON back from its own bytes and
+    reduces it with this same projection (Kotlin `SdiReexportProjection`, Swift
+    `Tests/SDIInterchange/main.swift`). Schema numbers, dates, revision and identifier case are left
+    out: Android writes the lowest schema that validates its content and both clients stamp dates.
+    Brush descriptors are compared by family and seed; per-point pressure is compared exactly."""
+    def element(item):
+        pts = [[p["x"], p["y"]] + ([p["pressure"]] if "pressure" in p else []) for p in item["points"]]
+        brush = item.get("brush")
+        return {"id": item["id"], "tool": item["tool"], "layerID": item["layerID"], "color": item["color"].upper(),
+                "width": item["width"], "opacity": item.get("opacity", 1), "points": pts,
+                "brush": None if brush is None else {"family": brush["family"], "seed": brush["seed"]}}
+    return {
+        "id": document["id"].lower(), "name": document["name"], "width": document["width"], "height": document["height"],
+        "fps": document["fps"], "activeFrameID": document["activeFrameID"], "activeLayerID": document["activeLayerID"],
+        "layers": [{"id": layer["id"], "name": layer["name"], "visible": layer.get("visible", True),
+                    "locked": layer.get("locked", False), "opacity": layer.get("opacity", 1),
+                    "lockMode": "full" if layer.get("locked") else layer.get("lockMode", "free"),
+                    "blendMode": layer.get("blendMode", "normal").lower(), "glowEnabled": layer.get("glowEnabled", False),
+                    "colorLabel": layer.get("colorLabel")} for layer in document["layers"]],
+        "frames": [{"id": frame["id"], "holdTicks": frame.get("holdTicks", 1),
+                    "elements": [element(item) for item in frame["elements"]]} for frame in document["frames"]],
+        "audioClips": len(document.get("audioClips", [])),
+        "audioTrackVolumes": document.get("audioTrackVolumes") or [1, 1, 1, 1],
+        "mutedAudioTracks": sorted(document.get("mutedAudioTracks") or []),
+        "audioTrackPans": document.get("audioTrackPans") or [0, 0, 0, 0],
+        "soloedAudioTracks": sorted(document.get("soloedAudioTracks") or []),
+    }
+
+
+def canonical(value):
+    """Sorted keys, numbers to four decimals: the comparison form shared with Kotlin and Swift."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        text = "%.4f" % value
+        return "0.0000" if text == "-0.0000" else text
+    if isinstance(value, str):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(value, dict):
+        return "{" + ",".join('"%s":%s' % (key, canonical(value[key])) for key in sorted(value)) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(canonical(item) for item in value) + "]"
+    raise TypeError(type(value))
+
+
+def reexport_expectations():
+    """`reexport.json`: the projection of the golden fixture that both clients' re-exports must match."""
+    return {"fixture": "swift-schema35-studio.sdi", "projection": interchange_projection(studio_document())}
+
+
 def write():
     ASSETS.mkdir(parents=True, exist_ok=True)
+    (ROOT / "reexport.json").write_text(json.dumps(reexport_expectations(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     expectations = {}
     for name, (data, expectation) in fixtures().items():
         (ASSETS / name).write_bytes(data)

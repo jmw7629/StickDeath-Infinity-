@@ -64,14 +64,14 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
 
     init { if (manager.isConfigured && state is AccountState.SignedOut) perform("Restoring your session…") { manager.restore() } }
 
-    private fun perform(progress: String, block: () -> Any?) {
+    private fun perform(progress: String, done: String = "", block: () -> Any?) {
         if (working) return
         working = true; notice = progress
         viewModelScope.launch {
             val failure = withContext(Dispatchers.IO) { runCatching { block() }.exceptionOrNull() }
             working = false
             state = manager.state
-            notice = when (failure) { null -> ""; is CancellationException -> ""; else -> failure.message ?: "That did not complete." }
+            notice = when (failure) { null -> done; is CancellationException -> ""; else -> failure.message ?: "That did not complete." }
             if (state !is AccountState.SignedIn) { feed = Load.Idle; records = Load.Idle; invitation = Load.Idle; spatterReply = Load.Idle; spatterUsage = Load.Idle; PlanRuntime.reportServerPlan(null) }
             else if (spatterUsage is Load.Idle) refreshSpatterUsage()
         }
@@ -99,6 +99,13 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     fun beginOAuth(provider: OAuthProvider): String? = runCatching { manager.beginOAuth(provider) }
         .onFailure { notice = it.message ?: "Sign-in could not start." }.getOrNull()
     fun completeOAuth(callback: String) = perform("Finishing sign-in…") { manager.completeOAuth(callback) }
+    /** Emails a reset link that returns to this app (same in-memory PKCE rule as provider sign-in). */
+    fun requestPasswordReset(email: String) = perform("Sending a reset link…",
+        "If an account exists for that email, a reset link is on its way. Open it on this device before closing the app.") {
+        manager.requestPasswordReset(email)
+    }
+    val needsNewPassword get() = (state as? AccountState.SignedIn)?.provider == RECOVERY_PROVIDER
+    fun updatePassword(password: String) = perform("Saving your new password…", "Your new password is saved.") { manager.updatePassword(password) }
     fun browserUnavailable() { manager.cancelOAuth(); notice = "No browser is available to complete sign-in. Nothing was sent." }
 
     fun loadFeed(category: FeedCategory = feedCategory) { feedCategory = category; fetch({ feed = it }) { feedClient.page(category, 0) } }

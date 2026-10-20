@@ -121,10 +121,10 @@ class GoTrueClient(private val config: BackendConfig, private val transport: Htt
     }
     private fun enc(value: String) = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
-    private fun post(path: String, query: Map<String, String>, body: JSONObject, bearer: String? = null): HttpResponse {
+    private fun post(path: String, query: Map<String, String>, body: JSONObject, bearer: String? = null, method: String = "POST"): HttpResponse {
         val headers = mutableMapOf("apikey" to config.publishableKey, "Content-Type" to "application/json", "Accept" to "application/json")
         bearer?.let { headers["Authorization"] = "Bearer $it" }
-        return try { transport.send(HttpRequest("POST", url(path, query), headers, body.toString().toByteArray(Charsets.UTF_8)), RESPONSE_LIMIT) }
+        return try { transport.send(HttpRequest(method, url(path, query), headers, body.toString().toByteArray(Charsets.UTF_8)), RESPONSE_LIMIT) }
         catch (e: IOException) { throw AuthException.Network() }
     }
 
@@ -150,8 +150,20 @@ class GoTrueClient(private val config: BackendConfig, private val transport: Htt
         "provider" to provider.wireName, "redirect_to" to OAuthCallback.REDIRECT, "scopes" to provider.scopes,
         "code_challenge" to challenge, "code_challenge_method" to "s256"))
 
-    fun exchangeCode(code: String, verifier: String, provider: OAuthProvider): StoredSession =
-        session(post("/auth/v1/token", mapOf("grant_type" to "pkce"), JSONObject().put("auth_code", code).put("code_verifier", verifier)), provider.wireName)
+    /** Sends the reset email. The link returns to [OAuthCallback.REDIRECT] with a PKCE code; GoTrue
+     * answers 200 whether or not the address has an account, so nothing about the account is revealed. */
+    fun recover(email: String, challenge: String) {
+        check(post("/auth/v1/recover", mapOf("redirect_to" to OAuthCallback.REDIRECT), JSONObject().put("email", email.trim())
+            .put("code_challenge", challenge).put("code_challenge_method", "s256")))
+    }
+
+    /** Sets a new password for the signed-in (recovery) session. */
+    fun updatePassword(accessToken: String, password: String) {
+        check(post("/auth/v1/user", emptyMap(), JSONObject().put("password", password), bearer = accessToken, method = "PUT"))
+    }
+
+    fun exchangeCode(code: String, verifier: String, providerName: String): StoredSession =
+        session(post("/auth/v1/token", mapOf("grant_type" to "pkce"), JSONObject().put("auth_code", code).put("code_verifier", verifier)), providerName)
 
     /** Server-side revocation; local sign-out proceeds regardless of the outcome. */
     fun logout(accessToken: String) { runCatching { post("/auth/v1/logout", emptyMap(), JSONObject(), bearer = accessToken) } }
@@ -186,6 +198,8 @@ class GoTrueClient(private val config: BackendConfig, private val transport: Htt
             code == "anonymous_provider_disabled" -> AuthException.Rejected("Guest sign-in is not enabled for this project.")
             code == "signup_disabled" -> AuthException.Rejected("New accounts are not being accepted right now.")
             code == "weak_password" -> AuthException.Rejected("Choose a stronger password.")
+            code == "same_password" -> AuthException.Rejected("Choose a password different from the current one.")
+            code == "over_email_send_rate_limit" -> AuthException.RateLimited()
             code == "user_already_exists" || code == "email_exists" -> AuthException.Rejected("An account already exists for that email. Sign in instead.")
             response.status >= 500 -> AuthException.Network()
             else -> AuthException.Rejected("The account service refused this request.")
@@ -198,6 +212,9 @@ class GoTrueClient(private val config: BackendConfig, private val transport: Htt
     }
 }
 
+/** Provider label of a session that came from a password reset link, until a new password is set. */
+const val RECOVERY_PROVIDER = "recovery"
+
 /** What the account surface can truthfully say. Only a server-issued session is ever [SignedIn]. */
 sealed class AccountState {
     abstract val summary: String
@@ -208,6 +225,7 @@ sealed class AccountState {
     data class RetryableFailure(val reason: String) : AccountState() { override val summary get() = "$reason Your saved session was kept; retry when online." }
     data class SignedIn(val userId: String, val email: String?, val isAnonymous: Boolean, val provider: String) : AccountState() {
         override val summary get() = when {
+            provider == RECOVERY_PROVIDER -> "Signed in from a password reset link. Choose a new password to finish."
             isAnonymous -> "Signed in as a guest. Guests can browse but cannot publish, vote or join rooms."
             email != null -> "Signed in as $email"
             else -> "Signed in"
@@ -226,7 +244,8 @@ class SessionManager(
     private val lock = Any()
     private var session: StoredSession? = null
     private var busy = false
-    private var pending: Pair<OAuthProvider, String>? = null
+    /** In-memory PKCE verifier for the one redirect in flight: an OAuth provider, or null for a password reset. */
+    private var pending: Pair<OAuthProvider?, String>? = null
     /** Increments on every identity change so replies for an earlier account can be discarded. */
     @Volatile var generation = 0L; private set
     @Volatile var state: AccountState = initialState(); private set
@@ -307,9 +326,35 @@ class SessionManager(
         val started = synchronized(lock) { pending.also { pending = null } } ?: throw AuthException.InvalidCallback()
         OAuthCallback.denial(callback)?.let { throw AuthException.ProviderDenied(it) }
         val code = OAuthCallback.code(callback) ?: throw AuthException.InvalidCallback()
-        adopt(client().exchangeCode(code, started.second, started.first)); state
+        adopt(client().exchangeCode(code, started.second, started.first?.wireName ?: RECOVERY_PROVIDER)); state
     }
+    /** Abandons the redirect in flight; a later callback for it is refused and nothing is exchanged. */
     fun cancelOAuth() = synchronized(lock) { pending = null }
+
+    /** Emails a reset link that returns here; the verifier stays in memory, so the link must be opened on
+     * this device before the app is closed. Replaces any sign-in redirect still in flight. */
+    fun requestPasswordReset(email: String) = exclusive {
+        require(email.isNotBlank() && email.contains('@')) { "Enter the email address of your account." }
+        val c = client()
+        val verifier = Pkce.verifier(random)
+        synchronized(lock) { pending = null to verifier }
+        try { c.recover(email, Pkce.challenge(verifier)) }
+        catch (e: AuthException) { synchronized(lock) { if (pending?.second == verifier) pending = null }; throw e }
+    }
+
+    /** True while the session came from a reset link and still needs a new password. */
+    val needsNewPassword get() = (state as? AccountState.SignedIn)?.provider == RECOVERY_PROVIDER
+
+    /** Sets the account password (required after a reset link; also allowed for any email session). */
+    fun updatePassword(password: String): AccountState {
+        require(password.length >= 8) { "Use a password of at least 8 characters." }
+        val token = accessToken() ?: throw AuthException.SessionEnded()
+        return exclusive {
+            client().updatePassword(token, password)
+            synchronized(lock) { session }?.let { current -> adopt(if (current.provider == RECOVERY_PROVIDER) current.copy(provider = "email") else current) }
+            state
+        }
+    }
 
     /** A usable access token, refreshed ahead of expiry; null when signed out. */
     fun accessToken(): String? {

@@ -18,6 +18,7 @@
     "bytes": 2590,
     "elements": 4,
     "frames": 2,
+    "ios": "accept",
     "layers": 2,
     "notes": "Position/alpha lock modes, a PhotoCraft label, multiply + linear-dodge blends, a 3-tick hold, a pressure-sampled round brush, a legacy line and the four-track mixer (volume, mute, pan, solo).",
     "schemaVersion": 35,
