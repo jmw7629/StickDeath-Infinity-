@@ -20,7 +20,14 @@ Event handling:
 * ``customer.subscription.created|updated|deleted`` – status, period end,
   ``cancel_at_period_end`` and the configured price id → approved product.
 * ``invoice.paid`` – active through the paid line period, plus a ``charge``
-  ledger row from ``amount_paid`` (live mode only).
+  ledger row from ``amount_paid`` (live mode only). The zero-amount invoice
+  Stripe issues when a subscription starts in a trial
+  (``billing_reason == "subscription_create"``, ``amount_paid == 0``) maps to
+  ``trialing`` with ``in_trial=True`` so it never ends the trial early.
+
+Free trials (owner decision 2026-10-20): a ``trialing`` subscription is sent
+with ``in_trial=True``; any other status with ``in_trial=False``. During a
+trial the Studio is unlocked but the Spatter meter funds no prompt.
 * ``invoice.payment_failed`` – recorded only; Stripe's subsequent
   ``customer.subscription.updated`` carries the ``past_due`` status.
 * ``charge.refunded`` – ``refund`` ledger rows per refund (live mode only); the
@@ -236,7 +243,7 @@ def map_event(event: Mapping[str, Any], catalog: ProductCatalog, config: StripeC
             payload["reason"] = "subscription not payable or lacks a period end"
             return ApplyEventCall(**base)
         return ApplyEventCall(**base, user_id=_metadata_user(obj), provider_subscription_id=sub_id, product_id=product.product_id,
-                              status=status, paid_through=paid_through, cancel_at_period_end=cancel)
+                              status=status, paid_through=paid_through, cancel_at_period_end=cancel, in_trial=status == "trialing")
 
     if event_type == "invoice.paid":
         sub_id, details = _invoice_subscription(obj)
@@ -249,8 +256,11 @@ def map_event(event: Mapping[str, Any], catalog: ProductCatalog, config: StripeC
         if product is None or sub_id is None or paid_through is None:
             payload["reason"] = "invoice has no approved subscription line"
             return ApplyEventCall(**base, ledger=ledger)
+        amount_paid = obj.get("amount_paid")
+        trial_start = obj.get("billing_reason") == "subscription_create" and amount_paid == 0 and not isinstance(amount_paid, bool)
         return ApplyEventCall(**base, user_id=_metadata_user(details, obj), provider_subscription_id=sub_id,
-                              product_id=product.product_id, status="active", paid_through=paid_through, ledger=ledger)
+                              product_id=product.product_id, status="trialing" if trial_start else "active",
+                              paid_through=paid_through, ledger=ledger, in_trial=trial_start)
 
     if event_type == "charge.refunded" and livemode:
         refunds = obj.get("refunds")

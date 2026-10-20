@@ -32,6 +32,7 @@ OTHER_ROOT = b"\x30\x03\x02\x01\x09"
 CATALOG = ProductCatalog([
     ApprovedProduct("sdi.creator.monthly", "apple", "creator", "monthly"),
     ApprovedProduct("sdi.pro.monthly", "apple", "pro", "monthly"),
+    ApprovedProduct("com.willisbmb.StickDeathInfinity.unlimited.monthly", "apple", "unlimited", "monthly"),
     ApprovedProduct("sdi.creator.monthly.web", "stripe", "creator", "monthly", stripe_price_id="price_creator"),
     ApprovedProduct("sdi.pro.monthly.web", "stripe", "pro", "monthly", stripe_price_id="price_pro"),
     ApprovedProduct("sdi.pro.annual.web", "stripe", "pro", "annual", stripe_price_id="price_annual", owner_configured=True),
@@ -129,8 +130,24 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ApprovedProduct("x", "apple", "pro", "monthly", stripe_price_id="price_x")
         with self.assertRaises(ValueError):
-            ApprovedProduct("x", "apple", "studio", "monthly")              # no third tier
+            ApprovedProduct("x", "apple", "studio", "monthly")              # no fourth tier
         ApprovedProduct("x.annual", "apple", "pro", "annual", owner_configured=True)
+        ApprovedProduct("x.unlimited", "apple", "unlimited", "monthly")    # owner decision 2026-10-20
+
+    def test_three_tiers_all_have_the_trial(self):
+        from backend.billing.contract import TIERS, TRIAL_TIERS
+        self.assertEqual(TIERS, ("creator", "pro", "unlimited"))
+        self.assertEqual(TRIAL_TIERS, TIERS)
+        sql = (REPO / "backend/sql/billing.sql").read_text()
+        self.assertIn("check(tier in('creator','pro','unlimited'))", sql)
+        self.assertIn("tier not in('creator','pro','unlimited')", sql)
+
+    def test_in_trial_is_sent_and_validated(self):
+        call = ApplyEventCall(provider="apple", event_id="e", event_type="t", occurred_at=NOW, payload={}, in_trial=True)
+        self.assertIs(call.rpc()[1]["in_trial"], True)
+        self.assertIsNone(ApplyEventCall(provider="apple", event_id="e", event_type="t", occurred_at=NOW, payload={}).rpc()[1]["in_trial"])
+        with self.assertRaises(ValueError):
+            ApplyEventCall(provider="apple", event_id="e", event_type="t", occurred_at=NOW, payload={}, in_trial="yes")
 
     def test_catalog_from_rows_ignores_unapproved_and_maps_prices(self):
         rows = [
@@ -343,6 +360,51 @@ def stripe_handle(event, executor=None, config=STRIPE_CONFIG, now=NOW, secret=SE
     return response, executor
 
 
+class AppStoreTrialTests(unittest.TestCase):
+    """Owner decision 2026-10-20: a 3-day free trial (introductory offer) on every tier."""
+
+    def test_free_trial_transaction_maps_to_trialing(self):
+        tx = transaction(productId="com.willisbmb.StickDeathInfinity.unlimited.monthly", offerType=1, offerDiscountType="FREE_TRIAL",
+                         price=0, expiresDate=int((NOW + dt.timedelta(days=3)).timestamp() * MS))
+        response, executor = apple_handle(notification("SUBSCRIBED", tx, subtype="INITIAL_BUY"))
+        self.assertEqual(response.status, 200)
+        params = executor.only
+        self.assertEqual((params["product_id"], params["status"], params["in_trial"]),
+                         ("com.willisbmb.StickDeathInfinity.unlimited.monthly", "trialing", True))
+        self.assertEqual(params["paid_through"], "2026-10-15T12:00:00.000Z")
+
+    def test_trial_detection_rules(self):
+        cases = [
+            ({"offerType": 1, "offerDiscountType": "FREE_TRIAL", "price": 0}, True),
+            ({"offerType": 3, "offerDiscountType": "FREE_TRIAL"}, True),            # offer-code free trial is also unpaid
+            ({"offerType": 1, "price": 0}, True),                                   # payload without offerDiscountType
+            ({"offerType": 1, "price": None}, True),                                # no price reported
+            ({"offerType": 1, "offerDiscountType": "PAY_AS_YOU_GO", "price": 990}, False),
+            ({"offerType": 1, "price": 990}, False),                                # a paid introductory price
+            ({"offerType": 2, "price": 0}, False),                                  # promotional without a trial discount type
+            ({}, False),
+            ({"offerType": True}, False),
+        ]
+        for fields, expected in cases:
+            self.assertIs(apple.is_free_trial(transaction(**fields)), expected, fields)
+
+    def test_paid_renewal_clears_the_trial(self):
+        response, executor = apple_handle(notification("DID_RENEW", transaction()))
+        self.assertEqual((executor.only["status"], executor.only["in_trial"]), ("active", False))
+
+    def test_billing_retry_after_an_unpaid_trial_keeps_the_trial(self):
+        tx = transaction(offerType=1, offerDiscountType="FREE_TRIAL", price=0)
+        grace = NOW + dt.timedelta(days=6)
+        renewal = {"autoRenewStatus": 1, "gracePeriodExpiresDate": int(grace.timestamp() * MS)}
+        _, executor = apple_handle(notification("DID_FAIL_TO_RENEW", tx, renewal=renewal, subtype="GRACE_PERIOD"))
+        self.assertEqual((executor.only["status"], executor.only["in_trial"]), ("grace", True))
+
+    def test_renewal_info_offer_does_not_make_a_paid_period_a_trial(self):
+        renewal = {"autoRenewStatus": 1, "offerType": 1, "offerDiscountType": "FREE_TRIAL"}
+        _, executor = apple_handle(notification("DID_CHANGE_RENEWAL_PREF", transaction(), renewal=renewal))
+        self.assertEqual((executor.only["status"], executor.only["in_trial"]), ("active", False))
+
+
 class StripeWebhookTests(unittest.TestCase):
     def test_signature_is_checked_before_the_body(self):
         event = stripe_event("customer.subscription.created", subscription_object())
@@ -384,12 +446,25 @@ class StripeWebhookTests(unittest.TestCase):
         self.assertIsNone(executor.only["provider_subscription_id"])
         self.assertEqual(executor.only["payload"]["reason"], "subscription not payable or lacks a period end")
 
-    def test_trial_applies_to_both_paid_plans(self):
+    def test_trial_applies_to_every_paid_plan(self):
         from backend.billing.contract import TIERS, TRIAL_TIERS
         self.assertEqual(TRIAL_TIERS, TIERS)
         for price, product in (("price_creator", "sdi.creator.monthly.web"), ("price_pro", "sdi.pro.monthly.web")):
             _, executor = stripe_handle(stripe_event("customer.subscription.created", subscription_object(status="trialing", price=price)))
-            self.assertEqual((executor.only["status"], executor.only["product_id"]), ("trialing", product))
+            self.assertEqual((executor.only["status"], executor.only["product_id"], executor.only["in_trial"]), ("trialing", product, True))
+        _, executor = stripe_handle(stripe_event("customer.subscription.updated", subscription_object(status="active")))
+        self.assertEqual((executor.only["status"], executor.only["in_trial"]), ("active", False))
+
+    def test_zero_amount_trial_start_invoice_keeps_the_trial(self):
+        period_end = NOW + dt.timedelta(days=3)
+        invoice = {"id": "in_t", "object": "invoice", "status": "paid", "amount_paid": 0, "currency": "usd", "subscription": "sub_1",
+                   "billing_reason": "subscription_create", "subscription_details": {"metadata": {"sdi_user_id": USER}},
+                   "lines": {"data": [{"price": {"id": "price_pro"}, "period": {"start": int(NOW.timestamp()), "end": int(period_end.timestamp())}}]}}
+        _, executor = stripe_handle(stripe_event("invoice.paid", invoice))
+        self.assertEqual((executor.only["status"], executor.only["in_trial"]), ("trialing", True))
+        paid = dict(invoice, amount_paid=999, billing_reason="subscription_cycle")
+        _, executor = stripe_handle(stripe_event("invoice.paid", paid))
+        self.assertEqual((executor.only["status"], executor.only["in_trial"]), ("active", False))
 
     def test_cancel_at_period_end_downgrade_and_deletion(self):
         _, executor = stripe_handle(stripe_event("customer.subscription.updated", subscription_object(cancel_at_period_end=True)))

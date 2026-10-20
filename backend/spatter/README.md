@@ -68,31 +68,38 @@ kept for the original daily-budget tests). `SqlMeter` calls the service-only RPC
    2026-10-15): Free has no server-funded allowance, so a Free request with a
    zero credit balance gets 402 `upgrade_required` + `plan: free` + `upgrade:
    creator_or_pro` + `buyCredits: true` + `credits: 0` and the message
-   "Spatter is part of Creator and Pro, or buy Spatter credits to pay as you
-   go." before any counter, reservation or provider call;
+   "Spatter is part of Creator, Pro and Unlimited, or buy Spatter credits to
+   pay as you go." before any counter, reservation or provider call; an
+   account whose only entitlements are in a **free trial** (owner decision
+   2026-10-20) gets the same 402 `upgrade_required` with `plan` = the trial
+   tier, `trial: true`, `upgrade: after_trial`, `resetsAt` = trial end and the
+   message "Spatter is a preview during the free trial; it unlocks when your
+   first paid period starts.", also before anything is counted or any credit
+   is spent;
 2. agent emergency stop (`sdi_private.agent_global.emergency_stop`) → 503 `emergency_stop`;
 3. global daily ceiling → 503 `global_limit` (**defaults to 0, i.e. closed, until the owner sets it**);
 4. per-account per-minute rate (default 6) → 429 `rate_limited` + `retryAfterSeconds`;
 5. per-account daily safety cap (default 100) → 429 `daily_safety_limit`;
 6. funding, in order: the plan allowance from `sdi_private.entitlements`
-   (Pro unlimited; Creator's period allowance), then **one Spatter credit**
+   (Unlimited; Creator's or Pro's period allowance), then **one Spatter credit**
    (1 credit = 1 prompt). Nothing left → Creator gets 429
-   `plan_allowance_exhausted` + `upgrade: pro` + `buyCredits: true`; Free gets
-   the 402 above. Free with credits pays as it goes (free text allowed). Pro
-   never spends credits. Steps 2–5 apply before any credit is spent:
-   * `creator` (USD 4.99/month): `floor(creator_period_budget_microusd /
-     prompt_cost_estimate_microusd)` server-funded prompts per billing period
-     (defaults 3 490 000 / 20 000 = 174: USD 4.99 net of a 30% store commission
-     at a conservative USD 0.02 per prompt; the budget is capped at the gross
-     price), keyed to `paid_through`, so a renewal opens a new period;
+   `plan_allowance_exhausted` + `upgrade: pro` + `buyCredits: true` (Pro:
+   `upgrade: unlimited`); Free gets the 402 above. Free with credits pays as it
+   goes (free text allowed). Unlimited never spends credits. Steps 2–5 apply
+   before any credit is spent, for every tier including Unlimited:
+   * `creator` (USD 4.99/month): 250 and `pro` (USD 9.99/month): 500
+     server-funded prompts per billing period (owner decision 2026-10-20;
+     owner-editable `creator_period_prompts` / `pro_period_prompts` in
+     `sdi_spatter_usage_admin`), keyed to `paid_through`, so a renewal opens a
+     new period;
    * a paid request may carry `suggestedPromptId` from the fixed allowlist
      (`suggested_prompts.py`, mirrored by `sdi_private.spatter_suggested_prompt_ids()`
      and the iOS `SpatterSuggestedPrompt.all`; `test_suggested_prompts.py` keeps
      all three identical); an unknown id is 400 `unknown_suggested_prompt`;
-   * `pro` (USD 9.99/month): unlimited by plan; steps 1–5 still apply.
-   * The free trial applies to both paid plans: a `trialing` subscription is
-     metered as its own tier (Creator or Pro), not as Free.
-   * Creator and Pro members may add their own AI key in the app. Those requests
+   * `unlimited` (USD 19.99/month): no plan allowance; steps 1–5 still apply.
+   * Free trial: the Studio is unlocked but Spatter is preview-only (step 1);
+     the first paid period opens the tier's allowance.
+   * Paid members may add their own AI key in the app. Those requests
      go directly from the device to the member's provider and never reach this
      handler or the meter, so they do not count against the allowance.
 
@@ -105,7 +112,7 @@ are swept as committed, never silently refunded. Prompt text is never stored.
 Successful metered replies carry `allowance` instead of the daily `budget`:
 
 ```json
-{"schemaVersion": 1, "reply": "…", "usage": {"units": 9}, "allowance": {"plan": "creator", "period": "billing_period", "remaining": 173, "resetsAt": "2026-11-01T00:00:00Z", "credits": 0, "funding": "allowance"}}
+{"schemaVersion": 1, "reply": "…", "usage": {"units": 9}, "allowance": {"plan": "creator", "period": "billing_period", "remaining": 249, "resetsAt": "2026-11-01T00:00:00Z", "credits": 0, "funding": "allowance"}}
 ```
 
 `remaining` is `null` for `pro`; `resetsAt` is the renewal date for `creator`
@@ -200,8 +207,9 @@ switches and credential non-disclosure. No sockets, provider or database.
 * Owner decisions (implemented in source; metering revised 2026-10-15): Free =
   Spatter visible, pay as you go with purchased credits, otherwise
   `upgrade_required`; credit packs need owner approval and store products; Creator $4.99 = own AI
-  key + break-even server allowance (default 174 per period); Pro $9.99 =
-  unlimited + own AI key; trial on both paid plans. See
+  key + 250 server-funded prompts per period; Pro $9.99 = 500 per period;
+  Unlimited $19.99 = unlimited (caps still apply); 3-day trial on every paid
+  tier with Spatter preview-only (2026-10-20). See
   docs/SPATTER_BILLING_DECISIONS_2026_10_14.md for the earlier decisions.
 * The iOS client now decodes `allowance` and reads the remaining count from
   `sdi_spatter_my_usage`; non-2xx JSON error bodies (`code`, `retryAfterSeconds`)
