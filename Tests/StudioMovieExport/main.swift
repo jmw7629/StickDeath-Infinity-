@@ -132,6 +132,82 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         try require(Double(error) / Double(pixels * 3) < 13 && Double(large) / Double(pixels) < 0.12, "Encoded pixels diverge from actual PNG rendering (MAE \(Double(error) / Double(pixels * 3)), large \(large))")
         try require(colored > 12, "Movie fixture became blank")
     }
+    /// Mean absolute RGB difference of two same-size opaque rasters.
+    static func meanError(_ a: Raster, _ b: Raster) -> Double {
+        guard a.width == b.width, a.height == b.height else { return .infinity }
+        var total = 0
+        for index in stride(from: 0, to: a.bytes.count, by: 4) {
+            for channel in 0..<3 { total += abs(Int(a.bytes[index + channel]) - Int(b.bytes[index + channel])) }
+        }
+        return Double(total) / Double(a.width * a.height * 3)
+    }
+    /// The live Studio canvas path: the shared StudioFrameRenderer drawing into a
+    /// SwiftUI Canvas on white, rendered once at document size.
+    static func liveCanvas(_ doc: StudioDocument, frame index: Int) throws -> Raster {
+        let frame = doc.frames[index]
+        let prepared = try StudioFrameRenderer.prepare(frame: frame)
+        let rasters = try StudioFrameRenderer.prepareRasters(frame: frame, layers: doc.layers, sourceData: [:])
+        let size = CGSize(width: doc.width, height: doc.height)
+        var drawError: Error?
+        let renderer = ImageRenderer(content: Canvas { context, canvasSize in
+            context.fill(Path(CGRect(origin: .zero, size: canvasSize)), with: .color(.white))
+            drawError = StudioFrameRenderer.draw(context: &context, frame: frame, layers: doc.layers, canvasSize: size, size: canvasSize,
+                preparedBrushes: prepared, rasterSources: [:], preparedRasters: rasters)
+        }.frame(width: size.width, height: size.height))
+        renderer.scale = 1
+        guard let image = renderer.cgImage else { throw Failure(message: "Live canvas renderer produced no image") }
+        if let drawError { throw drawError }
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { throw Failure(message: "Canvas decode context failed") }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        return Raster(width: image.width, height: image.height, bytes: bytes)
+    }
+    static let brushFeatureFamilies: [StudioBrushFamily] = [.airbrush, .watercolor, .neon, .calligraphy]
+    /// Two frames committed through the production editor: frame 1 holds a plain
+    /// stroke of `family`; frame 2 copies it and adds a stroke using the family's
+    /// own feature (Build-up, Bleed, Additive glow over a backdrop, nib angle).
+    static func brushFeatureDocument(_ family: StudioBrushFamily, featureOn: Bool) throws -> StudioDocument {
+        let doc = try StudioDocument.new(name: "Brush movie \(family.rawValue)", width: 64, height: 64, fps: 12)
+        var editor = try StudioDocumentEditor(document: doc)
+        let layer = doc.activeLayerID
+        let color: String
+        switch family {
+        case .airbrush: color = "#1E40FF"
+        case .watercolor: color = "#0A8F3C"
+        case .neon: color = "#FF2D95"
+        default: color = "#202020"
+        }
+        func element(_ id: String, y: CGFloat, descriptor: StudioBrushDescriptor, color: String, width: CGFloat) -> DrawnElement {
+            DrawnElement(id: id, tool: .brush,
+                points: [StrokePoint(x: 8, y: y, pressure: nil, timestamp: 0), StrokePoint(x: 20, y: y + 2, pressure: nil, timestamp: 0.5),
+                         StrokePoint(x: 56, y: y - 2, pressure: nil, timestamp: 0.7)],
+                color: color, width: width, opacity: 1, layerID: layer, brush: descriptor)
+        }
+        if family == .neon {
+            // Additive glow only shows over artwork: a dark backdrop under both strokes.
+            try editor.commit(element("backdrop", y: 32, descriptor: StudioBrushDescriptor(family: .round, seed: 3, smoothing: 0),
+                                      color: "#304060", width: 160), frameID: doc.activeFrameID)
+        }
+        try editor.commit(element("plain", y: 18, descriptor: StudioBrushDescriptor(family: family, seed: 71, smoothing: 0),
+                                  color: color, width: 10), frameID: doc.activeFrameID)
+        editor.copyFrame()
+        try editor.pasteFrame()
+        let second = editor.document.frames[1].id
+        var feature = StudioBrushDescriptor(family: family, seed: 72, smoothing: 0)
+        if featureOn {
+            switch family {
+            case .airbrush: feature.version = 3; feature.buildup = 1
+            case .watercolor: feature.version = 3; feature.bleed = 1
+            case .neon: feature.version = 3; feature.additiveGlow = true
+            default: feature.tipAngleDegrees = 15
+            }
+        }
+        try editor.commit(element("feature", y: 44, descriptor: feature, color: color, width: 12), frameID: second)
+        return editor.document
+    }
     static func main() async throws {
         let root = fm.temporaryDirectory.appendingPathComponent("sdi-movie-tests-" + UUID().uuidString)
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
@@ -295,6 +371,47 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let decoded = try await decode(movie.movieURL)
             try require(decoded.frames.count == StudioBrushFamily.allCases.count && doc == original, "Brush frames or editable settings changed")
             for index in decoded.frames.indices { try matchesPNG(decoded.frames[index], readPNG(reference.imageURLs[index])) }
+        }
+        await test("Airbrush Build-up, Watercolor Bleed, Neon Additive glow and Calligraphy angle MP4 frames match the live canvas (#142)") {
+            let folder = try parent(root, "brush-feature-movies")
+            var finalFrames: [StudioBrushFamily: (movie: Raster, canvas: Raster)] = [:]
+            for family in brushFeatureFamilies {
+                let doc = try brushFeatureDocument(family, featureOn: true)
+                let original = doc
+                let movie = try await Service().export(snapshot: snapshot(doc), outputParent: folder, background: .white)
+                let reference = try await StudioExportService().export(document: doc, format: .pngSequence, outputParent: folder)
+                let decoded = try await decode(movie.movieURL)
+                try require(decoded.frames.count == 2 && doc == original, "\(family.rawValue) movie lost frames or changed the document")
+                var canvases: [Raster] = []
+                for index in decoded.frames.indices {
+                    let canvas = try liveCanvas(doc, frame: index)
+                    try require(decoded.frames[index].width == 64 && decoded.frames[index].height == 64, "\(family.rawValue) MP4 resized the canvas")
+                    try matchesPNG(decoded.frames[index], canvas)
+                    try matchesPNG(decoded.frames[index], readPNG(reference.imageURLs[index]))
+                    canvases.append(canvas)
+                }
+                // The second frame adds the feature stroke; the MP4 must show it.
+                try require(meanError(decoded.frames[1], canvases[1]) < meanError(decoded.frames[1], canvases[0]),
+                            "\(family.rawValue) MP4 frame 2 is closer to the canvas without the added stroke")
+                // Feature-on and feature-off canvases differ; when that difference
+                // exceeds codec resolution the MP4 must carry the feature, not the plain stroke.
+                let plain = try liveCanvas(brushFeatureDocument(family, featureOn: false), frame: 1)
+                let separation = meanError(canvases[1], plain)
+                try require(separation > 0, "\(family.rawValue) feature did not change live canvas pixels")
+                if separation >= 1.5 {
+                    try require(meanError(decoded.frames[1], canvases[1]) < meanError(decoded.frames[1], plain),
+                                "\(family.rawValue) MP4 lost the feature (separation \(separation))")
+                }
+                print("BRUSH_MOVIE_CANVAS", family.rawValue, "mae", meanError(decoded.frames[1], canvases[1]), "feature-separation", separation)
+                finalFrames[family] = (decoded.frames[1], canvases[1])
+            }
+            // Each family's MP4 frame is closest to its own live canvas.
+            for (family, pair) in finalFrames {
+                let own = meanError(pair.movie, pair.canvas)
+                for (other, otherPair) in finalFrames where other != family {
+                    try require(own < meanError(pair.movie, otherPair.canvas), "\(family.rawValue) MP4 is closer to the \(other.rawValue) canvas")
+                }
+            }
         }
         await test("captured document and raster values stay immutable while caller continues editing") {
             let folder = try parent(root, "snapshot")

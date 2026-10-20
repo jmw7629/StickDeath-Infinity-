@@ -27,6 +27,9 @@ struct StudioImageImportPanel: View {
     @State private var playbackRate = 1.0
     @State private var usesSourceEnd = false
     @State private var videoFrameCount = 1
+    /// Clockwise turn after the movie's own orientation, then a centered crop (#201).
+    @State private var frameRotation = 0
+    @State private var frameAspect: StudioVideoFrameAspect = .original
     /// Explicit opt-in (#199): also decode the movie's soundtrack with this mapping.
     @State private var includeSoundtrack = false
     private static let previewAnchor = "studio.image.preview.anchor"
@@ -39,7 +42,8 @@ struct StudioImageImportPanel: View {
 
     private var videoMapping: StudioVideoFrameImportService.Mapping {
         .init(sourceStartSeconds: sourceStart, sourceEndSeconds: usesSourceEnd ? sourceEnd : nil,
-              projectStartSeconds: projectStart, speed: playbackRate)
+              projectStartSeconds: projectStart, speed: playbackRate,
+              rotationDegrees: frameRotation, aspect: frameAspect)
     }
     private var mappedTime: Double? {
         try? videoMapping.sourceTime(projectSeconds: Double(vm.document.startTick(ofFrame: vm.currentFrameIndex) + (videoFrameCount > 1 ? vm.currentFrame.durationTicks : 0)) / Double(vm.fps))
@@ -72,6 +76,7 @@ struct StudioImageImportPanel: View {
                     Text(String(format: "%g×", rate)).tag(rate)
                 }
             }.pickerStyle(.segmented).accessibilityIdentifier("studio.video.speed")
+            videoFraming
             Toggle("Also add the movie's soundtrack", isOn: $includeSoundtrack).tint(.red)
                 .accessibilityIdentifier("studio.video.soundtrack")
             if includeSoundtrack {
@@ -87,6 +92,28 @@ struct StudioImageImportPanel: View {
             }
         }
         .foregroundColor(.white).disabled(timingIsLocked)
+    }
+    /// Rotation and aspect apply to the decoded reference frames and are saved
+    /// with the movie's import mapping; the timing above is unaffected.
+    private var videoFraming: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Rotate", selection: $frameRotation) {
+                ForEach(StudioVideoFraming.rotations, id: \.self) { (degrees: Int) in
+                    Text("\(degrees)°").tag(degrees)
+                }
+            }.pickerStyle(.segmented).accessibilityIdentifier("studio.video.rotation")
+            Picker("Aspect", selection: $frameAspect) {
+                ForEach(StudioVideoFrameAspect.allCases, id: \.self) { (aspect: StudioVideoFrameAspect) in
+                    Text(aspect.title).tag(aspect)
+                }
+            }.pickerStyle(.menu).accessibilityIdentifier("studio.video.aspect")
+            Text(videoFramingSummary).font(.caption).accessibilityIdentifier("studio.video.framing-summary")
+        }
+    }
+    private var videoFramingSummary: String {
+        let turn: String = frameRotation == 0 ? "No extra rotation" : "Turned \(frameRotation)° clockwise"
+        let crop: String = frameAspect == .original ? "full frame" : "centered \(frameAspect.title) crop"
+        return "\(turn) after the movie's own orientation, \(crop). Saved with the import mapping."
     }
     private func timingField(_ title: String, value: Binding<Double>, identifier: String) -> some View {
         HStack {
@@ -237,7 +264,7 @@ struct StudioImageImportPanel: View {
                     }
                     Divider().overlay(Color.white.opacity(0.2))
                     if videoFrameMode {
-                        Text("Available here: still reference frames decoded from a video at the times you choose, and the video's soundtrack imported as a project sound, either here with the soundtrack option or from the Audio panel, cut with the same trim and speed. Adding frames keeps a copy of the movie (up to 16 MB) with this project, together with its measured size, rotation, frame rate and your trim and speed, so the project reopens after the original file is removed. The copy is deleted with the project and left out of later saves once its frames and their undo history are gone. There is no live video layer, and camera recording is not offered.")
+                        Text("Available here: still reference frames decoded from a video at the times you choose, turned and cropped as you choose, and the video's soundtrack imported as a project sound, either here with the soundtrack option or from the Audio panel, cut with the same trim and speed. Adding frames keeps a copy of the movie (up to 16 MB) with this project, together with its measured size, rotation, frame rate and your trim, speed, rotation and aspect, so the project reopens after the original file is removed. The copy is deleted with the project and left out of later saves once its frames and their undo history are gone. There is no live video layer, and camera recording is not offered.")
                             .font(.caption).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("studio.video.availability")
                     } else {

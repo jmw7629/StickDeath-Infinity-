@@ -210,6 +210,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */; };
 		38E99945C7E5CE4F588CEC7F /* OnboardingPolicyConsentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B14ED7A1B3901E426FC6AA67 /* OnboardingPolicyConsentView.swift */; };
 		86C15CBA2C1094034295E61A /* AdminProviderHealthSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CB674439D891170F920A0AF /* AdminProviderHealthSection.swift */; };
+		F2DCD53E449052CB0DBAE469 /* StudioVideoFraming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -429,6 +430,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Rooms/RoomProjectHandoff.swift"; sourceTree = SOURCE_ROOT; };
 		B14ED7A1B3901E426FC6AA67 /* OnboardingPolicyConsentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift"; sourceTree = SOURCE_ROOT; };
 		0CB674439D891170F920A0AF /* AdminProviderHealthSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Admin/AdminProviderHealthSection.swift"; sourceTree = SOURCE_ROOT; };
+		648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioVideoFraming.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -534,6 +536,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		31B4F99131B295EC586BBC18 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */,
 				735BEA1269807500EC232221 /* CommunityModels.swift */,
 				4D55B9BB2295236FE2D381EE /* SpatterMotionRecipe.swift */,
 				8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */,
@@ -1113,6 +1116,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F2DCD53E449052CB0DBAE469 /* StudioVideoFraming.swift in Sources */,
 				86C15CBA2C1094034295E61A /* AdminProviderHealthSection.swift in Sources */,
 				38E99945C7E5CE4F588CEC7F /* OnboardingPolicyConsentView.swift in Sources */,
 				0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */,

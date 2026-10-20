@@ -497,7 +497,8 @@ final class StudioImageImportSession: ObservableObject {
                 nominalFrameRate: measured.nominalFrameRate, hasVariableFrameRate: measured.hasVariableFrameRate,
                 hasAudio: measured.hasAudio),
             mapping: .init(sourceStartSeconds: mapping.sourceStartSeconds, sourceEndSeconds: mapping.sourceEndSeconds,
-                projectStartSeconds: mapping.projectStartSeconds, speed: mapping.speed))
+                projectStartSeconds: mapping.projectStartSeconds, speed: mapping.speed,
+                rotationDegrees: mapping.rotationDegrees, aspect: mapping.aspect))
         return .init(reference: reference,
                      movie: StoredVideoSource(id: movie.id, name: movie.name, container: movie.container, data: movie.data))
     }
