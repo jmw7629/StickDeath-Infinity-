@@ -506,7 +506,7 @@ private struct AdminDirectoryUser: Decodable, Identifiable {
     let id: UUID; let username: String; let masked_email: String?; let state: String
     let created_at: Date; let last_sign_in_at: Date?; let content_count: Int
     let sign_in_methods: [String]?; let feed_report_count: Int?
-    /// Billing tier (`free`, `creator`, `pro`); null unless the server granted finance visibility.
+    /// Billing tier (`free`, `creator`, `pro`, `unlimited`); null unless the server granted finance visibility.
     var plan: String? = nil
 }
 
@@ -2022,7 +2022,7 @@ private struct AdminAgentsContent: View {
 // MARK: - Finance (#255)
 /// Finance-capability reads of provider-reported records and owner-only
 /// product configuration through `sdi_finance_admin`. No balances, estimates
-/// or charges; the approved offers are the two monthly tiers.
+/// or charges; the approved offers are the three monthly tiers.
 @MainActor
 private struct AdminFinanceContent: View {
     @ObservedObject private var auth = AuthService.shared
@@ -2046,7 +2046,7 @@ private struct AdminFinanceContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Finance").font(.specialElite(22))
-            Text("Provider-reported records in minor units. Sums are not balances; no charge, refund or payout can be made from this client. Approved offers: two monthly tiers at USD 4.99 and USD 9.99; annual periods need explicit owner configuration.").font(.caption)
+            Text("Provider-reported records in minor units. Sums are not balances; no charge, refund or payout can be made from this client. Approved offers: three monthly tiers at USD 4.99, USD 9.99 and USD 19.99, each with a 3-day free trial configured in App Store Connect; annual periods need explicit owner configuration.").font(.caption)
             Picker("Section", selection: $section) { ForEach(sections, id: \.0) { Text($0.1).tag($0.0) } }
                 .pickerStyle(.segmented).accessibilityIdentifier("admin.finance.section")
             HStack {
@@ -2080,7 +2080,7 @@ private struct AdminFinanceContent: View {
                     TextField("Provider product id", text: $productID).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityIdentifier("admin.finance.product-id")
                     Picker("Provider", selection: $provider) { Text("Apple").tag("apple"); Text("Stripe").tag("stripe") }.pickerStyle(.segmented)
-                    Picker("Tier", selection: $tier) { Text("Creator (USD 4.99)").tag("creator"); Text("Pro (USD 9.99)").tag("pro") }.pickerStyle(.segmented)
+                    Picker("Tier", selection: $tier) { Text("Creator (USD 4.99)").tag("creator"); Text("Pro (USD 9.99)").tag("pro"); Text("Unlimited (USD 19.99)").tag("unlimited") }.pickerStyle(.segmented)
                     Picker("Period", selection: $period) { Text("Monthly").tag("monthly"); Text("Annual (owner configuration required)").tag("annual") }.pickerStyle(.segmented)
                     Toggle("Approved for sale", isOn: $approved)
                     TextField("Required reason", text: $reason, axis: .vertical).lineLimit(2...4).textFieldStyle(.roundedBorder)

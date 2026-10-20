@@ -5348,7 +5348,7 @@ struct StudioPlanGate: Equatable {
     var soundLibrary = true
     var advancedTools = true
     var pngSequenceExport = true
-    var upgradeNote = "This is part of Creator and Pro. Upgrade in Profile, Plans to unlock it."
+    var upgradeNote = "This is part of Creator, Pro and Unlimited. Upgrade in Profile, Plans to unlock it."
 
     static let unrestricted = StudioPlanGate()
     static var provider: () -> StudioPlanGate = { .unrestricted }

@@ -135,16 +135,18 @@ struct AppConfig {
         return object as? [String: Any]
     }
 
-    /// Ordering of existing StoreKit product families, not a price or entitlement policy.
+    /// Ordering of the StoreKit product families, not a price or entitlement
+    /// policy. `unlimited` replaces the retired `studio` family, which never had
+    /// an approved product (owner decision 2026-10-20).
     enum SubscriptionTier: String, CaseIterable {
-        case free, creator, pro, studio
+        case free, creator, pro, unlimited
 
         var rank: Int {
             switch self {
             case .free: return 0
             case .creator: return 1
             case .pro: return 2
-            case .studio: return 3
+            case .unlimited: return 3
             }
         }
     }
