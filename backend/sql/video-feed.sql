@@ -42,11 +42,9 @@ alter table sdi_private.feed_reports enable row level security;
 alter table sdi_private.feed_budget enable row level security;
 revoke all on sdi_private.feed_posts,sdi_private.feed_likes,sdi_private.feed_follows,sdi_private.feed_blocks,sdi_private.feed_reports,sdi_private.feed_budget from public,anon,authenticated;
 -- Publication service alone inserts approved posts. API returns only eligible video.
--- Paging is snapshot-stable (#217, #220): page 0 returns an `as_of` instant and
--- later pages sent with that instant exclude posts published after it, so new
--- publications shift nothing until the member refreshes. A snapshot older than a
--- day is refused. Trending's like-based rank is computed at request time and is
--- documented as refresh-based, not frozen.
+-- This base listing answers the first page only (no offset paging, #220); the
+-- install replaces it in feed-integrity.sql, whose sdi_feed_page pages by keyset
+-- cursor under a snapshot instant. A snapshot older than a day is refused.
 create function sdi_private.feed_action(action text, post_id uuid default null, target uuid default null,
  enabled boolean default true, category text default 'recent', page integer default 0, reason text default null,
  as_of timestamptz default null)
@@ -60,7 +58,7 @@ begin
  started_at=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then clock_timestamp() else feed_budget.started_at end returning attempts into n;
  if n>60 then return jsonb_build_object('error','Please wait before trying again.'); end if;
  if action='list' then
-  if page<0 or page>39 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
+  if page is distinct from 0 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
   snapshot:=least(coalesce(as_of,clock_timestamp()),clock_timestamp());
   if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
@@ -76,7 +74,7 @@ begin
    and (category<>'featured' or p.featured)
    and (category<>'following' or exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator))
    order by case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id and l.created_at>clock_timestamp()-interval '7 days') else 0 end desc,
-    p.published_at desc,p.id desc limit 25 offset page*25
+    p.published_at desc,p.id desc limit 25
   ) item;
   return jsonb_build_object('posts',items,'has_more',jsonb_array_length(items)=25,'as_of',snapshot);
  end if;

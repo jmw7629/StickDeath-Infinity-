@@ -101,14 +101,18 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     fun completeOAuth(callback: String) = perform("Finishing sign-in…") { manager.completeOAuth(callback) }
     fun browserUnavailable() { manager.cancelOAuth(); notice = "No browser is available to complete sign-in. Nothing was sent." }
 
-    fun loadFeed(category: FeedCategory = feedCategory) { feedCategory = category; fetch({ feed = it }) { feedClient.page(category, 0) } }
+    fun loadFeed(category: FeedCategory = feedCategory) { feedCategory = category; fetch({ feed = it }) { feedClient.page(category) } }
+    /** Next keyset page under page 0's snapshot; stops at the client memory bound (refresh restarts). */
     fun loadMoreFeed() {
         val current = (feed as? Load.Loaded)?.value ?: return
-        if (!current.hasMore) return
-        val nextPage = current.posts.size / FeedClient.PAGE_SIZE
-        fetch<FeedPage>({ next -> feed = if (next is Load.Loaded) Load.Loaded(FeedPage((current.posts + next.value.posts).distinctBy { it.id }, next.value.hasMore, current.asOf)) else next }) {
-            feedClient.page(feedCategory, nextPage, current.asOf)
-        }
+        val cursor = current.cursor
+        if (!current.hasMore || cursor == null) return
+        fetch<FeedPage>({ next ->
+            feed = if (next is Load.Loaded) {
+                val merged = (current.posts + next.value.posts).distinctBy { it.id }
+                Load.Loaded(FeedPage(merged, next.value.hasMore && merged.size < FeedClient.MAXIMUM_RETAINED_POSTS, current.asOf, next.value.cursor))
+            } else next
+        }) { feedClient.page(feedCategory, cursor, current.asOf) }
     }
     /** Optimistic ±1 on the tapped card only, rolled back unless the server confirms. */
     fun toggleLike(post: FeedPost) {

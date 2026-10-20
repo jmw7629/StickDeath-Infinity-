@@ -122,6 +122,8 @@ feed.card.like,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,lab
 feed.card.menu,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,image 'Report video',n-a,unmapped,deferred
 feed.card.play,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text,n-a,unmapped,deferred
 feed.card.share,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,label 'Share',n-a,unmapped,deferred
+feed.card.poster,StickDeathInfinity/Views/Home/FeedPosterView.swift,FeedPosterView,image (worker-recorded poster frame),n-a,#217,deferred
+feed.card.poster-placeholder,StickDeathInfinity/Views/Home/FeedPosterView.swift,FeedPosterView,image placeholder (no poster recorded or load failed),n-a,#217,deferred
 feed.home.empty,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text 'No approved videos in this feed yet.',n-a,unmapped,deferred
 feed.home.error,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text,n-a,unmapped,deferred
 feed.home.load-more,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,button -> load,n-a,unmapped,deferred

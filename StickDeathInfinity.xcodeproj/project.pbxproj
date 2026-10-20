@@ -209,6 +209,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		02366631F3092F2FFBAB75EE /* StudioViewModel+Rooms.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */; };
 		0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */; };
 		38E99945C7E5CE4F588CEC7F /* OnboardingPolicyConsentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B14ED7A1B3901E426FC6AA67 /* OnboardingPolicyConsentView.swift */; };
+		94531CF7ECA8D1C404FEAEBA /* FeedPosterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D94A7E702172A69FAED3A451 /* FeedPosterView.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -427,6 +428,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/ViewModels/StudioViewModel+Rooms.swift"; sourceTree = SOURCE_ROOT; };
 		E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Rooms/RoomProjectHandoff.swift"; sourceTree = SOURCE_ROOT; };
 		B14ED7A1B3901E426FC6AA67 /* OnboardingPolicyConsentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift"; sourceTree = SOURCE_ROOT; };
+		D94A7E702172A69FAED3A451 /* FeedPosterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Home/FeedPosterView.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -796,6 +798,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		CC02A86D43D4A1535D0F82CE /* Home */ = {
 			isa = PBXGroup;
 			children = (
+				D94A7E702172A69FAED3A451 /* FeedPosterView.swift */,
 				B32B62FCB6CB5F06F86A8E1C /* CreatePostView.swift */,
 				8342660DAF7FA877D246B033 /* HomeFeedView.swift */,
 			);
@@ -1110,6 +1113,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				94531CF7ECA8D1C404FEAEBA /* FeedPosterView.swift in Sources */,
 				38E99945C7E5CE4F588CEC7F /* OnboardingPolicyConsentView.swift in Sources */,
 				0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */,
 				02366631F3092F2FFBAB75EE /* StudioViewModel+Rooms.swift in Sources */,

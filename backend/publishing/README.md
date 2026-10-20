@@ -92,7 +92,12 @@ confirms the copy is gone), then one `sdi_feed_publish_claim`; it resolves the r
 artifact inside owned storage, verifies size and the SHA-256 of the actual bytes against
 the approved digest, measures the duration with the injected probe, copies through the
 injected `HostingAdapter` and calls `sdi_feed_publish_finish`. A lease lost after the copy
-removes the orphaned hosted file. `JobAPI` now carries its RPC prefix and allowlist as
+removes the orphaned hosted file. After verification it extracts one bit-exact JPEG
+poster frame from the same file (`ffmpeg_poster`, at `min(1 s, duration/2)`, at most
+640 px and 256 KiB), hosts it beside the video and reports its URL, SHA-256 and size
+with finish (#217); a poster that cannot be produced is absent, never substituted, and
+removals delete it with the video. A second executor finding the lock held reports
+`busy` without claiming (#263). `JobAPI` now carries its RPC prefix and allowlist as
 class attributes so each worker has its own narrow surface.
 
 `destinations.py` holds the social adapters (Discord webhook, Facebook Page, X) and

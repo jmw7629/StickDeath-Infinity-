@@ -10,6 +10,15 @@ begin;
 alter table sdi_private.render_reviews add column allow_export boolean not null default false;
 alter table public.sdi_watch_media add column review_id uuid references sdi_private.render_reviews(id);
 create unique index watch_media_render_digest on public.sdi_watch_media(render_digest) where render_digest is not null;
+-- Poster thumbnail (#217): one JPEG frame the publishing worker extracts from the
+-- digest-verified copy, hosted beside it. All three fields or none; bounded size.
+-- A post without a poster shows the client's placeholder; nothing is invented.
+alter table public.sdi_watch_media add column poster_url text check(poster_url ~ '^https://' and length(poster_url)<=2048),
+ add column poster_digest text check(poster_digest ~ '^[0-9a-f]{64}$'),
+ add column poster_bytes integer check(poster_bytes between 1 and 262144),
+ add constraint watch_media_poster_complete check((poster_url is null)=(poster_digest is null) and (poster_url is null)=(poster_bytes is null));
+-- A hosted poster that must be removed with its video before the media row exists.
+alter table sdi_private.publish_jobs add column poster_url text check(poster_url ~ '^https://' and length(poster_url)<=2048);
 create function sdi_private.export_consent(review uuid,version bigint,allowed boolean) returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews;
@@ -86,7 +95,10 @@ end $$;
 -- Finish inserts the approved public rendition and the visible post atomically.
 -- If approval lapsed or cancellation raced the copy, the hosted copy is already
 -- public, so the job becomes removal_pending for the feed removal worker.
-create function sdi_private.feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null) returns boolean
+-- The optional poster (#217) is all three of URL, SHA-256 and byte count or none;
+-- a partial or out-of-bounds poster is refused like an invalid video URL.
+create function sdi_private.feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null,
+ poster_url text default null,poster_digest text default null,poster_bytes integer default null) returns boolean
 language plpgsql security definer set search_path='' as $$
 declare j sdi_private.publish_jobs; a sdi_private.render_artifacts; r sdi_private.render_reviews; media uuid; name text;
 begin
@@ -100,25 +112,29 @@ begin
   return true;
  end if;
  if url is null or url !~ '^https://' or length(url)>2048 or duration is null or duration<=0 or duration>3600 then return false;end if;
+ if not coalesce((poster_url is null and poster_digest is null and poster_bytes is null)
+  or (poster_url ~ '^https://' and length(poster_url)<=2048 and poster_url<>url and poster_digest ~ '^[0-9a-f]{64}$' and poster_bytes between 1 and 262144),false) then
+  return false;end if;
  if j.state='cancel_requested' or not sdi_private.release_allowed(j.review_id,j.review_version,j.render_digest,'feed') then
   -- The copy step is over, so the lease is released and removal may start at once.
-  update sdi_private.publish_jobs set state='removal_pending',provider_id='feed:'||j.render_digest,result_url=url,lease=null,lease_expires=null,
+  update sdi_private.publish_jobs set state='removal_pending',provider_id='feed:'||j.render_digest,result_url=url,poster_url=feed_publish_finish.poster_url,lease=null,lease_expires=null,
    last_error='Hosted copy must be removed: approval or consent changed before release.',updated_at=clock_timestamp() where id=j.id;
   return true;
  end if;
  select * into a from sdi_private.render_artifacts where review_id=j.review_id and version=j.review_version;
  select * into r from sdi_private.render_reviews where id=j.review_id;
  select left(coalesce(nullif(trim(raw_user_meta_data->>'username'),''),'Member'),100) into name from auth.users where id=j.creator;
- insert into public.sdi_watch_media(title,url,duration,approved,owner_id,render_digest,review_id)
- values(left(a.title,200),url,duration,true,j.creator,j.render_digest,j.review_id)
+ insert into public.sdi_watch_media(title,url,duration,approved,owner_id,render_digest,review_id,poster_url,poster_digest,poster_bytes)
+ values(left(a.title,200),url,duration,true,j.creator,j.render_digest,j.review_id,poster_url,poster_digest,poster_bytes)
  on conflict(render_digest) where render_digest is not null do update set title=excluded.title,url=excluded.url,duration=excluded.duration,
-  approved=true,owner_id=excluded.owner_id,review_id=excluded.review_id,expires_at=null
+  approved=true,owner_id=excluded.owner_id,review_id=excluded.review_id,expires_at=null,
+  poster_url=excluded.poster_url,poster_digest=excluded.poster_digest,poster_bytes=excluded.poster_bytes
  returning id into media;
  insert into sdi_private.feed_posts(media_id,creator,creator_name,caption,visible,allow_export)
  values(media,j.creator,name,left(a.description,2000),true,r.allow_export)
  on conflict(media_id) do update set creator=excluded.creator,creator_name=excluded.creator_name,caption=excluded.caption,
   visible=true,allow_export=excluded.allow_export,published_at=clock_timestamp();
- update sdi_private.publish_jobs set state='published',provider_id='feed:'||media::text,result_url=url,phase='release',updated_at=clock_timestamp() where id=j.id;
+ update sdi_private.publish_jobs set state='published',provider_id='feed:'||media::text,result_url=url,poster_url=feed_publish_finish.poster_url,phase='release',updated_at=clock_timestamp() where id=j.id;
  return true;
 end $$;
 -- Removal worker for hosted feed copies: moderation removals (removal_jobs) and
@@ -127,7 +143,7 @@ alter table sdi_private.removal_jobs add column attempts integer not null defaul
 alter table sdi_private.removal_jobs add column lease uuid;
 alter table sdi_private.removal_jobs add column lease_expires timestamptz;
 create function sdi_private.feed_removal_claim() returns jsonb language plpgsql security definer set search_path='' as $$
-declare j sdi_private.publish_jobs; d sdi_private.removal_jobs; target text;
+declare j sdi_private.publish_jobs; d sdi_private.removal_jobs; target text; poster text;
 begin
  select * into j from sdi_private.publish_jobs where state='removal_pending' and destination='feed' and result_url is not null
   and removal_attempts<5 and (lease_expires is null or lease_expires<clock_timestamp()-interval '60 seconds')
@@ -135,17 +151,17 @@ begin
  if found then
   update sdi_private.publish_jobs set lease=gen_random_uuid(),lease_expires=clock_timestamp()+interval '2 minutes',
    removal_attempts=removal_attempts+1,updated_at=clock_timestamp() where id=j.id returning * into j;
-  return jsonb_build_object('source','publish_job','job',j.id,'lease',j.lease,'url',j.result_url,'digest',j.render_digest);
+  return jsonb_build_object('source','publish_job','job',j.id,'lease',j.lease,'url',j.result_url,'poster_url',j.poster_url,'digest',j.render_digest);
  end if;
  select rj.* into d from sdi_private.removal_jobs rj join public.sdi_watch_media m on m.id=rj.media_id
   where rj.state in('pending','failed') and rj.attempts<5 and m.review_id is not null
   and (rj.lease_expires is null or rj.lease_expires<clock_timestamp()-interval '60 seconds')
   order by rj.created_at for update of rj skip locked limit 1;
  if not found then return jsonb_build_object('empty',true);end if;
- select url into target from public.sdi_watch_media where id=d.media_id;
+ select url,poster_url into target,poster from public.sdi_watch_media where id=d.media_id;
  update sdi_private.removal_jobs set state='running',lease=gen_random_uuid(),lease_expires=clock_timestamp()+interval '2 minutes',attempts=attempts+1
   where id=d.id returning * into d;
- return jsonb_build_object('source','removal_job','job',d.id,'lease',d.lease,'url',target,'digest',d.render_digest);
+ return jsonb_build_object('source','removal_job','job',d.id,'lease',d.lease,'url',target,'poster_url',poster,'digest',d.render_digest);
 end $$;
 create function sdi_private.feed_removal_finish(source text,job uuid,token uuid,confirmed boolean) returns boolean
 language plpgsql security definer set search_path='' as $$
@@ -153,7 +169,7 @@ begin
  if confirmed is null then return false;end if;
  if source='publish_job' then
   update sdi_private.publish_jobs set state=case when confirmed then 'cancelled' else 'removal_pending' end,
-   result_url=case when confirmed then null else result_url end,
+   result_url=case when confirmed then null else result_url end,poster_url=case when confirmed then null else poster_url end,
    last_error=case when confirmed then 'Hosted feed copy removed; originals preserved.' else 'Feed copy removal not confirmed; bounded retry pending.' end,
    lease=null,lease_expires=null,updated_at=clock_timestamp()
   where id=job and lease=token and state='removal_pending' and destination='feed';
@@ -165,18 +181,19 @@ begin
  end if;
  return false;
 end $$;
-revoke all on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text),
+revoke all on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  sdi_private.feed_removal_claim(),sdi_private.feed_removal_finish(text,uuid,uuid,boolean) from public,anon,authenticated;
-grant execute on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text),
+grant execute on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  sdi_private.feed_removal_claim(),sdi_private.feed_removal_finish(text,uuid,uuid,boolean) to service_role;
 create function public.sdi_feed_publish_claim() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.feed_publish_claim()$$;
-create function public.sdi_feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null) returns boolean
-language sql security invoker set search_path='' as $$select sdi_private.feed_publish_finish(job,token,url,duration,failure)$$;
+create function public.sdi_feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null,
+ poster_url text default null,poster_digest text default null,poster_bytes integer default null) returns boolean
+language sql security invoker set search_path='' as $$select sdi_private.feed_publish_finish(job,token,url,duration,failure,poster_url,poster_digest,poster_bytes)$$;
 create function public.sdi_feed_removal_claim() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.feed_removal_claim()$$;
 create function public.sdi_feed_removal_finish(source text,job uuid,token uuid,confirmed boolean) returns boolean
 language sql security invoker set search_path='' as $$select sdi_private.feed_removal_finish(source,job,token,confirmed)$$;
-revoke all on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text),
+revoke all on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  public.sdi_feed_removal_claim(),public.sdi_feed_removal_finish(text,uuid,uuid,boolean) from public,anon,authenticated;
-grant execute on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text),
+grant execute on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  public.sdi_feed_removal_claim(),public.sdi_feed_removal_finish(text,uuid,uuid,boolean) to service_role;
 commit;

@@ -9,17 +9,31 @@ approved HTTPS hosting through the injected ``HostingAdapter`` and reports the
 result. Removals (moderation, cancellation after copy, account deletion) run first
 and succeed only when the adapter confirms the hosted copy is gone. The creator's
 original is never touched: the artifact root holds server staging copies only.
+
+Poster thumbnails (#217): after the bytes are verified, one JPEG frame is extracted
+from that same verified file at a fixed instant (``poster_instant``) with
+single-threaded, bit-exact ffmpeg settings, bounded to 640 px on the long edge and
+256 KiB, hashed, hosted beside the video and reported with ``publish_finish``. A
+poster that cannot be produced is simply absent (clients show a placeholder); it
+never blocks the approved video and is never substituted with another image.
+Removals delete the hosted poster together with the video.
+
+A second executor that finds the worker lock held claims nothing and reports
+``busy`` (#263), like ``PublishingWorker``'s slot cap.
 """
 from __future__ import annotations
 
 import fcntl
 import hashlib
+import subprocess
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 
 from .worker import JobAPI
 
 MAX_DURATION_SECONDS = 3600.0
+MAX_POSTER_BYTES = 256 * 1024
+POSTER_EDGE = 640
 
 
 class FeedJobAPI(JobAPI):
@@ -41,6 +55,25 @@ class FeedError(Exception):
     """A reason that is safe to store in ``publish_jobs.last_error``."""
 
 
+def poster_instant(duration: float) -> float:
+    """The frame the poster shows: one second in, or the midpoint of a shorter clip.
+    Fixed by the measured duration alone, so a re-run selects the same frame."""
+    return round(min(1.0, duration / 2.0), 3)
+
+
+def ffmpeg_poster(source: Path, duration: float, destination: Path, ffmpeg: str = "ffmpeg", timeout: float = 60.0) -> None:
+    """Extract one bit-exact JPEG frame from ``source`` into ``destination``.
+
+    Accurate seek (``-ss`` after ``-i``), one thread and ``+bitexact`` keep the
+    output identical for identical input on the same ffmpeg build. Raises on any
+    failure; the caller treats that as "no poster"."""
+    scale = "scale=w='if(gte(iw,ih),min(%d,iw),-2)':h='if(gte(iw,ih),-2,min(%d,ih))':flags=bicubic" % (POSTER_EDGE, POSTER_EDGE)
+    command = [ffmpeg, "-nostdin", "-v", "error", "-threads", "1", "-i", str(source), "-ss", "%.3f" % poster_instant(duration),
+               "-map", "0:v:0", "-frames:v", "1", "-vf", scale, "-map_metadata", "-1", "-fflags", "+bitexact",
+               "-flags:v", "+bitexact", "-c:v", "mjpeg", "-q:v", "5", "-f", "image2", "-y", str(destination)]
+    subprocess.run(command, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout)
+
+
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -51,19 +84,23 @@ def sha256_of(path: Path) -> str:
 
 class FeedPublisher:
     def __init__(self, api: FeedJobAPI, artifact_root: Path, host: HostingAdapter, probe_duration: Callable[[Path], float],
-                 checkpoint_root: Optional[Path] = None):
+                 checkpoint_root: Optional[Path] = None, extract_poster: Optional[Callable[[Path, float, Path], None]] = None):
         self.api = api
         self.artifacts = Path(artifact_root).resolve(strict=True)
         self.host = host
         self.probe_duration = probe_duration
         self.checkpoints = Path(checkpoint_root) if checkpoint_root else self.artifacts / ".feed-worker"
+        self.extract_poster = extract_poster if extract_poster is not None else ffmpeg_poster
 
     def run_once(self) -> dict:
         self.checkpoints.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.checkpoints.is_symlink() or self.checkpoints.stat().st_mode & 0o077:
             raise RuntimeError("Worker state must be private.")
         with (self.checkpoints / "worker.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {"state": "busy"}
             removal = self.api.call("removal_claim")
             if not removal.get("empty"):
                 return self._remove(removal)
@@ -72,14 +109,20 @@ class FeedPublisher:
                 return {"state": "idle"}
             return self._publish(job)
 
+    def _delete(self, url) -> bool:
+        if not isinstance(url, str) or not url.startswith("https://"):
+            return False
+        try:
+            return self.host.delete(url) is True
+        except Exception:
+            return False
+
     def _remove(self, job: dict) -> dict:
-        url = job.get("url")
-        confirmed = False
-        if isinstance(url, str) and url.startswith("https://"):
-            try:
-                confirmed = self.host.delete(url) is True
-            except Exception:
-                confirmed = False
+        confirmed = self._delete(job.get("url"))
+        poster = job.get("poster_url")
+        if poster is not None:
+            # The poster goes with its video; removal succeeds only when both are gone.
+            confirmed = self._delete(poster) and confirmed
         self.api.call("removal_finish", source=job["source"], job=job["job"], token=job["lease"], confirmed=confirmed)
         return {"state": "removed" if confirmed else "removal_unconfirmed", "job": job["job"], "source": job["source"]}
 
@@ -101,16 +144,50 @@ class FeedPublisher:
             # Hosting may hold a partial copy; the message tells the operator to check without leaking detail.
             self.api.call("publish_finish", job=job_id, token=token, url=None, duration=None, failure="Hosting copy failed; verify hosting before retry. Nothing published.")
             return {"state": "failed", "job": job_id, "reason": "hosting error"}
-        accepted = self.api.call("publish_finish", job=job_id, token=token, url=url, duration=duration)
+        poster, poster_reason = self._poster(job, source, duration)
+        extra = {"poster_url": poster["url"], "poster_digest": poster["digest"], "poster_bytes": poster["bytes"]} if poster else {}
+        accepted = self.api.call("publish_finish", job=job_id, token=token, url=url, duration=duration, **extra)
         if accepted is not True:
-            # The lease was lost after the copy: the hosted file is orphaned, so remove it now.
-            removed = False
-            try:
-                removed = self.host.delete(url) is True
-            except Exception:
-                removed = False
+            # The lease was lost after the copy: the hosted files are orphaned, so remove them now.
+            removed = self._delete(url)
+            if poster:
+                removed = self._delete(poster["url"]) and removed
             return {"state": "reconcile", "job": job_id, "url": url, "orphan_removed": removed}
-        return {"state": "published", "job": job_id, "url": url, "duration": duration}
+        result = {"state": "published", "job": job_id, "url": url, "duration": duration, "poster": poster}
+        if poster is None:
+            result["poster_reason"] = poster_reason
+        return result
+
+    def _poster(self, job: dict, source: Path, duration: float):
+        """Extract, bound, hash and host the poster. Returns (poster, None) or (None, reason)."""
+        staging = self.checkpoints / ("%s.poster.jpg" % job["digest"])
+        try:
+            staging.unlink(missing_ok=True)
+            try:
+                self.extract_poster(source, duration, staging)
+            except Exception:
+                return None, "Poster frame could not be extracted."
+            if staging.is_symlink() or not staging.is_file():
+                return None, "Poster frame could not be extracted."
+            size = staging.stat().st_size
+            if not 0 < size <= MAX_POSTER_BYTES:
+                return None, "Poster frame is outside the accepted size."
+            with staging.open("rb") as handle:
+                head = handle.read(3)
+                handle.seek(-2, 2)
+                tail = handle.read(2)
+            if head != b"\xff\xd8\xff" or tail != b"\xff\xd9":
+                return None, "Poster frame is not a complete JPEG image."
+            digest = sha256_of(staging)
+            try:
+                url = self.host.put("%s.poster.jpg" % job["digest"], staging, digest)
+            except Exception:
+                return None, "Poster hosting failed; the video is published without a poster."
+            if not isinstance(url, str) or not url.startswith("https://") or len(url) > 2048:
+                return None, "Poster hosting returned no HTTPS URL."
+            return {"url": url, "digest": digest, "bytes": size}, None
+        finally:
+            staging.unlink(missing_ok=True)
 
     def _artifact(self, job: dict) -> Path:
         key = job.get("object_key")
