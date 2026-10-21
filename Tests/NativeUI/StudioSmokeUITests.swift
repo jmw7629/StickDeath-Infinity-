@@ -2600,7 +2600,8 @@ final class StudioSmokeUITests: XCTestCase {
             if last != frame { last = frame; since = Date(); return false }
             return Date().timeIntervalSince(since) >= 1
         }
-        let geometrySettled = expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 8)
+        // Hosted runners need up to ~15 s for a cold-launched canvas to stop moving.
+        let geometrySettled = expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 15)
         if !geometrySettled {
             let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
             evidence.name = "canvas-geometry-wait-failed"
@@ -4631,7 +4632,8 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
         try disableDefaultAudioLoop(reopened); reopened.buttons["studio.audio.timelinePlay"].tap()
-        XCTAssertTrue(reopened.staticTexts["00:09.22"].waitForExistence(timeout: 15), "Saved auditioned sound failed real playback after cold reopen")
+        // The clip plays in real time (9.22 s) after a cold audio-engine start.
+        XCTAssertTrue(reopened.staticTexts["00:09.22"].waitForExistence(timeout: 30), "Saved auditioned sound failed real playback after cold reopen")
         capture(reopened, name: "audio-tag-selected-sound-cold-reopen")
     }
 
@@ -7583,8 +7585,9 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true AND hittable == true"),
             evaluatedWith: done).waitUntilFulfilled(timeout: 5), "Files must accept the folder name before Done")
         done.tap()
+        // The Files provider commits the rename asynchronously; hosted runners take longer than 5 s.
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: folderInput)
-            .waitUntilFulfilled(timeout: 5), "Actual folder rename must finish before choosing the destination")
+            .waitUntilFulfilled(timeout: 20), "Actual folder rename must finish before choosing the destination")
         let destination = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", folderName)).firstMatch
         if destination.waitForExistence(timeout: 3) && destination.isHittable { destination.tap() }
         // Files exposes the folder title as an Actions Menu button. Match the

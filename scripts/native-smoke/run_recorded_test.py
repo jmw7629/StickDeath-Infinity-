@@ -17,7 +17,7 @@ from test_budget import build_test_budget, build_shard_budget
 
 # Whole-file pin covers test bodies AND shared helpers. Unreviewed source changes
 # retain both mandatory fixtures rather than silently omitting a new dependency.
-FIXTURE_SOURCE_SHA256 = "06db33bc4b6a894f52530e8bdca350afff94d9c5266a7da1a34e1167c7369425"
+FIXTURE_SOURCE_SHA256 = "55baa4ed42d18670b214e8257dbb703885c7d2f6fec4939550bf297ab3cdfdac"
 PHOTO_FIXTURE_CASE = "testPhotoImportUndoPersistenceAndRealPNGExport"
 VIDEO_FIXTURE_CASE = "testRotoscopePhotosActualPlayheadUndoAndColdReopen"
 
