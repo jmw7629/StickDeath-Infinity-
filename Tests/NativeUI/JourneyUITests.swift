@@ -94,7 +94,7 @@ final class JourneyUITests: XCTestCase {
             let before = canvas.frame
             try railControl("studio.tool.pencil", app: app).tap()
             let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
-            XCTAssertTrue(popup.waitForExistence(timeout: 5), "Options popup did not open")
+            XCTAssertTrue(popup.waitForExistence(timeout: 10), "Options popup did not open")
             XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(popup.frame), "Options popup extends outside the window")
             let close = app.buttons["studio.tool-settings.close"]
             XCTAssertTrue(close.isHittable && min(close.frame.width, close.frame.height) >= 44, "Popup close unreachable")

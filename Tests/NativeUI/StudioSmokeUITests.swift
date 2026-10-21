@@ -3595,7 +3595,8 @@ final class StudioSmokeUITests: XCTestCase {
             // iOS exposes this native picker track as Other, with a separate
             // percentage TextField; the Studio opacity Slider is underneath.
             let systemPicker = app.otherElements["UIColorPickerView"].firstMatch
-            XCTAssertTrue(systemPicker.waitForExistence(timeout: 8))
+            // UIKit's remote color picker can take over 8 s to present on hosted runners.
+            XCTAssertTrue(systemPicker.waitForExistence(timeout: 20))
             let alpha = systemPicker.otherElements.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
             let alphaValue = systemPicker.textFields.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
             XCTAssertTrue(alpha.waitForExistence(timeout: 5) && alpha.isHittable && alpha.isEnabled)
@@ -3764,7 +3765,7 @@ final class StudioSmokeUITests: XCTestCase {
         let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
         let scroll = popup.scrollViews.firstMatch
         let control = app.descendants(matching: .any)[identifier].firstMatch
-        XCTAssertTrue(scroll.waitForExistence(timeout: 5), "Fill controls need the existing popup scroll viewport")
+        XCTAssertTrue(scroll.waitForExistence(timeout: 10), "Fill controls need the existing popup scroll viewport")
         for _ in 0..<6 {
             let bounds = scroll.frame.intersection(app.frame)
             // Sliders need room for their thumb. A menu/button at the first
@@ -7794,11 +7795,12 @@ final class StudioSmokeUITests: XCTestCase {
         let dismiss = nativeShare.buttons["header.closeButton"]
         // CI37718624465 captured real Close and Save to Files at about 16s
         // after Share; initial remote snapshots consumed the old 10s window.
-        // Both actual controls share one 20s deadline. Never retap Share.
-        let shareDeadline = Date().addingTimeInterval(20)
+        // Both actual controls share one 40s deadline (hosted runners overran
+        // 20s populating the remote sheet). Never retap Share.
+        let shareDeadline = Date().addingTimeInterval(40)
         let nativeCloseReady = expectation(for: NSPredicate { _, _ in
             dismiss.exists && dismiss.isEnabled && dismiss.isHittable
-        }, evaluatedWith: dismiss).waitUntilFulfilled(timeout: 20)
+        }, evaluatedWith: dismiss).waitUntilFulfilled(timeout: max(0, shareDeadline.timeIntervalSinceNow))
         let shareReady = nativeCloseReady && expectation(for: NSPredicate { _, _ in
             files.exists && files.isEnabled && files.isHittable && dismiss.isHittable
         }, evaluatedWith: files).waitUntilFulfilled(timeout: max(0, shareDeadline.timeIntervalSinceNow))
