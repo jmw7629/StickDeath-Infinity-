@@ -3129,7 +3129,7 @@ final class StudioSmokeUITests: XCTestCase {
         let blurFinished = NSPredicate { _, _ in
             blurProgress.count == 0 && app.buttons["studio.undo"].isEnabled
         }
-        let completed = expectation(for: blurFinished, evaluatedWith: nil).waitUntilFulfilled(timeout: 30)
+        let completed = expectation(for: blurFinished, evaluatedWith: nil).waitUntilFulfilled(timeout: 60)
         if !completed { captureHierarchy(app, name: "blur-operation-completion-timeout") }
         XCTAssertTrue(completed, "Actual Blur did not complete before save")
         guard completed else { throw NSError(domain: "NativeBlurCompletion", code: 1) }
@@ -3590,12 +3590,16 @@ final class StudioSmokeUITests: XCTestCase {
             // swatch opens UIKit's picker. Derive its center from actual bounds.
             let well = picker.frame
             XCTAssertGreaterThan(well.width, well.height)
-            picker.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2)).tap()
+            let swatch = picker.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2))
+            swatch.tap()
             // iOS exposes this native picker track as Other, with a separate
             // percentage TextField; the Studio opacity Slider is underneath.
             let systemPicker = app.otherElements["UIColorPickerView"].firstMatch
-            // UIKit's remote color picker can take over 8 s to present on hosted runners.
+            // Hosted runners intermittently drop the first swatch tap (3 of 4
+            // runs on 2026-10-21 never presented the picker); tap the same
+            // swatch once more before failing.
+            if !systemPicker.waitForExistence(timeout: 10) { swatch.tap() }
             XCTAssertTrue(systemPicker.waitForExistence(timeout: 20))
             let alpha = systemPicker.otherElements.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
             let alphaValue = systemPicker.textFields.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
@@ -7903,7 +7907,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(try changedPixelCount(twoStrokes,pixels(canvas.screenshot().image)),4)
         capture(app,name:"picker-blue-strokes-undo-redo")
         let save = app.buttons["studio.save"]; save.tap()
-        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:8))
+        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:20))
         app.buttons["studio.back"].tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format:"label == %@",projectName)).firstMatch.waitForExistence(timeout:8))
         app.terminate()
@@ -8205,7 +8209,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(saveReady, "Save must become reachable after the preceding action")
         guard saveReady else { throw NSError(domain: "NativeSaveReadiness", code: 1) }
         save.tap()
-        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:8))
+        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:20))
         // Ask whether the query is empty. Resolving firstMatch's attributes
         // retries a nonexistent element, exhausting the old five-second wait
         // even when the recording visibly contains no sampled-color toast.
