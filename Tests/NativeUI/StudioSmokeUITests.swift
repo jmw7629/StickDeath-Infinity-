@@ -7643,8 +7643,10 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(movie.waitForExistence(timeout: 8)); XCTAssertTrue(movie.isHittable); movie.tap()
         let preview = try imageControl("studio.image.preview", app: app)
         XCTAssertTrue(app.staticTexts["studio.image.dimensions"].label.hasPrefix("1,080 × 1,920 pixels"))
-        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.contains("Studio 0.000s"))
+        // Sample the preview while it is on screen: reaching the result label
+        // below scrolls the preview out of the visible panel.
         let decoded = try pixels(preview.screenshot().image)
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.contains("Studio 0.000s"))
         let ink = exportInkMask(decoded)
         XCTAssertGreaterThan(ink.filter { Double($0 / decoded.width) < Double(decoded.height) * 0.5 }.count, 12,
                              "Independent saved movie did not decode the first upper stroke")
@@ -7692,7 +7694,8 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(share.isEnabled); share.tap()
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
         let saveToFiles = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
-        XCTAssertTrue(saveToFiles.waitForExistence(timeout: 10)); XCTAssertTrue(saveToFiles.isHittable)
+        // The remote share sheet populates its actions slowly on hosted runners.
+        XCTAssertTrue(saveToFiles.waitForExistence(timeout: 20)); XCTAssertTrue(saveToFiles.isHittable)
         capture(app, name: "gif-native-share-sheet")
         let dismiss = nativeShare.buttons["header.closeButton"]
         XCTAssertTrue(dismiss.isHittable); dismiss.tap()
