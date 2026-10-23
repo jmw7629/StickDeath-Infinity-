@@ -7530,7 +7530,8 @@ final class StudioSmokeUITests: XCTestCase {
                     || app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"].exists
                     || app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Browse", "Locations")).firstMatch.exists
             }
-            guard expectation(for: providerReady, evaluatedWith: app).waitUntilFulfilled(timeout: 10) else {
+            // abc9b2e CI: the provider's navigation bar and Save arrived just after a 10s wait.
+            guard expectation(for: providerReady, evaluatedWith: app).waitUntilFulfilled(timeout: 30) else {
                 capture(app, name: "mp4-files-provider-transition-failed")
                 captureHierarchy(app, name: "mp4-files-provider-transition-failed-hierarchy")
                 XCTFail("Actual Files provider did not finish presenting")
@@ -8274,7 +8275,9 @@ final class StudioSmokeUITests: XCTestCase {
         for attempt in 0...6 {
             if element.exists && scroll.frame.insetBy(dx: 0, dy: 2).contains(element.frame) && element.isHittable { return element }
             guard attempt < 6 else { break }
-            scroll.swipeUp()
+            // Scroll toward the control: one above the viewport (e.g. a decoded
+            // preview after import) needs a downward swipe, never another upward one.
+            if element.exists && element.frame.midY < scroll.frame.midY { scroll.swipeDown() } else { scroll.swipeUp() }
         }
         captureHierarchy(app, name: "image-control-unreachable-" + identifier)
         XCTFail("Image import control was not reachable: \(identifier)")
