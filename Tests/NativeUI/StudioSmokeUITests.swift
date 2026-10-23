@@ -1285,7 +1285,10 @@ final class StudioSmokeUITests: XCTestCase {
         }
         let search = app.textFields["studio.library.search"]
         try reveal(search, upward: false); search.tap(); search.typeText(prefix + "\n")
-        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        // Return dismisses the keyboard with an animation; assert it disappears
+        // within the same bound the other keyboard checks in this file use.
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch).waitUntilFulfilled(timeout: 5),
+                      "Return in library search must dismiss the keyboard")
         // Six real UI-saved projects, isolated by a fresh name. Each duplicate
         // preserves actual artwork; existing user/test projects are untouched.
         var lastName = prefix
