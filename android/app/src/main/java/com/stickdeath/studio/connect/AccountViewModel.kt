@@ -108,18 +108,27 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     fun updatePassword(password: String) = perform("Saving your new password…", "Your new password is saved.") { manager.updatePassword(password) }
     fun browserUnavailable() { manager.cancelOAuth(); notice = "No browser is available to complete sign-in. Nothing was sent." }
 
-    fun loadFeed(category: FeedCategory = feedCategory) { feedCategory = category; fetch({ feed = it }) { feedClient.page(category) } }
+    /** Bumped by every feed request; a reply for an older request (another category or page) is dropped. */
+    private var feedRequest = 0
+    fun loadFeed(category: FeedCategory = feedCategory) {
+        feedCategory = category
+        val request = ++feedRequest
+        fetch<FeedPage>({ if (request == feedRequest) feed = it }) { feedClient.page(category) }
+    }
     /** Next keyset page under page 0's snapshot; stops at the client memory bound (refresh restarts). */
     fun loadMoreFeed() {
         val current = (feed as? Load.Loaded)?.value ?: return
         val cursor = current.cursor
         if (!current.hasMore || cursor == null) return
+        val category = feedCategory
+        val request = ++feedRequest
         fetch<FeedPage>({ next ->
+            if (request != feedRequest || category != feedCategory) return@fetch
             feed = if (next is Load.Loaded) {
                 val merged = (current.posts + next.value.posts).distinctBy { it.id }
                 Load.Loaded(FeedPage(merged, next.value.hasMore && merged.size < FeedClient.MAXIMUM_RETAINED_POSTS, current.asOf, next.value.cursor))
             } else next
-        }) { feedClient.page(feedCategory, cursor, current.asOf) }
+        }) { feedClient.page(category, cursor, current.asOf) }
     }
     /** Optimistic ±1 on the tapped card only, rolled back unless the server confirms. */
     fun toggleLike(post: FeedPost) {
