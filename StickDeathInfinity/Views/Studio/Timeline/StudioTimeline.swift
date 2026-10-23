@@ -13,14 +13,17 @@ struct StudioTimeline: View {
     @State private var tweenCapture: StudioViewModel.TweenCapture?
 
     var body: some View {
+        GeometryReader { geometry in
         HStack(spacing: 6) {
             // Prev
             Button(action: { vm.prevFrame() }) {
                 Text("‹")
                     .font(.specialElite(16)).fontWeight(.bold)
                     .foregroundColor(vm.currentFrameIndex > 0 ? .white.opacity(0.6) : .white.opacity(0.2))
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .disabled(vm.currentFrameIndex == 0)
+            .accessibilityLabel("Previous frame")
 
             // Play/Pause
             Button(action: toggleTimelinePlayback) {
@@ -30,6 +33,7 @@ struct StudioTimeline: View {
                     .frame(width: 32, height: 32)
                     .background(Color(hex: "1E1E2A"))
                     .clipShape(Circle())
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
             }
 
             .accessibilityLabel(audioPlayback.isPreparing ? "Cancel audio preparation" : vm.isPlaying ? "Pause timeline" : "Play timeline")
@@ -45,8 +49,10 @@ struct StudioTimeline: View {
                 Text("›")
                     .font(.specialElite(16)).fontWeight(.bold)
                     .foregroundColor(vm.currentFrameIndex < vm.frames.count - 1 ? .white.opacity(0.6) : .white.opacity(0.2))
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .disabled(vm.currentFrameIndex >= vm.frames.count - 1)
+            .accessibilityLabel("Next frame")
 
             // Frame thumbnails
             ScrollViewReader { proxy in
@@ -87,11 +93,12 @@ struct StudioTimeline: View {
                                         .stroke(vm.currentFrameIndex == i ? Color.red : Color.white.opacity(0.1),
                                                 lineWidth: vm.currentFrameIndex == i ? 2 : 1)
                                 )
+                                .frame(width: 44, height: 44).contentShape(Rectangle())
                             }
                             .id(frame.id)
                             .accessibilityLabel("Frame \(i + 1)")
                             .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
-                            .accessibilityHint("Exposure: \(frame.durationTicks) ticks at \(vm.fps) FPS")
+                            .accessibilityHint("Frame \(i + 1) of \(vm.frames.count). Exposure: \(frame.durationTicks) ticks at \(vm.fps) FPS")
                             .accessibilityIdentifier("studio.frame." + frame.id)
                             .contextMenu {
                                 Button("Copy frame") { vm.copyFrame(frame.id) }
@@ -153,6 +160,7 @@ struct StudioTimeline: View {
                     withAnimation { proxy.scrollTo(vm.currentFrame.id, anchor: .center) }
                 }
             }
+            .frame(minWidth: 44)
 
             // Add frame
             Button(action: { vm.addFrame() }) {
@@ -161,8 +169,10 @@ struct StudioTimeline: View {
                     .foregroundColor(.white.opacity(0.5))
                     .frame(width: 32, height: 32)
                     .background(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
             }
 
+            .accessibilityLabel("Add frame")
             .accessibilityIdentifier("studio.add-frame")
 
             // Onion skin toggle
@@ -170,21 +180,27 @@ struct StudioTimeline: View {
                 Image(systemName: "circle.dashed")
                     .font(.system(size: 14))
                     .foregroundColor(vm.showOnionSkin ? .red : .white.opacity(0.3))
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
             }
-
-            Spacer()
+            .accessibilityLabel("Onion skin")
+            .accessibilityValue(vm.showOnionSkin ? "On" : "Off")
 
             // Frame counter
-            Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
-                .font(.specialElite(10, relativeTo: .caption2)).monospacedDigit()
-                .foregroundColor(.white.opacity(0.4))
+            if geometry.size.width >= 375 {
+                Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
+                    .font(.specialElite(10, relativeTo: .caption2)).monospacedDigit()
+                    .foregroundColor(.white.opacity(0.4))
+                    .lineLimit(1).minimumScaleFactor(0.7).frame(maxWidth: 50)
+            }
         }
         // A timeline is a bounded control row, not a second flexible canvas.
         // The thumbnail label must never expand the horizontal scroll view
         // vertically when the editor receives a portrait or landscape proposal.
-        .frame(height: 36)
+        .frame(height: 44)
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 2)
+        }
+        .frame(height: 48)
         .background(Color(hex: "0A0A10"))
         .onDisappear { audioPlayback.close() }
         .onChange(of: vm.document.id) { _, _ in audioPlayback.close() }

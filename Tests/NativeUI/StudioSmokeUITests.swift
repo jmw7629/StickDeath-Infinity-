@@ -8277,9 +8277,10 @@ final class StudioSmokeUITests: XCTestCase {
             }
             guard attempt < 8 else { break }
             let upward = frame.isEmpty || frame.isNull ? scrollUp : frame.maxY > viewport.maxY
-            let from = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: upward ? 0.75 : 0.35))
-            let to = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: upward ? 0.4 : 0.7))
-            from.press(forDuration: 0.1, thenDragTo: to)
+            // A press-drag can activate an example while revealing the editor.
+            // Use a scrolling gesture so reaching a control does not replace its draft.
+            if upward { scroll.swipeUp(velocity: .slow) }
+            else { scroll.swipeDown(velocity: .slow) }
         }
         captureHierarchy(app, name: "local-motion-control-unreachable-" + identifier)
         XCTFail("Local motion control is unreachable after eight bounded scrolls: \(identifier)")
