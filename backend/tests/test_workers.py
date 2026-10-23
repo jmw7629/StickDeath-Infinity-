@@ -130,7 +130,10 @@ class FeedPublisherTests(unittest.TestCase):
             Path(destination).write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 10)
         def nothing(source, seconds, destination):
             pass
-        for extractor, fragment in ((oversize, "size"), (truncated, "complete JPEG"), (nothing, "could not be extracted"), (None, "could not be extracted")):
+        def one_byte(source, seconds, destination):
+            Path(destination).write_bytes(b"\xff")   # too short for the SOI/EOI checks
+        for extractor, fragment in ((oversize, "size"), (truncated, "complete JPEG"), (nothing, "could not be extracted"),
+                                    (None, "could not be extracted"), (one_byte, "size")):
             api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})
             host = FakeHost()
             result = self.publisher(api, host, poster=extractor).run_once()

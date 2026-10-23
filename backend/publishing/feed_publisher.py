@@ -170,15 +170,22 @@ class FeedPublisher:
             if staging.is_symlink() or not staging.is_file():
                 return None, "Poster frame could not be extracted."
             size = staging.stat().st_size
-            if not 0 < size <= MAX_POSTER_BYTES:
+            # A JPEG needs at least its 3-byte SOI prefix and 2-byte EOI suffix;
+            # anything shorter cannot be checked by the seek below.
+            if not 5 <= size <= MAX_POSTER_BYTES:
                 return None, "Poster frame is outside the accepted size."
-            with staging.open("rb") as handle:
-                head = handle.read(3)
-                handle.seek(-2, 2)
-                tail = handle.read(2)
-            if head != b"\xff\xd8\xff" or tail != b"\xff\xd9":
-                return None, "Poster frame is not a complete JPEG image."
-            digest = sha256_of(staging)
+            try:
+                with staging.open("rb") as handle:
+                    head = handle.read(3)
+                    handle.seek(-2, 2)
+                    tail = handle.read(2)
+                if head != b"\xff\xd8\xff" or tail != b"\xff\xd9":
+                    return None, "Poster frame is not a complete JPEG image."
+                digest = sha256_of(staging)
+            except OSError:
+                # The poster is optional: a read failure must not abandon the
+                # video that is already hosted.
+                return None, "Poster frame could not be read; the video is published without a poster."
             try:
                 url = self.host.put("%s.poster.jpg" % job["digest"], staging, digest)
             except Exception:
