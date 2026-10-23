@@ -455,16 +455,41 @@ class StripeWebhookTests(unittest.TestCase):
         _, executor = stripe_handle(stripe_event("customer.subscription.updated", subscription_object(status="active")))
         self.assertEqual((executor.only["status"], executor.only["in_trial"]), ("active", False))
 
-    def test_zero_amount_trial_start_invoice_keeps_the_trial(self):
+    def _initial_invoice(self, amount_paid=0, billing_reason="subscription_create"):
         period_end = NOW + dt.timedelta(days=3)
-        invoice = {"id": "in_t", "object": "invoice", "status": "paid", "amount_paid": 0, "currency": "usd", "subscription": "sub_1",
-                   "billing_reason": "subscription_create", "subscription_details": {"metadata": {"sdi_user_id": USER}},
-                   "lines": {"data": [{"price": {"id": "price_pro"}, "period": {"start": int(NOW.timestamp()), "end": int(period_end.timestamp())}}]}}
-        _, executor = stripe_handle(stripe_event("invoice.paid", invoice))
-        self.assertEqual((executor.only["status"], executor.only["in_trial"]), ("trialing", True))
-        paid = dict(invoice, amount_paid=999, billing_reason="subscription_cycle")
-        _, executor = stripe_handle(stripe_event("invoice.paid", paid))
+        return {"id": "in_t", "object": "invoice", "status": "paid", "amount_paid": amount_paid, "currency": "usd", "subscription": "sub_1",
+                "billing_reason": billing_reason, "subscription_details": {"metadata": {"sdi_user_id": USER}},
+                "lines": {"data": [{"price": {"id": "price_pro"}, "period": {"start": int(NOW.timestamp()), "end": int(period_end.timestamp())}}]}}
+
+    def _final_subscription_state(self, events):
+        """Replays signed events through one executor; the last subscription write wins, as in the database."""
+        executor = RecordingExecutor()
+        for index, (event_type, obj) in enumerate(events):
+            stripe_handle(stripe_event(event_type, obj, event_id=f"evt_{index}"), executor=executor)
+        writes = [params for _, params in executor.calls if params["provider_subscription_id"] is not None]
+        return (writes[-1]["status"], writes[-1]["in_trial"]) if writes else None
+
+    def test_zero_amount_initial_invoice_never_decides_trial_or_active(self):
+        _, executor = stripe_handle(stripe_event("invoice.paid", self._initial_invoice()))
+        params = executor.only
+        self.assertIsNone(params["provider_subscription_id"])
+        self.assertIsNone(params["status"])
+        self.assertEqual(params["payload"]["reason"], "zero-amount initial invoice; the subscription event decides trial or active")
+        renewal = self._initial_invoice(amount_paid=999, billing_reason="subscription_cycle")
+        _, executor = stripe_handle(stripe_event("invoice.paid", renewal))
         self.assertEqual((executor.only["status"], executor.only["in_trial"]), ("active", False))
+
+    def test_full_discount_first_invoice_stays_active_in_either_delivery_order(self):
+        invoice = ("invoice.paid", self._initial_invoice())
+        created = ("customer.subscription.created", subscription_object(status="active"))
+        self.assertEqual(self._final_subscription_state([created, invoice]), ("active", False))
+        self.assertEqual(self._final_subscription_state([invoice, created]), ("active", False))
+
+    def test_real_trial_stays_trialing_in_either_delivery_order(self):
+        invoice = ("invoice.paid", self._initial_invoice())
+        created = ("customer.subscription.created", subscription_object(status="trialing"))
+        self.assertEqual(self._final_subscription_state([created, invoice]), ("trialing", True))
+        self.assertEqual(self._final_subscription_state([invoice, created]), ("trialing", True))
 
     def test_cancel_at_period_end_downgrade_and_deletion(self):
         _, executor = stripe_handle(stripe_event("customer.subscription.updated", subscription_object(cancel_at_period_end=True)))

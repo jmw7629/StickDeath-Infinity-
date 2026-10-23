@@ -68,8 +68,10 @@ webhook secret, SQL executor); the deployment wraps them in its edge-function ru
   refunded`) with `paid_through = current_period_end` and ledger rows from
   `balance_transaction` amounts and fees.
 - Trials (owner decisions 2026-10-14 and 2026-10-20): every paid tier has the free
-  trial. A `trialing` subscription maps to `trialing` with `in_trial=True`; the
-  zero-amount `subscription_create` invoice keeps the trial. The entitlement view
+  trial. A `trialing` subscription maps to `trialing` with `in_trial=True`. A
+  zero-amount `subscription_create` invoice (trial start, or a 100%-discount or
+  credit-covered first period) is recorded without changing the subscription, so
+  the signed subscription event alone decides trial or active. The entitlement view
   grants the tier (Studio unlocked), but the Spatter meter funds no prompt and
   spends no credit while the account's only entitlements are in a trial. Trial
   length is Stripe/App Store configuration; checkout requests carry no trial or
