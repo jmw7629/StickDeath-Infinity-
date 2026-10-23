@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import uuid
 from pathlib import Path
 
@@ -142,6 +143,45 @@ class FeedPublisherTests(unittest.TestCase):
             self.assertIn(fragment, result["poster_reason"])
             self.assertEqual(len(host.puts), 1)
             self.assertNotIn("poster_url", api.calls[-1][1])
+
+    def test_poster_staging_filesystem_errors_never_strand_the_hosted_video(self):
+        real_unlink = Path.unlink
+        def failing_unlink(path, *args, **kwargs):
+            if path.name.endswith(".poster.jpg"):
+                raise PermissionError("staging cleanup denied")
+            return real_unlink(path, *args, **kwargs)
+        for extractor, hosted in ((self.jpeg_writer(), 1), (None, 0)):
+            api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})
+            host = FakeHost()
+            with mock.patch.object(Path, "unlink", failing_unlink):
+                result = self.publisher(api, host, poster=extractor).run_once()
+            self.assertEqual(result["state"], "published")
+            self.assertEqual(api.calls[-1][0], "publish_finish")      # the hosted video is finalized
+            self.assertEqual(host.puts[0][0], "%s.mp4" % self.digest)
+            self.assertIsNone(result["poster"])                        # the initial staging unlink failed too
+            self.assertIn("staging failed", result["poster_reason"])
+            self.assertIn("could not be removed", result["poster_cleanup"])
+            self.assertEqual(len(host.puts), 1)
+            self.assertNotIn("poster_url", api.calls[-1][1])
+
+    def test_poster_cleanup_failure_keeps_a_hosted_poster_and_reports_it(self):
+        real_unlink = Path.unlink
+        calls = []
+        def failing_final_unlink(path, *args, **kwargs):
+            if path.name.endswith(".poster.jpg"):
+                calls.append(path.name)
+                if len(calls) > 1:                                     # only the final cleanup fails
+                    raise PermissionError("staging cleanup denied")
+            return real_unlink(path, *args, **kwargs)
+        api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [True]})
+        host = FakeHost()
+        with mock.patch.object(Path, "unlink", failing_final_unlink):
+            result = self.publisher(api, host, poster=self.jpeg_writer()).run_once()
+        self.assertEqual(result["state"], "published")
+        self.assertIsNotNone(result["poster"])
+        self.assertEqual(api.calls[-1][1]["poster_url"], result["poster"]["url"])
+        self.assertIn("could not be removed", result["poster_cleanup"])
+        (self.root / ".feed-worker" / ("%s.poster.jpg" % self.digest)).unlink(missing_ok=True)
 
     def test_lost_lease_removes_the_orphan_poster_too(self):
         api = FakeAPI({"removal_claim": [{"empty": True}], "publish_claim": [self.claim()], "publish_finish": [False]})

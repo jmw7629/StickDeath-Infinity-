@@ -144,7 +144,7 @@ class FeedPublisher:
             # Hosting may hold a partial copy; the message tells the operator to check without leaking detail.
             self.api.call("publish_finish", job=job_id, token=token, url=None, duration=None, failure="Hosting copy failed; verify hosting before retry. Nothing published.")
             return {"state": "failed", "job": job_id, "reason": "hosting error"}
-        poster, poster_reason = self._poster(job, source, duration)
+        poster, poster_reason, poster_cleanup = self._poster(job, source, duration)
         extra = {"poster_url": poster["url"], "poster_digest": poster["digest"], "poster_bytes": poster["bytes"]} if poster else {}
         accepted = self.api.call("publish_finish", job=job_id, token=token, url=url, duration=duration, **extra)
         if accepted is not True:
@@ -156,45 +156,62 @@ class FeedPublisher:
         result = {"state": "published", "job": job_id, "url": url, "duration": duration, "poster": poster}
         if poster is None:
             result["poster_reason"] = poster_reason
+        if poster_cleanup:
+            result["poster_cleanup"] = poster_cleanup
         return result
 
     def _poster(self, job: dict, source: Path, duration: float):
-        """Extract, bound, hash and host the poster. Returns (poster, None) or (None, reason)."""
+        """Extract, bound, hash and host the poster.
+
+        Returns (poster, reason, cleanup): poster or None with the reason, plus a
+        factual note when the staging file could not be removed. The poster is
+        optional, so a filesystem error here never abandons the hosted video;
+        video hosting and publish_finish are handled by the caller.
+        """
         staging = self.checkpoints / ("%s.poster.jpg" % job["digest"])
         try:
+            poster, reason = self._poster_from_staging(job, source, duration, staging)
+        except OSError:
+            poster, reason = None, "Poster staging failed; the video is published without a poster."
+        cleanup = None
+        try:
             staging.unlink(missing_ok=True)
-            try:
-                self.extract_poster(source, duration, staging)
-            except Exception:
-                return None, "Poster frame could not be extracted."
-            if staging.is_symlink() or not staging.is_file():
-                return None, "Poster frame could not be extracted."
-            size = staging.stat().st_size
-            # A JPEG needs at least its 3-byte SOI prefix and 2-byte EOI suffix;
-            # anything shorter cannot be checked by the seek below.
-            if not 5 <= size <= MAX_POSTER_BYTES:
-                return None, "Poster frame is outside the accepted size."
-            try:
-                with staging.open("rb") as handle:
-                    head = handle.read(3)
-                    handle.seek(-2, 2)
-                    tail = handle.read(2)
-                if head != b"\xff\xd8\xff" or tail != b"\xff\xd9":
-                    return None, "Poster frame is not a complete JPEG image."
-                digest = sha256_of(staging)
-            except OSError:
-                # The poster is optional: a read failure must not abandon the
-                # video that is already hosted.
-                return None, "Poster frame could not be read; the video is published without a poster."
-            try:
-                url = self.host.put("%s.poster.jpg" % job["digest"], staging, digest)
-            except Exception:
-                return None, "Poster hosting failed; the video is published without a poster."
-            if not isinstance(url, str) or not url.startswith("https://") or len(url) > 2048:
-                return None, "Poster hosting returned no HTTPS URL."
-            return {"url": url, "digest": digest, "bytes": size}, None
-        finally:
-            staging.unlink(missing_ok=True)
+        except OSError:
+            cleanup = "Poster staging file could not be removed from the worker checkpoints."
+        return poster, reason, cleanup
+
+    def _poster_from_staging(self, job: dict, source: Path, duration: float, staging: Path):
+        staging.unlink(missing_ok=True)
+        try:
+            self.extract_poster(source, duration, staging)
+        except Exception:
+            return None, "Poster frame could not be extracted."
+        if staging.is_symlink() or not staging.is_file():
+            return None, "Poster frame could not be extracted."
+        size = staging.stat().st_size
+        # A JPEG needs at least its 3-byte SOI prefix and 2-byte EOI suffix;
+        # anything shorter cannot be checked by the seek below.
+        if not 5 <= size <= MAX_POSTER_BYTES:
+            return None, "Poster frame is outside the accepted size."
+        try:
+            with staging.open("rb") as handle:
+                head = handle.read(3)
+                handle.seek(-2, 2)
+                tail = handle.read(2)
+            if head != b"\xff\xd8\xff" or tail != b"\xff\xd9":
+                return None, "Poster frame is not a complete JPEG image."
+            digest = sha256_of(staging)
+        except OSError:
+            # The poster is optional: a read failure must not abandon the
+            # video that is already hosted.
+            return None, "Poster frame could not be read; the video is published without a poster."
+        try:
+            url = self.host.put("%s.poster.jpg" % job["digest"], staging, digest)
+        except Exception:
+            return None, "Poster hosting failed; the video is published without a poster."
+        if not isinstance(url, str) or not url.startswith("https://") or len(url) > 2048:
+            return None, "Poster hosting returned no HTTPS URL."
+        return {"url": url, "digest": digest, "bytes": size}, None
 
     def _artifact(self, job: dict) -> Path:
         key = job.get("object_key")
