@@ -516,8 +516,9 @@ final class StudioSmokeUITests: XCTestCase {
             for _ in 0..<5 {
                 // Files presents asynchronously after SwiftUI becomes idle.
                 // Wait for a real actionable navigation control at each level.
+                // Same provider latency as the MP4 Files save (presentation exceeded 10s on CI).
                 _ = try hittableElement(in: navigation.matching(NSPredicate(format: "label IN %@",
-                    ["Cancel", "On My iPhone", "Browse", "Locations"])), timeout: 10)
+                    ["Cancel", "On My iPhone", "Browse", "Locations"])), timeout: 30)
                 if let cancel = navigation.matching(NSPredicate(format: "label == %@", "Cancel"))
                     .allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable }) {
                     cancel.tap()
@@ -3589,7 +3590,9 @@ final class StudioSmokeUITests: XCTestCase {
                 guard scroll.frame.intersection(app.frame).contains(current) else { return false }
                 defer { previousPickerFrame = current; previousPopupFrame = currentPopup }
                 return previousPickerFrame == current && previousPopupFrame == currentPopup
-            }, evaluatedWith: picker).waitUntilFulfilled(timeout: 8)
+            // 1842a82 CI: each AX snapshot took ~5s, so 8s allowed only two
+            // evaluations; the failure hierarchy showed the swatch settled and contained.
+            }, evaluatedWith: picker).waitUntilFulfilled(timeout: 20)
             if !pickerReady { captureHierarchy(app, name: "native-text-colorwell-not-settled") }
             XCTAssertTrue(pickerReady, "Native Text color swatch did not become stable and actionable")
             // Observed ColorWell includes its label; only the right circular
