@@ -2099,8 +2099,11 @@ final class StudioSmokeUITests: XCTestCase {
             let scroll = app.scrollViews.containing(.textField, identifier: "studio.settings.name").firstMatch
             let shelf = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Stickers & Emoji")).firstMatch
             XCTAssertTrue(shelf.waitForExistence(timeout: 5) && scroll.exists)
-            for _ in 0..<4 where !shelf.isHittable { scroll.swipeUp(velocity: .slow) }
-            XCTAssertTrue(shelf.isHittable); shelf.tap()
+            // f793f56 CI: the row reported hittable with 2pt on screen and the tap landed off-window.
+            // Scroll until the whole row is inside both the scroll view and the window.
+            let visible = { scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 2).contains(shelf.frame) }
+            for _ in 0..<6 where !(shelf.isHittable && visible()) { scroll.swipeUp(velocity: .slow) }
+            XCTAssertTrue(shelf.isHittable && visible()); shelf.tap()
             XCTAssertTrue(app.buttons["studio.sticker.item.f1"].waitForExistence(timeout: 5))
         }
         try lock("Full"); try openShelf()
