@@ -15,6 +15,7 @@ from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, parseaddr
 from typing import Callable, Dict, Optional
 
+from ..ops.provider_health import classify_exception
 from .queue import EmailQueue
 
 LOOPBACK = ("localhost", "127.0.0.1", "::1")
@@ -69,15 +70,21 @@ class EmailWorker:
     """Claims a batch, sends each message, records sent/retry/bounce."""
 
     def __init__(self, queue: EmailQueue, sender: SMTPSender, suppressed: Optional[Callable[[str], bool]] = None,
-                 on_bounce: Optional[Callable[[str], None]] = None, unsubscribe_url_for: Optional[Callable[[str, str], str]] = None):
+                 on_bounce: Optional[Callable[[str], None]] = None, unsubscribe_url_for: Optional[Callable[[str, str], str]] = None,
+                 on_outcome: Optional[Callable[[bool, Optional[str]], object]] = None):
         self.queue = queue
         self.sender = sender
         self.suppressed = suppressed
         self.on_bounce = on_bounce
         self.unsubscribe_url_for = unsubscribe_url_for
+        # Provider health (#248): called once per run that attempted a send, with
+        # (succeeded, error_class). The class comes from the exception type only;
+        # a recipient refusal is the recipient's, not a sender failure.
+        self.on_outcome = on_outcome
 
     def run_once(self, batch: int = 50) -> Dict[str, int]:
         summary = {"sent": 0, "queued": 0, "failed": 0, "bounced": 0}
+        last_error: Optional[BaseException] = None
         for item in self.queue.claim(batch, self.suppressed):
             unsubscribe = self.unsubscribe_url_for(item["address_hash"], item["category"]) if (self.unsubscribe_url_for and item["category"] != "transactional") else None
             try:
@@ -86,8 +93,11 @@ class EmailWorker:
             except smtplib.SMTPRecipientsRefused:
                 state = self.queue.mark(item["id"], "bounced", "recipient refused", self.on_bounce)
             except (smtplib.SMTPException, OSError, ValueError) as error:
+                last_error = error
                 state = self.queue.mark(item["id"], "retry", type(error).__name__)
             else:
                 state = self.queue.mark(item["id"], "sent")
             summary[state] = summary.get(state, 0) + 1
+        if self.on_outcome is not None and (last_error is not None or summary["sent"]):
+            self.on_outcome(last_error is None, None if last_error is None else classify_exception(last_error))
         return summary

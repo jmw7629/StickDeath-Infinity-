@@ -22,9 +22,26 @@ iOS Codable contract (`StickDeathInfinity/Models/StudioDocument.swift`, `Models.
   (the verifier fails if committed bytes drift from the generator).
 - Android consumes `assets/` as instrumented-test assets (`app/build.gradle.kts`
   `androidTest` source set); `SwiftProjectImportTest` asserts the accept/reject outcomes and
-  round-trips the golden fixture through `SwiftProjectExport`. The iOS side can open the same
-  bytes with `DeviceStorageManager.projectFromPortableBundle`; an iOS Foundation-runnable check
-  against these files is still a follow-up and is not claimed here.
+  round-trips the golden fixture through `SwiftProjectExport`.
+
+## Both-client re-export comparison
+
+`reexport.json` is the interchange projection of the golden fixture (`make_fixtures.interchange_projection`:
+identities, names, canvas, layers with lock mode/blend/label, frame holds, element tool/colour/width/
+opacity/points/pressure, brush family and seed, and the four-track mixer; schema numbers, dates,
+revision and identifier case are excluded, numbers compared to four decimals).
+
+- Android (`SdiReexportComparisonTest`, JVM, runs in `:app:testDebugUnitTest`): opens the golden
+  fixture with `SwiftProjectImport`, re-exports with `SwiftProjectExport`, and the projection of the
+  exported bytes must equal `reexport.json`. The exported bytes must also equal the committed
+  `android-reexport/swift-schema35-studio.android.sdi`, so the iOS side reads what Android writes today.
+- iOS (`Tests/SDIInterchange/main.swift`, native-production-tests): opens every fixture with
+  `DeviceStorageManager.projectFromPortableBundle` + `StudioDocumentArchive.decode`, re-exports with
+  `StudioDocumentArchive.encoded` + `portableBundle(for:)`, and compares the projection with
+  `reexport.json`; it also opens Android's committed re-export and writes it back out. Fixtures with an
+  `ios` expectation are asserted; the others have their iOS outcome printed, and every opened fixture
+  must re-export and reopen to an equal `StudioDocument`.
+- `verify_fixtures.py` checks that `reexport.json` and the Android re-export match the generator.
 
 Nothing in these fixtures is a recovered-corpus asset: every coordinate, colour and name is
 synthetic.

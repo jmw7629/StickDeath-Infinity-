@@ -23,6 +23,7 @@ def seed_video_fixture(udid: str, output: Path) -> None:
     compiler = ['xcrun', 'swiftc', '-swift-version', '5', '-parse-as-library', *[str(repo / p) for p in [
         'StickDeathInfinity/Services/StudioImageImportService.swift',
         'StickDeathInfinity/Services/StudioImageProviderFile.swift',
+        'StickDeathInfinity/Models/StudioVideoFraming.swift',
         'StickDeathInfinity/Services/StudioVideoFrameImportService.swift',
         'Tests/StudioVideoFrameImport/Fixtures.swift',
         'scripts/native-smoke/GenerateVideoFixture.swift']], '-o', str(folder / 'generate-video')]

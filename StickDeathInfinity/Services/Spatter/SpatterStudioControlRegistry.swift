@@ -49,8 +49,12 @@ enum SpatterStudioControlRegistry {
         }
     }
 
-    static let selectionNote = "Selections are made by touch on the canvas; Spatter uses the selection you made and never draws one."
-    static let pixelToolNote = "This touch tool edits pixels under your finger; Spatter has no instruction for it, so use the tool directly."
+    /// Pixel effects stay manual (#204): each dab's result depends on the
+    /// rendered pixels under a live touch path, pressure and the effect
+    /// selection mask. A typed route would need a replayable pixel-stroke
+    /// command with its own preview; without one Spatter cannot show or verify
+    /// what it would change before Apply.
+    static let pixelToolNote = "This tool paints pixel effects along your touch path; a typed route could not preview or verify the result before Apply, so use the tool directly."
     static let viewNote = "View navigation only. It never changes the project, so Spatter does not operate it."
     static let freehandNote = "Spatter has no instruction for this tool yet. Draw with the tool directly; Spatter's brush-stroke instruction covers brush families only."
 
@@ -61,8 +65,8 @@ enum SpatterStudioControlRegistry {
         .init(id: "tool.move", surface: .toolbar, title: "Move", route: .instructions([
             "selectionTranslate", "selectionTransform", "selectionReflect", "drawingDuplicate", "artworkOrder",
             "imageReflection", "imageRotation", "imageCrop", "imagePlacement", "textUpdate", "selectByID"])),
-        .init(id: "tool.lasso", surface: .toolbar, title: "Lasso", route: .manual(selectionNote)),
-        .init(id: "tool.wand", surface: .toolbar, title: "Wand", route: .manual(selectionNote)),
+        .init(id: "tool.lasso", surface: .toolbar, title: "Lasso", route: .instructions(["areaSelection", "selectByID"])),
+        .init(id: "tool.wand", surface: .toolbar, title: "Wand", route: .instructions(["wandSelection"])),
         .init(id: "tool.brush", surface: .toolbar, title: "Brush", route: .instructions(["brushStroke"])),
         .init(id: "tool.pencil", surface: .toolbar, title: "Pencil", route: .manual(freehandNote)),
         .init(id: "tool.pen", surface: .toolbar, title: "Pen", route: .manual(freehandNote)),
@@ -85,7 +89,7 @@ enum SpatterStudioControlRegistry {
         .init(id: "tool.zoom", surface: .toolbar, title: "Zoom", route: .manual(viewNote)),
         // Tools present in the document model without a toolbar button.
         .init(id: "tool.arrow", surface: .hiddenTool, title: "Arrow", route: .manual("Not on the Studio toolbar; existing arrow drawings stay editable with Move.")),
-        .init(id: "tool.image", surface: .hiddenTool, title: "Image", route: .manual("Pictures are added from Add Picture; Spatter can only open that picker for you to choose.")),
+        .init(id: "tool.image", surface: .hiddenTool, title: "Image", route: .instructions(["libraryPicture", "imagePlacement"])),
         .init(id: "tool.ruler", surface: .hiddenTool, title: "Ruler", route: .manual("Not on the Studio toolbar.")),
         .init(id: "tool.airbrush", surface: .hiddenTool, title: "Airbrush", route: .instructions(["brushStroke"])),
         .init(id: "tool.watercolor", surface: .hiddenTool, title: "Watercolor", route: .instructions(["brushStroke"])),
@@ -100,13 +104,15 @@ enum SpatterStudioControlRegistry {
         .init(id: "panel.projectSettings", surface: .panel, title: "Project settings", route: .instructions(["projectSettings", "projectRename", "grid", "onionSkin"])),
         .init(id: "panel.layers", surface: .panel, title: "Layers", route: .instructions([
             "layerStructure", "layerDuplicate", "layerUpdate", "layerGlow", "layerOrder", "navigation"])),
-        .init(id: "panel.export", surface: .panel, title: "Export", route: .blocked("Exports start only from Export or from the direct-export button after a saved Spatter edit. Spatter never exports, uploads or publishes on its own.")),
+        .init(id: "panel.export", surface: .panel, title: "Export", route: .instructions(["projectExport"])),
         .init(id: "panel.framesViewer", surface: .panel, title: "Frames", route: .instructions([
             "frameAction", "frameCut", "frameExposure", "frameReverse", "frameDuplicateRange", "frameClipboard", "tween", "navigation"])),
         .init(id: "panel.audioTimeline", surface: .panel, title: "Audio timeline", route: .instructions(["audioClip", "audioTrack"])),
         .init(id: "panel.soundLibrary", surface: .panel, title: "Sound library", route: .manual("You choose, preview and add licensed sounds yourself; Spatter edits clips already on the timeline.")),
         .init(id: "panel.stickerEmoji", surface: .panel, title: "Stickers", route: .manual("Stickers are placed by touch.")),
-        .init(id: "panel.addImage", surface: .panel, title: "Add picture", route: .blocked("Spatter can open the picture picker, but you choose, preview and Add the picture yourself. No file path or URL is accepted from an instruction.")),
+        // Files, Photos and the camera stay with you: no instruction names a path,
+        // URL or Photos item, and Spatter never opens those pickers itself.
+        .init(id: "panel.addImage", surface: .panel, title: "Add picture", route: .instructions(["libraryPicture"])),
         .init(id: "panel.backgroundLibrary", surface: .panel, title: "Backgrounds", route: .manual("Backgrounds are chosen and added by you; generated background images are not available.")),
         .init(id: "panel.menu", surface: .panel, title: "Studio menu", route: .manual("Menu commands such as saving copies are performed by you.")),
         .init(id: "panel.aiVoice", surface: .panel, title: "Voice", route: .manual("Voice recording and import are started by you; Spatter edits the resulting clip only after it is on the timeline.")),
@@ -299,8 +305,16 @@ struct SpatterContextSnapshot: Codable, Equatable {
             guard activeFrameNumber != nil, displayedFrameNumber == activeFrameNumber else { return .needs("Select the frame you want to change.") }
         case "fill":
             guard activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "position" else { return .needs("Show the active layer and unlock it (free or position lock).") }
-        case "selectByID":
+        case "selectByID", "areaSelection":
             guard activeFrameNumber != nil else { return .needs("Select the frame whose drawings you want first.") }
+        case "wandSelection":
+            guard activeFrameNumber != nil, activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "position" else {
+                return .needs("Show the active drawing layer and set its lock to Free or Position.")
+            }
+        case "libraryPicture":
+            guard activeLayerVisible, activeLayerLockMode != "full" else { return .needs("Show and unlock the active layer.") }
+        case "projectExport":
+            guard !isDirty else { return .needs("Save the project first; export uses the saved revision.") }
         case "brushStroke":
             guard activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "alpha" else { return .needs("Show and unlock the active layer.") }
         default: break

@@ -19,7 +19,7 @@ declare bad text; service_expected text[]:=array[
  'sdi_consent_verify','sdi_credential_load','sdi_credential_record_state','sdi_credential_revoke','sdi_credential_store','sdi_diagnostics_retention',
  'sdi_email_recipients','sdi_email_suppress','sdi_feed_publish_claim','sdi_feed_publish_finish','sdi_feed_removal_claim','sdi_feed_removal_finish',
  'sdi_legacy_communication_exposure','sdi_marketing_cadence_due','sdi_marketing_claim','sdi_marketing_finish','sdi_merch_retention','sdi_ops_report','sdi_preview_renew',
- 'sdi_provision_owner','sdi_publication_release_candidates','sdi_publish_claim','sdi_publish_finish','sdi_publish_progress',
+ 'sdi_provider_outcome','sdi_provision_owner','sdi_publication_release_candidates','sdi_publish_claim','sdi_publish_finish','sdi_publish_progress',
  'sdi_publish_removal_claim','sdi_publish_removal_finish','sdi_publish_removal_renew','sdi_publish_renew','sdi_publish_uncertain',
  'sdi_register_upload','sdi_release_published_upload','sdi_retire_upload','sdi_review_bind_source_digest','sdi_room_asset_sweep','sdi_spatter_credits_grant','sdi_spatter_credits_refund','sdi_spatter_draft_claim',
  'sdi_spatter_draft_progress','sdi_spatter_usage_meter','sdi_support_retention','sdi_upload_preview','sdi_war_expire_proposals','sdi_war_finalize',

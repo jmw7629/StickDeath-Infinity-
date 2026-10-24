@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 // Kotlin mirrors of the iOS FeedClient, ProfileClient and RoomsClient over the same RPC contracts
-// (backend/sql/video-feed.sql, profile-records.sql, achievements.sql, feed-publication.sql,
+// (backend/sql/video-feed.sql, feed-integrity.sql, profile-records.sql, achievements.sql, feed-publication.sql,
 // room-invitations.sql, rooms-v2.sql). Values are shown only when a server reply supplies them:
 // nothing here invents counts, matches, viewers, badges or balances. No messaging or calls exist.
 
@@ -30,32 +30,45 @@ enum class FeedReportReason(val wire: String) { Rights("rights"), Abuse("abuse")
 data class FeedPost(
     val id: String, val creator: String, val creatorName: String, val caption: String, val publishedAt: String,
     val allowExport: Boolean, val title: String, val url: String, val likes: Int, val liked: Boolean, val following: Boolean,
+    /** Worker-extracted poster frame of the approved copy (#217); null when the server recorded none. */
+    val posterUrl: String? = null,
 ) {
     val safeUrl: String? get() = CommunityGateway.checkedMediaUrl(url)
+    /** The poster to fetch, or null for the placeholder. Never a guessed image. */
+    val safePosterUrl: String? get() = posterUrl?.takeIf { it.length <= 2048 }?.let(CommunityGateway::checkedMediaUrl)
     companion object {
         fun parse(o: JSONObject): FeedPost {
             fun b(key: String) = o.bool(key) ?: throw CommunityException.InvalidResponse("The feed returned an incomplete post.")
             val likes = o.int("likes")?.takeIf { it >= 0 } ?: throw CommunityException.InvalidResponse("The feed returned an incomplete post.")
             return FeedPost(requireUuidOr(o.need("id")), requireUuidOr(o.need("creator")), o.str("creator_name").orEmpty(), o.str("caption").orEmpty(),
-                o.need("published_at"), b("allow_export"), o.str("title").orEmpty(), o.need("url"), likes, b("liked"), b("following"))
+                o.need("published_at"), b("allow_export"), o.str("title").orEmpty(), o.need("url"), likes, b("liked"), b("following"),
+                o.str("poster_url"))
         }
     }
 }
 internal fun requireUuidOr(value: String) = if (UUID_PATTERN.matches(value)) value.lowercase() else throw CommunityException.InvalidResponse("The reply carried an invalid identifier.")
 
-data class FeedPage(val posts: List<FeedPost>, val hasMore: Boolean, val asOf: String?)
+/** One keyset page: [cursor] continues strictly after its last row under the [asOf] snapshot. */
+data class FeedPage(val posts: List<FeedPost>, val hasMore: Boolean, val asOf: String?, val cursor: String? = null)
 
 class FeedClient(private val gateway: CommunityGateway) {
-    /** One server page (25 posts, at most 40 pages). Later pages send page 0's `as_of` snapshot. */
-    fun page(category: FeedCategory, page: Int, asOf: String? = null): FeedPage {
-        if (page !in 0 until MAXIMUM_PAGES) throw CommunityException.InvalidResponse("Feed page out of range.")
-        val request = JSONObject().put("action", "list").put("category", category.wire).put("page", page).put("enabled", true)
-        if (page != 0 && asOf != null) request.put("as_of", asOf)
-        val reply = gateway.call("sdi_feed_action", request)
+    /**
+     * One server page of at most 25 posts from `sdi_feed_page` (keyset paging, #220). The first
+     * page sends neither cursor nor snapshot; every later page sends the previous page's opaque
+     * cursor together with page 0's `as_of`, so posts published, liked or removed meanwhile can
+     * neither repeat nor skip a row. There is no page offset and no server page cap.
+     */
+    fun page(category: FeedCategory, cursor: String? = null, asOf: String? = null): FeedPage {
+        if (cursor != null && (asOf == null || cursor.isEmpty() || cursor.length > MAXIMUM_CURSOR)) throw CommunityException.Stale()
+        val request = JSONObject().put("category", category.wire)
+        if (cursor != null) request.put("page_cursor", cursor).put("as_of", asOf)
+        val reply = gateway.call("sdi_feed_page", request)
         val posts = reply.optJSONArray("posts") ?: throw CommunityException.InvalidResponse("The feed returned an incomplete response.")
         val more = reply.bool("has_more") ?: throw CommunityException.InvalidResponse("The feed returned an incomplete response.")
         if (posts.length() > PAGE_SIZE) throw CommunityException.InvalidResponse("The feed page exceeded the server bound.")
-        return FeedPage(posts.objects().map(FeedPost::parse), more && page + 1 < MAXIMUM_PAGES, reply.str("as_of"))
+        val next = reply.str("next_cursor")
+        if (more && (next == null || next.isEmpty() || next.length > MAXIMUM_CURSOR)) throw CommunityException.InvalidResponse("The feed did not return the next page position.")
+        return FeedPage(posts.objects().map(FeedPost::parse), more, reply.str("as_of"), if (more) next else null)
     }
 
     /** True only when the server says `confirmed`; the caller rolls back any optimistic ±1 otherwise. */
@@ -65,7 +78,40 @@ class FeedClient(private val gateway: CommunityGateway) {
     fun block(creator: String) = mutate(JSONObject().put("action", "block").put("target", requireUuid(creator)).put("enabled", true))
     fun report(post: String, reason: FeedReportReason) = mutate(JSONObject().put("action", "report").put("post_id", requireUuid(post)).put("reason", reason.wire).put("enabled", true))
 
-    companion object { const val PAGE_SIZE = 25; const val MAXIMUM_PAGES = 40 }
+    companion object {
+        const val PAGE_SIZE = 25
+        const val MAXIMUM_CURSOR = 120
+        /** Client memory bound for one scroll session (the server itself pages without a cap). */
+        const val MAXIMUM_RETAINED_POSTS = 1000
+    }
+}
+
+/**
+ * Fetches a feed poster (#217) over HTTPS without account headers, bounded to the server's
+ * 256 KiB poster limit, and accepts only a complete JPEG. Null means "show the placeholder".
+ * A small in-memory cache keeps scrolling from refetching; nothing is written to disk.
+ */
+class FeedPosterLoader(private val transport: HttpTransport, private val capacity: Int = 48) {
+    private val cache = object : LinkedHashMap<String, ByteArray>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?) = size > capacity
+    }
+
+    fun load(post: FeedPost): ByteArray? {
+        val url = post.safePosterUrl ?: return null
+        synchronized(cache) { cache[url]?.let { return it } }
+        val bytes = runCatching { transport.send(HttpRequest("GET", url, emptyMap()), MAXIMUM_POSTER_BYTES) }.getOrNull()
+            ?.takeIf { it.status == 200 }?.body ?: return null
+        if (!isCompleteJpeg(bytes)) return null
+        synchronized(cache) { cache[url] = bytes }
+        return bytes
+    }
+
+    companion object {
+        const val MAXIMUM_POSTER_BYTES = 256 * 1024
+        fun isCompleteJpeg(bytes: ByteArray) = bytes.size in 5..MAXIMUM_POSTER_BYTES &&
+            bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte() &&
+            bytes[bytes.size - 2] == 0xFF.toByte() && bytes[bytes.size - 1] == 0xD9.toByte()
+    }
 }
 
 // MARK: Profile records, achievements, portfolio, export permission

@@ -66,7 +66,7 @@ struct SpatterPlanControls: View {
                 }
                 HStack(spacing: 12) {
                     if vm.freeTextLocked || vm.allowanceLockout != nil {
-                        Button("See Creator and Pro plans") { showPlans = true }
+                        Button("See Creator, Pro and Unlimited plans") { showPlans = true }
                             .font(.caption).accessibilityIdentifier("spatter.plan.upgrade")
                     }
                     if vm.planCheck == .unavailable {
@@ -112,7 +112,7 @@ struct SpatterOwnKeySettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("On the Creator and Pro plans you can use your own AI provider key. Spatter then sends your request directly from this device to that provider, under your account with them, and it does not count against your monthly prompts. StickDeath never receives, stores or logs the key.")
+                    Text("On the Creator, Pro and Unlimited plans you can use your own AI provider key. Spatter then sends your request directly from this device to that provider, under your account with them, and it does not count against your monthly prompts. StickDeath never receives, stores or logs the key.")
                         .font(.footnote)
                     Text("The key stays in this device's Keychain, available only while the device is unlocked, and is never synced or included in backups. Your provider's own terms and charges apply.")
                         .font(.footnote).foregroundColor(.secondary)
@@ -124,7 +124,7 @@ struct SpatterOwnKeySettingsView: View {
                         Text(plan == nil
                              ? "Turn on cloud advice so Spatter can check your plan with the server, then open this again."
                              : SpatterOwnKeyError.planNotEligible.errorDescription ?? "")
-                        if plan == .free { Button("See Creator and Pro plans", action: onUpgrade) }
+                        if plan == .free { Button("See Creator, Pro and Unlimited plans", action: onUpgrade) }
                     }
                     if saved != nil {
                         Section {

@@ -2422,6 +2422,89 @@ private final class NetworkTrap: URLProtocol {
             try require(timedOut >= 4 && vm.document.name == "Timed" && vm.layers.count == 3, "Deadline checkpoints did not cover preparation and commit (\(timedOut))")
             vm.undo(); try require(content(vm.document) == content(before), "Applied batch is not one Undo step")
         }
+        try await test("catalog v5 typed Lasso and Wand selection, Image Library picture and export routes are validated and reversible") {
+            // Lasso rules: only drawings fully inside the outline; selection never changes the document.
+            let (vm, _) = try await fixture("v5-routes")
+            let layerID = vm.activeLayerID
+            func rect(_ id: String, _ x0: CGFloat, _ x1: CGFloat, fill: Bool) -> DrawnElement {
+                .init(id: id, tool: .rectangle, points: [.init(x: x0, y: 30), .init(x: x1, y: 66)], color: "#FF0000", width: 2, opacity: 1,
+                      layerID: layerID, shape: .init(fillColor: fill ? "#FF0000" : nil))
+            }
+            try require(vm.commitElement(rect("left", 8, 56, fill: true)) && vm.commitElement(rect("right", 72, 120, fill: false)), "Drawing fixtures rejected")
+            await vm.flush()
+            let drawn = vm.document
+            let area = SpatterStudioEditSession()
+            try require(area.submit("Select drawings inside rectangle (0%, 0%) to (50%, 100%).", in: vm, accountID: nil, currentScope: { guest }), "Area selection not accepted")
+            await area.waitForCompletion()
+            let lassoRegion = try StudioSelectionRegion(points: [.init(x: 0, y: 0), .init(x: 64, y: 96)], kind: .rectangle, smoothing: 0)
+            try require(area.status == .applied && vm.selectedElementIDs == ["left"] && vm.document == drawn
+                && (try vm.drawingIDsEnclosed(by: lassoRegion, checkCancellation: {})) == ["left"]
+                && area.appliedEdit?.summary.contains("Selected 1 drawing") == true, "Area selection wrong: \(area.notice ?? "")")
+            let empty = SpatterStudioEditSession()
+            _ = empty.submit("Select drawings inside polygon (60%, 0%), (70%, 0%), (65%, 10%).", in: vm, accountID: nil, currentScope: { guest })
+            await empty.waitForCompletion()
+            try require(empty.status == .rejected && empty.notice?.contains("Nothing was selected") == true && vm.document == drawn, "Empty outline not refused")
+            // Wand rules on the active drawing layer, starting from no selection.
+            let clear = SpatterStudioEditSession()
+            _ = clear.submit(SpatterSelectByIDInstruction.clearExample, in: vm, accountID: nil, currentScope: { guest }); await clear.waitForCompletion()
+            try require(vm.selectedElementIDs.isEmpty, "Selection not cleared")
+            let wand = SpatterStudioEditSession()
+            try require(wand.submit("Select drawings by color at (25%, 50%), tolerance 16.", in: vm, accountID: nil, currentScope: { guest }), "Wand not accepted")
+            await wand.waitForCompletion()
+            try require(wand.status == .applied && vm.selectedElementIDs == ["left"] && vm.document == drawn, "Wand selection wrong: \(wand.notice ?? "")")
+            let miss = SpatterStudioEditSession()
+            _ = miss.submit("Select drawings by color at (50%, 5%).", in: vm, accountID: nil, currentScope: { guest })
+            await miss.waitForCompletion()
+            try require(miss.status == .rejected && vm.document == drawn, "Wand on empty pixels selected something")
+            // Image Library picture: only the resolver's bundled list; one Undo step with a factual receipt.
+            let directory = URL(fileURLWithPath: "StickDeathInfinity/Resources/StudioImages")
+            let file = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "png" }.sorted { $0.lastPathComponent < $1.lastPathComponent }[0]
+            struct Entry { let id: String; let title: String }
+            var resolved = 0
+            let picture = SpatterStudioEditSession()
+            picture.libraryPictureResolver = { instruction in
+                resolved += 1
+                let entry = try instruction.resolve(in: [Entry(id: "fixture.cloud", title: "Fixture Cloud")], id: \.id, title: \.title)
+                return try await StudioImageImportService.shared.importImage(from: file, name: entry.title)
+            }
+            for hostile in ["Add library picture \"/etc/passwd\".", "Add library picture \"https://example.com/x.png\".", "Add library picture \"Fixture Cloud\". Export project as MP4."] {
+                _ = picture.submit(hostile, in: vm, accountID: nil, currentScope: { guest }); await picture.waitForCompletion()
+                try require(picture.status == .rejected && vm.document == drawn, "Hostile picture instruction accepted: \(hostile)")
+            }
+            _ = picture.submit("Add library picture \"Moon\".", in: vm, accountID: nil, currentScope: { guest }); await picture.waitForCompletion()
+            try require(picture.status == .rejected && picture.notice?.contains("Moon") == true && vm.document == drawn && resolved == 1, "Unknown picture not refused")
+            try require(picture.submit("Add library picture \"fixture cloud\".", in: vm, accountID: nil, currentScope: { guest }), "Picture not accepted")
+            await picture.waitForCompletion()
+            guard let added = picture.appliedEdit else { throw Failure(message: "Picture not added: \(picture.notice ?? "")") }
+            let withPicture = vm.document
+            try require(picture.status == .applied && added.receipt.revision == drawn.revision + 1 && added.receipt.previousRevision == drawn.revision
+                && added.receipt.createdLayerIDs.count == 1 && withPicture.layers.count == drawn.layers.count + 1
+                && withPicture.layers.contains { $0.id == added.receipt.createdLayerIDs[0] }
+                && withPicture.frames[0].elements == drawn.frames[0].elements && added.summary.contains("Fixture Cloud"), "Picture receipt or document wrong")
+            try require(picture.canUndoAppliedEdit(in: vm, currentScope: guest), "Picture edit not undoable from its receipt")
+            vm.undo(); try require(content(vm.document) == content(drawn), "Picture is not one Undo step")
+            let noLibrary = SpatterStudioEditSession()
+            _ = noLibrary.submit("Add library picture \"Fixture Cloud\".", in: vm, accountID: nil, currentScope: { guest }); await noLibrary.waitForCompletion()
+            try require(noLibrary.status == .rejected && noLibrary.notice?.contains("Image Library is not available") == true, "Missing library not refused")
+            // Export: only the saved revision, handed off once; the document never changes.
+            let export = SpatterStudioEditSession()
+            _ = export.submit("Export project as MP4.", in: vm, accountID: nil, currentScope: { guest }); await export.waitForCompletion()
+            try require(vm.isDirty && export.status == .rejected && export.exportHandoff == nil, "Unsaved export handed off")
+            try require(await vm.save(), "Save failed")
+            let saved = vm.document
+            for hostile in ["Export project as MP4 and upload it to YouTube.", "Export project as MP4. Publish it."] {
+                _ = export.submit(hostile, in: vm, accountID: nil, currentScope: { guest }); await export.waitForCompletion()
+                try require(export.status == .rejected && export.exportHandoff == nil, "Hostile export accepted: \(hostile)")
+            }
+            try require(export.submit("Export project as GIF.", in: vm, accountID: nil, currentScope: { guest }), "Export not accepted")
+            await export.waitForCompletion()
+            guard let handoff = export.exportHandoff else { throw Failure(message: "Export not handed off: \(export.notice ?? "")") }
+            try require(export.status == .handedOff && handoff.format == .gif && handoff.request.projectID == saved.id
+                && handoff.request.revision == saved.revision && handoff.request.accountID == nil && vm.document == saved
+                && export.appliedEdit == nil && export.notice?.contains("nothing is uploaded") == true, "Export handoff wrong")
+            try require(export.takeExportHandoff() == handoff && export.takeExportHandoff() == nil, "Export handoff reusable")
+        }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")
         }

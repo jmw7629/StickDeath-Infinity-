@@ -1,32 +1,62 @@
 # Billing Contract (native iOS)
 
-Status: implementation batch, 2026-10-12. Verification deferred to the final
-integration phase; nothing below is claimed as passed. Source of authority:
+Status: implementation batch, 2026-10-12; plans revised 2026-10-20 (three paid
+tiers, 3-day trials). Verification deferred to the final integration phase;
+nothing below is claimed as passed unless a command is named with its result. Source of authority:
 `AGENTS.md` (owner scope 2026-09-19 and later) and
 `docs/PRODUCT_SCOPE_2026_09_19.md` line 61.
 
-## Approved plan contract
+## Approved plan contract (owner decision 2026-10-20)
 
-| Plan | Cadence | Requested price | StoreKit product id (placeholder) | Tier mapping |
-| --- | --- | --- | --- | --- |
-| Creator | Monthly, auto-renewable | USD 4.99 | `com.stickdeath.infinity.creator.monthly` | `AppConfig.SubscriptionTier.creator` |
-| Pro | Monthly, auto-renewable | USD 9.99 | `com.stickdeath.infinity.pro.monthly` | `AppConfig.SubscriptionTier.pro` |
+Configured by the owner in App Store Connect. Supersedes the 2026-10-15 "no
+trial" and "Pro unlimited / Creator break-even" decisions recorded below, which
+are kept for history.
 
-- Exactly two paid plans exist. The former USD 19.99 "Studio" tier and all
-  annual identifiers were removed from the client catalogue; they were never
-  approved by the owner.
+| Plan | Cadence | Requested price | Release product id | Placeholder (Debug/CI) | Tier mapping |
+| --- | --- | --- | --- | --- | --- |
+| Creator | Monthly, auto-renewable, 3-day free trial | USD 4.99 | `com.willisbmb.StickDeathInfinity.creator.monthly` | `com.stickdeath.infinity.creator.monthly` | `AppConfig.SubscriptionTier.creator` |
+| Pro | Monthly, auto-renewable, 3-day free trial | USD 9.99 | `com.willisbmb.StickDeathInfinity.pro.monthly` | `com.stickdeath.infinity.pro.monthly` | `AppConfig.SubscriptionTier.pro` |
+| Unlimited | Monthly, auto-renewable, 3-day free trial | USD 19.99 | `com.willisbmb.StickDeathInfinity.unlimited.monthly` | `com.stickdeath.infinity.unlimited.monthly` | `AppConfig.SubscriptionTier.unlimited` |
+
+- Exactly three paid plans exist, ranked **Unlimited > Pro > Creator > Free**
+  (`BillingPlanTier.rank` 3/2/1/0). The retired, never-sold `studio` enum case
+  was replaced by `unlimited` in `AppConfig.SubscriptionTier`; a server tier of
+  `studio` is still refused.
+- Entitlements:
+  - **Free**: unchanged. Studio limits (`StudioPlanLimits.free`); Spatter
+    preview-only (suggested prompts plus the upgrade note); Spatter credits pay
+    as you go.
+  - **Creator**: full Studio, own AI key, **250** server-funded Spatter prompts
+    per billing period (`SpatterPromptAllowance.perPeriod(250)`).
+  - **Pro**: full Studio, own AI key, **500** prompts per billing period
+    (`.perPeriod(500)`).
+  - **Unlimited**: full Studio, own AI key, unlimited prompts (`.unlimited`).
+  - Credit packs are unchanged and keep Spatter going after a Creator or Pro
+    allowance.
+- **Free trial**: every paid plan has a 3-day free trial (Apple introductory
+  offer). During the trial the Studio is fully unlocked but Spatter is
+  preview-only: it shows the suggested prompts and `BillingCopy.spatterTrialNote`
+  (Spatter starts when the paid period begins; subscribe or upgrade in Profile,
+  Plans to start sooner), sends nothing to the server and uses no credits
+  (`StudioPlanLimits.trial`, `spatterActive == false`,
+  `spatterTrialPreview == true`). The trial is detected from StoreKit
+  (`Transaction.offerType == .introductory` →
+  `BillingEntitlementSnapshot.isIntroductoryOffer` → `BillingState.inTrial`) and
+  from the server: `sdi_my_entitlement` and `sdi_spatter_my_usage` may report an
+  optional `in_trial` or `trial` boolean (missing means false); a `trialing`
+  entitlement status also counts. Free never has a trial.
+- Combining sources (`StudioPlanLimits.effective(storeTier:storeInTrial:serverTier:serverInTrial:enforcing:)`):
+  the higher tier wins and carries its own source's trial flag; for an equal
+  tier Apple's on-device signed transaction decides.
 - The price the user is charged is the price Apple shows at checkout. The app
   never hard-codes a price string; it displays `Product.displayPrice` from the
   loaded StoreKit product or an honest "not configured" state.
 - Annual plans: **not configured.** No annual product id, price or entitlement
-  exists. `BillingPlanCatalog` offers an annual plan only when the build sets
+  exists, and there is no annual Unlimited key. `BillingPlanCatalog` offers an annual plan only when the build sets
   `SDI_BILLING_ANNUAL_OWNER_CONFIGURED = YES` **and** an annual product id
   (`SDI_STOREKIT_PLAN_4_99_ANNUAL_PRODUCT_ID` / `SDI_STOREKIT_PLAN_9_99_ANNUAL_PRODUCT_ID`);
   the server additionally refuses to approve an annual product without
   `owner_configured_at`. Amounts stay in App Store Connect.
-- `AppConfig.SubscriptionTier.studio` still exists as an enum case in
-  `StickDeathInfinity/App/AppConfig.swift` (not owned by this batch). It maps to
-  no product and grants nothing.
 
 ## Product identifier configuration
 
@@ -35,12 +65,14 @@ the existing `$(VAR)` xcconfig pattern and falls back to the placeholders above:
 
 | Info.plist key | Plan |
 | --- | --- |
-| `SDI_STOREKIT_PLAN_4_99_PRODUCT_ID` | USD 4.99 monthly |
-| `SDI_STOREKIT_PLAN_9_99_PRODUCT_ID` | USD 9.99 monthly |
+| `SDI_STOREKIT_PLAN_4_99_PRODUCT_ID` | Creator, USD 4.99 monthly |
+| `SDI_STOREKIT_PLAN_9_99_PRODUCT_ID` | Pro, USD 9.99 monthly |
+| `SDI_STOREKIT_PLAN_19_99_PRODUCT_ID` | Unlimited, USD 19.99 monthly |
 
-The keys are not yet present in `StickDeathInfinity/Info.plist` or the xcconfig
-(those files are outside this batch). Until they are added, the placeholders are
-used and `StoreProductID.usesPlaceholderIdentifiers` is `true`.
+Release builds fill all three keys with the `com.willisbmb.StickDeathInfinity.*`
+ids above. Debug/CI builds leave them unexpanded, so the placeholders are used
+and `StoreProductID.usesPlaceholderIdentifiers` is `true` (it is true while any
+one of the three is missing), which also keeps Studio limits unenforced.
 
 ## One plan configuration (#259, 2026-10-14)
 
@@ -48,11 +80,30 @@ used and `StoreProductID.usesPlaceholderIdentifiers` is `true`.
 the single source for plans, periods, purchase state and plan copy. Both views and
 `StoreProductID` read it; nothing else lists plans.
 
+Historical table (2026-10-14/15). The current plans are in the 2026-10-20
+contract at the top of this file.
+
 | Plan | Product | Owner-stated entitlements (2026-10-07, #250/#259) | Enforced today |
 | --- | --- | --- | --- |
 | Free | none | Full Studio on device; no video upload/download; **Spatter visible with its suggested prompts; works only on purchased Spatter credits** (pay as you go; with no credits every request is refused with `upgrade_required`; the server funds nothing) | Studio only |
-| Creator | USD 4.99 monthly | No watermark; upload/download; **own AI key** (prompts sent with it are not counted) plus a **server-funded Spatter allowance per billing period within break-even** (default 174, reset at renewal) | none (pending) |
-| Pro | USD 9.99 monthly | Everything in Creator; **unlimited Spatter prompts**; **own AI key** | none (pending) |
+| Creator | USD 4.99 monthly (`com.willisbmb.StickDeathInfinity.creator.monthly`) | No watermark; upload/download; **own AI key** (prompts sent with it are not counted) plus **250 server-funded Spatter prompts per billing period** (reset at renewal) | server: Spatter meter (candidate) |
+| Pro | USD 9.99 monthly (`com.willisbmb.StickDeathInfinity.pro.monthly`) | Everything in Creator; **500 server-funded Spatter prompts per billing period**; **own AI key** | server: Spatter meter (candidate) |
+| Unlimited | USD 19.99 monthly (`com.willisbmb.StickDeathInfinity.unlimited.monthly`) | Everything in Pro; **unlimited Spatter prompts** (still under the per-user daily safety cap, per-minute rate, the owner's global daily ceiling and the emergency stop); **own AI key** | server: Spatter meter (candidate) |
+
+**Owner decision 2026-10-20 (backend):** three monthly tiers, ranked unlimited >
+pro > creator, each with a **3-day free trial** (App Store introductory offer,
+configured in App Store Connect). During the trial the Studio is fully unlocked
+but Spatter is preview-only: the server funds no prompt and spends no credit
+while an account's only entitlements are in a free-trial period, and answers
+with Free's refusal shape (`upgrade_required`, plan = the trial tier,
+`trial: true`, `upgrade: after_trial`, `resets_at` = trial end). The first paid
+period converts the trial to the tier's normal allowance. This supersedes the
+break-even Creator allowance, "Pro unlimited" and "no free trial" below; the
+native clients are not changed by this backend batch. Server objects:
+`billing_products.tier` accepts `unlimited`; `subscriptions.in_trial` /
+`entitlements.in_trial`; `spatter_usage_controls.creator_period_prompts` (250) /
+`pro_period_prompts` (500); live projects apply
+`backend/sql/upgrades/2026-10-20-three-tiers.sql`.
 
 Owner decisions 2026-10-14 (#209/#259), Spatter metering revised 2026-10-15:
 Free = Spatter visible but not active (no server-funded prompts; requests are
@@ -89,12 +140,14 @@ if you want." Implemented server side (unapplied candidates, tested locally):
   `finance_ledger` rows (live Stripe pack charges are recorded by the webhook's
   normal ledger path; sandbox never).
 - **Metering**: caps first (emergency stop, global, per-minute, daily safety),
-  then the plan allowance (Pro unlimited never spends credits; Creator's period
-  allowance), then one credit per prompt. Free with credits pays as it goes;
-  Free with none gets `upgrade_required` ("Spatter is part of Creator and Pro,
-  or buy Spatter credits to pay as you go."); Creator with neither allowance nor
-  credits gets `plan_allowance_exhausted` with `upgrade: pro` and `buyCredits`.
-  A released (failed) prompt refunds its credit.
+  then the plan allowance (Unlimited never spends credits; Creator's and Pro's
+  period allowance), then one credit per prompt. Free with credits pays as it
+  goes; Free with none gets `upgrade_required` ("Spatter is part of Creator, Pro
+  and Unlimited, or buy Spatter credits to pay as you go."); Creator or Pro with
+  neither allowance nor credits gets `plan_allowance_exhausted` with
+  `upgrade: pro` (Creator) or `upgrade: unlimited` (Pro) and `buyCredits`. A
+  trial-only account is refused before credits are considered. A released
+  (failed) prompt refunds its credit.
 - **Purchases**: Apple consumables are not announced by App Store Server
   Notifications at purchase, so the app posts the StoreKit 2 signed transaction
   to `backend/billing/appstore_credits.py` (member JWT + the same pinned-root
@@ -116,32 +169,44 @@ if you want." Implemented server side (unapplied candidates, tested locally):
   ```json
   {"plan": "free", "unlimited": false, "limit": 0, "used": 0, "remaining": 0, "period": "none",
    "resets_at": null, "credits": 12, "available": true, "upgrade": "creator_or_pro", "service": "metered"}
-  {"plan": "creator", "unlimited": false, "limit": 174, "used": 174, "remaining": 0, "period": "billing_period",
+  {"plan": "creator", "trial": false, "unlimited": false, "limit": 250, "used": 250, "remaining": 0, "period": "billing_period",
    "resets_at": "2026-11-01T00:00:00+00:00", "credits": 5, "available": true, "service": "metered"}
-  {"plan": "pro", "unlimited": true, "limit": null, "used": null, "remaining": null, "period": "none",
+  {"plan": "pro", "trial": false, "unlimited": false, "limit": 500, "used": 12, "remaining": 488, "period": "billing_period",
+   "resets_at": "2026-11-01T00:00:00+00:00", "credits": 0, "available": true, "service": "metered"}
+  {"plan": "unlimited", "trial": false, "unlimited": true, "limit": null, "used": null, "remaining": null, "period": "none",
    "resets_at": null, "credits": 0, "available": true, "service": "metered"}
+  {"plan": "pro", "trial": true, "unlimited": false, "limit": 0, "used": 0, "remaining": 0, "period": "trial",
+   "resets_at": "2026-10-23T12:00:00+00:00", "credits": 0, "available": false, "upgrade": "after_trial", "service": "metered"}
   ```
 
   `available` is true when the plan allowance or credits remain (always for
-  Pro); `service` is `paused` under the emergency stop.
+  Unlimited; never during a free trial); `service` is `paused` under the
+  emergency stop.
 
 - Every paid entitlement carries `isLive = false` and is shown with a pending marker
   and the note that it turns on when the server applies the plan from Apple's
   verified purchase. No server enforcement is claimed.
-- Remaining prompts: `BillingCopy.prompts` shows a count only when the server
-  reports one (`sdi_spatter_my_usage` or a metered reply's `allowance`); the
-  plan screens show the plan line without a count. Free shows its credit
-  balance and offers Creator, Pro or credits; Creator at zero offers Pro or
-  credits.
-- Trial: none on any plan (owner decision 2026-10-15). `BillingPlanDefinition.offersTrial`
-  is false for every tier and `BillingCopy.trial(for:days:eligible:)` returns nil
-  even if a store introductory offer were left configured, so the apps never show
-  trial copy. Do not configure introductory offers in App Store Connect or Stripe.
-  Server side, a `trialing` status from a provider still maps to its tier
-  (`backend/billing/contract.py` `TRIAL_TIERS`) so a misconfigured store offer
-  cannot strand a paying member.
-- Bring-your-own AI key (#209): listed as a pending entitlement on Creator and
-  Pro. The key is stored only in the device Keychain
+- Remaining prompts: `BillingCopy.prompts` shows a remaining count only when
+  the server reports one (`sdi_spatter_my_usage` or a metered reply's
+  `allowance`); otherwise the plan line states the plan's published allowance
+  (250 or 500 per billing period) without a remaining count. A server-reported
+  limit caps the count; otherwise the plan's allowance does. Free shows its
+  credit balance and offers a paid plan or credits; Creator at zero offers Pro
+  or Unlimited, own key or credits; Pro at zero offers Unlimited, own key or
+  credits. The client decodes server plan `unlimited` (no counts) and treats
+  `pro` as metered.
+- Trial (owner decision 2026-10-20, replacing "none" of 2026-10-15):
+  `BillingPlanDefinition.offersTrial` is true for every paid tier.
+  `StripeService.trialCopy(for:)` shows `BillingCopy.trial` ("3-day free trial")
+  only when the loaded product has an introductory offer with
+  `paymentMode == .freeTrial` and `Product.SubscriptionInfo.isEligibleForIntroOffer`
+  is true for the account; the length is Apple's, never assumed. Server side, a
+  provider-reported trial maps to `trialing` with `in_trial`
+  (`backend/billing/contract.py` `TRIAL_TIERS` = all three tiers); the
+  entitlement grants the tier, but the Spatter meter refuses server-funded
+  prompts (HTTP 402, `trial: true`) until the first paid period.
+- Bring-your-own AI key (#209): listed as a pending entitlement on Creator, Pro
+  and Unlimited. The key is stored only in the device Keychain
   (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, not synchronizable), is sent
   only from the device to the chosen provider's fixed endpoint, and never to the
   StickDeath backend.
@@ -163,7 +228,8 @@ grace and revocation do not. Server verification is a separate field that starts
 `deferred` and is never reported as verified until the server answers.
 `StripeService` feeds the machine from `Product.purchase`, `Transaction.latest(for:)`
 and `transaction.subscriptionStatus` (iOS 17). Standalone suite:
-`Tests/BillingPlans/main.swift` (not run on Linux; deferred to macOS CI).
+`Tests/BillingPlans/main.swift` (Foundation only; compiles and runs with a Linux
+Swift toolchain as well as in the macOS CI job).
 
 Settings (`SubscriptionView`) shows the status title/detail (renews on / auto-renew
 off, access ends on / grace / billing retry / revoked / ended), Apple's price, the
@@ -177,8 +243,14 @@ File: `StickDeathInfinity/Services/Stripe/StripeService.swift`
 (the historical type name is kept because the Xcode project references the
 file; the client calls no Stripe API).
 
-- `loadProducts()` fetches the two approved ids; an empty result sets
-  `productLoadState = .notConfigured`, an error sets `.failed(message)`.
+- `loadProducts()` fetches the three approved monthly ids; an empty result sets
+  `productLoadState = .notConfigured`, an error sets `.failed(message)`. It also
+  records each product's introductory-offer eligibility (refreshed after each
+  entitlement refresh) for trial copy.
+- `applyStudioLimits()` derives `StudioPlanLimits.current` from Apple's tier and
+  trial flag plus the server entitlement's tier and trial flag, and re-runs
+  whenever the tier, the store load state, the billing state or the server
+  record changes.
 - `purchase(_:)` / `subscribe(to:)` call `Product.purchase(options:)` with
   `appAccountToken` set to the signed-in Supabase user id (UUID). Purchase
   requires sign-in so the server can later link Apple's transaction to the
@@ -234,11 +306,13 @@ is still not opened from any screen.
   - Purchase goes through `StripeService.purchase(_:)`. The simulated
     two-second "Subscribed!" success was deleted.
 - `StickDeathInfinity/Views/Onboarding/ChoosePlanView.swift`
-  - Two monthly plan cards. Price comes from the loaded product, otherwise
-    "Price shown when configured". The CTA is disabled while no product exists.
+  - Three monthly plan cards (Creator, Pro, Unlimited). Price comes from the
+    loaded product, otherwise "Price shown when configured". The CTA is
+    disabled while no product exists. Trial copy only from an eligible App
+    Store free-trial offer.
   - Feature pills come from `BillingPlanCatalog` (owner-stated entitlements of
     2026-10-07); everything the server does not enforce yet is marked `*` with the
-    pending note. No trial copy (no plan has a trial). No
+    pending note. No
     "Commercial license", project counts, coins or sale claims. (Updated #259,
     2026-10-14; earlier this list was "Extras pending owner configuration".)
   - A failed purchase shows the error and stays on the screen; it no longer
@@ -301,16 +375,21 @@ Apple proceeds (App Store Connect financial reports) have no parser yet.
 
 ## Owner-gated (not done, not claimed)
 
-1. Create the two monthly auto-renewable subscriptions in App Store Connect at
-   USD 4.99 and USD 9.99 (or confirm the placeholder ids / set the Info.plist
-   keys above). Localized prices and introductory offers are App Store Connect
-   configuration.
+1. Done by the owner (2026-10-20): three monthly auto-renewable subscriptions
+   in App Store Connect at USD 4.99, USD 9.99 and USD 19.99, each with a 3-day
+   free-trial introductory offer; Release builds carry their ids. Sandbox
+   verification of purchase, trial and upgrade flows is deferred to the final
+   integration phase.
 2. Decide annual amounts and entitlements, if any. Nothing annual ships until
    then.
-3. Entitlement rules are in `docs/PLAN_DECISIONS_2026_10_15.md` (no free trial
-   on any plan; Free previews Spatter; Creator break-even allowance; credits).
-   Remaining: deploy the Spatter metering and billing SQL and handlers. The
-   native client already reads `sdi_my_entitlement`.
+3. Entitlement rules: the 2026-10-20 contract above (Creator 250, Pro 500,
+   Unlimited unlimited, 3-day trial with Spatter preview-only) supersedes
+   `docs/PLAN_DECISIONS_2026_10_15.md`. Remaining: the backend must accept the
+   `unlimited` tier, meter Pro at 500, report the optional trial flag and
+   refuse server-funded prompts and credit spending during a trial; then
+   deploy the Spatter metering and billing SQL and handlers. The native client
+   already reads `sdi_my_entitlement` and `sdi_spatter_my_usage` with those
+   fields.
 4. Verify the existing Stripe account before any reuse. Stripe has no
    client-side role in the current contract; any server-side use (web
    payments) must be verified separately and must not be a new paid service.
@@ -326,5 +405,5 @@ Apple proceeds (App Store Connect financial reports) have no parser yet.
 - `docs/BACKEND_ARCHITECTURE_PUBLIC.md` lines 22-23, 58, 198-217 and 263
   describe the old Studio/annual tiers, the `tips` table and the client-side
   `users` sync; they are now historical.
-- `StickDeathInfinity/Info.plist` and the xcconfig need the two
-  `SDI_STOREKIT_*` keys when the owner confirms the identifiers.
+- `StickDeathInfinity/Info.plist` carries the three `SDI_STOREKIT_PLAN_*` keys
+  (Release fills them; done 2026-10-20).

@@ -231,7 +231,10 @@ def handle(headers: Mapping[str, str], raw_body: bytes, *,
         return Response(error.status, body)
 
 
-UPGRADE_MESSAGE = "Spatter is part of Creator and Pro, or buy Spatter credits to pay as you go."
+UPGRADE_MESSAGE = "Spatter is part of Creator, Pro and Unlimited, or buy Spatter credits to pay as you go."
+# Free trial (owner decision 2026-10-20): same 402 `upgrade_required` shape as
+# Free, with the trial tier, `trial: true` and the trial end as `resetsAt`.
+TRIAL_MESSAGE = "Spatter is a preview during the free trial; it unlocks when your first paid period starts."
 
 # Metered refusals: HTTP status, public reason. 429 keeps the existing client's
 # "try later / allowance used" message; 503 keeps its "unavailable" message.
@@ -280,7 +283,12 @@ def _metered(user_id: str, messages: list, suggested: Optional[str], meter: Mete
                                   "resetsAt": _iso(decision.resets_at) if decision.resets_at else None}
         if decision.upgrade:
             extra["upgrade"] = decision.upgrade
-        if decision.code == "upgrade_required":
+        if decision.code == "upgrade_required" and decision.trial:
+            reason = TRIAL_MESSAGE
+            extra["plan"] = decision.plan
+            extra["trial"] = True
+            extra["resetsAt"] = _iso(decision.resets_at) if decision.resets_at else None
+        elif decision.code == "upgrade_required":
             extra["plan"] = "free"
         if decision.buy_credits:
             extra["buyCredits"] = True
@@ -293,7 +301,7 @@ def _metered(user_id: str, messages: list, suggested: Optional[str], meter: Mete
         except Exception:
             pass  # An unsettled reservation stays counted; the SQL sweep never refunds silently.
 
-    if decision.plan not in ("creator", "pro") and decision.funding != "credit":
+    if decision.plan not in ("creator", "pro", "unlimited") and decision.funding != "credit":
         # The meter must have refused: Free is sent to the provider only on a credit.
         release()
         raise HandlerError(402, UPGRADE_MESSAGE, code="upgrade_required", plan="free", upgrade="creator_or_pro",

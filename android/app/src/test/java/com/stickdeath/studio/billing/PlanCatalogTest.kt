@@ -8,8 +8,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlanCatalogTest {
-    private val real = PlanCatalog.load("com.stickdeath.studio.creator.monthly", "com.stickdeath.studio.pro.monthly", "com.stickdeath.studio.credits.small")
-    private val placeholder = PlanCatalog.load(PlanCatalog.PLACEHOLDER_CREATOR_MONTHLY, PlanCatalog.PLACEHOLDER_PRO_MONTHLY, PlanCatalog.PLACEHOLDER_CREDIT_PACK)
+    private val real = PlanCatalog.load("com.stickdeath.studio.creator.monthly", "com.stickdeath.studio.pro.monthly",
+        "com.stickdeath.studio.unlimited.monthly", "com.stickdeath.studio.credits.small")
+    private val placeholder = PlanCatalog.load(PlanCatalog.PLACEHOLDER_CREATOR_MONTHLY, PlanCatalog.PLACEHOLDER_PRO_MONTHLY,
+        PlanCatalog.PLACEHOLDER_UNLIMITED_MONTHLY, PlanCatalog.PLACEHOLDER_CREDIT_PACK)
 
     @Test fun freeLimitsMatchTheOwnerDecision() {
         val free = StudioPlanLimits.Free
@@ -21,6 +23,7 @@ class PlanCatalogTest {
         assertFalse(free.pngSequenceExport); assertFalse(free.sdiChannelSubmission); assertFalse(free.spatterActive)
         assertEquals(StudioPlanLimits.Unrestricted, StudioPlanLimits.forTier(PlanTier.Creator))
         assertEquals(StudioPlanLimits.Unrestricted, StudioPlanLimits.forTier(PlanTier.Pro))
+        assertEquals(StudioPlanLimits.Unrestricted, StudioPlanLimits.forTier(PlanTier.Unlimited))
         assertEquals(StudioPlanLimits.Free, StudioPlanLimits.forTier(PlanTier.Free))
     }
 
@@ -37,25 +40,36 @@ class PlanCatalogTest {
     }
 
     @Test fun catalogueRefusesBlankMalformedAndDuplicateIds() {
-        assertTrue(PlanCatalog.load("", "", "").usesPlaceholderIdentifiers)
-        assertTrue(PlanCatalog.load(null, null, null).creditPacksUsePlaceholders)
-        assertTrue(PlanCatalog.load("Bad Id!", "com.stickdeath.studio.pro.monthly", null).usesPlaceholderIdentifiers)
-        val duplicate = PlanCatalog.load("com.same.id", "com.same.id", null)
+        assertTrue(PlanCatalog.load("", "", "", "").usesPlaceholderIdentifiers)
+        assertTrue(PlanCatalog.load(null, null, null, null).creditPacksUsePlaceholders)
+        assertTrue(PlanCatalog.load("Bad Id!", "com.stickdeath.studio.pro.monthly", "com.stickdeath.studio.unlimited.monthly", null).usesPlaceholderIdentifiers)
+        // Unlimited still unconfigured: the catalogue is not real, and its placeholder is listed like the others.
+        val noUnlimited = PlanCatalog.load("com.stickdeath.studio.creator.monthly", "com.stickdeath.studio.pro.monthly", null, null)
+        assertTrue(noUnlimited.usesPlaceholderIdentifiers)
+        assertEquals(PlanCatalog.PLACEHOLDER_UNLIMITED_MONTHLY, noUnlimited.plans.last().productId)
+        assertTrue(PlanCatalog.load("a.b.c", "d.e.f", PlanCatalog.PLACEHOLDER_UNLIMITED_MONTHLY, null).usesPlaceholderIdentifiers)
+        val duplicate = PlanCatalog.load("com.same.id", "com.same.id", "com.other.id", null)
         assertTrue(duplicate.usesPlaceholderIdentifiers)
-        assertEquals(listOf(PlanTier.Free), duplicate.plans.map { it.tier })
+        assertEquals(listOf(PlanTier.Free, PlanTier.Unlimited), duplicate.plans.map { it.tier })
+        assertTrue(PlanCatalog.load("a.b.c", "d.e.f", "a.b.c", null).usesPlaceholderIdentifiers)
         assertFalse(real.usesPlaceholderIdentifiers); assertFalse(real.creditPacksUsePlaceholders)
-        assertEquals(listOf("com.stickdeath.studio.creator.monthly", "com.stickdeath.studio.pro.monthly"), real.subscriptionProductIds)
+        assertEquals(listOf("com.stickdeath.studio.creator.monthly", "com.stickdeath.studio.pro.monthly", "com.stickdeath.studio.unlimited.monthly"), real.subscriptionProductIds)
         assertEquals(PlanTier.Pro, real.tier("com.stickdeath.studio.pro.monthly"))
+        assertEquals(PlanTier.Unlimited, real.tier("com.stickdeath.studio.unlimited.monthly"))
         assertEquals(PlanTier.Free, real.tier("com.unknown.product")) // unknown ids grant nothing
         assertTrue(real.isCreditPack("com.stickdeath.studio.credits.small"))
-        val packs = PlanCatalog.load(null, null, " a.pack.one , a.pack.two,a.pack.one,,")
+        val packs = PlanCatalog.load(null, null, null, " a.pack.one , a.pack.two,a.pack.one,,")
         assertEquals(listOf("a.pack.one", "a.pack.two"), packs.creditProductIds)
     }
 
     @Test fun trialAndOwnKeyBelongToPaidPlansOnly() {
-        assertFalse(PlanTier.Free.offersTrial); assertFalse(PlanTier.Creator.offersTrial); assertFalse(PlanTier.Pro.offersTrial)
-        assertFalse(PlanTier.Free.includesOwnAIKey); assertTrue(PlanTier.Creator.includesOwnAIKey)
+        assertFalse(PlanTier.Free.offersTrial)
+        assertTrue(PlanTier.Creator.offersTrial); assertTrue(PlanTier.Pro.offersTrial); assertTrue(PlanTier.Unlimited.offersTrial)
+        assertFalse(PlanTier.Free.includesOwnAIKey)
+        assertTrue(PlanTier.Creator.includesOwnAIKey); assertTrue(PlanTier.Pro.includesOwnAIKey); assertTrue(PlanTier.Unlimited.includesOwnAIKey)
         assertEquals(PlanTier.Pro, PlanTier.best(PlanTier.Creator, null, PlanTier.Pro))
+        assertEquals(PlanTier.Unlimited, PlanTier.best(PlanTier.Pro, PlanTier.Unlimited, PlanTier.Creator))
+        assertEquals(PlanTier.Unlimited, PlanTier.fromWire("unlimited"))
         assertEquals(PlanTier.Free, PlanTier.best(null, null))
         assertNull(PlanTier.fromWire("enterprise"))
         assertEquals(PlanTier.Creator, PlanTier.fromWire(" Creator "))
@@ -105,8 +119,53 @@ class PlanCatalogTest {
         assertTrue(tiny.left >= 0 && tiny.top >= 0 && tiny.right <= 16 && tiny.bottom <= 16)
     }
 
-    private fun usage(plan: PlanTier, remaining: Int? = null, credits: Int? = null, available: Boolean? = null) =
-        SpatterUsage(plan, plan == PlanTier.Pro, null, remaining, credits, available, null, false)
+    @Test fun tiersRankAndAllowancesMatchTheOwnerDecision() {
+        assertEquals(listOf(PlanTier.Free, PlanTier.Creator, PlanTier.Pro, PlanTier.Unlimited), PlanTier.entries.sortedBy { it.rank })
+        assertEquals(0, PlanTier.Free.spatterMessagesPerPeriod)
+        assertEquals(250, PlanTier.Creator.spatterMessagesPerPeriod)
+        assertEquals(500, PlanTier.Pro.spatterMessagesPerPeriod)
+        assertNull(PlanTier.Unlimited.spatterMessagesPerPeriod)
+        assertEquals(listOf(SpatterPromptAllowance.PreviewOnly, SpatterPromptAllowance.PerPeriod, SpatterPromptAllowance.PerPeriod, SpatterPromptAllowance.Unlimited),
+            real.plans.map { it.promptAllowance })
+        assertTrue(PlanCatalog.creatorEntitlements.any { it.text.startsWith("250 Spatter messages") })
+        assertTrue(PlanCatalog.proEntitlements.any { it.text.startsWith("500 Spatter messages") })
+        assertTrue(PlanCatalog.unlimitedEntitlements.any { it.text == "Unlimited Spatter messages" })
+        val allPlanText = (PlanCatalog.creatorEntitlements + PlanCatalog.proEntitlements + PlanCatalog.unlimitedEntitlements).joinToString { it.text }
+        assertFalse(allPlanText.contains("break-even"))
+    }
+
+    @Test fun trialUnlocksTheStudioButKeepsSpatterPreviewOnly() {
+        for (tier in listOf(PlanTier.Creator, PlanTier.Pro, PlanTier.Unlimited)) {
+            val trial = StudioPlanLimits.forTier(tier, inTrial = true)
+            assertEquals(StudioPlanLimits.Unrestricted.copy(spatterActive = false), trial)
+            assertTrue(PlanStatus(tier, inTrial = true).spatterPreviewOnly)
+            assertFalse(PlanStatus(tier).spatterPreviewOnly)
+            // Before enforcement the Studio stays unlocked, and the trial still keeps Spatter preview-only.
+            assertEquals(trial, StudioPlanLimits.effective(tier, enforcing = false, inTrial = true))
+            assertEquals(trial, StudioPlanLimits.effective(tier, enforcing = true, inTrial = true))
+        }
+        // Free has no trial; a stray flag changes nothing.
+        assertEquals(StudioPlanLimits.Free, StudioPlanLimits.forTier(PlanTier.Free, inTrial = true))
+        assertFalse(PlanStatus(PlanTier.Free, inTrial = true).trialing)
+        assertEquals(StudioPlanLimits.Unrestricted, StudioPlanLimits.effective(PlanTier.Free, enforcing = false, inTrial = true))
+    }
+
+    private fun usage(plan: PlanTier, remaining: Int? = null, credits: Int? = null, available: Boolean? = null, inTrial: Boolean? = null) =
+        SpatterUsage(plan, plan == PlanTier.Unlimited, null, remaining, credits, available, null, false, inTrial)
+
+    @Test fun spatterGateSendsNothingDuringATrial() {
+        val trialLimits = StudioPlanLimits.forTier(PlanTier.Pro, inTrial = true)
+        for (tier in listOf(PlanTier.Creator, PlanTier.Pro, PlanTier.Unlimited)) {
+            // Credits are not spent during a trial either.
+            assertEquals(SpatterGate.TrialPreview, SpatterGate.decide(trialLimits, usage(tier, remaining = 10, credits = 5, inTrial = true), false))
+            assertEquals(SpatterGate.TrialPreview, SpatterGate.decide(StudioPlanLimits.Unrestricted, usage(tier, remaining = 10), false, inTrial = true))
+        }
+        assertEquals(SpatterGate.TrialPreview, SpatterGate.decide(trialLimits, null, false, inTrial = true))
+        assertEquals(SpatterGate.TrialPreview, SpatterGate.decide(trialLimits, null, true, inTrial = true))
+        // A trial flag on a Free report is ignored.
+        assertEquals(SpatterGate.UpgradeNote, SpatterGate.decide(StudioPlanLimits.Free, usage(PlanTier.Free, inTrial = true), false))
+        assertTrue(PlanCopy.usage(usage(PlanTier.Pro, inTrial = true)).contains("free trial"))
+    }
 
     @Test fun spatterGateFollowsPlanAndCredits() {
         val free = StudioPlanLimits.Free; val open = StudioPlanLimits.Unrestricted
@@ -121,11 +180,15 @@ class PlanCatalogTest {
         assertEquals(SpatterGate.Checking, SpatterGate.decide(free, null, true))
         assertEquals(SpatterGate.UpgradeNote, SpatterGate.decide(free, null, false))
         assertEquals(SpatterGate.Send(payAsYouGo = false), SpatterGate.decide(open, null, false))
-        // Creator: allowance, then credits.
-        assertEquals(SpatterGate.Send(payAsYouGo = false), SpatterGate.decide(open, usage(PlanTier.Creator, remaining = 3), false))
-        assertEquals(SpatterGate.AllowanceUsed, SpatterGate.decide(open, usage(PlanTier.Creator, remaining = 0), false))
-        assertEquals(SpatterGate.Send(payAsYouGo = true), SpatterGate.decide(open, usage(PlanTier.Creator, remaining = 0, credits = 2), false))
-        assertEquals(SpatterGate.Send(payAsYouGo = false), SpatterGate.decide(open, usage(PlanTier.Pro), false))
+        // Creator and Pro: allowance, then credits.
+        for (tier in listOf(PlanTier.Creator, PlanTier.Pro)) {
+            assertEquals(SpatterGate.Send(payAsYouGo = false), SpatterGate.decide(open, usage(tier, remaining = 3), false))
+            assertEquals(SpatterGate.AllowanceUsed, SpatterGate.decide(open, usage(tier, remaining = 0), false))
+            assertEquals(SpatterGate.Send(payAsYouGo = true), SpatterGate.decide(open, usage(tier, remaining = 0, credits = 2), false))
+        }
+        // Unlimited: always sent, never pay as you go; inTrial = false is not a trial.
+        assertEquals(SpatterGate.Send(payAsYouGo = false), SpatterGate.decide(open, usage(PlanTier.Unlimited), false))
+        assertEquals(SpatterGate.Send(payAsYouGo = false), SpatterGate.decide(open, usage(PlanTier.Unlimited, inTrial = false), false))
     }
 
     @Test fun purchasesAreFinalisedOnlyAfterAServerGrant() {
@@ -151,7 +214,10 @@ class PlanCatalogTest {
         assertNull(PlanCopy.trial(null)); assertNull(PlanCopy.trial("garbage"))
         assertTrue(PlanCopy.usage(usage(PlanTier.Free, credits = 5)).contains("Credits: 5"))
         assertTrue(!PlanCopy.usage(usage(PlanTier.Free)).contains("Credits")) // absent balance is not invented
-        val allPlanText = (PlanCatalog.freeEntitlements + PlanCatalog.creatorEntitlements + PlanCatalog.proEntitlements).joinToString { it.text }
-        assertFalse(allPlanText.contains("4.99") || allPlanText.contains("9.99"))
+        assertTrue(PlanCopy.usage(usage(PlanTier.Pro, remaining = 12)).startsWith("Pro: 12 Spatter messages left"))
+        assertTrue(PlanCopy.usage(usage(PlanTier.Unlimited)).startsWith("Unlimited: unlimited"))
+        val allPlanText = (PlanCatalog.freeEntitlements + PlanCatalog.creatorEntitlements + PlanCatalog.proEntitlements +
+            PlanCatalog.unlimitedEntitlements).joinToString { it.text } + PlanCopy.TRIAL_RULE + PlanCopy.SPATTER_TRIAL_PREVIEW
+        assertFalse(allPlanText.contains("4.99") || allPlanText.contains("9.99") || allPlanText.contains("19.99"))
     }
 }

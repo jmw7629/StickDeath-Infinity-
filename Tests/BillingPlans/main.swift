@@ -1,5 +1,6 @@
 // Standalone checks for StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift
-// (#250, #251, #259). Foundation only; no StoreKit, no network, no purchase.
+// (#250, #251, #259; owner decision 2026-10-20: Creator 250, Pro 500, Unlimited,
+// 3-day trial on every paid plan). Foundation only; no StoreKit, no network, no purchase.
 //
 //   swiftc -swift-version 5 -parse-as-library \
 //     StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
@@ -19,6 +20,8 @@ private struct Failure: Error, CustomStringConvertible { let description: String
 
     static let now = Date(timeIntervalSince1970: 1_791_000_000) // 2026-10-03
     static let utc = TimeZone(identifier: "UTC")!
+    static let liveInfo = [BillingPlanCatalog.creatorMonthlyKey: "sdi.creator.m", BillingPlanCatalog.proMonthlyKey: "sdi.pro.m",
+                           BillingPlanCatalog.unlimitedMonthlyKey: "sdi.unlimited.m"]
 
     static func snapshot(_ id: String, _ tier: BillingPlanTier, ends: TimeInterval?, renew: Bool? = true,
                          state: BillingRenewalState = .subscribed, intro: Bool = false) -> BillingEntitlementSnapshot {
@@ -41,13 +44,23 @@ private struct Failure: Error, CustomStringConvertible { let description: String
 
     static func catalogue() throws {
         let empty = BillingPlanCatalog.load(info: [:])
-        try require(empty.plans.map(\.tier) == [.free, .creator, .pro], "Free, Creator and Pro only")
-        try require(empty.productIDs == [BillingPlanCatalog.placeholderCreatorMonthly, BillingPlanCatalog.placeholderProMonthly],
-                    "two monthly placeholder ids requested from the App Store")
+        // Owner decision 2026-10-20: four tiers ranked Unlimited > Pro > Creator > Free.
+        try require(empty.plans.map(\.tier) == [.free, .creator, .pro, .unlimited], "Free, Creator, Pro and Unlimited")
+        try require(BillingPlanTier.allCases.map(\.rank) == [0, 1, 2, 3] && BillingPlanTier.unlimited.rank > BillingPlanTier.pro.rank,
+                    "Unlimited > Pro > Creator > Free")
+        try require(BillingPlanTier(rawValue: "unlimited") == .unlimited && BillingPlanTier(rawValue: "studio") == nil, "server tier names")
+        try require(empty.productIDs == [BillingPlanCatalog.placeholderCreatorMonthly, BillingPlanCatalog.placeholderProMonthly,
+                                         BillingPlanCatalog.placeholderUnlimitedMonthly],
+                    "three monthly placeholder ids requested from the App Store")
+        try require(BillingPlanCatalog.placeholderUnlimitedMonthly == "com.stickdeath.infinity.unlimited.monthly"
+                    && BillingPlanCatalog.unlimitedMonthlyKey == "SDI_STOREKIT_PLAN_19_99_PRODUCT_ID", "Unlimited key and placeholder")
         try require(empty.usesPlaceholderIdentifiers && !empty.annualConfigured && empty.periods == [.monthly], "no annual without configuration")
         try require(empty.tier(forProductID: "com.example.unknown") == .free, "unknown id grants nothing")
-        try require(empty.plans.first { $0.tier == .creator }?.promptAllowance == .breakEvenPerPeriod, "Creator break-even allowance per period")
-        try require(empty.plans.first { $0.tier == .pro }?.promptAllowance == .unlimited, "Pro unlimited prompts")
+        try require(empty.plans.first { $0.tier == .creator }?.promptAllowance == .perPeriod(250), "Creator 250 prompts per period")
+        try require(empty.plans.first { $0.tier == .pro }?.promptAllowance == .perPeriod(500), "Pro 500 prompts per period")
+        try require(empty.plans.first { $0.tier == .unlimited }?.promptAllowance == .unlimited, "Unlimited has no cap")
+        try require(SpatterPromptAllowance.perPeriod(250).perPeriodLimit == 250 && SpatterPromptAllowance.unlimited.perPeriodLimit == nil
+                    && SpatterPromptAllowance.previewOnly.perPeriodLimit == nil, "per-period limit accessor")
         try require(empty.plans.first { $0.tier == .free }?.promptAllowance == .previewOnly, "Free previews Spatter only")
         // Owner decision 2026-10-15: FlipaClip-style Free limits, none on paid plans.
         let freeLimits = empty.plans.first { $0.tier == .free }!.studioLimits
@@ -58,7 +71,7 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         try require(!freeLimits.audioImport && !freeLimits.soundLibrary && !freeLimits.advancedTools
                     && !freeLimits.pngSequenceExport && !freeLimits.sdiChannelSubmission && !freeLimits.spatterActive,
                     "Free: locked extras and Spatter preview only")
-        for tier in [BillingPlanTier.creator, .pro] {
+        for tier in [BillingPlanTier.creator, .pro, .unlimited] {
             try require(empty.plans.first { $0.tier == tier }?.studioLimits == .unrestricted, "\(tier) has no Studio limits")
         }
         // Spatter credit packs (owner decision 2026-10-15): off until both ids are configured.
@@ -74,21 +87,51 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         try require(BillingCopy.spatterUpgradeNote.contains("credits"), "upgrade note offers credits")
         // Nobody is limited until the App Store sells real plans.
         try require(!StudioPlanLimits.enforcing(catalog: empty, storeLoaded: true), "placeholder ids never enforce limits")
-        let live = BillingPlanCatalog.load(info: [BillingPlanCatalog.creatorMonthlyKey: "sdi.creator.m", BillingPlanCatalog.proMonthlyKey: "sdi.pro.m"])
+        let twoOnly = BillingPlanCatalog.load(info: [BillingPlanCatalog.creatorMonthlyKey: "sdi.creator.m", BillingPlanCatalog.proMonthlyKey: "sdi.pro.m"])
+        try require(twoOnly.usesPlaceholderIdentifiers && !StudioPlanLimits.enforcing(catalog: twoOnly, storeLoaded: true),
+                    "a missing Unlimited id is still placeholder configuration")
+        let live = BillingPlanCatalog.load(info: liveInfo)
+        try require(!live.usesPlaceholderIdentifiers && live.tier(forProductID: "sdi.unlimited.m") == .unlimited
+                    && live.plan(forProductID: "sdi.unlimited.m")?.name == "Unlimited", "Unlimited product id maps to its tier")
         try require(!StudioPlanLimits.enforcing(catalog: live, storeLoaded: false), "store not loaded: no limits")
         try require(StudioPlanLimits.enforcing(catalog: live, storeLoaded: true), "real plans loaded: limits apply")
         try require(StudioPlanLimits.effective(tier: .free, enforcing: false) == .unrestricted, "unenforced Free is unrestricted")
         try require(StudioPlanLimits.effective(tier: .free, enforcing: true) == .free, "enforced Free is limited")
         try require(StudioPlanLimits.effective(tier: .creator, enforcing: true) == .unrestricted, "enforced Creator is unrestricted")
-        // Owner decisions: own AI key on both paid plans (2026-10-14); no trial on any plan (2026-10-15).
-        try require(empty.plans.map(\.offersTrial) == [false, false, false], "no plan offers a trial (owner decision 2026-10-15)")
-        try require(empty.plans.map(\.includesOwnAIKey) == [false, true, true], "own AI key on Creator and Pro only")
-        for tier in [BillingPlanTier.creator, .pro] {
+        try require(StudioPlanLimits.effective(tier: .unlimited, enforcing: true) == .unrestricted, "enforced Unlimited is unrestricted")
+        // Owner decision 2026-10-20: during a paid plan's free trial the Studio is
+        // fully unlocked, but Spatter is preview-only.
+        for tier in [BillingPlanTier.creator, .pro, .unlimited] {
+            let trial = StudioPlanLimits.effective(tier: tier, inTrial: true, enforcing: true)
+            try require(trial == .trial && !trial.spatterActive && trial.spatterTrialPreview, "\(tier) trial: Spatter preview-only")
+            try require(trial.maxLayers == nil && trial.maxOnionSkinBack == nil && trial.customCanvasSize && trial.maxExportLongEdge == nil
+                        && !trial.exportWatermark && trial.audioImport && trial.soundLibrary && trial.advancedTools
+                        && trial.pngSequenceExport && trial.sdiChannelSubmission, "\(tier) trial: full Studio")
+        }
+        try require(StudioPlanLimits.effective(tier: .free, inTrial: true, enforcing: true) == .free, "Free has no trial")
+        try require(StudioPlanLimits.effective(tier: .pro, inTrial: true, enforcing: false) == .unrestricted, "no enforcement: unrestricted")
+        try require(!StudioPlanLimits.free.spatterTrialPreview && !StudioPlanLimits.unrestricted.spatterTrialPreview, "trial flag only on .trial")
+        // Store and server combined: the higher tier wins and carries its own trial state.
+        try require(StudioPlanLimits.effective(storeTier: .creator, storeInTrial: true, serverTier: .free, serverInTrial: false,
+                                               enforcing: true) == .trial, "Apple trial applies")
+        try require(StudioPlanLimits.effective(storeTier: .creator, storeInTrial: true, serverTier: .unlimited, serverInTrial: false,
+                                               enforcing: true) == .unrestricted, "higher paid server plan ends the preview")
+        try require(StudioPlanLimits.effective(storeTier: .free, storeInTrial: false, serverTier: .pro, serverInTrial: true,
+                                               enforcing: true) == .trial, "server trial applies")
+        try require(StudioPlanLimits.effective(storeTier: .pro, storeInTrial: false, serverTier: .pro, serverInTrial: true,
+                                               enforcing: true) == .unrestricted, "Apple's paid period wins over a stale server trial")
+        try require(StudioPlanLimits.effective(storeTier: .free, storeInTrial: true, serverTier: .free, serverInTrial: true,
+                                               enforcing: true) == .free, "Free stays Free")
+        try require(StudioPlanLimits.upgradeNote.contains("Creator, Pro and Unlimited"), "Studio upgrade note names every paid plan")
+        // Owner decisions: own AI key on every paid plan (2026-10-14); 3-day trial on every paid plan (2026-10-20).
+        try require(empty.plans.map(\.offersTrial) == [false, true, true, true], "every paid plan offers a trial")
+        try require(empty.plans.map(\.includesOwnAIKey) == [false, true, true, true], "own AI key on every paid plan")
+        for tier in [BillingPlanTier.creator, .pro, .unlimited] {
             let texts = empty.plans.first { $0.tier == tier }?.entitlements.map(\.text) ?? []
             try require(texts.contains { $0.hasPrefix("Use your own AI key") }, "\(tier) lists the own AI key")
         }
         try require(empty.plans.first { $0.tier == .free }?.entitlements.map(\.text)
-                        .contains("Preview Spatter and its suggested prompts (answers need Creator, Pro or credits)") == true,
+                        .contains("Preview Spatter and its suggested prompts (answers need a paid plan or credits)") == true,
                     "Free lists the Spatter preview")
         // Device-enforced Studio extras are live; server-applied extras stay pending.
         let serverExtras = empty.plans.filter { $0.tier != .free }.flatMap(\.entitlements)
@@ -102,7 +145,7 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         let unexpanded = BillingPlanCatalog.load(info: [BillingPlanCatalog.creatorMonthlyKey: "$(SDI_STOREKIT_PLAN_4_99_PRODUCT_ID)"])
         try require(unexpanded.usesPlaceholderIdentifiers, "unexpanded build setting is not configuration")
 
-        let monthly = [BillingPlanCatalog.creatorMonthlyKey: "sdi.creator.m", BillingPlanCatalog.proMonthlyKey: "sdi.pro.m"]
+        let monthly = liveInfo
         var annualWithoutFlag = monthly
         annualWithoutFlag[BillingPlanCatalog.creatorAnnualKey] = "sdi.creator.y"
         let noFlag = BillingPlanCatalog.load(info: annualWithoutFlag)
@@ -115,6 +158,7 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         let annual = BillingPlanCatalog.load(info: annualFlagged)
         try require(annual.annualConfigured && annual.periods == [.monthly, .annual], "annual offered once configured")
         try require(annual.plans(for: .annual).map(\.tier) == [.free, .creator], "only the configured annual plan appears")
+        try require(annual.plan(forProductID: "sdi.creator.y")?.promptAllowance == .perPeriod(250), "annual Creator keeps its allowance")
         try require(annual.plan(forProductID: "sdi.creator.y")?.period == .annual, "annual product maps to its period")
 
         let clash = BillingPlanCatalog.load(info: [BillingPlanCatalog.creatorMonthlyKey: "same", BillingPlanCatalog.proMonthlyKey: "same"])
@@ -161,6 +205,16 @@ private struct Failure: Error, CustomStringConvertible { let description: String
         let pro = snapshot("sdi.pro.m", .pro, ends: 86_400 * 5)
         s = BillingState.reduce(s, .entitlementsRefreshed([creator, pro], now: now))
         try require(s.activeEntitlement == pro, "highest tier wins")
+        let unlimited = snapshot("sdi.unlimited.m", .unlimited, ends: 86_400 * 2)
+        try require(BillingState.reduce(s, .entitlementsRefreshed([creator, unlimited, pro], now: now)).activeEntitlement == unlimited,
+                    "Unlimited outranks Pro")
+        // Apple's introductory offer marks the trial.
+        let trialing = snapshot("sdi.creator.m", .creator, ends: 86_400 * 3, intro: true)
+        let inTrial = BillingState.reduce(BillingState(), .purchaseVerified(trialing))
+        try require(inTrial.inTrial && !s.inTrial, "introductory offer is the trial")
+        try require(StudioPlanLimits.effective(storeTier: trialing.tier, storeInTrial: inTrial.inTrial, serverTier: .free, serverInTrial: false,
+                                               enforcing: true) == .trial, "trial snapshot: full Studio, Spatter preview")
+        try require(!BillingState.reduce(inTrial, .entitlementsRefreshed([], now: now)).inTrial, "no entitlement, no trial")
         let grace = snapshot("sdi.pro.m", .pro, ends: 86_400 * 3, state: .inGracePeriod)
         try require(BillingState.reduce(s, .entitlementsRefreshed([grace], now: now)).activeEntitlement == grace, "grace keeps access")
         let retry = snapshot("sdi.pro.m", .pro, ends: -60, renew: true, state: .inBillingRetry)
@@ -177,17 +231,18 @@ private struct Failure: Error, CustomStringConvertible { let description: String
     }
 
     static func copy() throws {
-        let catalog = BillingPlanCatalog.load(info: [BillingPlanCatalog.creatorMonthlyKey: "sdi.creator.m", BillingPlanCatalog.proMonthlyKey: "sdi.pro.m"])
+        let catalog = BillingPlanCatalog.load(info: liveInfo)
         try require(BillingCopy.price(nil, period: .monthly) == "Price shown when configured", "no price before the App Store answers")
         try require(BillingCopy.price("4,99 €", period: .monthly) == "4,99 € per month", "Apple's localized price is shown verbatim")
         try require(BillingCopy.price("$9.99", period: .annual) == "$9.99 per year", "annual period copy")
         try require(BillingCopy.trial(days: 3, eligible: true) == "3-day free trial", "trial from the store offer")
         try require(BillingCopy.trial(days: 3, eligible: false) == nil && BillingCopy.trial(days: nil, eligible: true) == nil,
                     "no trial claim without an eligible store offer")
-        for tier in [BillingPlanTier.creator, .pro] {
+        for tier in [BillingPlanTier.creator, .pro, .unlimited] {
             let plan = catalog.plans.first { $0.tier == tier }
-            // No trial on any plan, even if a store offer were left configured.
-            try require(BillingCopy.trial(for: plan, days: 3, eligible: true) == nil, "\(tier) shows no trial")
+            // Every paid plan shows the trial, but only from an eligible store offer.
+            try require(BillingCopy.trial(for: plan, days: 3, eligible: true) == "3-day free trial", "\(tier) shows the store trial")
+            try require(BillingCopy.trial(for: plan, days: 3, eligible: false) == nil, "\(tier) ineligible: no trial")
         }
         try require(BillingCopy.trial(for: catalog.plans.first { $0.tier == .free }, days: 3, eligible: true) == nil, "Free never shows a trial")
         try require(BillingCopy.trial(for: nil, days: 3, eligible: true) == nil, "unknown product shows no trial")
@@ -225,12 +280,28 @@ private struct Failure: Error, CustomStringConvertible { let description: String
                     "free copy")
         try require(BillingCopy.server(.notConfigured).hasPrefix("Server verification deferred"), "deferred server copy")
 
-        try require(BillingCopy.prompts(.breakEvenPerPeriod, remaining: nil).contains("once the server reports"), "no invented prompt count")
-        try require(BillingCopy.prompts(.breakEvenPerPeriod, remaining: 4, limit: 174) == "4 of 174 Spatter prompts left this billing period.", "remaining prompts")
-        try require(BillingCopy.prompts(.breakEvenPerPeriod, remaining: 0, limit: 174).contains("own AI key"), "own key offered at the limit")
-        try require(BillingCopy.prompts(.breakEvenPerPeriod, remaining: 999, limit: 174) == "174 of 174 Spatter prompts left this billing period.", "server count clamped")
-        try require(BillingCopy.prompts(.unlimited, remaining: nil) == "Unlimited Spatter prompts.", "Pro unlimited")
+        try require(BillingCopy.prompts(.perPeriod(250), remaining: nil).hasPrefix("250 Spatter prompts each billing period.")
+                    && BillingCopy.prompts(.perPeriod(250), remaining: nil).contains("once the server reports"), "no invented prompt count")
+        try require(BillingCopy.prompts(.perPeriod(500), remaining: nil).hasPrefix("500 Spatter prompts each billing period."), "Pro allowance copy")
+        try require(BillingCopy.prompts(.perPeriod(250), remaining: 4) == "4 of 250 Spatter prompts left this billing period.", "remaining prompts")
+        try require(BillingCopy.prompts(.perPeriod(250), remaining: 4, limit: 240) == "4 of 240 Spatter prompts left this billing period.", "server limit wins")
+        let creatorUsed = BillingCopy.prompts(.perPeriod(250), remaining: 0)
+        try require(creatorUsed.contains("own AI key") && creatorUsed.contains("upgrade to Pro or Unlimited") && creatorUsed.contains("credits"),
+                    "Creator at the limit: own key, credits, Pro or Unlimited")
+        let proUsed = BillingCopy.prompts(.perPeriod(500), remaining: 0)
+        try require(proUsed.contains("upgrade to Unlimited") && !proUsed.contains("Pro or Unlimited"), "Pro at the limit: Unlimited")
+        try require(BillingCopy.prompts(.perPeriod(250), remaining: 999) == "250 of 250 Spatter prompts left this billing period.", "server count clamped")
+        try require(BillingCopy.prompts(.unlimited, remaining: nil) == "Unlimited Spatter prompts.", "Unlimited plan")
         try require(BillingCopy.prompts(.previewOnly, remaining: 3) == BillingCopy.spatterUpgradeNote, "Free only sees the upgrade note")
-        try require(BillingCopy.spatterUpgradeNote.contains("Creator and Pro"), "upgrade note names the paid plans")
+        try require(BillingCopy.spatterUpgradeNote.contains("Creator, Pro and Unlimited"), "upgrade note names the paid plans")
+        try require(BillingCopy.spatterTrialNote.contains("paid period begins") && BillingCopy.spatterTrialNote.contains("suggested prompts")
+                    && BillingCopy.spatterTrialNote.contains("Profile, Plans"), "trial note explains when Spatter starts")
+        try require(BillingCopy.spatterPreviewNote(trial: true) == BillingCopy.spatterTrialNote
+                    && BillingCopy.spatterPreviewNote(trial: false) == BillingCopy.spatterUpgradeNote, "preview note selection")
+        for note in [BillingCopy.spatterTrialNote, BillingCopy.spatterUpgradeNote, StudioPlanLimits.upgradeNote] {
+            for banned in ["$", "USD", "4.99", "9.99", "19.99"] {
+                try require(!note.contains(banned), "no hard-coded price in plan copy: \(banned)")
+            }
+        }
     }
 }

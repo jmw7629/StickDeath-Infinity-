@@ -198,45 +198,50 @@ grant execute on function public.sdi_spatter_draft_status(date,date) to authenti
 --   former Free allowance (5 suggested prompts per calendar month, column
 --   free_prompts and 'month:'/'free' buckets) is retired; this file was never
 --   applied, so the column and buckets are removed rather than left unused.
--- * Creator (USD 4.99/month): prompts a member sends with their own AI key go
---   device-to-provider and never reach this meter. The server-funded allowance
---   per billing period is a cost model that keeps the plan within break-even:
---   limit = floor(creator_period_budget_microusd / prompt_cost_estimate_microusd).
---   The budget defaults to 3490000 (USD 4.99 net of a 30% store commission,
---   rounded down) and may never exceed the gross price 4990000; the per-prompt
---   estimate defaults to 20000 (USD 0.02), a conservative owner-editable figure.
---   Defaults give 174 prompts per period, keyed to the subscription's
---   paid_through so a renewal starts a new period.
--- * Pro (USD 9.99/month): no plan allowance, but still obeys the per-user daily
---   safety cap, the per-minute rate, the global daily ceiling and the agent
---   emergency stop.
+-- * Paid tiers (owner decision 2026-10-20; rank unlimited > pro > creator):
+--   creator (USD 4.99/month) 250, pro (USD 9.99/month) 500 server-funded
+--   prompts per billing period (owner-editable creator_period_prompts /
+--   pro_period_prompts), keyed to the subscription's paid_through so a renewal
+--   starts a new period; unlimited (USD 19.99/month) has no plan allowance.
+--   Prompts a member sends with their own AI key go device-to-provider and
+--   never reach this meter. Every tier, unlimited included, still obeys the
+--   per-user daily safety cap, the per-minute rate, the global daily ceiling
+--   (spatter_usage_controls.global_daily_cap) and the agent emergency stop.
+-- * Free trial (owner decision 2026-10-20): each paid tier starts with a 3-day
+--   free trial (App Store introductory offer). The Studio is unlocked, but
+--   Spatter is preview-only: an account whose only current entitlements are in
+--   a free-trial period (entitlements.in_trial) is refused with
+--   'upgrade_required' (plan = the trial tier, trial true, upgrade
+--   'after_trial', buy_credits false) before any counter, reservation, credit
+--   or provider call. The first paid period clears in_trial and opens the
+--   tier's normal allowance (a new paid_through, so a new period bucket).
 -- * Spatter credits (owner decision 2026-10-15, later): consumable store packs
 --   (sdi_private.spatter_credit_packs, no prices: the store owns them) credit
 --   an append-only ledger. 1 credit = 1 prompt. A reservation spends the plan
---   allowance first (Creator's period allowance; Pro is unlimited and never
---   spends credits), then one credit. Safety, rate and global caps and the
---   emergency stop apply before either. A released reservation refunds its
---   credit. Purchases and refunds are granted only by verified provider
---   events through the service-only spatter_credits_grant/_refund functions.
--- A 'trialing' subscription maps to its own tier through
--- sdi_private.entitlements. The global ceiling defaults to 0 (closed) so
+--   allowance first (creator/pro period allowance; unlimited never spends
+--   credits), then one credit. Safety, rate and global caps and the emergency
+--   stop apply before either. A released reservation refunds its credit.
+--   Purchases and refunds are granted only by verified provider events through
+--   the service-only spatter_credits_grant/_refund functions. Credits are never
+--   spent during a free trial.
+-- The global ceiling defaults to 0 (closed) so
 -- nothing can be spent until the owner sets it. One unit is one prompt;
 -- provider-reported usage units (tokens, not money) are recorded on the
 -- reservation when the handler commits it. Actual provider cost is not
--- recorded: the provider contract returns usage units only, so the
--- per-prompt estimate stays the owner's control on spend.
+-- recorded: the provider contract returns usage units only, so the per-tier
+-- period counts and the global ceiling stay the owner's control on spend.
 create table sdi_private.spatter_usage_controls (
  singleton boolean primary key default true check(singleton),
  global_daily_cap integer not null default 0 check(global_daily_cap between 0 and 10000000),
  user_daily_safety_cap integer not null default 100 check(user_daily_safety_cap between 0 and 10000),
  user_per_minute_cap integer not null default 6 check(user_per_minute_cap between 1 and 600),
- creator_period_budget_microusd integer not null default 3490000 check(creator_period_budget_microusd between 0 and 4990000),
- prompt_cost_estimate_microusd integer not null default 20000 check(prompt_cost_estimate_microusd between 1 and 4990000),
+ creator_period_prompts integer not null default 250 check(creator_period_prompts between 0 and 1000000),
+ pro_period_prompts integer not null default 500 check(pro_period_prompts between 0 and 1000000),
  revision bigint not null default 1, updated_by uuid references auth.users(id) on delete set null,
  updated_at timestamptz not null default clock_timestamp()
 );
 insert into sdi_private.spatter_usage_controls(singleton) values(true);
--- One row per (account, bucket). Buckets: 'period:<paid_through>' (creator
+-- One row per (account, bucket). Buckets: 'period:<paid_through>' (creator/pro
 -- billing period), 'day:<utc date>' (safety cap) and 'minute:<utc minute>'
 -- (rate). Free accounts never get a row. No prompt text is ever stored.
 create table sdi_private.spatter_usage_counters (
@@ -252,8 +257,8 @@ create table sdi_private.spatter_usage_global (
 create table sdi_private.spatter_usage_reservations (
  id uuid primary key default gen_random_uuid(),
  user_id uuid not null references auth.users(id) on delete cascade,
- plan text not null check(plan in('free','creator','pro')),
- -- What paid for the prompt: the plan allowance, Pro's unlimited plan, or one credit.
+ plan text not null check(plan in('free','creator','pro','unlimited')),
+ -- What paid for the prompt: the plan allowance, the unlimited plan, or one credit.
  funding text not null check(funding in('allowance','unlimited','credit')),
  check(plan<>'free' or funding='credit'),
  buckets text[] not null, day date not null,
@@ -337,32 +342,39 @@ create function sdi_private.spatter_suggested_prompt_ids() returns text[] langua
  select array['animation_tips','scene_ideas','fight_choreography','style_advice']::text[]
 $$;
 
--- Creator's server-funded prompts per billing period: the break-even budget
--- divided by the owner's per-prompt cost estimate, rounded down.
-create function sdi_private.spatter_creator_period_limit(c sdi_private.spatter_usage_controls) returns integer
- language sql immutable set search_path='' as $$select (c.creator_period_budget_microusd/c.prompt_cost_estimate_microusd)::integer$$;
+-- Server-funded prompts per billing period for a paid tier; null = no plan
+-- allowance (unlimited) or no plan (anything else).
+create function sdi_private.spatter_plan_period_limit(c sdi_private.spatter_usage_controls,p_tier text) returns integer
+ language sql immutable set search_path='' as $$
+ select case p_tier when 'creator' then c.creator_period_prompts when 'pro' then c.pro_period_prompts else null end
+$$;
 
--- The account's current plan and allowance, without consuming anything.
+-- The account's current plan and allowance, without consuming anything. A paid
+-- (non-trial) entitlement wins over a trial one; then the highest tier.
 create function sdi_private.spatter_usage_plan(p_user uuid) returns jsonb language plpgsql stable security definer set search_path='' as $$
-declare c sdi_private.spatter_usage_controls; v_tier text; v_paid timestamptz; v_bucket text; v_limit integer; v_used integer;
+declare c sdi_private.spatter_usage_controls; v_tier text; v_paid timestamptz; v_trial boolean; v_bucket text; v_limit integer; v_used integer;
  v_credits integer:=sdi_private.spatter_credit_balance(p_user);
 begin
  select * into c from sdi_private.spatter_usage_controls;
- select tier,paid_through into v_tier,v_paid from sdi_private.entitlements where user_id=p_user
-  order by case tier when 'pro' then 0 else 1 end,paid_through desc limit 1;
- if v_tier='pro' then
-  return jsonb_build_object('plan','pro','unlimited',true,'limit',null,'used',null,'remaining',null,'period','none','resets_at',null,
+ select e.tier,e.paid_through,e.in_trial into v_tier,v_paid,v_trial from sdi_private.entitlements e where e.user_id=p_user
+  order by e.in_trial,sdi_private.billing_tier_rank(e.tier) desc,e.paid_through desc limit 1;
+ if v_trial then
+  -- Free trial only: Spatter is preview-only; nothing is funded and credits are not spent.
+  return jsonb_build_object('plan',v_tier,'trial',true,'unlimited',false,'limit',0,'used',0,'remaining',0,'period','trial','resets_at',to_jsonb(v_paid),
+   'credits',v_credits,'available',false,'upgrade','after_trial');
+ elsif v_tier='unlimited' then
+  return jsonb_build_object('plan','unlimited','trial',false,'unlimited',true,'limit',null,'used',null,'remaining',null,'period','none','resets_at',null,
    'credits',v_credits,'available',true);
- elsif v_tier='creator' then
+ elsif v_tier in('creator','pro') then
   v_bucket:='period:'||to_char(v_paid at time zone 'utc','YYYY-MM-DD"T"HH24:MI:SS"Z"');
-  v_limit:=sdi_private.spatter_creator_period_limit(c);
+  v_limit:=sdi_private.spatter_plan_period_limit(c,v_tier);
   select u.used into v_used from sdi_private.spatter_usage_counters u where u.user_id=p_user and u.bucket=v_bucket;
   v_used:=coalesce(v_used,0);
-  return jsonb_build_object('plan','creator','unlimited',false,'limit',v_limit,'used',v_used,'remaining',greatest(v_limit-v_used,0),
+  return jsonb_build_object('plan',v_tier,'trial',false,'unlimited',false,'limit',v_limit,'used',v_used,'remaining',greatest(v_limit-v_used,0),
    'period','billing_period','resets_at',to_jsonb(v_paid),'credits',v_credits,'available',v_limit>v_used or v_credits>0,'bucket',v_bucket);
  end if;
  -- Free: no server-funded allowance; Spatter works only on purchased credits.
- return jsonb_build_object('plan','free','unlimited',false,'limit',0,'used',0,'remaining',0,'period','none','resets_at',null,
+ return jsonb_build_object('plan','free','trial',false,'unlimited',false,'limit',0,'used',0,'remaining',0,'period','none','resets_at',null,
   'credits',v_credits,'available',v_credits>0,'upgrade','creator_or_pro');
 end $$;
 
@@ -379,9 +391,16 @@ begin
   return jsonb_build_object('allowed',false,'code','account_restricted'); end if;
  -- Free without credits (owner decisions 2026-10-15): nothing is funded, so
  -- the request is refused before any counter or reservation.
- if not exists(select 1 from sdi_private.entitlements where user_id=p_user and tier in('creator','pro'))
+ if not exists(select 1 from sdi_private.entitlements where user_id=p_user and tier in('creator','pro','unlimited'))
   and sdi_private.spatter_credit_balance(p_user)<=0 then
   return jsonb_build_object('allowed',false,'code','upgrade_required','plan','free','upgrade','creator_or_pro','buy_credits',true,'credits',0); end if;
+ -- Free trial only (owner decision 2026-10-20): the same refusal shape, before
+ -- any counter, reservation or credit spend. Purchased credits wait for the trial to end.
+ if exists(select 1 from sdi_private.entitlements where user_id=p_user and in_trial)
+  and not exists(select 1 from sdi_private.entitlements where user_id=p_user and not in_trial) then
+  p:=sdi_private.spatter_usage_plan(p_user);
+  return jsonb_build_object('allowed',false,'code','upgrade_required','plan',p->>'plan','trial',true,'upgrade','after_trial',
+   'resets_at',p->'resets_at','buy_credits',false,'credits',(p->>'credits')::integer); end if;
  if (select emergency_stop from sdi_private.agent_global) then
   return jsonb_build_object('allowed',false,'code','emergency_stop'); end if;
  if p_suggested_prompt is not null and not (p_suggested_prompt=any(sdi_private.spatter_suggested_prompt_ids())) then
@@ -399,17 +418,20 @@ begin
  select coalesce((select used from sdi_private.spatter_usage_counters where user_id=p_user and bucket='day:'||v_day::text),0) into d;
  if d>=c.user_daily_safety_cap then
   return jsonb_build_object('allowed',false,'code','daily_safety_limit','resets_at',(v_day+1)::timestamp at time zone 'utc'); end if;
- -- Funding order: plan allowance (Pro unlimited, Creator period), then one credit.
+ -- Funding order: plan allowance (unlimited, or the creator/pro period), then one credit.
  p:=sdi_private.spatter_usage_plan(p_user);
  v_credits:=(p->>'credits')::integer;
- if (p->>'unlimited')::boolean then v_funding:='unlimited';
+ if (p->>'trial')::boolean then
+  return jsonb_build_object('allowed',false,'code','upgrade_required','plan',p->>'plan','trial',true,'upgrade','after_trial',
+   'resets_at',p->'resets_at','buy_credits',false,'credits',v_credits);
+ elsif (p->>'unlimited')::boolean then v_funding:='unlimited';
  elsif (p->>'remaining')::integer>0 then v_funding:='allowance';
  elsif v_credits>0 then v_funding:='credit';
  elsif p->>'plan'='free' then
   return jsonb_build_object('allowed',false,'code','upgrade_required','plan','free','upgrade','creator_or_pro','buy_credits',true,'credits',0);
  else
   return jsonb_build_object('allowed',false,'code','plan_allowance_exhausted','plan',p->>'plan','period',p->>'period','resets_at',p->'resets_at',
-   'upgrade','pro','buy_credits',true,'credits',0); end if;
+   'upgrade',case p->>'plan' when 'creator' then 'pro' else 'unlimited' end,'buy_credits',true,'credits',0); end if;
  v_buckets:=array['minute:'||v_minute,'day:'||v_day::text];
  if v_funding='allowance' then v_buckets:=v_buckets||(p->>'bucket'); end if;
  foreach b in array v_buckets loop
@@ -499,7 +521,8 @@ begin
  select * into c from sdi_private.spatter_usage_controls;
  if action='get' then
   return jsonb_build_object('controls',to_jsonb(c)-'singleton'-'updated_by',
-   'creator_period_limit',sdi_private.spatter_creator_period_limit(c),
+   'period_limits',jsonb_build_object('creator',sdi_private.spatter_plan_period_limit(c,'creator'),
+    'pro',sdi_private.spatter_plan_period_limit(c,'pro'),'unlimited',null),
    'global_used_today',coalesce((select g.used from sdi_private.spatter_usage_global g where g.day=v_day),0),
    'committed_units_today',coalesce((select sum(r.units) from sdi_private.spatter_usage_reservations r where r.day=v_day and r.state='committed'),0),
    'emergency_stop',(select a.emergency_stop from sdi_private.agent_global a));
@@ -508,15 +531,15 @@ begin
   if spatter_usage_admin.revision is distinct from c.revision then return jsonb_build_object('error','Limits changed elsewhere; reload.','revision',c.revision); end if;
   if length(trim(coalesce(spatter_usage_admin.reason,''))) not between 1 and 2000 then return jsonb_build_object('error','A reason is required.'); end if;
   if payload is null or jsonb_typeof(payload)<>'object' or exists(select 1 from jsonb_object_keys(payload) k
-   where k not in('global_daily_cap','user_daily_safety_cap','user_per_minute_cap','creator_period_budget_microusd','prompt_cost_estimate_microusd')) then
+   where k not in('global_daily_cap','user_daily_safety_cap','user_per_minute_cap','creator_period_prompts','pro_period_prompts')) then
    return jsonb_build_object('error','Unknown limit.'); end if;
   begin
    update sdi_private.spatter_usage_controls u set
     global_daily_cap=coalesce((payload->>'global_daily_cap')::integer,u.global_daily_cap),
     user_daily_safety_cap=coalesce((payload->>'user_daily_safety_cap')::integer,u.user_daily_safety_cap),
     user_per_minute_cap=coalesce((payload->>'user_per_minute_cap')::integer,u.user_per_minute_cap),
-    creator_period_budget_microusd=coalesce((payload->>'creator_period_budget_microusd')::integer,u.creator_period_budget_microusd),
-    prompt_cost_estimate_microusd=coalesce((payload->>'prompt_cost_estimate_microusd')::integer,u.prompt_cost_estimate_microusd),
+    creator_period_prompts=coalesce((payload->>'creator_period_prompts')::integer,u.creator_period_prompts),
+    pro_period_prompts=coalesce((payload->>'pro_period_prompts')::integer,u.pro_period_prompts),
     revision=c.revision+1,updated_by=auth.uid(),updated_at=clock_timestamp()
    returning u.revision into next_rev;
   exception when check_violation or invalid_text_representation or numeric_value_out_of_range then
@@ -529,7 +552,7 @@ begin
  return jsonb_build_object('error','Unknown action.');
 end $$;
 
-revoke all on function sdi_private.spatter_suggested_prompt_ids(),sdi_private.spatter_creator_period_limit(sdi_private.spatter_usage_controls),sdi_private.spatter_usage_plan(uuid),sdi_private.spatter_usage_reserve(uuid,text),sdi_private.spatter_usage_settle(uuid,text,integer),
+revoke all on function sdi_private.spatter_suggested_prompt_ids(),sdi_private.spatter_plan_period_limit(sdi_private.spatter_usage_controls,text),sdi_private.spatter_usage_plan(uuid),sdi_private.spatter_usage_reserve(uuid,text),sdi_private.spatter_usage_settle(uuid,text,integer),
  sdi_private.spatter_usage_sweep(),sdi_private.spatter_usage_meter(text,uuid,uuid,text,integer,text),sdi_private.spatter_my_usage(),
  sdi_private.spatter_usage_admin(text,bigint,jsonb,text) from public,anon,authenticated;
 grant execute on function sdi_private.spatter_usage_meter(text,uuid,uuid,text,integer,text) to service_role;

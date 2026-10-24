@@ -1,0 +1,12 @@
+# Apache settings for GoDaddy cPanel hosting (ignored by other hosts).
+
+# Serve the site's own not-found page.
+ErrorDocument 404 /404.html
+
+# GoDaddy injects a performance-monitoring script into every HTML response.
+# The privacy policy promises that every request stays on this origin, so
+# only scripts shipped with the site may run. Every page loads its scripts
+# from files; none uses inline script.
+<IfModule mod_headers.c>
+  Header always set Content-Security-Policy "script-src 'self'; object-src 'none'; base-uri 'self'"
+</IfModule>

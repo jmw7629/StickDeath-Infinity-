@@ -8,7 +8,9 @@ an injected executor. The executor is the only thing that touches PostgreSQL and
 the deployment supplies it (service role, PostgREST ``rpc`` or a direct
 connection). Tests use a recording fake.
 
-Approved offers are the owner's two monthly tiers. No amount is stored or
+Approved offers are the owner's three monthly tiers (decision 2026-10-20:
+creator, pro, unlimited; rank unlimited > pro > creator), each with a 3-day
+free trial. No amount is stored or
 embedded anywhere in this package: prices live in App Store Connect and the
 Stripe dashboard, and Stripe line items reference configured price ids only.
 """
@@ -22,13 +24,15 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 PROVIDERS = ("apple", "stripe")
-TIERS = ("creator", "pro")
-# Owner decision 2026-10-14: the free trial applies to both paid plans. A
-# provider-reported trial maps to the canonical ``trialing`` status of that
-# tier, which the entitlement view and the Spatter meter treat as the tier
-# itself. Trial length and eligibility are store configuration (App Store
-# introductory offer; Stripe trial settings), never embedded here.
-TRIAL_TIERS = ("creator", "pro")
+TIERS = ("creator", "pro", "unlimited")
+# Owner decisions 2026-10-14 and 2026-10-20: every paid tier starts with a
+# free trial (3 days, App Store introductory offer). A provider-reported trial
+# maps to the canonical ``trialing`` status and ``in_trial=True``. The
+# entitlement view grants the tier (the Studio is unlocked), but the Spatter
+# meter funds no prompt while the account's only entitlements are in a trial.
+# Trial length and eligibility are store configuration (App Store introductory
+# offer; Stripe trial settings), never embedded here.
+TRIAL_TIERS = TIERS
 PERIODS = ("monthly", "annual")
 CANONICAL_STATUSES = ("active", "trialing", "grace", "past_due", "cancelled", "expired", "revoked", "refunded")
 LEDGER_KINDS = ("charge", "refund", "fee", "payout", "adjustment")
@@ -67,7 +71,7 @@ class ApprovedProduct:
         if self.provider not in PROVIDERS:
             raise ValueError("provider must be apple or stripe")
         if self.tier not in TIERS:
-            raise ValueError("tier must be creator or pro")
+            raise ValueError("tier must be creator, pro or unlimited")
         if self.period not in PERIODS:
             raise ValueError("period must be monthly or annual")
         if self.period == "annual" and not self.owner_configured:
@@ -162,6 +166,9 @@ class ApplyEventCall:
     paid_through: Optional[_dt.datetime] = None
     cancel_at_period_end: bool = False
     ledger: List[LedgerEntry] = field(default_factory=list)
+    # The provider reports the current period as a free trial. None = not
+    # reported (stored as false); the database also treats ``trialing`` as a trial.
+    in_trial: Optional[bool] = None
 
     def __post_init__(self):
         if self.provider not in PROVIDERS:
@@ -182,6 +189,8 @@ class ApplyEventCall:
             raise ValueError("a subscription change needs product, status and paid_through")
         if self.paid_through is not None and self.paid_through.tzinfo is None:
             raise ValueError("paid_through must be timezone-aware")
+        if self.in_trial is not None and not isinstance(self.in_trial, bool):
+            raise ValueError("in_trial must be a boolean or None")
 
     def grants(self) -> bool:
         return self.provider_subscription_id is not None
@@ -201,6 +210,7 @@ class ApplyEventCall:
             "paid_through": iso(self.paid_through) if self.paid_through else None,
             "cancel_at_period_end": bool(self.cancel_at_period_end),
             "ledger": [entry.as_json() for entry in self.ledger],
+            "in_trial": self.in_trial,
         }
 
 

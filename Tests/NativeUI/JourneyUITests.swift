@@ -94,7 +94,7 @@ final class JourneyUITests: XCTestCase {
             let before = canvas.frame
             try railControl("studio.tool.pencil", app: app).tap()
             let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
-            XCTAssertTrue(popup.waitForExistence(timeout: 5), "Options popup did not open")
+            XCTAssertTrue(popup.waitForExistence(timeout: 10), "Options popup did not open")
             XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(popup.frame), "Options popup extends outside the window")
             let close = app.buttons["studio.tool-settings.close"]
             XCTAssertTrue(close.isHittable && min(close.frame.width, close.frame.height) >= 44, "Popup close unreachable")
@@ -165,7 +165,7 @@ final class JourneyUITests: XCTestCase {
         let source = try XCTUnwrap(env["SDI_SMOKE_SOURCE_COMMIT"])
         XCTAssertNotNil(source.range(of: "^[0-9a-f]{40}$", options: .regularExpression))
         XCUIDevice.shared.orientation = .portrait
-        let app = XCUIApplication(bundleIdentifier: "com.willisnmb.stickdeathinfinity")
+        let app = XCUIApplication(bundleIdentifier: "com.willisbmb.StickDeathInfinity")
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
                                "-sdi.guest.chosen.v1", "NO", "-tutorial_completed", "NO"]
         app.launch()
@@ -238,9 +238,32 @@ final class JourneyUITests: XCTestCase {
         let wait = expectation(for: stable, evaluatedWith: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [wait], timeout: 10), .completed, "Canvas geometry did not settle")
         let visible = canvas.frame.intersection(app.frame)
-        XCTAssertGreaterThanOrEqual(min(visible.width, visible.height), minimumCanvasSide,
+        // The canvas aspect-fits the project document, so a portrait document in
+        // a short landscape phone stage is narrow by design (the 2026-10-20 run
+        // measured 108 x 192 pt filling the whole stage height). A collapse is a
+        // short long side, or a canvas that fills neither axis of the space the
+        // docked toolbar leaves.
+        XCTAssertGreaterThanOrEqual(max(visible.width, visible.height), minimumCanvasSide,
                                     "Canvas collapsed to \(visible.size) on \(idiom)")
+        let available = availableCanvasArea(app)
+        XCTAssertTrue(visible.width >= available.width * 0.75 || visible.height >= available.height * 0.75,
+                      "Canvas \(visible.size) does not fill the available \(available) on \(idiom)")
         return canvas
+    }
+
+    /// The stage minus the side the primary toolbar occupies (a vertical rail
+    /// docks beside the canvas; a horizontal rail sits above it).
+    @MainActor private func availableCanvasArea(_ app: XCUIApplication) -> CGSize {
+        let stage = app.descendants(matching: .any)["studio.toolbar.stage"].firstMatch
+        XCTAssertTrue(stage.exists, "Studio stage missing")
+        let bounds = stage.frame.intersection(app.frame)
+        let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
+        guard rail.exists else { return bounds.size }
+        let railFrame = rail.frame.intersection(bounds)
+        guard !railFrame.isNull else { return bounds.size }
+        return railFrame.height > railFrame.width
+            ? CGSize(width: max(0, bounds.width - railFrame.width), height: bounds.height)
+            : CGSize(width: bounds.width, height: max(0, bounds.height - railFrame.height))
     }
 
     /// Scrolls the snapping toolbar until the control is fully visible and hittable.

@@ -21,6 +21,8 @@ val sdiPlayCreator = sdiValue("sdi.playCreatorMonthlyProductId", "SDI_PLAY_CREAT
     .ifEmpty { "com.stickdeath.studio.creator.monthly.placeholder" }
 val sdiPlayPro = sdiValue("sdi.playProMonthlyProductId", "SDI_PLAY_PRO_MONTHLY_PRODUCT_ID")
     .ifEmpty { "com.stickdeath.studio.pro.monthly.placeholder" }
+val sdiPlayUnlimited = sdiValue("sdi.playUnlimitedMonthlyProductId", "SDI_PLAY_UNLIMITED_MONTHLY_PRODUCT_ID")
+    .ifEmpty { "com.stickdeath.studio.unlimited.monthly.placeholder" }
 // Comma-separated consumable Spatter credit packs.
 val sdiPlayCredits = sdiValue("sdi.playCreditPackProductIds", "SDI_PLAY_CREDIT_PACK_PRODUCT_IDS")
     .ifEmpty { "com.stickdeath.studio.spatter.credits.placeholder" }
@@ -47,6 +49,7 @@ android {
         buildConfigField("boolean", "SDI_NETWORK_DECLARED", sdiConnected.toString())
         buildConfigField("String", "SDI_PLAY_CREATOR_MONTHLY_PRODUCT_ID", "\"$sdiPlayCreator\"")
         buildConfigField("String", "SDI_PLAY_PRO_MONTHLY_PRODUCT_ID", "\"$sdiPlayPro\"")
+        buildConfigField("String", "SDI_PLAY_UNLIMITED_MONTHLY_PRODUCT_ID", "\"$sdiPlayUnlimited\"")
         buildConfigField("String", "SDI_PLAY_CREDIT_PACK_PRODUCT_IDS", "\"$sdiPlayCredits\"")
     }
     if (sdiConnected) {
@@ -58,6 +61,8 @@ android {
     sourceSets.getByName("main").assets.srcDir(generatedStudioAssets)
     // Shared iOS/Android `.sdi` golden fixtures (Tests/SDIFixtures) feed the instrumented import tests.
     sourceSets.getByName("androidTest").assets.srcDir("../../Tests/SDIFixtures/assets")
+    // The same fixtures plus `reexport.json` let the JVM re-export comparison run without a device.
+    sourceSets.getByName("test").resources.srcDir("../../Tests/SDIFixtures")
     androidResources { noCompress += listOf("wav", "m4a") }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {

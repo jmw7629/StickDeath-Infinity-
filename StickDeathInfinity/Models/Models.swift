@@ -519,19 +519,54 @@ struct StudioGradientDescriptor: Codable, Equatable, Sendable {
     }
 }
 
-/// Persisted trim/speed mapping of an imported movie (#200, #201). Mirrors
+/// Persisted import mapping of an imported movie (#200, #201): trim, speed and
+/// the framing chosen in the import panel. Mirrors
 /// StudioVideoFrameImportService.Mapping field for field; the end is exclusive.
+/// Rotation and aspect are encoded only when chosen, so earlier mappings keep
+/// their exact bytes, and decode as unrotated, uncropped when absent.
 struct StudioVideoSourceMapping: Codable, Equatable, Sendable {
     var sourceStartSeconds: Double = 0
     var sourceEndSeconds: Double? = nil
     var projectStartSeconds: Double = 0
     var speed: Double = 1
+    /// Clockwise rotation applied after the track's own orientation.
+    var rotationDegrees: Int = 0
+    var aspect: StudioVideoFrameAspect = .original
+
+    init(sourceStartSeconds: Double = 0, sourceEndSeconds: Double? = nil, projectStartSeconds: Double = 0, speed: Double = 1,
+         rotationDegrees: Int = 0, aspect: StudioVideoFrameAspect = .original) {
+        self.sourceStartSeconds = sourceStartSeconds; self.sourceEndSeconds = sourceEndSeconds
+        self.projectStartSeconds = projectStartSeconds; self.speed = speed
+        self.rotationDegrees = rotationDegrees; self.aspect = aspect
+    }
+    private enum CodingKeys: String, CodingKey {
+        case sourceStartSeconds, sourceEndSeconds, projectStartSeconds, speed, rotationDegrees, aspect
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sourceStartSeconds = try c.decode(Double.self, forKey: .sourceStartSeconds)
+        sourceEndSeconds = try c.decodeIfPresent(Double.self, forKey: .sourceEndSeconds)
+        projectStartSeconds = try c.decode(Double.self, forKey: .projectStartSeconds)
+        speed = try c.decode(Double.self, forKey: .speed)
+        rotationDegrees = try c.decodeIfPresent(Int.self, forKey: .rotationDegrees) ?? 0
+        aspect = try c.decodeIfPresent(StudioVideoFrameAspect.self, forKey: .aspect) ?? .original
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(sourceStartSeconds, forKey: .sourceStartSeconds)
+        try c.encodeIfPresent(sourceEndSeconds, forKey: .sourceEndSeconds)
+        try c.encode(projectStartSeconds, forKey: .projectStartSeconds)
+        try c.encode(speed, forKey: .speed)
+        if rotationDegrees != 0 { try c.encode(rotationDegrees, forKey: .rotationDegrees) }
+        if aspect != .original { try c.encode(aspect, forKey: .aspect) }
+    }
 
     var isValid: Bool {
         sourceStartSeconds.isFinite && (0..<3600).contains(sourceStartSeconds) &&
         projectStartSeconds.isFinite && (0...3600).contains(projectStartSeconds) &&
         speed.isFinite && (0.25...4).contains(speed) &&
-        (sourceEndSeconds.map { $0.isFinite && $0 > sourceStartSeconds && $0 <= 3600 } ?? true)
+        (sourceEndSeconds.map { $0.isFinite && $0 > sourceStartSeconds && $0 <= 3600 } ?? true) &&
+        StudioVideoFraming.rotations.contains(rotationDegrees)
     }
     /// Studio time at which `sourceSeconds` appears; nil outside the trim.
     func projectTime(sourceSeconds: Double) -> Double? {

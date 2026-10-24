@@ -2,9 +2,11 @@
 // ChoosePlanView — Subscription plan selection (onboarding)
 //
 // Contract: docs/BILLING_CONTRACT.md
-// - Two monthly plans only (USD 4.99 and 9.99 as configured in App Store
-//   Connect). Prices come from the loaded StoreKit `Product`; nothing here
-//   states a price. No annual plan, no third tier.
+// - Three monthly plans (Creator USD 4.99, Pro USD 9.99, Unlimited USD 19.99
+//   as configured in App Store Connect, owner decision 2026-10-20). Prices
+//   come from the loaded StoreKit `Product`; nothing here states a price. No
+//   annual plan. Trial copy appears only when the App Store reports an
+//   eligible introductory free-trial offer for the product.
 // - Feature pills name only what the app really does today. Paid-plan
 //   extras are owner configuration and are labelled as pending.
 // - "Start Free →" always continues without a purchase. A failed purchase
@@ -33,6 +35,7 @@ struct ChoosePlanView: View {
             switch plan.tier {
             case .creator: tier = .creator
             case .pro: tier = .pro
+            case .unlimited: tier = .unlimited
             case .free: return nil
             }
             return PlanInfo(tier: tier, name: plan.name,
@@ -60,7 +63,7 @@ struct ChoosePlanView: View {
                         .tracking(1)
                         .padding(.top, 12)
 
-                    Text("Two monthly plans, billed by Apple")
+                    Text("Three monthly plans, billed by Apple")
                         .font(.specialElite(14))
                         .foregroundColor(.sdTextSecondary)
                         .padding(.top, 8)
@@ -82,7 +85,7 @@ struct ChoosePlanView: View {
 
                         availabilityNotice
 
-                        Text("* " + BillingCopy.pendingEntitlementNote + " Subscriptions renew monthly until cancelled in Apple subscription settings.")
+                        Text("* " + BillingCopy.pendingEntitlementNote + " Subscriptions renew monthly until cancelled in Apple subscription settings. During a free trial the full Studio is unlocked and Spatter starts when the paid period begins.")
                             .font(.specialElite(10))
                             .foregroundColor(.sdTextSecondary)
                             .multilineTextAlignment(.center)

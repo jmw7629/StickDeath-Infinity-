@@ -64,14 +64,14 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
 
     init { if (manager.isConfigured && state is AccountState.SignedOut) perform("Restoring your session…") { manager.restore() } }
 
-    private fun perform(progress: String, block: () -> Any?) {
+    private fun perform(progress: String, done: String = "", block: () -> Any?) {
         if (working) return
         working = true; notice = progress
         viewModelScope.launch {
             val failure = withContext(Dispatchers.IO) { runCatching { block() }.exceptionOrNull() }
             working = false
             state = manager.state
-            notice = when (failure) { null -> ""; is CancellationException -> ""; else -> failure.message ?: "That did not complete." }
+            notice = when (failure) { null -> done; is CancellationException -> ""; else -> failure.message ?: "That did not complete." }
             if (state !is AccountState.SignedIn) { feed = Load.Idle; records = Load.Idle; invitation = Load.Idle; spatterReply = Load.Idle; spatterUsage = Load.Idle; PlanRuntime.reportServerPlan(null) }
             else if (spatterUsage is Load.Idle) refreshSpatterUsage()
         }
@@ -99,16 +99,36 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     fun beginOAuth(provider: OAuthProvider): String? = runCatching { manager.beginOAuth(provider) }
         .onFailure { notice = it.message ?: "Sign-in could not start." }.getOrNull()
     fun completeOAuth(callback: String) = perform("Finishing sign-in…") { manager.completeOAuth(callback) }
+    /** Emails a reset link that returns to this app (same in-memory PKCE rule as provider sign-in). */
+    fun requestPasswordReset(email: String) = perform("Sending a reset link…",
+        "If an account exists for that email, a reset link is on its way. Open it on this device before closing the app.") {
+        manager.requestPasswordReset(email)
+    }
+    val needsNewPassword get() = (state as? AccountState.SignedIn)?.provider == RECOVERY_PROVIDER
+    fun updatePassword(password: String) = perform("Saving your new password…", "Your new password is saved.") { manager.updatePassword(password) }
     fun browserUnavailable() { manager.cancelOAuth(); notice = "No browser is available to complete sign-in. Nothing was sent." }
 
-    fun loadFeed(category: FeedCategory = feedCategory) { feedCategory = category; fetch({ feed = it }) { feedClient.page(category, 0) } }
+    /** Bumped by every feed request; a reply for an older request (another category or page) is dropped. */
+    private var feedRequest = 0
+    fun loadFeed(category: FeedCategory = feedCategory) {
+        feedCategory = category
+        val request = ++feedRequest
+        fetch<FeedPage>({ if (request == feedRequest) feed = it }) { feedClient.page(category) }
+    }
+    /** Next keyset page under page 0's snapshot; stops at the client memory bound (refresh restarts). */
     fun loadMoreFeed() {
         val current = (feed as? Load.Loaded)?.value ?: return
-        if (!current.hasMore) return
-        val nextPage = current.posts.size / FeedClient.PAGE_SIZE
-        fetch<FeedPage>({ next -> feed = if (next is Load.Loaded) Load.Loaded(FeedPage((current.posts + next.value.posts).distinctBy { it.id }, next.value.hasMore, current.asOf)) else next }) {
-            feedClient.page(feedCategory, nextPage, current.asOf)
-        }
+        val cursor = current.cursor
+        if (!current.hasMore || cursor == null) return
+        val category = feedCategory
+        val request = ++feedRequest
+        fetch<FeedPage>({ next ->
+            if (request != feedRequest || category != feedCategory) return@fetch
+            feed = if (next is Load.Loaded) {
+                val merged = (current.posts + next.value.posts).distinctBy { it.id }
+                Load.Loaded(FeedPage(merged, next.value.hasMore && merged.size < FeedClient.MAXIMUM_RETAINED_POSTS, current.asOf, next.value.cursor))
+            } else next
+        }) { feedClient.page(category, cursor, current.asOf) }
     }
     /** Optimistic ±1 on the tapped card only, rolled back unless the server confirms. */
     fun toggleLike(post: FeedPost) {
@@ -148,16 +168,18 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
         if (state !is AccountState.SignedIn || spatterUsage is Load.Loading) return
         fetch<SpatterUsage>({ result ->
             spatterUsage = result
-            if (result is Load.Loaded) PlanRuntime.reportServerPlan(result.value.plan)
+            if (result is Load.Loaded) PlanRuntime.reportServerPlan(result.value.plan, result.value.inTrial == true)
         }) { usageClient.myUsage() }
     }
-    /** What a Spatter send does now (Free without credits gets the upgrade note on the device). */
-    val spatterGate: SpatterGate get() = SpatterGate.decide(PlanRuntime.limits, (spatterUsage as? Load.Loaded)?.value, spatterUsage is Load.Loading)
+    /** What a Spatter send does now (Free without credits gets the upgrade note and a free trial the
+     * preview note, both on the device; nothing is sent). */
+    val spatterGate: SpatterGate get() = SpatterGate.decide(PlanRuntime.limits, (spatterUsage as? Load.Loaded)?.value, spatterUsage is Load.Loading, PlanRuntime.inTrial)
 
     fun askSpatter(question: String) {
         when (spatterGate) {
             SpatterGate.UpgradeNote -> { spatterReply = Load.Failed(PlanCopy.SPATTER_UPGRADE_NOTE); return }
             SpatterGate.AllowanceUsed -> { spatterReply = Load.Failed(PlanCopy.SPATTER_ALLOWANCE_USED); return }
+            SpatterGate.TrialPreview -> { spatterReply = Load.Failed(PlanCopy.SPATTER_TRIAL_PREVIEW); return }
             SpatterGate.Checking -> { spatterReply = Load.Failed(PlanCopy.SPATTER_CHECKING); refreshSpatterUsage(); return }
             is SpatterGate.Send -> Unit
         }

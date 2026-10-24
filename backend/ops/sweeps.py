@@ -57,8 +57,12 @@ MAX_LOOP = 20
 
 # Settings whose presence the sweeps worker reports for the masked configuration
 # health view (#248). Only names appear here; the report sends booleans.
+# The provider health view (sdi_admin_provider_health) groups these names per
+# integration; keep them in step with sdi_private.provider_settings().
 REPORTED_SETTINGS = ("SDI_BACKEND_URL", "SDI_SERVICE_KEY", "SDI_YOUTUBE_CLIENT_FILE", "SDI_YOUTUBE_TOKEN_FILE",
-                     "SDI_STRIPE_WEBHOOK_SECRET_FILE", "SDI_MAIL_SENDER_DOMAIN", "SDI_MAIL_CREDENTIALS_FILE")
+                     "SDI_STRIPE_WEBHOOK_SECRET_FILE", "SDI_MAIL_SENDER_DOMAIN", "SDI_MAIL_CREDENTIALS_FILE",
+                     "SDI_APNS_KEY_ID", "SDI_APNS_TEAM_ID", "SDI_APNS_KEY_FILE", "SDI_APNS_TOPIC",
+                     "SDI_FCM_PROJECT_ID", "SDI_FCM_SERVICE_ACCOUNT_FILE", "SDI_DRAFT_RENDERER_CLI")
 
 
 class SweepAPI(JobAPI):

@@ -9,15 +9,20 @@ webhook secret, SQL executor); the deployment wraps them in its edge-function ru
 
 ## Approved offers
 
-- Two monthly tiers, the owner's stated price points USD 4.99 (`creator`) and USD 9.99
-  (`pro`). Prices live only in App Store Connect and the Stripe dashboard; the database
-  stores product identifiers (`sdi_private.billing_products`) and never an amount.
+- Three monthly tiers (owner decision 2026-10-20), ranked `unlimited` > `pro` >
+  `creator` (`sdi_private.billing_tier_rank`): USD 4.99 `creator`
+  (`com.willisbmb.StickDeathInfinity.creator.monthly`), USD 9.99 `pro`
+  (`...pro.monthly`) and USD 19.99 `unlimited` (`...unlimited.monthly`), each with a
+  3-day free trial (App Store introductory offer). Prices live only in App Store
+  Connect and the Stripe dashboard; the database stores product identifiers
+  (`sdi_private.billing_products`) and never an amount.
 - Annual periods are **not** approved. A product row with `period='annual'` cannot be
   approved until the owner records `owner_configured_at` through the owner-only
   `set_product` operation; the check constraint enforces this.
-- No Studio tier, coins, tips, call billing or "unlimited AI" offers exist. Earlier
-  client code and documentation that described a USD 19.99 tier, annual prices or
-  call charges are retired scope and must not be reused.
+- No Studio tier, coins, tips or call billing exist. The USD 19.99 `unlimited` tier
+  is the owner's 2026-10-20 decision, not the retired "Studio" tier; its unlimited
+  Spatter prompts still obey the daily safety cap, per-minute rate, global daily
+  ceiling and emergency stop.
 - Native digital entitlements are sold through StoreKit 2. Stripe is server-side only
   (web checkout/portal) and runs in test mode until the owner separately authorizes
   live activation. No live charge is ever made as a test.
@@ -62,11 +67,15 @@ webhook secret, SQL executor); the deployment wraps them in its edge-function ru
   the canonical set (`active, trialing, grace, past_due, cancelled, expired, revoked,
   refunded`) with `paid_through = current_period_end` and ledger rows from
   `balance_transaction` amounts and fees.
-- Trials (owner decision 2026-10-14): the free trial applies to both paid plans.
-  A `trialing` subscription on either the Creator or the Pro price maps to
-  `trialing` for that tier (`contract.TRIAL_TIERS`), and the entitlement view and
-  the Spatter meter treat it as that tier. Trial length is Stripe/App Store
-  configuration; checkout requests carry no trial or amount fields.
+- Trials (owner decisions 2026-10-14 and 2026-10-20): every paid tier has the free
+  trial. A `trialing` subscription maps to `trialing` with `in_trial=True`. A
+  zero-amount `subscription_create` invoice (trial start, or a 100%-discount or
+  credit-covered first period) is recorded without changing the subscription, so
+  the signed subscription event alone decides trial or active. The entitlement view
+  grants the tier (Studio unlocked), but the Spatter meter funds no prompt and
+  spends no credit while the account's only entitlements are in a trial. Trial
+  length is Stripe/App Store configuration; checkout requests carry no trial or
+  amount fields.
 - Replays and delayed deliveries are safe: `provider_events(provider,event_id)` is
   unique and older events never move a subscription backwards.
 

@@ -394,7 +394,22 @@ struct FeedPost: Codable, Identifiable, Equatable {
     var can_download: Bool? = nil
     /// Ranking key the server ordered by (Trending likes in the snapshot window).
     var score: Int? = nil
+    /// Worker-extracted JPEG frame of the hosted copy (#217); nil when none was produced.
+    var poster_url: String? = nil
     var safeURL: URL? { CommunityMediaURL.checked(url) }
+    var poster: FeedPoster { FeedPoster.resolve(poster_url) }
+}
+
+/// What a feed card shows above the title: the server-recorded poster frame of
+/// the approved copy, or an honest placeholder. Never a guessed or generated image.
+enum FeedPoster: Equatable {
+    case image(URL)
+    case placeholder
+    static func resolve(_ raw: String?) -> FeedPoster {
+        guard let raw, raw.count <= 2048, let url = CommunityMediaURL.checked(raw) else { return .placeholder }
+        return .image(url)
+    }
+    var url: URL? { if case .image(let url) = self { return url }; return nil }
 }
 
 struct FeedListResponse: CommunityResponse {
@@ -415,8 +430,10 @@ enum FeedReportReason: String, CaseIterable { case rights, abuse, unsafe, spam
 }
 
 /// Client-side page assembly over the server's keyset ranking: identity
-/// de-duplication, the 40-page cap and optimistic reactions with rollback.
-/// Nothing here changes a count the server did not report.
+/// de-duplication, a client memory bound and optimistic reactions with rollback.
+/// Nothing here changes a count the server did not report. The server pages by
+/// cursor without a cap (#220); `maximumPages` only bounds how many cards one
+/// scroll session keeps in memory before asking the member to refresh.
 struct FeedTimeline: Equatable {
     static let pageSize = 25
     static let maximumPages = 40

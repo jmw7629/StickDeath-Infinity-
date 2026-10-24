@@ -6,8 +6,8 @@ import FoundationNetworking
 // ═══════════════════════════════════════════════════════════════════
 // Spatter bring-your-own AI key (#209, owner decision 2026-10-14)
 //
-// Creator (USD 4.99) and Pro (USD 9.99) members may use their own AI provider
-// key. The key:
+// Creator (USD 4.99), Pro (USD 9.99) and Unlimited (USD 19.99) members may use
+// their own AI provider key (owner decision 2026-10-20). The key:
 // - is stored only on this device, in the Keychain, as
 //   kSecAttrAccessibleWhenUnlockedThisDeviceOnly and never synchronizable
 //   (SpatterOwnKeyKeychain.swift), scoped to the signed-in account;
@@ -65,7 +65,7 @@ enum SpatterOwnKeyError: Error, SpatterUserFacingError, Equatable {
         case .invalidKey: return "That doesn't look like a key for the selected provider. Nothing was saved."
         case .invalidModel: return "Enter a model name using letters, numbers, dots, dashes, underscores or colons (up to 128 characters)."
         case .invalidAccount: return "Sign in to manage your own AI key."
-        case .planNotEligible: return "Your own AI key is available on the Creator and Pro plans."
+        case .planNotEligible: return "Your own AI key is available on the Creator, Pro and Unlimited plans."
         case .storageFailed: return "The key could not be saved to or read from this device's Keychain."
         case .requestTooLarge: return "This conversation is too large to send. Shorten it and try again."
         case .rejectedKey: return "Your AI provider rejected the saved key. Replace or remove it in Spatter settings."
