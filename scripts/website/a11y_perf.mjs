@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { runAdminEpochScenarios } from './admin_epoch_scenarios.mjs';
 
 // Default to the pre-installed browser bundle only where it exists (local review
 // container); elsewhere Playwright uses its own cache (CI runs `playwright install`).
@@ -284,6 +285,7 @@ async function perf(browser, base) {
 }
 
 async function main() {
+  for (const result of await runAdminEpochScenarios()) record('admin response ownership: ' + result.name, result.ok, result.detail || '', 'offline production handlers');
   const server = await startServer();
   const base = `http://127.0.0.1:${server.address().port}/`;
   const articles = JSON.parse(fs.readFileSync(path.join(site, 'help', 'articles.json'), 'utf8')).articles;

@@ -84,7 +84,7 @@ enum SpatterStudioControlRegistry {
         .init(id: "tool.dodge", surface: .toolbar, title: "Dodge", route: .instructions(["pixelEffect"])),
         .init(id: "tool.burn", surface: .toolbar, title: "Burn", route: .instructions(["pixelEffect"])),
         .init(id: "tool.blur", surface: .toolbar, title: "Blur", route: .instructions(["pixelEffect"])),
-        .init(id: "tool.text", surface: .toolbar, title: "Text", route: .instructions(["textUpdate"])),
+        .init(id: "tool.text", surface: .toolbar, title: "Text", route: .instructions(["textCreate", "textUpdate"])),
         .init(id: "tool.hand", surface: .toolbar, title: "Hand", route: .manual(viewNote)),
         .init(id: "tool.zoom", surface: .toolbar, title: "Zoom", route: .manual(viewNote)),
         // Tools present in the document model without a toolbar button.
@@ -295,6 +295,8 @@ struct SpatterContextSnapshot: Codable, Equatable {
             guard move, selectedImageCount == 1, selectedDrawingCount == 0 else { return .needs("Select one image with Move and deselect drawings.") }
         case "artworkOrder":
             guard move, selectedDrawingCount + selectedImageCount > 0 else { return .needs("Select artwork with Move.") }
+        case "textCreate":
+            guard activeFrameNumber != nil, activeLayerVisible, activeLayerLockMode == "free" else { return .needs("Show the active layer and set its lock to Free before creating text.") }
         case "textUpdate":
             guard move, selectedDrawingCount == 1, selectedImageCount == 0 else { return .needs("Select exactly one text box with Move.") }
         case "selectedErasure":

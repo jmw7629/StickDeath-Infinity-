@@ -1997,7 +1997,7 @@ struct SpatterInstructionGrammar: Equatable {
 }
 
 enum SpatterInstructionCatalog {
-    static let version = 9
+    static let version = 10
     static let grammars: [SpatterInstructionGrammar] = [
         .init(name: "multiClauseBrief", examples: ["A red stick figure walks left to right for 1 second, then punches, then falls; 3 seconds.",
                                                    "A red stick figure runs left to right, then kicks; a blue stick figure ducks, then jumps; 2.5 seconds.",
@@ -2071,6 +2071,7 @@ enum SpatterInstructionCatalog {
         .init(name: "imageCrop", examples: ["Crop selected image to (10%, 10%, 80%, 80%)."], commands: ["cropImage"], summary: "Crop the selected image to a source rectangle (x, y, width, height percentages)."),
         .init(name: "imagePlacement", examples: ["Place selected image at (10%, 20%) with size (40%, 30%).", "Place selected image at (10%, 20%) with size (40%, 30%) and angle 25 degrees."],
               commands: ["updateImagePlacement"], summary: "Position, size and angle of the selected image in canvas percentages."),
+        .init(name: "textCreate", examples: ["Create text \"SDI\" at (12.5%, 25%), box 96 by 48 px, font Special Elite, size 24 px, color #FF0000, opacity 100%.", "Create text \"SDI\\nSTUDIO\" at (12.5%, 25%), box 96 by 48 px, font monospaced, size 16 px, color #0000FF, opacity 80%, align center, bold on, italic off, rotation 10 degrees."], commands: ["draw"], summary: "Create one native editable text box on the active Free layer: explicit canvas origin, box pixels, font, size, color and opacity; optional alignment, bold, italic and rotation use Text defaults. JSON-escaped quoted content stays literal; one Undo. The entire rotated box must fit the canvas; no remembered tool settings change."),
         .init(name: "textUpdate", examples: ["Set selected text to \"Hello\".", "Set selected text to \"Hello\" in #FF0000."], commands: ["updateText"], summary: "Replace the selected text box's content and optionally its color."),
         .init(name: "audioClip", examples: ["Set selected audio clip volume to 40%.", "Mute selected audio clip.", "Unmute selected audio clip.", "Fade selected audio clip in over 0.05 seconds and out over 0.10 seconds.", "Clear selected audio clip fades.", "Move selected audio clip to 1.25 seconds on track 2.", "Trim selected audio clip from source 0.10 seconds for 0.50 seconds.", "Duplicate selected audio clip.", "Repeat selected audio clip with 4 additional copies.", "Split selected audio clip at 0.5 timeline seconds.", "Delete selected audio clip."],
               commands: ["updateAudioClip", "duplicateAudioClip", "splitAudioClip", "deleteAudioClip"], summary: "Selected clip volume, mute, linear fades, placement, trim, duplicate, repeat, split and delete."),

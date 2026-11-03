@@ -60,7 +60,7 @@ struct SpatterMotionRecipePanel: View {
     private var isImagePlacementDraft: Bool { SpatterImagePlacementInstruction.isInstruction(draft) }
     private var isImageEditDraft: Bool { isImageRotationDraft || isImageCropDraft || isImagePlacementDraft }
     private var isTextUpdateDraft: Bool { SpatterTextUpdateInstruction.isInstruction(draft) }
-    private var isAudioDraft: Bool { !isLayerDraft && !isSelectionDraft && !isImageEditDraft && !isTextUpdateDraft && SpatterAudioInstruction.isAudioInstruction(draft) }
+    private var isAudioDraft: Bool { !isLayerDraft && !isSelectionDraft && !isImageEditDraft && !isTextUpdateDraft && !SpatterTextCreateInstruction.isInstruction(draft) && SpatterAudioInstruction.isAudioInstruction(draft) }
     private var isOrderDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterArtworkOrderInstruction.isInstruction(draft) }
     private var isImageDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterImageReflectionInstruction.isInstruction(draft) }
     private var selectedImage: StudioViewModel.ImageMoveCapture? {
@@ -72,7 +72,7 @@ struct SpatterMotionRecipePanel: View {
     private var routedKind: SpatterInstructionRouter.Kind? {
         guard let kind = SpatterInstructionRouter.classify(draft) else { return nil }
         switch kind {
-        case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke, .shape,
+        case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke, .shape, .textCreate,
              .areaSelection, .wandSelection, .libraryPicture, .librarySound, .projectExport, .gradientFill, .pixelEffect: return kind
         default: return nil
         }
@@ -84,6 +84,7 @@ struct SpatterMotionRecipePanel: View {
         case .tween?: return "Tween between two frames"
         case .frameClipboard?: return "Copy or paste a frame"
         case .projectSettings?: return "Change project settings"
+        case .textCreate?: return "Create an editable text box"
         case .shape?: return "Draw an editable shape"
         case .brushStroke?: return "Draw a brush stroke"
         case .areaSelection?: return "Select drawings inside an outline"
@@ -103,6 +104,7 @@ struct SpatterMotionRecipePanel: View {
         case .tween?: return "Adds 1–24 interpolated frames between two adjacent frames whose drawings match in count and style, with the chosen easing. One Undo removes them."
         case .frameClipboard?: return "Copy a frame to the frame clipboard and/or paste an editable copy with fresh identities after a frame. A bare paste needs a copied frame; copy alone changes nothing in the document."
         case .projectSettings?: return "Changes the canvas size (16–4096 px) and/or frame rate (1–60 FPS) through the same Project Settings operation. Artwork coordinates are kept; audio keeps its time in seconds. One Undo restores the previous settings."
+        case .textCreate?: return "Creates one native editable Text box with explicit geometry, font, size, color and opacity. Optional alignment, bold, italic and rotation start at Text defaults. Existing artwork, the selected tool and remembered settings stay unchanged; one Undo removes the new box."
         case .shape?: return "Draws one line, rectangle or true circle on the active frame and layer with Studio’s shape tools. Circles use a center and a radius in document pixels; rectangle fill and rounded corners are optional. One Undo removes the shape."
         case .brushStroke?: return "Draws one straight stroke in the chosen brush family on the active frame and layer, with a request-stable seed. The stroke is editable like a hand-drawn one; one Undo removes it."
         case .areaSelection?: return "Selects the drawings a rectangle or polygon fully encloses on the active frame, with the Lasso's rules. Selection never changes the project."
@@ -122,6 +124,7 @@ struct SpatterMotionRecipePanel: View {
         case .tween?: return "Use Tween 4 in-betweens between frames 1 and 2 with ease-in-out easing. Easings: linear, ease-in, ease-out, ease-in-out, easy-ease. Frames are one-based and must be adjacent with matching drawings."
         case .frameClipboard?: return "Use Copy frame 1 and paste it after frame 2., Copy frame 1., or Paste frame after active frame. Frame numbers are one-based; the project must have room for one more frame."
         case .projectSettings?: return "Use Set project size to 640 by 480 pixels., Set project frame rate to 24 FPS., or both with at 24 FPS. Resizing keeps artwork coordinates and can be refused when stored effects depend on the current size."
+        case .textCreate?: return "Use the text examples below. Origin is the unrotated box’s top-left in canvas percentages; the whole rotated box must fit. Box dimensions are 16–4096 px; font size is 8–240 px. Optional suffixes in order: align left/center/right, bold on/off, italic on/off, rotation −180…180 degrees. Omitted suffixes are left/off/off/0°. Use JSON escapes for quotes and newlines. Show a Free layer and stop playback; text creation runs on its own."
         case .shape?: return "Use the shape examples below. Line/rectangle endpoints and circle centers use canvas percentages. Circle radius, stroke size and rectangle corner radius use document pixels. The whole shape must fit inside the canvas; the layer must be visible with Free or Alpha lock."
         case .brushStroke?: return "Use Draw a round brush line from (10%, 20%) to (90%, 20%) in #000000, size 6 px, opacity 100%. Gradient needs in #RRGGBB to #RRGGBB. Size 1–50 px; the active layer must be visible and not fully or position-locked."
         case .areaSelection?: return "Use \(SpatterAreaSelectInstruction.example) or a polygon of 3–32 points. Only drawings on visible layers locked to Free are selected."
@@ -141,6 +144,7 @@ struct SpatterMotionRecipePanel: View {
         case .tween?: return SpatterTweenInstruction.example
         case .frameClipboard?: return SpatterFrameClipboardInstruction.copyPasteExample
         case .projectSettings?: return SpatterProjectSettingsInstruction.bothExample
+        case .textCreate?: return SpatterTextCreateInstruction.example
         case .shape?: return SpatterShapeInstruction.lineExample
         case .brushStroke?: return SpatterBrushStrokeInstruction.example
         case .areaSelection?: return SpatterAreaSelectInstruction.example

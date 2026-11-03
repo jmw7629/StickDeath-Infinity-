@@ -178,6 +178,120 @@ private struct Failure: Error { let message: String }
         await vm.flush()
         pass("vertex-aligned drawing bounds use robust even-odd enclosure through real freehand and polygon selection")
     }
+    /// Actual compositor pixels distinguish a butt-ended native line from the
+    /// round disks the old Wand broad-phase placed around its endpoints.
+    static func wandNativeButtLinePixels() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-wand-butt-line-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for mode in ["plain", "affine", "reflected-affine"] {
+            let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent(mode + "/Documents"),
+                cachesDirectory: root.appendingPathComponent(mode + "/Cache"))
+            let vm = StudioViewModel(storage: storage)
+            let created = await vm.createProject(name: "Wand native butt shaft", width: 128, height: 128, fps: 12)
+            try require(created, "Butt-line project creation")
+            var line = DrawnElement(id: UUID().uuidString, tool: .line,
+                points: [.init(x: 32, y: 64), .init(x: 96, y: 64)], color: "#000000",
+                width: 8, opacity: 1, layerID: vm.activeLayerID)
+            if mode != "plain" {
+                // Nonuniform affine placement with shear, preserving the canvas centre.
+                line.transform = .init(a: 0.9, b: 0.25, c: 0.35, d: 0.75, tx: -16, ty: 0)
+            }
+            if mode == "reflected-affine" {
+                line.reflection = .init(horizontal: true, vertical: false)
+                line.translation = .init(x: 128, y: 0)
+            }
+            try require(vm.commitElement(line), "Actual butt-line commit failed")
+            await vm.flush()
+            let before = vm.document, beforePixels = try render(before)
+            let visible = try StudioFillService.capture(document: before, frameID: vm.currentFrame.id,
+                layerID: vm.activeLayerID, point: CGPoint(x: 1, y: 1), color: "#000000", opacity: 1,
+                settings: .init(tolerance: 0, contiguous: true, expand: 0, gapClose: 0, antiAlias: false), sampleAllLayers: true)
+            let rgba = [UInt8](visible.rgba), placement = try line.erasurePlacement()
+            let start = placement.point(CGPoint(x: 32, y: 64)), end = placement.point(CGPoint(x: 96, y: 64))
+            let centre = placement.point(CGPoint(x: 64, y: 64))
+            let dx = Double(end.x - start.x), dy = Double(end.y - start.y), distance = hypot(dx, dy)
+            let oldReach = max(0.5, Double(line.width) * sqrt(abs(placement.a * placement.d - placement.b * placement.c)) / 2)
+            var whiteEndpoint: CGPoint?, painted: CGPoint?, paintedDistance = Double.infinity
+            // Geometry only bounds the endpoint search. Actual compositor bytes
+            // choose a white pixel that the old round endpoint probe would hit,
+            // plus a genuinely painted shaft pixel nearest its real centre.
+            for y in 0..<128 { for x in 0..<128 {
+                let index = (y * 128 + x) * 4
+                let px = Double(x) + 0.5, py = Double(y) + 0.5
+                let fromX = px - Double(start.x), fromY = py - Double(start.y)
+                if whiteEndpoint == nil, fromX * fromX + fromY * fromY <= oldReach * oldReach,
+                   (fromX * dx + fromY * dy) / distance < -0.5,
+                   Array(rgba[index..<index+4]) == [255,255,255,255] {
+                    whiteEndpoint = CGPoint(x: x, y: y)
+                }
+                let centreDistance = pow(px - Double(centre.x), 2) + pow(py - Double(centre.y), 2)
+                if rgba[index] < 128, rgba[index+1] < 128, rgba[index+2] < 128, rgba[index+3] == 255,
+                   centreDistance < paintedDistance {
+                    paintedDistance = centreDistance; painted = CGPoint(x: x, y: y)
+                }
+            } }
+            guard let whiteEndpoint, let painted else { throw Failure(message: "Native \(mode) line has no actual white endpoint / painted shaft fixture") }
+            vm.selectedTool = .wand; vm.wandTolerance = 0; vm.wandContiguous = true
+            vm.wandSampleVisibleCanvas = true; vm.wandFeather = 0; vm.wandMode = .newSelection
+            let outside = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: whiteEndpoint)
+            let outsideIDs = try await vm.wandDrawingIDs(at: whiteEndpoint, tolerance: 0, sampleAllLayers: true,
+                checkCancellation: { try Task.checkCancellation() })
+            try require(outside && vm.selectedElementIDs.isEmpty && outsideIDs.isEmpty && vm.document == before,
+                "Native \(mode) butt line acquired real white endpoint pixels: physical=\(outside), IDs=\(vm.selectedElementIDs.sorted()), typed=\(outsideIDs), message=\(vm.message ?? "nil")")
+            let inside = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: painted)
+            let insideIDs = try await vm.wandDrawingIDs(at: painted, tolerance: 0, sampleAllLayers: true,
+                checkCancellation: { try Task.checkCancellation() })
+            try require(inside && vm.selectedElementIDs == [line.id] && insideIDs == [line.id] && vm.document == before,
+                "Native \(mode) painted shaft was lost after the butt-footprint filter")
+            vm.deleteSelected(); await vm.flush()
+            try require(vm.currentFrame.elements.isEmpty, "Actual selected native line did not delete")
+            vm.undo(); await vm.flush()
+            try require(vm.document.frames == before.frames && (try render(vm.document)) == beforePixels,
+                "Butt-line Delete Undo lost native source geometry or pixels")
+        }
+        pass("actual compositor white butt endpoints stay unselected while plain affine reflected shafts select and delete with Undo")
+    }
+    /// A valid forward placement can have an out-of-range inverse origin;
+    /// hit directions need only its inverse linear components.
+    static func wandHighTranslationLinePixels() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-wand-translated-line-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"),
+            cachesDirectory: root.appendingPathComponent("Cache"))
+        let vm = StudioViewModel(storage: storage)
+        let created = await vm.createProject(name: "Wand valid compressed translated shaft", width: 4096, height: 512, fps: 12)
+        try require(created, "Translated line project creation")
+        let forward = StudioElementTransform(a: 0.02, d: 1, tx: 4000)
+        try forward.validate()
+        let line = DrawnElement(id: UUID().uuidString, tool: .line,
+            points: [.init(x: 32, y: 256), .init(x: 96, y: 256)], color: "#000000",
+            width: 8, opacity: 1, layerID: vm.activeLayerID, transform: forward)
+        try require(vm.commitElement(line), "Valid compressed translated line commit failed")
+        await vm.flush()
+        let before = vm.document
+        try before.validate()
+        let visible = try StudioFillService.capture(document: before, frameID: vm.currentFrame.id,
+            layerID: vm.activeLayerID, point: CGPoint(x: 1, y: 1), color: "#000000", opacity: 1,
+            settings: .init(tolerance: 0, contiguous: true, expand: 0, gapClose: 0, antiAlias: false), sampleAllLayers: true)
+        let rgba = [UInt8](visible.rgba)
+        var painted: CGPoint?
+        paintedScan: for y in 0..<visible.height { for x in 0..<visible.width {
+            let index = (y * visible.width + x) * 4
+            if rgba[index] < 128, rgba[index+1] < 128, rgba[index+2] < 128, rgba[index+3] == 255 {
+                painted = CGPoint(x: x, y: y); break paintedScan
+            }
+        } }
+        guard let painted else { throw Failure(message: "Actual compositor did not paint the valid compressed translated line") }
+        vm.selectedTool = .wand; vm.wandTolerance = 0; vm.wandContiguous = true
+        vm.wandSampleVisibleCanvas = true; vm.wandFeather = 0; vm.wandMode = .newSelection
+        let selected = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: painted)
+        let typed = try await vm.wandDrawingIDs(at: painted, tolerance: 0, sampleAllLayers: true,
+            checkCancellation: { try Task.checkCancellation() })
+        try require(selected && vm.selectedElementIDs == [line.id] && typed == [line.id] && vm.document == before,
+            "Valid compressed translated native shaft was rejected: physical=\(selected), IDs=\(vm.selectedElementIDs.sorted()), typed=\(typed), message=\(vm.message ?? "nil")")
+        await vm.flush()
+        pass("actual painted compressed line remains Wand-selectable with valid high forward translation")
+    }
     /// Production Wand input must intersect the ellipse's rendered body, never its empty box.
     static func wandFilledEllipsePixels() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-wand-ellipse-" + UUID().uuidString)
@@ -218,7 +332,7 @@ private struct Failure: Error { let message: String }
             let outsideCapture = try vm.captureDrawingWand()
             let selectedOutside = await vm.selectDrawingRegion(outsideCapture, at: CGPoint(x: 1, y: 1))
             try require(selectedOutside && vm.selectedElementIDs.isEmpty && vm.document == before,
-                "Visible white region selected an ellipse through its empty bounding-box corners")
+                "Visible white region selected an ellipse through its empty bounding-box corners: rotated=\(rotated), opacity=\(opacity), physical=\(selectedOutside), IDs=\(vm.selectedElementIDs.sorted()), ellipse=\(ellipse.id), line=\(other.id), message=\(vm.message ?? "nil")")
             let outsideIDs = try await vm.wandDrawingIDs(at: CGPoint(x: 1, y: 1), tolerance: 0,
                 sampleAllLayers: true, checkCancellation: { try Task.checkCancellation() })
             try require(outsideIDs.isEmpty, "Typed Wand still selected an ellipse through empty box pixels")
@@ -230,7 +344,7 @@ private struct Failure: Error { let message: String }
                 sampleAllLayers: true, checkCancellation: { try Task.checkCancellation() })
             try require(insideIDs == [ellipse.id], "Typed Wand lost canonical ellipse alpha/placement")
             try require(vm.copySelected(), "Wand ellipse could not enter the production clipboard")
-            vm.paste(); await vm.flush()
+            vm.pasteClipboard(); await vm.flush()
             let copies = vm.currentFrame.elements.filter { $0.id != ellipse.id && $0.id != other.id }
             try require(copies.count == 1 && copies[0].tool == .circle && copies[0].shape == ellipse.shape
                 && copies[0].opacity == ellipse.opacity && vm.currentFrame.elements.contains(other),
@@ -353,6 +467,159 @@ private struct Failure: Error { let message: String }
             && painted > 100 && painted < 10_000,
             "Existing no-crop coverage lost its complete native source alpha or document capacity")
         pass("native no-crop selection coverage retains a valid2050x2048 document above the compact4MP limit")
+    }
+
+    static func wandGlyphAndRoundedCornerCoverage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-wand-glyphs-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for kind in ["text", "legacy-text", "rounded"] { for rotated in [false, true] { for opacity in [1.0, 0.2] {
+            let label = "\(kind)-\(rotated)-\(opacity)"
+            let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent(label + "/Documents"),
+                cachesDirectory: root.appendingPathComponent(label + "/Cache"))
+            let vm = StudioViewModel(storage: storage)
+            let created = await vm.createProject(name: "Wand actual glyph coverage", width: 128, height: 128, fps: 12)
+            try require(created, "Glyph Wand project creation")
+            var element: DrawnElement
+            if kind == "rounded" {
+                element = DrawnElement(id: UUID().uuidString, tool: .rectangle,
+                    points: [.init(x: 32, y: 32), .init(x: 96, y: 96)], color: "#000000", width: 2,
+                    opacity: opacity, layerID: vm.activeLayerID, shape: .init(fillColor: "#000000", cornerRadius: 24))
+            } else if kind == "text" {
+                let style = StudioTextStyle(font: .monospaced, size: 24, alignment: .center,
+                    boxWidth: 96, boxHeight: 48, rotation: rotated ? 15 : 0)
+                element = DrawnElement(id: UUID().uuidString, tool: .text,
+                    points: [.init(x: 16, y: 40)], color: "#000000", width: 1,
+                    opacity: opacity, layerID: vm.activeLayerID, text: .init(content: "H H", style: style))
+            } else {
+                element = DrawnElement(id: UUID().uuidString, tool: .text,
+                    points: [.init(x: 24, y: 42)], color: "#000000", width: 8,
+                    opacity: opacity, fillColor: "H H", layerID: vm.activeLayerID)
+            }
+            if rotated {
+                element.transform = try StudioElementTransform.scaleRotation(x: 0.85, y: 0.95,
+                    degrees: kind == "text" ? -5 : 20, center: CGPoint(x: 64, y: 64))
+            }
+            let other = DrawnElement(id: UUID().uuidString, tool: .line,
+                points: [.init(x: 8, y: 118), .init(x: 24, y: 118)], color: "#0000FF", width: 3,
+                opacity: 1, layerID: vm.activeLayerID)
+            try require(vm.commitElement(element) && vm.commitElement(other), "Glyph/rounded native commits failed")
+            await vm.flush()
+            let before = vm.document, beforePixels = try render(before)
+            let isolated = AnimationFrame(id: vm.currentFrame.id, elements: [element])
+            guard let full = try StudioFillService.selectionCoverage(document: before, frame: isolated, selectedIDs: [element.id]),
+                  let compact = try StudioFillService.wandElementCoverage(document: before, frame: vm.currentFrame,
+                    element: element, maximumPixels: StudioSelectionMask.maximumElementProbes),
+                  let box = element.selectionBounds?.intersection(CGRect(x: 0, y: 0, width: 128, height: 128)) else {
+                throw Failure(message: "Missing real glyph/rounded alpha")
+            }
+            try require(StudioFillService.wandRequiresAlphaCoverage(element) && compact.width * compact.height < 128 * 128,
+                "Glyph/rounded capture used a full-canvas or box-only proxy")
+            for y in 0..<128 { for x in 0..<128 {
+                let localX = x - compact.x, localY = y - compact.y
+                let pixel: UInt8 = localX >= 0 && localY >= 0 && localX < compact.width && localY < compact.height
+                    ? compact.bytes[localY * compact.rowStride + localX] : 0
+                try require(pixel == full[y * 128 + x], "Cropped native glyph/rounded alpha differs from the full renderer")
+            } }
+            guard let maximum = full.max(), maximum > 0, let paintedIndex = full.firstIndex(of: maximum) else {
+                throw Failure(message: "Native glyph/rounded fixture has no painted body")
+            }
+            let painted = CGPoint(x: paintedIndex % 128, y: paintedIndex / 128)
+            var gap: CGPoint?
+            let left = max(0, Int(ceil(box.minX)) + 2), right = min(127, Int(floor(box.maxX)) - 2)
+            let top = max(0, Int(ceil(box.minY)) + 2), bottom = min(127, Int(floor(box.maxY)) - 2)
+            for y in top...bottom where gap == nil {
+                let ink = (left...right).filter { full[y * 128 + $0] > 0 }
+                // For text require a genuine unpainted glyph gap between actual ink,
+                // not merely the unused margin of a typography bounding box.
+                let start = kind == "rounded" ? left : (ink.first.map { $0 + 1 } ?? right)
+                let end = kind == "rounded" ? right : (ink.last.map { $0 - 1 } ?? left)
+                if start <= end, let x = (start...end).first(where: { full[y * 128 + $0] == 0 }) { gap = CGPoint(x: x, y: y) }
+            }
+            guard let gap else { throw Failure(message: "Fixture has no actual glyph gap/rounded empty corner") }
+            let visible = try StudioFillService.capture(document: before, frameID: vm.currentFrame.id,
+                layerID: vm.activeLayerID, point: gap, color: "#000000", opacity: 1,
+                settings: .init(tolerance: 0, contiguous: true, expand: 0, gapClose: 0, antiAlias: false), sampleAllLayers: true)
+            let rgba = [UInt8](visible.rgba), gapIndex = (Int(gap.y) * 128 + Int(gap.x)) * 4
+            try require(Array(rgba[gapIndex..<gapIndex+4]) == [255,255,255,255], "Chosen glyph gap/corner is not actual visible white")
+            vm.selectedTool = .wand; vm.wandSampleVisibleCanvas = true; vm.wandTolerance = 0
+            vm.wandContiguous = true; vm.wandFeather = 0; vm.wandMode = .newSelection
+            let outside = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: gap)
+            let outsideIDs = try await vm.wandDrawingIDs(at: gap, tolerance: 0, sampleAllLayers: true,
+                checkCancellation: { try Task.checkCancellation() })
+            try require(outside && vm.selectedElementIDs.isEmpty && outsideIDs.isEmpty && vm.document == before,
+                "Visible glyph gap/rounded empty corner falsely selected its bounding box")
+            let inside = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: painted)
+            let insideIDs = try await vm.wandDrawingIDs(at: painted, tolerance: 0, sampleAllLayers: true,
+                checkCancellation: { try Task.checkCancellation() })
+            try require(inside && vm.selectedElementIDs == [element.id] && insideIDs == [element.id], "Actual painted body was not selected independently")
+            vm.selectedTool = .move; vm.selectionMode = .new
+            guard let move = vm.beginMove(at: painted) else { throw Failure(message: "Wand-selected glyph/rounded body has no Move capture") }
+            try require(vm.finishMove(move, delta: .init(width: 2, height: 1)), "Real glyph/rounded Move failed")
+            await vm.flush()
+            try require(vm.currentFrame.elements.contains(other) && (try render(vm.document)) != beforePixels,
+                "Move changed only a label or moved unrelated artwork")
+            vm.undo(); await vm.flush()
+            try require(vm.document.frames == before.frames && (try render(vm.document)) == beforePixels, "Move Undo lost original glyph/rounded pixels")
+            vm.selectedTool = .wand
+            let forCopy = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: painted)
+            try require(forCopy && vm.copySelected(), "Actual glyph/rounded selection did not copy")
+            vm.pasteClipboard(); await vm.flush()
+            let copies = vm.currentFrame.elements.filter { $0.id != element.id && $0.id != other.id }
+            try require(copies.count == 1 && copies[0].tool == element.tool && copies[0].text == element.text
+                && copies[0].shape == element.shape && copies[0].fillColor == element.fillColor && vm.currentFrame.elements.contains(other),
+                "Copy/paste lost glyph/rounded source data or copied unrelated artwork")
+            vm.undo(); await vm.flush(); vm.selectedTool = .wand
+            let forDelete = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: painted)
+            try require(forDelete && vm.selectedElementIDs == [element.id], "Delete selection lost painted body")
+            vm.deleteSelected(); await vm.flush()
+            try require(vm.currentFrame.elements == [other], "Delete removed unrelated artwork or retained selected glyph/rounded body")
+            vm.undo(); await vm.flush()
+            try require(vm.document.frames == before.frames && (try render(vm.document)) == beforePixels, "Delete Undo lost editable glyph/rounded source or pixels")
+        } } }
+        pass("native glyph gaps and rounded corners do not hit boxes; painted bodies move/copy/delete with exact Undo")
+    }
+
+    static func wandSkipsInertHistoricalText() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-wand-inert-text-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"),
+            cachesDirectory: root.appendingPathComponent("Cache"))
+        let vm = StudioViewModel(storage: storage)
+        let created = await vm.createProject(name: "Historical inert text", width: 128, height: 128, fps: 12)
+        try require(created, "Inert legacy text project creation")
+        let inert = [
+            DrawnElement(id: UUID().uuidString, tool: .text, points: [], color: "#000000", width: 8,
+                opacity: 1, layerID: vm.activeLayerID),
+            DrawnElement(id: UUID().uuidString, tool: .text, points: [.init(x: 16, y: 16)], color: "#000000", width: 8,
+                opacity: 1, layerID: vm.activeLayerID),
+            DrawnElement(id: UUID().uuidString, tool: .text, points: [.init(x: 16, y: 16)], color: "#000000", width: 8,
+                opacity: 1, fillColor: "", layerID: vm.activeLayerID),
+            DrawnElement(id: UUID().uuidString, tool: .text, points: [.init(x: 16, y: 16)], color: "#000000", width: 8,
+                opacity: 1, fillColor: "   ", layerID: vm.activeLayerID),
+        ]
+        for element in inert {
+            try require(element.selectionBounds == nil && !StudioFillService.wandRequiresAlphaCoverage(element),
+                "Inert legacy text entered exact-alpha capture instead of its historical skip")
+            try require(vm.commitElement(element), "Valid inert legacy text was rejected by the canonical editor")
+        }
+        let artwork = DrawnElement(id: UUID().uuidString, tool: .line,
+            points: [.init(x: 32, y: 64), .init(x: 96, y: 64)], color: "#000000", width: 8,
+            opacity: 1, layerID: vm.activeLayerID)
+        try require(vm.commitElement(artwork), "Unrelated actual artwork commit failed")
+        try vm.document.validate(); await vm.flush()
+        let before = vm.document
+        vm.selectedTool = .wand; vm.wandSampleVisibleCanvas = true; vm.wandTolerance = 0
+        vm.wandContiguous = true; vm.wandFeather = 0; vm.wandMode = .newSelection
+        let selected = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: CGPoint(x: 64, y: 64))
+        let typed = try await vm.wandDrawingIDs(at: CGPoint(x: 64, y: 64), tolerance: 0,
+            sampleAllLayers: true, checkCancellation: { try Task.checkCancellation() })
+        try require(selected && vm.selectedElementIDs == [artwork.id] && typed == [artwork.id]
+            && vm.document == before, "An inert historical text record blocked physical/typed Wand on real artwork")
+        vm.deleteSelected(); await vm.flush()
+        try require(vm.currentFrame.elements == inert, "Wand deleted or rewrote inert historical source records")
+        vm.undo(); await vm.flush()
+        try require(vm.document.frames == before.frames, "Undo did not restore real artwork beside inert legacy text")
+        pass("physical and typed Wand skip valid inert historical text without blocking unrelated artwork")
     }
 
     static func main() async throws {
@@ -658,9 +925,13 @@ private struct Failure: Error { let message: String }
         try require(locksOpened && locksReopened.layers == lockedDocument.layers && (try render(locksReopened.document)) == lockPixels,
                     "Cold reopen lost locks or changed pixels")
         pass("explicit selected whole-layer locking is atomic reversible cancellation-safe and persistent without changing artwork")
+        try await wandNativeButtLinePixels()
+        try await wandHighTranslationLinePixels()
         try await wandFilledEllipsePixels()
         try await wandPortraitSmallEllipsesStayWithinBudget()
         try fullCanvasSelectionCoverageKeepsExistingLargeDocumentCapacity()
+        try await wandGlyphAndRoundedCornerCoverage()
+        try await wandSkipsInertHistoricalText()
         try await moveIgnoresEraserRecords()
         try await restoredSelectionPreferencesDriveActualSelection()
         print("PASS \(passed) production area-selection groups")

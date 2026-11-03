@@ -4301,7 +4301,32 @@ final class StudioViewModel: ObservableObject {
                 continue
             }
             if element.fillMask == nil, [.pencil, .pen, .brush, .marker, .crayon, .line].contains(element.tool), !element.points.isEmpty {
-                result.strokes.append(.init(id: element.id, points: element.points.map { placed($0.x, $0.y) }, radius: radius))
+                if element.tool == .line, element.shape == nil, element.brush == nil {
+                    // The native plain-line renderer draws only its first two points
+                    // with butt caps. Clip the existing probe disks to that source
+                    // shaft through the exact inverse affine placement, including
+                    // nonuniform scale, shear, translation and reflection.
+                    guard element.points.count >= 2 else { continue }
+                    let a = element.points[0], b = element.points[1]
+                    let dx = Double(b.x - a.x), dy = Double(b.y - a.y), length = hypot(dx, dy)
+                    guard length > 0 else { continue } // A zero-length butt shaft paints nothing.
+                    let ux = dx / length, uy = dy / length
+                    // Only inverse directions are used below. Inverting the
+                    // placement's translation could reject a valid visible line
+                    // when its unused inverse origin exceeds document limits.
+                    let linearPlacement = StudioElementTransform(a: placement.a, b: placement.b, c: placement.c, d: placement.d)
+                    let inverse = try linearPlacement.invertedForErasure(), start = placed(a.x, a.y)
+                    let shaft = StudioSelectionElementHitTest.ButtStroke(startX: start.x, startY: start.y,
+                        alongX: ux * inverse.a + uy * inverse.b, alongY: ux * inverse.c + uy * inverse.d,
+                        acrossX: -uy * inverse.a + ux * inverse.b, acrossY: -uy * inverse.c + ux * inverse.d,
+                        length: length, halfWidth: Double(element.width) / 2)
+                    let transverseScale = hypot(-uy * placement.a + ux * placement.c, -uy * placement.b + ux * placement.d)
+                    let shaftRadius = min(512, max(0.5, Double(element.width) * transverseScale / 2))
+                    result.strokes.append(.init(id: element.id, points: [start, placed(b.x, b.y)],
+                        radius: shaftRadius, buttStroke: shaft))
+                } else {
+                    result.strokes.append(.init(id: element.id, points: element.points.map { placed($0.x, $0.y) }, radius: radius))
+                }
                 continue
             }
             let filled = element.shape?.fillColor != nil || element.fillColor != nil
@@ -4320,7 +4345,7 @@ final class StudioViewModel: ObservableObject {
                 result.strokes.append(.init(id: element.id, points: outline, radius: radius))
                 continue
             }
-            if element.tool == .circle, filled, element.points.count == 2 {
+            if StudioFillService.wandRequiresAlphaCoverage(element) {
                 let alpha = try StudioFillService.wandElementCoverage(document: document,
                     frame: frame, element: element,
                     maximumPixels: StudioSelectionMask.maximumElementProbes - capturedAlphaPixels)

@@ -33,6 +33,34 @@
   let session = null;      // { access_token, refresh_token, expires_at, email, aal }
   let expiryTimer = null;
   let pendingFactor = null;
+  let authEpoch = 0;
+  const latestWork = new Map();
+  class StaleWork extends Error {}
+  // Check once after the transport and again in each consumer immediately before
+  // synchronous UI/state commits. An await in rpc is not a render ownership gate.
+  function sessionLease() {
+    const epoch = authEpoch; const owner = session;
+    const current = () => authEpoch === epoch && session === owner;
+    return { owner, current, check: () => { if (!current()) throw new StaleWork(); } };
+  }
+  function beginWork(key) {
+    const scope = sessionLease(); const sequence = (latestWork.get(key) || 0) + 1;
+    latestWork.set(key, sequence);
+    const current = () => scope.current() && latestWork.get(key) === sequence;
+    return { owner: scope.owner, current, check: () => { if (!current()) throw new StaleWork(); } };
+  }
+  function invalidateSession() {
+    authEpoch += 1; latestWork.clear(); session = null; pendingFactor = null;
+    if (expiryTimer) { clearTimeout(expiryTimer); expiryTimer = null; }
+    clearPrivateView();
+  }
+  function beginAuthentication() {
+    invalidateSession();
+    show('admin-console', false); show('admin-signin', true);
+    show('admin-password-form', true); show('admin-mfa-form', false);
+    show('admin-enrol-form', false); show('admin-newpassword-form', false);
+    return beginWork('authentication');
+  }
   const PANELS = [
     { title: 'Health and queues', rpc: 'sdi_admin_health', params: {} },
     { title: 'Backups, releases and retention', rpc: 'sdi_admin_operations', params: {} },
@@ -68,33 +96,51 @@
   }
 
   async function rpc(name, params) {
-    if (!session) return { error: 'Not signed in.' };
-    const result = await call(`/rest/v1/rpc/${name}`, { body: params, token: session.access_token });
-    if (result.status === 401) { signOut('Session expired. Sign in again.'); return { error: 'Session expired.' }; }
+    const lease = sessionLease();
+    if (!lease.owner) return { error: 'Not signed in.' };
+    const result = await call(`/rest/v1/rpc/${name}`, { body: params, token: lease.owner.access_token });
+    lease.check();
+    if (result.status === 401) {
+      signOut('Session expired. Sign in again.');
+      throw new StaleWork(); // sign-out cleared the page; no old consumer may refill it
+    }
     if (!result.ok) return { error: `The server refused the call (HTTP ${result.status}).` };
     return result.data;
   }
 
-  function signOut(message) {
-    const token = session && session.access_token;
-    session = null; pendingFactor = null;
-    if (expiryTimer) { clearTimeout(expiryTimer); expiryTimer = null; }
-    show('admin-console', false); show('admin-signin', true); show('admin-mfa-form', false); show('admin-password-form', true);
-    show('admin-enrol-form', false); show('admin-newpassword-form', false);
+  function clearPrivateView() {
     $('admin-panels').replaceChildren();
     for (const id of ['admin-users-result', 'admin-history-result', 'admin-publish-result', 'admin-diagnostics-result', 'admin-announce-change-result', 'admin-agent-result', 'admin-finance-result', 'admin-report-result']) { const el = $(id); if (el) el.replaceChildren(); }
-    for (const id of ['admin-account-result', 'admin-proposal-result', 'admin-stop-result', 'admin-announce-result']) { const el = $(id); if (el) el.textContent = ''; }
-    lastExport = null; capsLoaded = null; { const d = $('admin-report-download'); if (d) d.disabled = true; }
-    setStatus('Signed out.', message || 'No session is held. Sign in to continue.');
-    if (token) call('/auth/v1/logout', { token }).catch(() => {});
+    for (const id of ['admin-identity', 'admin-account-result', 'admin-proposal-result', 'admin-stop-result', 'admin-announce-result', 'admin-recover-result']) { const el = $(id); if (el) el.textContent = ''; }
+    // Server-populated revision/cap fields, financial drafts and pending owner
+    // action inputs also belong to the previous session, not the next admin.
+    for (const form of document.querySelectorAll('#admin-console form')) form.reset();
+    for (const id of ['admin-email', 'admin-password', 'admin-code', 'admin-enrol-code', 'admin-enrol-secret', 'admin-newpassword']) { const el = $(id); if (el) el.value = ''; }
+    const qr = $('admin-enrol-qr'); if (qr) { qr.removeAttribute('src'); qr.hidden = true; }
+    lastExport = null; capsLoaded = null;
+    const download = $('admin-report-download'); if (download) download.disabled = true;
   }
 
-  function adoptSession(data) {
-    if (!data || typeof data.access_token !== 'string' || typeof data.expires_in !== 'number') return false;
+  function signOut(message) {
+    const token = session && session.access_token;
+    invalidateSession();
+    show('admin-console', false); show('admin-signin', true); show('admin-mfa-form', false); show('admin-password-form', true);
+    show('admin-enrol-form', false); show('admin-newpassword-form', false);
+    setStatus('Signed out.', message || 'No session is held. Sign in to continue.');
+    // An old device logout must not revoke a later same-user sign-in or other
+    // devices. This best-effort request never adopts/clears another session.
+    if (token) call('/auth/v1/logout', { token, query: { scope: 'local' } }).catch(() => {});
+  }
+
+  function adoptSession(data, lease) {
+    lease.check();
+    if (!data || typeof data.access_token !== 'string' || !/^[\x21-\x7e]{1,16384}$/.test(data.access_token)
+      || typeof data.expires_in !== 'number' || !Number.isFinite(data.expires_in) || data.expires_in <= 0) return false;
     const user = data.user || {};
+    invalidateSession();
     session = { access_token: data.access_token, refresh_token: data.refresh_token || null, expires_at: Date.now() + data.expires_in * 1000, email: typeof user.email === 'string' ? user.email : '' };
-    if (expiryTimer) clearTimeout(expiryTimer);
-    expiryTimer = setTimeout(() => signOut('Session expired. Sign in again.'), Math.max(1000, data.expires_in * 1000 - 5000));
+    const adopted = sessionLease();
+    expiryTimer = setTimeout(() => { if (adopted.current()) signOut('Session expired. Sign in again.'); }, Math.max(1000, data.expires_in * 1000 - 5000));
     return true;
   }
 
@@ -138,33 +184,40 @@
       const button = document.createElement('button'); button.type = 'button'; button.className = 'button'; button.textContent = `Load (${panel.rpc})`;
       const out = document.createElement('div'); out.setAttribute('aria-live', 'polite');
       button.addEventListener('click', async () => {
+        const lease = beginWork('panel:' + panel.title);
         button.disabled = true; out.replaceChildren(renderValue('Loading…'));
         try {
           const result = await rpc(panel.rpc, panel.params);
+          lease.check();
           if (result && typeof result === 'object' && (result.error || result.code)) {
             const p = document.createElement('p'); p.className = 'note'; p.textContent = `Server answer: ${result.error || result.code}${result.code && result.error ? '' : ''}`; out.replaceChildren(p);
           } else {
             out.replaceChildren(renderValue(result));
           }
-        } catch (_) {
+        } catch (_) { if (!lease.current()) return;
           out.replaceChildren(renderValue('The request did not complete. Nothing was changed.'));
-        } finally { button.disabled = false; }
+        } finally { if (lease.current()) button.disabled = false; }
       });
       answer.append(button, out); details.append(answer); host.append(details);
     }
   }
 
   async function enterConsole() {
-    show('admin-signin', false); show('admin-console', true);
-    $('admin-identity').textContent = session.email ? `Signed in as ${session.email}. Session held in memory only.` : 'Signed in. Session held in memory only.';
-    const mine = await rpc('sdi_admin_permissions', { action: 'mine' });
-    if (!mine || mine.error || mine.code) {
-      setStatus('Signed in without administrator access.', `The server answered: ${mine && (mine.error || mine.code) ? (mine.error || mine.code) : 'no permissions'}. Native navigation or this page cannot grant a role; roles are provisioned server-side with MFA.`);
-    } else {
-      const caps = Array.isArray(mine.capabilities) ? mine.capabilities.join(', ') : 'none';
-      setStatus('Administrator session verified by the server.', `Capabilities: ${caps}. Owner: ${mine.owner ? 'yes' : 'no'}. Recent re-authentication: ${mine.step_up_current ? 'current' : 'not current (sensitive changes will ask for it)'}.`);
-    }
-    buildPanels();
+    if (!session) return;
+    const lease = beginWork('console');
+    try {
+      show('admin-signin', false); show('admin-console', true);
+      $('admin-identity').textContent = session.email ? `Signed in as ${session.email}. Session held in memory only.` : 'Signed in. Session held in memory only.';
+      const mine = await rpc('sdi_admin_permissions', { action: 'mine' });
+      lease.check();
+      if (!mine || mine.error || mine.code) {
+        setStatus('Signed in without administrator access.', `The server answered: ${mine && (mine.error || mine.code) ? (mine.error || mine.code) : 'no permissions'}. Native navigation or this page cannot grant a role; roles are provisioned server-side with MFA.`);
+      } else {
+        const caps = Array.isArray(mine.capabilities) ? mine.capabilities.join(', ') : 'none';
+        setStatus('Administrator session verified by the server.', `Capabilities: ${caps}. Owner: ${mine.owner ? 'yes' : 'no'}. Recent re-authentication: ${mine.step_up_current ? 'current' : 'not current (sensitive changes will ask for it)'}.`);
+      }
+      buildPanels();
+    } catch (_) { if (!lease.current()) return; setStatus('Backend unreachable.', 'Administrator permissions could not be read.'); }
   }
 
   // --- sign-in flows ---------------------------------------------------------------
@@ -174,32 +227,44 @@
     const email = form.email.value.trim(); const password = form.password.value;
     form.password.value = '';
     if (!email || !password) { setStatus('Email and password are required.', 'Nothing was sent.'); return; }
+    const lease = beginAuthentication();
     setStatus('Signing in…', 'Contacting the configured backend.');
     try {
       const result = await call('/auth/v1/token', { query: { grant_type: 'password' }, body: { email, password } });
-      if (!result.ok || !adoptSession(result.data)) { setStatus('Sign-in refused.', 'The backend did not issue a session. Check the account or provider status; this page cannot reset credentials.'); return; }
+      lease.check();
+      if (!result.ok || !adoptSession(result.data, lease)) { setStatus('Sign-in refused.', 'The backend did not issue a session. Check the account or provider status; this page cannot reset credentials.'); return; }
       await stepUp();
-    } catch (_) { setStatus('Backend unreachable.', 'The sign-in request did not complete. Nothing is stored.'); }
+    } catch (_) { if (!lease.current()) return; setStatus('Backend unreachable.', 'The sign-in request did not complete. Nothing is stored.'); }
   }
 
   async function stepUp() {
-    // Administrators need aal2: GoTrue lists factors on the user record (there is no
-    // GET /factors); challenge the first verified TOTP factor.
-    const user = await call('/auth/v1/user', { method: 'GET', token: session.access_token });
-    if (!user.ok || !user.data) { setStatus('Account lookup failed.', `The backend answered ${user.status}. Signed out.`); signOut(); return; }
-    const factors = Array.isArray(user.data.factors) ? user.data.factors.filter((f) => f && f.factor_type === 'totp') : [];
-    const totp = factors.find((f) => f.status === 'verified');
-    if (!totp) {
-      // An abandoned enrolment leaves an unverified factor whose friendly name blocks a new one.
-      for (const stale of factors) await call(`/auth/v1/factors/${encodeURIComponent(stale.id)}`, { method: 'DELETE', token: session.access_token });
-      await beginEnrolment(); return;
-    }
-    const challenge = await call(`/auth/v1/factors/${encodeURIComponent(totp.id)}/challenge`, { token: session.access_token });
-    if (!challenge.ok || !challenge.data || typeof challenge.data.id !== 'string') { setStatus('MFA challenge failed.', 'The backend did not start a challenge. Signed out.'); signOut(); return; }
-    pendingFactor = { factorId: totp.id, challengeId: challenge.data.id };
-    show('admin-password-form', false); show('admin-mfa-form', true);
-    setStatus('Enter your authenticator code.', 'A second factor is required for every administrator session.');
-    $('admin-code').focus();
+    if (!session) return;
+    const lease = beginWork('auth-step');
+    try {
+      // Administrators need aal2: GoTrue lists factors on the user record (there is no
+      // GET /factors); challenge the first verified TOTP factor.
+      const user = await call('/auth/v1/user', { method: 'GET', token: session.access_token });
+      lease.check();
+      if (!user.ok || !user.data) { setStatus('Account lookup failed.', `The backend answered ${user.status}. Signed out.`); signOut(); return; }
+      const factors = Array.isArray(user.data.factors) ? user.data.factors.filter((f) => f && f.factor_type === 'totp') : [];
+      const totp = factors.find((f) => f.status === 'verified');
+      if (!totp) {
+        // An abandoned enrolment leaves an unverified factor whose friendly name blocks a new one.
+        for (const stale of factors) {
+          lease.check();
+          await call(`/auth/v1/factors/${encodeURIComponent(stale.id)}`, { method: 'DELETE', token: lease.owner.access_token });
+          lease.check();
+        }
+        await beginEnrolment(); return;
+      }
+      const challenge = await call(`/auth/v1/factors/${encodeURIComponent(totp.id)}/challenge`, { token: session.access_token });
+      lease.check();
+      if (!challenge.ok || !challenge.data || typeof challenge.data.id !== 'string') { setStatus('MFA challenge failed.', 'The backend did not start a challenge. Signed out.'); signOut(); return; }
+      pendingFactor = { factorId: totp.id, challengeId: challenge.data.id };
+      show('admin-password-form', false); show('admin-mfa-form', true);
+      setStatus('Enter your authenticator code.', 'A second factor is required for every administrator session.');
+      $('admin-code').focus();
+    } catch (_) { if (!lease.current()) return; setStatus('Backend unreachable.', 'The second-factor request did not complete.'); }
   }
 
   // --- authenticator enrolment (first administrator sign-in) --------------------------
@@ -207,74 +272,91 @@
   // secret and a QR image; the factor becomes verified only when a code from the
   // authenticator passes a challenge. Owner provisioning requires that verified factor.
   async function beginEnrolment() {
-    const result = await call('/auth/v1/factors', { token: session.access_token, body: { factor_type: 'totp', friendly_name: 'SDI command center' } });
-    const totp = result.ok && result.data && result.data.totp;
-    if (!totp || typeof result.data.id !== 'string' || typeof totp.secret !== 'string') {
-      setStatus('Authenticator enrolment could not start.', `The backend answered ${result.status}${result.data && result.data.msg ? `: ${result.data.msg}` : ''}. Signed out.`);
-      signOut(); return;
-    }
-    pendingFactor = { factorId: result.data.id, challengeId: null };
-    const qr = $('admin-enrol-qr');
-    if (typeof totp.qr_code === 'string' && totp.qr_code.startsWith('data:image/svg+xml')) { qr.src = totp.qr_code; qr.hidden = false; } else { qr.hidden = true; }
-    $('admin-enrol-secret').value = totp.secret;
-    show('admin-password-form', false); show('admin-mfa-form', false); show('admin-enrol-form', true);
-    setStatus('Enrol an authenticator to continue.', 'This account has no verified second factor; administrator sessions require one. Scan the code or enter the secret, then verify a code.');
-    $('admin-enrol-code').focus();
+    if (!session) return;
+    const lease = beginWork('auth-enrol');
+    try {
+      const result = await call('/auth/v1/factors', { token: session.access_token, body: { factor_type: 'totp', friendly_name: 'SDI command center' } });
+      lease.check();
+      const totp = result.ok && result.data && result.data.totp;
+      if (!totp || typeof result.data.id !== 'string' || typeof totp.secret !== 'string') {
+        setStatus('Authenticator enrolment could not start.', `The backend answered ${result.status}${result.data && result.data.msg ? `: ${result.data.msg}` : ''}. Signed out.`);
+        signOut(); return;
+      }
+      pendingFactor = { factorId: result.data.id, challengeId: null };
+      const qr = $('admin-enrol-qr');
+      if (typeof totp.qr_code === 'string' && totp.qr_code.startsWith('data:image/svg+xml')) { qr.src = totp.qr_code; qr.hidden = false; } else { qr.hidden = true; }
+      $('admin-enrol-secret').value = totp.secret;
+      show('admin-password-form', false); show('admin-mfa-form', false); show('admin-enrol-form', true);
+      setStatus('Enrol an authenticator to continue.', 'This account has no verified second factor; administrator sessions require one. Scan the code or enter the secret, then verify a code.');
+      $('admin-enrol-code').focus();
+    } catch (_) { if (!lease.current()) return; setStatus('Backend unreachable.', 'Authenticator enrolment did not complete.'); }
   }
 
   async function finishEnrolment(event) {
     event.preventDefault();
+    const lease = beginWork('auth-enrol-verify');
     const code = $('admin-enrol-code').value.trim(); $('admin-enrol-code').value = '';
     if (!pendingFactor || !/^[0-9]{6}$/.test(code)) { setStatus('Enter the six-digit code.', 'Nothing was sent.'); return; }
+    const factor = pendingFactor;
     try {
-      const challenge = await call(`/auth/v1/factors/${encodeURIComponent(pendingFactor.factorId)}/challenge`, { token: session.access_token });
+      const challenge = await call(`/auth/v1/factors/${encodeURIComponent(factor.factorId)}/challenge`, { token: session.access_token });
+      lease.check();
       if (!challenge.ok || !challenge.data || typeof challenge.data.id !== 'string') { setStatus('Enrolment challenge failed.', 'The backend did not start a challenge. Try again or cancel.'); return; }
-      const result = await call(`/auth/v1/factors/${encodeURIComponent(pendingFactor.factorId)}/verify`, { token: session.access_token, body: { challenge_id: challenge.data.id, code } });
-      if (!result.ok || !adoptSession(result.data)) { setStatus('Code refused.', 'The factor is not verified yet. Check the authenticator clock and try again, or cancel to sign out.'); return; }
+      const result = await call(`/auth/v1/factors/${encodeURIComponent(factor.factorId)}/verify`, { token: session.access_token, body: { challenge_id: challenge.data.id, code } });
+      lease.check();
+      if (!result.ok || !adoptSession(result.data, lease)) { setStatus('Code refused.', 'The factor is not verified yet. Check the authenticator clock and try again, or cancel to sign out.'); return; }
       pendingFactor = null; show('admin-enrol-form', false); $('admin-enrol-secret').value = ''; $('admin-enrol-qr').removeAttribute('src');
       await enterConsole();
-    } catch (_) { setStatus('Backend unreachable.', 'The enrolment did not complete.'); }
+    } catch (_) { if (!lease.current()) return; setStatus('Backend unreachable.', 'The enrolment did not complete.'); }
   }
 
   // --- password reset by email -------------------------------------------------------
   async function requestRecovery() {
+    const lease = beginWork('auth-recovery');
     const email = $('admin-email').value.trim();
     const out = $('admin-recover-result');
     if (!email) { out.textContent = 'Enter the account email first; nothing was sent.'; return; }
     try {
       const result = await call('/auth/v1/recover', { body: { email }, query: { redirect_to: `${location.origin}${location.pathname}` } });
+      lease.check();
       out.textContent = result.ok
         ? 'If that account exists, a reset link was emailed. Open it on this page to set a new password; this page must be an allowed redirect URL in the backend auth settings.'
         : `The backend answered ${result.status}; no link was sent.`;
-    } catch (_) { out.textContent = 'The request did not complete.'; }
+    } catch (_) { if (!lease.current()) return; out.textContent = 'The request did not complete.'; }
   }
 
   async function saveNewPassword(event) {
     event.preventDefault();
+    const lease = beginWork('auth-password');
     const password = $('admin-newpassword').value; $('admin-newpassword').value = '';
     if (!session || password.length < 6 || password.length > 128) { setStatus('Choose a password of 6 to 128 characters.', 'Nothing was sent.'); return; }
     try {
       const result = await call('/auth/v1/user', { method: 'PUT', token: session.access_token, body: { password } });
+      lease.check();
       if (!result.ok) { setStatus('Password not saved.', `The backend answered ${result.status}${result.data && result.data.msg ? `: ${result.data.msg}` : ''}.`); return; }
       show('admin-newpassword-form', false);
       setStatus('Password saved.', 'Continuing with the second factor.');
       await stepUp();
-    } catch (_) { setStatus('Backend unreachable.', 'The password change did not complete.'); }
+    } catch (_) { if (!lease.current()) return; setStatus('Backend unreachable.', 'The password change did not complete.'); }
   }
 
   async function verifyCode(event) {
     event.preventDefault();
+    const lease = beginWork('auth-verify');
     const code = $('admin-code').value.trim(); $('admin-code').value = '';
     if (!pendingFactor || !/^[0-9]{6}$/.test(code)) { setStatus('Enter the six-digit code.', 'Nothing was sent.'); return; }
+    const factor = pendingFactor;
     try {
-      const result = await call(`/auth/v1/factors/${encodeURIComponent(pendingFactor.factorId)}/verify`, { token: session.access_token, body: { challenge_id: pendingFactor.challengeId, code } });
-      if (!result.ok || !adoptSession(result.data)) { setStatus('Code refused.', 'Try again or cancel to sign out.'); return; }
+      const result = await call(`/auth/v1/factors/${encodeURIComponent(factor.factorId)}/verify`, { token: session.access_token, body: { challenge_id: factor.challengeId, code } });
+      lease.check();
+      if (!result.ok || !adoptSession(result.data, lease)) { setStatus('Code refused.', 'Try again or cancel to sign out.'); return; }
       pendingFactor = null; show('admin-mfa-form', false);
       await enterConsole();
-    } catch (_) { setStatus('Backend unreachable.', 'The verification did not complete.'); }
+    } catch (_) { if (!lease.current()) return; setStatus('Backend unreachable.', 'The verification did not complete.'); }
   }
 
   function providerSignIn(provider) {
+    beginAuthentication();
     // GoTrue redirects back to this page with the session in the URL fragment; the
     // fragment is read once below and removed from the address bar.
     const redirect = `${location.origin}${location.pathname}`;
@@ -291,33 +373,43 @@
     const expiresIn = Number(params.get('expires_in'));
     history.replaceState(null, '', `${location.pathname}${location.search}`);
     if (!accessToken || !Number.isFinite(expiresIn)) return false;
-    const user = await call('/auth/v1/user', { method: 'GET', token: accessToken });
-    if (!adoptSession({ access_token: accessToken, refresh_token: params.get('refresh_token'), expires_in: expiresIn, user: user.ok ? user.data : {} })) return false;
-    if (params.get('type') === 'recovery') {
-      // A password reset link lands here with a session; set the password before the second factor.
-      show('admin-signin', true); show('admin-password-form', false); show('admin-newpassword-form', true);
-      setStatus('Set a new password.', 'The reset link signed you in for this step only.');
-      $('admin-newpassword').focus();
+    const lease = beginAuthentication();
+    try {
+      const user = await call('/auth/v1/user', { method: 'GET', token: accessToken });
+      lease.check();
+      if (!user.ok || !user.data) return false;
+      if (!adoptSession({ access_token: accessToken, refresh_token: params.get('refresh_token'), expires_in: expiresIn, user: user.data }, lease)) return false;
+      if (params.get('type') === 'recovery') {
+        // A password reset link lands here with a session; set the password before the second factor.
+        show('admin-signin', true); show('admin-password-form', false); show('admin-newpassword-form', true);
+        setStatus('Set a new password.', 'The reset link signed you in for this step only.');
+        $('admin-newpassword').focus();
+        return true;
+      }
+      await stepUp();
       return true;
-    }
-    await stepUp();
-    return true;
+    } catch (error) { if (!lease.current()) return false; throw error; }
   }
 
   async function emergencyStop(event) {
     event.preventDefault();
+    const lease = beginWork('emergency-stop');
     const submitter = event.submitter;
     const enabled = submitter && submitter.dataset.enabled === 'true';
     const reason = $('admin-stop-reason').value.trim();
     const out = $('admin-stop-result');
     if (!reason) { out.textContent = 'A reason is required; nothing was sent.'; return; }
-    const result = await rpc('sdi_agent_admin', { action: 'emergency_stop', payload: { enabled }, reason });
-    out.textContent = result && result.status === 'confirmed' ? `Emergency stop ${enabled ? 'engaged' : 'cleared'} and audited.` : `Server answer: ${(result && (result.error || result.code)) || 'no confirmation'}.`;
-    if (result && result.status === 'confirmed') $('admin-stop-reason').value = '';
+    try {
+      const result = await rpc('sdi_agent_admin', { action: 'emergency_stop', payload: { enabled }, reason });
+      lease.check();
+      out.textContent = result && result.status === 'confirmed' ? `Emergency stop ${enabled ? 'engaged' : 'cleared'} and audited.` : `Server answer: ${(result && (result.error || result.code)) || 'no confirmation'}.`;
+      if (result && result.status === 'confirmed') $('admin-stop-reason').value = '';
+    } catch (_) { if (!lease.current()) return; out.textContent = 'The request did not complete. Read the emergency-stop state before retrying.'; }
   }
 
   async function decideProposal(event) {
     event.preventDefault();
+    const lease = beginWork('proposal');
     const submitter = event.submitter;
     const action = submitter && submitter.dataset.decision === 'approve' ? 'approve' : 'reject';
     const proposal = $('admin-proposal-id').value.trim();
@@ -327,11 +419,14 @@
     if (!/^[0-9a-f-]{36}$/i.test(proposal) || !Number.isInteger(revision) || revision < 1 || !reason) {
       out.textContent = 'Proposal id, the revision shown in the inbox and a reason are required; nothing was sent.'; return;
     }
-    const result = await rpc('sdi_agent_proposal_admin', { action, proposal, revision, reason });
-    out.textContent = result && result.status === 'confirmed'
-      ? `Proposal ${result.state} and audited. The worker executes approved proposals; nothing runs on a rejection.`
-      : `Server answer: ${(result && (result.error || result.code)) || 'no confirmation'}.`;
-    if (result && result.status === 'confirmed') { $('admin-proposal-reason').value = ''; buildPanels(); }
+    try {
+      const result = await rpc('sdi_agent_proposal_admin', { action, proposal, revision, reason });
+      lease.check();
+      out.textContent = result && result.status === 'confirmed'
+        ? `Proposal ${result.state} and audited. The worker executes approved proposals; nothing runs on a rejection.`
+        : `Server answer: ${(result && (result.error || result.code)) || 'no confirmation'}.`;
+      if (result && result.status === 'confirmed') { $('admin-proposal-reason').value = ''; buildPanels(); }
+    } catch (_) { if (!lease.current()) return; out.textContent = 'The request did not complete. Read the proposal inbox before retrying.'; }
   }
 
   // Shows a server answer in `out`: a refusal verbatim, otherwise the rows.
@@ -348,17 +443,19 @@
 
   async function searchUsers(event) {
     event.preventDefault();
+    const lease = beginWork('users');
     const out = $('admin-users-result');
     const query = $('admin-users-query').value.trim();
     const page = pageNumber($('admin-users-page').value);
     if (query.length > 100 || page === null) { out.replaceChildren(renderValue('Use at most 100 characters and a page from 1 to 200; nothing was sent.')); return; }
     out.replaceChildren(renderValue('Loading…'));
-    try { showAnswer(out, await rpc('sdi_users_action', { action: 'list', query, page }), 'users'); }
-    catch (_) { out.replaceChildren(renderValue('The request did not complete.')); }
+    try { const result = await rpc('sdi_users_action', { action: 'list', query, page }); lease.check(); showAnswer(out, result, 'users'); }
+    catch (_) { if (!lease.current()) return; out.replaceChildren(renderValue('The request did not complete.')); }
   }
 
   async function accountAction(event) {
     event.preventDefault();
+    const lease = beginWork('account-action');
     const out = $('admin-account-result');
     const subject = $('admin-account-subject').value.trim();
     const action = $('admin-account-action').value;
@@ -368,6 +465,7 @@
     }
     try {
       const result = await rpc('sdi_users_action', { action, subject, reason });
+      lease.check();
       if (result && result.status === 'unchanged') {
         out.textContent = 'No open reports on this member\'s posts; nothing was changed or audited.';
       } else if (result && result.status === 'confirmed') {
@@ -378,11 +476,12 @@
       } else {
         out.textContent = `Server answer: ${(result && (result.error || result.code)) || 'no confirmation'}. Nothing was changed.`;
       }
-    } catch (_) { out.textContent = 'The request did not complete. Refresh the directory before retrying.'; }
+    } catch (_) { if (!lease.current()) return; out.textContent = 'The request did not complete. Refresh the directory before retrying.'; }
   }
 
   async function searchHistory(event) {
     event.preventDefault();
+    const lease = beginWork('history');
     const out = $('admin-history-result');
     const kind = $('admin-history-kind').value === 'audit' ? 'audit' : 'runs';
     const agent = $('admin-history-agent').value.trim();
@@ -395,8 +494,8 @@
     const payload = { query, page: String(page) };
     if (kind === 'runs' && state) payload.state = state;
     out.replaceChildren(renderValue('Loading…'));
-    try { showAnswer(out, await rpc('sdi_agent_admin', { action: kind, agent: agent || null, payload }), kind); }
-    catch (_) { out.replaceChildren(renderValue('The request did not complete.')); }
+    try { const result = await rpc('sdi_agent_admin', { action: kind, agent: agent || null, payload }); lease.check(); showAnswer(out, result, kind); }
+    catch (_) { if (!lease.current()) return; out.replaceChildren(renderValue('The request did not complete.')); }
   }
 
   // --- shared helpers for the action forms -----------------------------------------
@@ -435,31 +534,35 @@
   const publishStage = (job) => PUBLISH_STAGE_TITLE[publishStageKey(job)];
   async function showPublishing(event) {
     event.preventDefault();
+    const lease = beginWork('publishing');
     const out = $('admin-publish-result');
     const page = pageNumber($('admin-publish-page').value);
     const job = $('admin-publish-job').value.trim();
     if (page === null || (job && !UUID_RE.test(job))) { say(out, 'Use a page from 1 to 200 and, optionally, a job id; nothing was sent.'); return; }
     say(out, 'Loading…');
     try {
-      if (job) { showAnswer(out, await rpc('sdi_publishing_admin', { action: 'history', job }), 'history'); return; }
+      if (job) { const result = await rpc('sdi_publishing_admin', { action: 'history', job }); lease.check(); showAnswer(out, result, 'history'); return; }
       const result = await rpc('sdi_publishing_admin', { action: 'list', page });
+      lease.check();
       if (result && Array.isArray(result.jobs)) result.jobs = result.jobs.map((row) => ({ stage: publishStage(row), title: row.title, destination: row.destination, link: row.result_url || '', failure: row.last_error || '', state: row.state, phase: row.phase, attempts: row.attempts, revision: row.revision, updated_at: row.updated_at, id: row.id }));
       showAnswer(out, result, 'jobs');
-    } catch (_) { say(out, 'The request did not complete.'); }
+    } catch (_) { if (!lease.current()) return; say(out, 'The request did not complete.'); }
   }
 
   // --- diagnostics read model (#291) ---------------------------------------------------
   async function showDiagnostics(event) {
     event.preventDefault();
+    const lease = beginWork('diagnostics');
     const out = $('admin-diagnostics-result');
     const days = wholeNumber($('admin-diagnostics-days').value, { min: 1, max: 90 });
     if (days === null) { say(out, 'Choose between 1 and 90 days; nothing was sent.'); return; }
     say(out, 'Loading…');
     try {
       const result = await rpc('sdi_diagnostics_admin', { action: 'summary', days });
+      lease.check();
       if (!result || result.error || result.code) { const p = document.createElement('p'); p.className = 'note'; p.textContent = refusal(result).replace(' Nothing was changed.', ''); out.replaceChildren(p); return; }
       out.replaceChildren(spikeAlert(result), renderValue(result));
-    } catch (_) { say(out, 'The request did not complete.'); }
+    } catch (_) { if (!lease.current()) return; say(out, 'The request did not complete.'); }
   }
   // Crash-spike alert from the server's rule (at least 5 and over five times the prior
   // 7-day mean, per platform and build). Real counts only; with no reports there is
@@ -482,6 +585,7 @@
   // --- announcements (#290) ------------------------------------------------------------
   async function composeAnnouncement(event) {
     event.preventDefault();
+    const lease = beginWork('announce-compose');
     const out = $('admin-announce-result');
     const title = $('admin-announce-title').value.trim(); const body = $('admin-announce-body').value.trim();
     const category = $('admin-announce-category').value; const audience = $('admin-announce-audience').value;
@@ -493,21 +597,23 @@
     }
     try {
       const result = await rpc('sdi_announce_admin', { action: 'compose', payload: { title, body, category, audience, channels }, reason });
+      lease.check();
       if (result && result.status === 'draft') {
         out.textContent = `Draft saved: id ${result.announcement}, revision ${result.revision}. Nothing is sent until it is scheduled.`;
         $('admin-announce-id').value = result.announcement; $('admin-announce-revision').value = String(result.revision);
         $('admin-announce-reason').value = '';
       } else out.textContent = refusal(result);
-    } catch (_) { out.textContent = 'The request did not complete. Refresh the Announcements panel before retrying.'; }
+    } catch (_) { if (!lease.current()) return; out.textContent = 'The request did not complete. Refresh the Announcements panel before retrying.'; }
   }
   async function changeAnnouncement(event) {
     event.preventDefault();
+    const lease = beginWork('announce-change');
     const out = $('admin-announce-change-result');
     const change = event.submitter && event.submitter.dataset.change;
     const announcement = $('admin-announce-id').value.trim();
     if (!UUID_RE.test(announcement) || !['schedule', 'cancel', 'results'].includes(change)) { say(out, 'An announcement id is required; nothing was sent.'); return; }
     try {
-      if (change === 'results') { showAnswer(out, await rpc('sdi_announce_admin', { action: 'results', announcement }), 'results'); return; }
+      if (change === 'results') { const result = await rpc('sdi_announce_admin', { action: 'results', announcement }); lease.check(); showAnswer(out, result, 'results'); return; }
       const revision = wholeNumber($('admin-announce-revision').value, { min: 1 });
       const reason = $('admin-announce-change-reason').value.trim();
       const payload = {};
@@ -519,23 +625,25 @@
       if (revision === null || !reason || reason.length > 2000) { say(out, 'The revision shown and a reason are required; nothing was sent.'); return; }
       if (change === 'schedule' && !confirm(`Schedule this announcement${payload.scheduled_for ? ` for ${new Date(payload.scheduled_for).toLocaleString()}` : ' for the next delivery run'}? It goes to every eligible member.`)) return;
       const result = await rpc('sdi_announce_admin', { action: change, announcement, revision, payload, reason });
+      lease.check();
       if (result && result.status === 'confirmed') {
         $('admin-announce-revision').value = String(result.revision); $('admin-announce-change-reason').value = '';
         say(out, change === 'schedule' ? `Scheduled and audited (revision ${result.revision}). The delivery worker sends it when due.` : `Cancelled and audited (revision ${result.revision}). Queued deliveries were suppressed.`);
       } else say(out, refusal(result));
-    } catch (_) { say(out, 'The request did not complete. Refresh before retrying.'); }
+    } catch (_) { if (!lease.current()) return; say(out, 'The request did not complete. Refresh before retrying.'); }
   }
 
   // --- agent controls (#284) ------------------------------------------------------------
   let capsLoaded = null;   // { agent, revision } whose current caps fill the form
   async function agentControl(event) {
     event.preventDefault();
+    const lease = beginWork('agent');
     const out = $('admin-agent-result');
     const agent = $('admin-agent-key').value.trim(); const action = $('admin-agent-action').value;
     if (!/^[a-z0-9_]{1,40}$/.test(agent)) { say(out, 'Enter the agent key shown in the Agents panel; nothing was sent.'); return; }
     if (action === 'instructions') {
       say(out, 'Loading…');
-      try { showAnswer(out, await rpc('sdi_agent_admin', { action, agent }), 'instructions'); } catch (_) { say(out, 'The request did not complete.'); }
+      try { const result = await rpc('sdi_agent_admin', { action, agent }); lease.check(); showAnswer(out, result, 'instructions'); } catch (_) { if (!lease.current()) return; say(out, 'The request did not complete.'); }
       return;
     }
     const ACTIONS = ['pause', 'resume', 'set_caps', 'set_permissions', 'publish_instructions', 'rollback_instructions'];
@@ -546,6 +654,7 @@
       capsLoaded = null; say(out, 'Reading the current caps…');
       try {
         const list = await rpc('sdi_agent_admin', { action: 'list' });
+        lease.check();
         const row = list && Array.isArray(list.agents) ? list.agents.find((a) => a && a.key === agent) : null;
         if (!row || !Number.isInteger(row.revision)) { say(out, list && (list.error || list.code) ? refusal(list) : 'That agent is not in the registry; nothing was sent.'); return; }
         $('admin-agent-daily').value = String(row.daily_run_cap); $('admin-agent-items').value = String(row.per_run_item_cap);
@@ -554,7 +663,7 @@
         $('admin-agent-revision').value = String(row.revision);
         capsLoaded = { agent, revision: row.revision };
         say(out, `Current caps for ${agent} loaded at revision ${row.revision}. Edit them and apply again; an empty per-run cost cap means none. Nothing was sent.`);
-      } catch (_) { say(out, 'The current caps could not be read; nothing was sent.'); }
+      } catch (_) { if (!lease.current()) return; say(out, 'The current caps could not be read; nothing was sent.'); }
       return;
     }
     const reason = $('admin-agent-reason').value.trim();
@@ -579,12 +688,13 @@
     if (['pause', 'publish_instructions', 'rollback_instructions'].includes(action) && !confirm(`Apply "${action.replace('_', ' ')}" to ${agent}?`)) return;
     try {
       const result = await rpc('sdi_agent_admin', { action, agent, revision, payload, reason });
+      lease.check();
       if (result && result.status === 'confirmed') {
         $('admin-agent-revision').value = String(result.revision); $('admin-agent-reason').value = '';
         capsLoaded = action === 'set_caps' ? { agent, revision: result.revision } : null;
         say(out, `${action.replace(/_/g, ' ')} confirmed and audited; ${agent} is now at revision ${result.revision}.`);
       } else say(out, refusal(result));
-    } catch (_) { say(out, 'The request did not complete. Refresh the Agents panel before retrying.'); }
+    } catch (_) { if (!lease.current()) return; say(out, 'The request did not complete. Refresh the Agents panel before retrying.'); }
   }
 
   // --- finance records and reports (#254) -------------------------------------------------
@@ -604,6 +714,7 @@
   }
   async function recordFinance(event) {
     event.preventDefault();
+    const lease = beginWork('finance-record');
     const out = $('admin-finance-result');
     const action = $('admin-finance-action').value; const reason = $('admin-finance-reason').value.trim();
     if (!reason || reason.length > 2000) { say(out, 'A reason is required; nothing was sent.'); return; }
@@ -629,6 +740,7 @@
     } else { say(out, 'Unknown record type; nothing was sent.'); return; }
     try {
       const result = await rpc('sdi_finance_record', params);
+      lease.check();
       if (result && ['recorded', 'imported', 'confirmed', 'duplicate'].includes(result.status)) {
         $('admin-finance-reason').value = '';
         const lines = [];
@@ -640,7 +752,7 @@
         if (Array.isArray(result.rejected) && result.rejected.length) parts.push(renderValue(result.rejected.map((r) => ({ rejected_row: r }))));
         out.replaceChildren(...parts);
       } else say(out, refusal(result));
-    } catch (_) { say(out, 'The request did not complete. Check the export before retrying.'); }
+    } catch (_) { if (!lease.current()) return; say(out, 'The request did not complete. Check the export before retrying.'); }
   }
   let lastExport = null;
   const csvCell = (value) => {
@@ -651,6 +763,7 @@
   };
   async function financeReport(event) {
     event.preventDefault();
+    const lease = beginWork('finance-report');
     const out = $('admin-report-result'); const download = $('admin-report-download');
     const view = $('admin-report-view').value; const provider = $('admin-report-provider').value || null;
     const currency = $('admin-report-currency').value.trim().toUpperCase() || null;
@@ -662,6 +775,7 @@
     say(out, 'Loading…');
     try {
       const result = await rpc('sdi_finance_report', { action: view, period_start: dayStart(start), period_end: dayStart(end), provider, currency, page });
+      lease.check();
       if (!result || result.error || result.code) { const p = document.createElement('p'); p.className = 'note'; p.textContent = refusal(result).replace(' Nothing was changed.', ''); out.replaceChildren(p); return; }
       const parts = [];
       if (result.label) parts.push(renderValue(result.label));
@@ -676,7 +790,7 @@
         }
       }
       out.replaceChildren(...parts);
-    } catch (_) { say(out, 'The request did not complete.'); }
+    } catch (_) { if (!lease.current()) return; say(out, 'The request did not complete.'); }
   }
   function downloadExport() {
     if (!lastExport) return;
@@ -722,5 +836,5 @@
   $('admin-report-download').addEventListener('click', downloadExport);
   show('admin-signin', true);
   setStatus('Backend configured; not signed in.', `Sign in to ${new URL(base).hostname}. Nothing is stored in this browser; the session ends on reload or expiry.`);
-  adoptFragment().catch(() => setStatus('Sign-in redirect could not be read.', 'Sign in again.'));
+  adoptFragment().catch((error) => { if (!(error instanceof StaleWork)) setStatus('Sign-in redirect could not be read.', 'Sign in again.'); });
 })();

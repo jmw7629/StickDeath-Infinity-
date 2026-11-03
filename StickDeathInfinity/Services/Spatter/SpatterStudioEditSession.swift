@@ -74,6 +74,7 @@ final class SpatterStudioEditSession: ObservableObject {
         var imageRotation: StudioImageQuarterTurn? = nil
         var imageCrop: StudioImageCrop? = nil
         var imagePlacement: SpatterImagePlacementInstruction? = nil
+        var textCreate: SpatterTextCreateInstruction? = nil
         var textUpdate: SpatterTextUpdateInstruction? = nil
         // October 13 registry extensions, briefs and batches (#204, #205, #206, #214).
         var storyboard: SpatterStoryboard? = nil
@@ -204,6 +205,9 @@ final class SpatterStudioEditSession: ObservableObject {
             if let imagePlacement {
                 return receipt.outcome == .unchanged ? "The selected image already has this placement. Nothing changed."
                     : "Placed the selected image at (\(String(format: "%.6g", imagePlacement.xPercent))%, \(String(format: "%.6g", imagePlacement.yPercent))%) with size \(String(format: "%.6g", imagePlacement.widthPercent))% × \(String(format: "%.6g", imagePlacement.heightPercent))%\(imagePlacement.angleDegrees.map { " and angle \(String(format: "%.6g", $0))°" } ?? "") in one Undo step. Original image bytes are unchanged."
+            }
+            if let textCreate {
+                return "Created one editable \(textCreate.summary) in one Undo step. Existing artwork, the selected tool and its remembered settings are unchanged."
             }
             if textUpdate != nil {
                 return receipt.outcome == .unchanged ? "The selected text already has this content and color. Nothing changed."
@@ -482,6 +486,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isImageRotation = SpatterImageRotationInstruction.isInstruction(draft)
                 let isImageCrop = SpatterImageCropInstruction.isInstruction(draft)
                 let isImagePlacement = SpatterImagePlacementInstruction.isInstruction(draft)
+                let isTextCreate = SpatterTextCreateInstruction.isInstruction(draft)
                 let isTextUpdate = SpatterTextUpdateInstruction.isInstruction(draft)
                 var selectionTranslate: SpatterSelectionTranslateInstruction?
                 var selectionTransform: SpatterSelectionTransformInstruction?
@@ -489,6 +494,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 var imageRotation: StudioImageQuarterTurn?
                 var imageCrop: StudioImageCrop?
                 var imagePlacement: SpatterImagePlacementInstruction?
+                var textCreate: SpatterTextCreateInstruction?
                 var textUpdate: SpatterTextUpdateInstruction?
                 // October 13 registry extensions (#204), batches (#205) and briefs (#206).
                 let isBatch = SpatterInstructionBatch.isBatch(draft)
@@ -769,6 +775,11 @@ final class SpatterStudioEditSession: ObservableObject {
                         preparedRequest = try instruction.prepare(in: document, frameID: frameID, layerID: layerID, assetID: assetID, requestID: submissionID, checkCancellation: check)
                         imagePlacement = instruction
                     }
+                } else if isTextCreate {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before creating text with Spatter.") }
+                    let instruction = try SpatterTextCreateInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    textCreate = instruction
                 } else if isTextUpdate {
                     let instruction = try SpatterTextUpdateInstruction.parse(draft)
                     // Exactly one captured selected element that is a real text box on the active frame.
@@ -885,7 +896,7 @@ final class SpatterStudioEditSession: ObservableObject {
                     fps: studio.fps, addedDurationSeconds: Double(addedTicks) / Double(studio.fps),
                     audioTrackInstruction: audioTrackInstruction, cutFrameCount: isFrameCut ? document.frames.filter { old in !studio.frames.contains { $0.id == old.id } }.count : 0, duplicatedDrawingCount: isDrawingDuplicate ? receipt.createdElementIDs.count : 0,
                     selectionTranslate: selectionTranslate, selectionTransform: selectionTransform, selectionReflectAxis: selectionReflectAxis,
-                    imageRotation: imageRotation, imageCrop: imageCrop, imagePlacement: imagePlacement, textUpdate: textUpdate,
+                    imageRotation: imageRotation, imageCrop: imageCrop, imagePlacement: imagePlacement, textCreate: textCreate, textUpdate: textUpdate,
                     storyboard: storyboard, batchSummary: batchSummary, tween: tweenInstruction, frameClipboard: frameClipboardInstruction,
                     projectSettings: projectSettingsInstruction, brushStroke: brushStrokeInstruction, shape: shapeInstruction,
                     createdFrames: studio.document.frames.filter { newIDs.contains($0.id) },

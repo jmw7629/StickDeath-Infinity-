@@ -1832,6 +1832,109 @@ struct SpatterImagePlacementInstruction: Equatable {
     }
 }
 
+/// Creates one native editable text box, never rendered/flattened substitute art.
+/// Geometry, font, size, color and opacity are explicit. Optional text-specific
+/// settings start at StudioTextStyle's defaults, never the current brush/tool.
+struct SpatterTextCreateInstruction: Equatable {
+    let content: String
+    let origin: SpatterMotionRecipe.PercentPoint
+    let style: StudioTextStyle
+    let colorHex: String
+    let opacity: Double
+    static let example = "Create text \"SDI\" at (12.5%, 25%), box 96 by 48 px, font Special Elite, size 24 px, color #FF0000, opacity 100%."
+    static let styledExample = "Create text \"SDI\\nSTUDIO\" at (12.5%, 25%), box 96 by 48 px, font monospaced, size 16 px, color #0000FF, opacity 80%, align center, bold on, italic off, rotation 10 degrees."
+    var summary: String {
+        func n(_ value: Double) -> String { String(format: "%.6g", value) }
+        return "text box at (\(n(origin.x))%, \(n(origin.y))%), \(n(style.boxWidth)) × \(n(style.boxHeight)) px, "
+            + "\(style.font.title) \(n(style.size)) px, \(colorHex), opacity \(n(opacity * 100))%, "
+            + "align \(style.alignment.rawValue), bold \(style.bold ? "on" : "off"), italic \(style.italic ? "on" : "off"), rotation \(n(style.rotation))°"
+    }
+    enum Failure: LocalizedError {
+        case syntax, layer, geometry
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use: \(SpatterTextCreateInstruction.example) Font: system, monospaced, serif or Special Elite; size 8–240 px, box 16–4096 px, color #RRGGBB and opacity 0–100%. Optional suffixes in order: align left/center/right, bold on/off, italic on/off, rotation −180…180 degrees. Omitted suffixes use Text defaults (left, off, off, 0°). JSON quotes/\\n are literal text, never commands; maximum instruction 1,024 UTF-8 bytes. Nothing changed."
+            case .layer: return "Show the active frame's layer and set its lock to Free before creating text. Nothing changed."
+            case .geometry: return "The whole text box, including rotation, must fit inside this canvas. Its origin is the unrotated box's top-left corner in canvas percentages. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*create\s+text\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let number = #"([0-9]+(?:\.[0-9]+)?)"#
+        let quoted = #"("(?:[^"\\\x00-\x1F]|\\(?:["\\/bfnrt]|u[0-9a-f]{4}))*")"#
+        let pattern = #"\A\s*create\s+text\s+"# + quoted
+            + #"\s+at\s*\(\s*"# + number + #"\s*%\s*,\s*"# + number + #"\s*%\s*\)\s*,\s*box\s+"#
+            + number + #"\s+by\s+"# + number + #"\s+px\s*,\s*font\s+(system|monospaced|serif|special\s+elite)\s*,\s*size\s+"#
+            + number + #"\s+px\s*,\s*color\s+(#[0-9a-f]{6})\s*,\s*opacity\s+"# + number
+            + #"\s*%(?:\s*,\s*align\s+(left|center|right))?(?:\s*,\s*bold\s+(on|off))?(?:\s*,\s*italic\s+(on|off))?(?:\s*,\s*rotation\s+(-?[0-9]+(?:\.[0-9]+)?)\s+degrees)?\.?\s*\z"#
+        guard let (_, values) = try SpatterGrammarSupport.captures(text, patterns: [pattern]),
+              let content = try? JSONDecoder().decode(String.self, from: Data(values[0].utf8)),
+              let x = SpatterGrammarSupport.number(values[1], in: 0...100), let y = SpatterGrammarSupport.number(values[2], in: 0...100),
+              let width = SpatterGrammarSupport.number(values[3], in: 16...4096), let height = SpatterGrammarSupport.number(values[4], in: 16...4096),
+              let size = SpatterGrammarSupport.number(values[6], in: 8...240), let opacity = SpatterGrammarSupport.number(values[8], in: 0...100),
+              !content.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0.value != 10 }) else { throw Failure.syntax }
+        let fontName = values[5].lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let font: StudioTextFont
+        switch fontName {
+        case "system": font = .system
+        case "monospaced": font = .monospaced
+        case "serif": font = .serif
+        case "special elite": font = .specialElite
+        default: throw Failure.syntax
+        }
+        var style = StudioTextStyle()
+        style.font = font; style.size = size; style.boxWidth = width; style.boxHeight = height
+        if !values[9].isEmpty {
+            guard let alignment = StudioTextAlignment(rawValue: values[9].lowercased()) else { throw Failure.syntax }
+            style.alignment = alignment
+        }
+        if !values[10].isEmpty { style.bold = values[10].lowercased() == "on" }
+        if !values[11].isEmpty { style.italic = values[11].lowercased() == "on" }
+        if !values[12].isEmpty {
+            guard let rotation = SpatterGrammarSupport.number(values[12], in: -180...180) else { throw Failure.syntax }
+            style.rotation = rotation
+        }
+        let instruction = Self(content: content, origin: .init(x: x, y: y), style: style, colorHex: values[7].uppercased(), opacity: opacity / 100)
+        _ = try instruction.stroke(at: .zero, id: "text-validation", layerID: "text-validation")
+        return instruction
+    }
+    /// Descriptor validation is also applied to directly constructed instructions;
+    /// parsing is never the only trust boundary.
+    private func stroke(at point: CGPoint, id: String, layerID: String) throws -> StudioCommandStroke {
+        guard !content.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0.value != 10 }) else { throw Failure.syntax }
+        let descriptor = StudioTextDescriptor(content: content, style: style)
+        let element = DrawnElement(id: id, tool: .text, points: [.init(x: point.x, y: point.y)], color: colorHex,
+            width: 1, opacity: opacity, layerID: layerID, text: descriptor)
+        do { try descriptor.validate(element: element) } catch { throw Failure.syntax }
+        return .init(id: id, tool: .text, points: element.points, color: colorHex, width: 1, opacity: opacity, text: descriptor)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard context.width > 0, context.height > 0, context.width <= 4096, context.height <= 4096,
+              [origin.x, origin.y].allSatisfy({ $0.isFinite && (0...100).contains($0) }) else { throw Failure.geometry }
+        guard context.frames.contains(where: { $0.id == context.activeFrameID }), context.supportedTools.contains(.text),
+              let layer = context.layers.first(where: { $0.id == context.activeLayerID }), layer.visible, layer.opacity > 0,
+              !layer.isFullyLocked, layer.lockMode == "free" else { throw Failure.layer }
+        let point = CGPoint(x: origin.x * Double(context.width) / 100, y: origin.y * Double(context.height) / 100)
+        let stroke = try stroke(at: point, id: "text-\(requestID.uuidString)", layerID: context.activeLayerID)
+        let bounds = style.bounds(at: point)
+        // Native sine/cosine at 90°/180° can put an edge a few representable
+        // steps outside zero. Admit only that roundoff, never a pixel of spill.
+        let tolerance = Double(max(context.width, context.height)).ulp * 8
+        guard Double(bounds.minX) >= -tolerance, Double(bounds.minY) >= -tolerance,
+              Double(bounds.maxX) <= Double(context.width) + tolerance,
+              Double(bounds.maxY) <= Double(context.height) + tolerance else { throw Failure.geometry }
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.draw(.init(frame: .id(context.activeFrameID), layer: .id(context.activeLayerID), strokes: [stroke]))]))
+    }
+}
+
 /// "Set selected text to \"Hello\" in #FF0000." Replaces content, keeps typography.
 struct SpatterTextUpdateInstruction: Equatable {
     let content: String
@@ -3545,7 +3648,7 @@ enum SpatterInstructionRouter {
     enum Kind: String, CaseIterable {
         case batch, frameDuplicateRange, frameReverse, navigation, layerStructure, grid, onionSkin, frameAction, layerOrder, audioTrack
         case frameCut, drawingDuplicate, artworkOrder, imageReflection, selectionTranslate, selectionTransform, selectionReflect
-        case imageRotation, imageCrop, imagePlacement, textUpdate, tween, frameClipboard, projectSettings, brushStroke, shape
+        case imageRotation, imageCrop, imagePlacement, textCreate, textUpdate, tween, frameClipboard, projectSettings, brushStroke, shape
         case selectedErasure, projectRename, frameExposure, layerUpdate, layerDuplicate, layerGlow, audioClip
         case multiClauseBrief, twoActorBrief, sceneBrief, stickFigure, circleMotion
         case fill, selectByID, sourceReference
@@ -3597,6 +3700,7 @@ enum SpatterInstructionRouter {
         if SpatterImageRotationInstruction.isInstruction(draft) { return .imageRotation }
         if SpatterImageCropInstruction.isInstruction(draft) { return .imageCrop }
         if SpatterImagePlacementInstruction.isInstruction(draft) { return .imagePlacement }
+        if SpatterTextCreateInstruction.isInstruction(draft) { return .textCreate }
         if SpatterTextUpdateInstruction.isInstruction(draft) { return .textUpdate }
         if SpatterTweenInstruction.isInstruction(draft) { return .tween }
         if SpatterFrameClipboardInstruction.isInstruction(draft) { return .frameClipboard }
@@ -3773,6 +3877,11 @@ enum SpatterInstructionPreview {
         let probe = UUID()
         do {
             switch kind {
+            case .textCreate:
+                let instruction = try SpatterTextCreateInstruction.parse(text)
+                guard let context else { return "Create an editable \(instruction.summary). Open the project to preview its bounds and layer." }
+                let request = try instruction.prepare(in: context, requestID: probe, checkCancellation: {})
+                return "Plan: create one editable \(instruction.summary) on the active frame/layer → \(describe(request)) against revision \(context.revision), as one Undo step. Nothing has changed yet."
             case .batch:
                 let batch = try SpatterInstructionBatch.parse(text)
                 guard let context else { return "Batch of \(batch.summary). Open the project to preview its commands." }

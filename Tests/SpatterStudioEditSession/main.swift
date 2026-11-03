@@ -52,6 +52,23 @@ private final class NetworkTrap: URLProtocol {
             .init(x: 40, y: 30, pressure: 0.9, timestamp: 0.2)], color: "#0000FF", width: 6, opacity: 0.7,
             layerID: vm.activeLayerID, brush: .init(family: .grain, seed: 9821, smoothing: 0, pressureEnabled: true))
     }
+    /// The manual fixture sends document-space points through viewport division
+    /// and canvas multiplication; the typed path already holds document points.
+    /// Those two projections can differ by at most two representable coordinate
+    /// steps. Compare only coordinates within that tight bound; retain exact
+    /// sample metadata and the byte-exact rendered-pixel oracle below.
+    static func sameProjectedPoints(_ typed: [StrokePoint], _ manual: [StrokePoint]) -> Bool {
+        guard typed.count == manual.count else { return false }
+        func coordinate(_ a: CGFloat, _ b: CGFloat) -> Bool {
+            guard a.isFinite, b.isFinite else { return false }
+            return abs(a - b) <= 2 * max(a.ulp, b.ulp)
+        }
+        for (a, b) in zip(typed, manual) {
+            guard coordinate(a.x, b.x), coordinate(a.y, b.y),
+                  a.pressure == b.pressure, a.timestamp == b.timestamp, a.tilt == b.tilt else { return false }
+        }
+        return true
+    }
     static func erasurePixels(_ doc: StudioDocument, includeOnion: Bool = false) throws -> [UInt8] {
         let frame = includeOnion ? doc.frames.first(where: { $0.id == doc.activeFrameID })! : doc.frames[0], prepared = try StudioFrameRenderer.prepare(frame: frame)
         let ghosts = includeOnion ? doc.onionGhosts : []
@@ -1794,6 +1811,145 @@ private final class NetworkTrap: URLProtocol {
             _ = none.submit(SpatterImageCropInstruction.example, in: vm, accountID: nil, currentScope: { guest }); await none.waitForCompletion()
             try require(none.status == .rejected && vm.document == captured, "Image edit without a selected image did not fail closed")
         }
+        try await test("text creation matches the manual editable Text operation with one Undo persistence and native PNG export") {
+            let instruction = try SpatterTextCreateInstruction.parse(SpatterTextCreateInstruction.styledExample)
+            let (vm, store) = try await fixture("text-create"), (manual, _) = try await fixture("text-create-manual")
+            let original = styledStroke(vm)
+            try require(vm.commitElement(original), "Text base artwork rejected")
+            var manualOriginal = original; manualOriginal.layerID = manual.activeLayerID
+            try require(manual.commitElement(manualOriginal), "Manual text base artwork rejected")
+            // Exercise the actual Text draft/apply path in the separate manual editor.
+            manual.selectedTool = .text; manual.textStyle = instruction.style
+            manual.strokeColor = Color(red: 0, green: 0, blue: 1); manual.strokeOpacity = instruction.opacity
+            await manual.flush()
+            let origin = CGPoint(x: instruction.origin.x * 128 / 100, y: instruction.origin.y * 96 / 100)
+            let center = CGPoint(x: origin.x + instruction.style.boxWidth / 2, y: origin.y + instruction.style.boxHeight / 2)
+            try require(manual.beginTextEditing(at: center), "Manual Text draft rejected")
+            manual.textInput = instruction.content
+            try require(manual.applyTextEditing(), "Manual Text apply rejected")
+            // Deliberately leave unrelated remembered settings active in Spatter's editor.
+            vm.selectedTool = .brush; vm.strokeColor = Color(red: 0, green: 1, blue: 0); vm.strokeWidth = 7; vm.strokeOpacity = 0.27
+            vm.textStyle = .init(font: .serif, size: 18, alignment: .right, bold: false, italic: true, boxWidth: 60, boxHeight: 32, rotation: -5)
+            vm.activePanel = .spatterAI; await vm.flush()
+            let rememberedStyle = vm.textStyle, before = vm.document, beforePixels = try erasurePixels(vm.document)
+            let session = SpatterStudioEditSession()
+            _ = session.submit(SpatterTextCreateInstruction.styledExample, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+            guard session.status == .applied, let edit = session.appliedEdit, let element = vm.currentFrame.elements.last,
+                  let native = manual.currentFrame.elements.last else { throw Failure(message: "Text create failed: \(session.notice ?? "")") }
+            let pixels = try erasurePixels(vm.document)
+            try require(edit.textCreate == instruction && edit.receipt.createdElementIDs == [element.id]
+                && edit.receipt.revision == before.revision + 1 && edit.addedFrameCount == 0
+                && vm.frames.count == 1 && vm.layers == before.layers && vm.currentFrame.elements.count == 2
+                && vm.currentFrame.elements.first == original && element.tool == .text && element.text == native.text
+                && element.points == native.points && element.color == native.color && element.opacity == native.opacity
+                && element.width == native.width && element.layerID == vm.activeLayerID && element.brush == nil && element.fillMask == nil
+                && pixels == (try erasurePixels(manual.document)) && pixels != beforePixels, "Typed Text differs from native manual pixels/settings or flattened existing art")
+            try require(vm.selectedTool == .brush && vm.strokeColorHex == "#00FF00" && vm.strokeWidth == 7 && vm.strokeOpacity == 0.27
+                && vm.textStyle == rememberedStyle && vm.textDraft == nil && vm.activePanel == .spatterAI,
+                "Text creation changed toolbar/remembered settings or opened a manual draft")
+            try require(edit.summary.contains(instruction.summary) && edit.summary.contains("one Undo") && !edit.summary.contains("saved"), "Text receipt invented persistence or omitted requested settings")
+            let changed = vm.document
+            try require(session.undoAppliedEdit(in: vm, currentScope: guest) && content(vm.document) == content(before), "Text create was not one Undo")
+            vm.redo(); try require(content(vm.document) == content(changed), "Text Redo lost editable descriptor/identity")
+            try require(await vm.save(), "Text save failed")
+            let saved = try store.loadAnimation(id: vm.document.id)!, cold = StudioViewModel(storage: store)
+            try require(await cold.openProject(saved.metadata), "Text cold reopen failed")
+            try require(cold.document == vm.document && (try erasurePixels(cold.document)) == pixels, "Text save/reopen lost native glyphs/descriptor")
+            let exporter = StudioExportService()
+            let image = try exporter.render(cold.currentFrame, document: cold.document, background: .transparent, raster: nil)
+            let output = try await exporter.export(document: cold.document, format: .pngSequence, outputParent: root, background: .transparent)
+            guard let url = output.imageURLs.first, let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let reopened = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Failure(message: "Text export PNG did not reopen") }
+            try require(output.imageURLs.count == 1 && image.width == 128 && image.height == 96 && reopened.width == image.width
+                && reopened.height == image.height && (try rgbaImage(reopened)) == (try rgbaImage(image)), "Text PNG lost actual compositor pixels/dimensions")
+            await manual.flush(); await cold.flush()
+        }
+        try await test("each exposed text creation setting changes actual native glyph pixels and default text creates without a selection") {
+            let base = SpatterTextCreateInstruction.example.replacingOccurrences(of: "font Special Elite", with: "font monospaced")
+                .replacingOccurrences(of: "size 24", with: "size 16").replacingOccurrences(of: "\"SDI\"", with: #""SDI\nWORDS""#)
+            let variants = [base, base.replacingOccurrences(of: #""SDI\nWORDS""#, with: "\"EDITED\""),
+                base.replacingOccurrences(of: "12.5%", with: "0%"), base.replacingOccurrences(of: "size 16", with: "size 24"),
+                base.replacingOccurrences(of: "#FF0000", with: "#0000FF"), base.replacingOccurrences(of: "100%", with: "50%"),
+                base.replacingOccurrences(of: "monospaced", with: "serif"),
+                base.replacingOccurrences(of: "100%.", with: "100%, align right."),
+                base.replacingOccurrences(of: "100%.", with: "100%, bold on."),
+                base.replacingOccurrences(of: "100%.", with: "100%, italic on."),
+                base.replacingOccurrences(of: "100%.", with: "100%, rotation 10 degrees."),
+                base.replacingOccurrences(of: "96 by 48", with: "32 by 48"),
+                base.replacingOccurrences(of: "96 by 48", with: "96 by 16")]
+            var renders: [[UInt8]] = []
+            for (index, text) in variants.enumerated() {
+                let (vm, _) = try await fixture("text-setting-\(index)"), before = vm.document, session = SpatterStudioEditSession()
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == .applied && vm.currentFrame.elements.count == 1 && vm.document.revision == before.revision + 1,
+                    "Text setting did not create real text: \(session.notice ?? "")")
+                let pixels = try erasurePixels(vm.document)
+                try require(pixels != (try erasurePixels(before)), "Text created no glyph pixels")
+                renders.append(pixels); await vm.flush()
+            }
+            try require(renders.dropFirst().allSatisfy { $0 != renders[0] }, "A text setting changed only its label")
+        }
+        try await test("text creation rejects invalid syntax geometry hidden locked layers and unfinished native text without side effects") {
+            for text in [SpatterTextCreateInstruction.example + " Delete active layer.",
+                SpatterTextCreateInstruction.example.replacingOccurrences(of: "12.5%", with: "100%"),
+                SpatterTextCreateInstruction.example.replacingOccurrences(of: "font Special Elite", with: "font shell"),
+                SpatterTextCreateInstruction.example.replacingOccurrences(of: "size 24", with: "size 0")] {
+                let (vm, _) = try await fixture("text-denied"), before = vm.document, session = SpatterStudioEditSession()
+                let undo = vm.canUndo, redo = vm.canRedo
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before && vm.canUndo == undo && vm.canRedo == redo, "Invalid text mutated editor")
+            }
+            for state in ["full", "position", "alpha", "hidden", "zero-opacity"] {
+                let (vm, _) = try await fixture("text-layer-\(state)")
+                let settings: StudioCommandLayerSettings
+                switch state {
+                case "hidden": settings = .init(visible: false)
+                case "zero-opacity": settings = .init(opacity: 0)
+                default: settings = .init(lock: StudioCommandLock(rawValue: state)!)
+                }
+                _ = try vm.applyStudioCommands(.init(requestID: UUID(), projectID: vm.document.id, expectedRevision: vm.document.revision,
+                    action: .apply([.updateLayer(.init(layer: .id(vm.activeLayerID), settings: settings))])))
+                await vm.flush()
+                let before = vm.document, undo = vm.canUndo, redo = vm.canRedo, session = SpatterStudioEditSession()
+                _ = session.submit(SpatterTextCreateInstruction.example, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before && vm.canUndo == undo && vm.canRedo == redo, "Text bypassed layer state \(state)")
+            }
+            let (vm, _) = try await fixture("text-existing-draft")
+            try require(vm.beginTextEditing(), "Existing native Text draft unavailable")
+            vm.textInput = "Unapplied original words"; vm.activePanel = .spatterAI
+            let before = vm.document, draft = vm.textDraft, session = SpatterStudioEditSession()
+            _ = session.submit(SpatterTextCreateInstruction.example, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+            try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before && vm.textDraft == draft
+                && vm.textInput == "Unapplied original words", "Spatter overwrote an unfinished native Text draft")
+            vm.cancelTextEditing(); await vm.flush()
+        }
+        try await test("text creation fences account frame selection tool playback revision and cancellation at both real session boundaries") {
+            for boundary in 1...2 { for change in ["revision", "account", "cancel", "frame", "selection", "tool", "playback", "background"] {
+                let (vm, _) = try await fixture("text-fence"), gate = Gate()
+                try require(vm.commitElement(styledStroke(vm)), "Text fence artwork failed")
+                vm.addFrame(); vm.prevFrame(); vm.selectedTool = .move; vm.activePanel = .spatterAI; await vm.flush()
+                var account: String? = nil, foreground = true
+                let session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                _ = session.submit(SpatterTextCreateInstruction.example, in: vm, accountID: nil,
+                    currentScope: { .init(isStudioVisible: foreground, accountID: account) })
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                switch change {
+                case "revision": vm.showOnionSkin = true; await vm.flush()
+                case "account": account = "other"
+                case "cancel": session.cancel()
+                case "frame": vm.currentFrameIndex = 1
+                case "selection": try require(vm.selectElement(at: CGPoint(x: 20, y: 20)) != nil, "Actual selection fixture missed")
+                case "tool": vm.selectedTool = .eraser
+                case "playback": vm.togglePlayback()
+                default: foreground = false
+                }
+                let held = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil && vm.document == held
+                    && vm.canUndo == undo && vm.canRedo == redo, "Text crossed captured \(change) authority at boundary \(boundary)")
+                vm.stopPlayback(); await vm.flush()
+            } }
+        }
         try await test("text update changes one selected text box and rejects drawing selections") {
             let (vm, _) = try await fixture("text-update")
             let textID = "text-box"
@@ -2542,7 +2698,7 @@ private final class NetworkTrap: URLProtocol {
                 guard session.status == .applied, let edit = session.appliedEdit, let effect = vm.currentFrame.elements.last,
                       let native = manual.currentFrame.elements.last else { throw Failure(message: "Raster effect failed: \(session.notice ?? "")") }
                 let pixels = try erasurePixels(vm.document)
-                try require(effect.tool == instruction.settings.tool && effect.points == native.points && effect.width == native.width
+                try require(effect.tool == instruction.settings.tool && sameProjectedPoints(effect.points, native.points) && effect.width == native.width
                     && effect.opacity == native.opacity && effect.smudge == native.smudge && effect.blur == native.blur
                     && effect.sharpen == native.sharpen && effect.dodgeBurn == native.dodgeBurn && effect.selectionMask == native.selectionMask
                     && pixels == (try erasurePixels(manual.document)) && pixels != originalPixels
@@ -2667,7 +2823,7 @@ private final class NetworkTrap: URLProtocol {
                 && image.document == before && image.originalImageSource(asset) == source, "Image selection silently broadened")
         }
         try await test("canvas Gradient matches the manual native operation preserves preferences and persists editable mask descriptor pixels") {
-            for selected in [false, true] { for text in [SpatterGradientInstruction.linearExample, SpatterGradientInstruction.radialExample] {
+            for selected in [false, true] { for text in [SpatterGradientInstruction.linearExample, SpatterGradientInstruction.radialExample.replacingOccurrences(of: "#FF0000", with: "#0000FF")] {
                 let (vm, store) = try await fixture("gradient-typed"), (manual, _) = try await fixture("gradient-touch")
                 for target in [vm, manual] {
                     if selected { try erasureArtwork(target) }

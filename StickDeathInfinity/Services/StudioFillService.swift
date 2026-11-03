@@ -113,16 +113,25 @@ enum StudioFillService {
             opacity: opacity, settings: settings)
     }
 
-    /// Exact original filled-ellipse alpha, rendered only within its clipped integer
+    /// Bodies with empty glyph/rounded-corner regions need actual source alpha;
+    /// their selection boxes are bounds for capture, never painted hit geometry.
+    static func wandRequiresAlphaCoverage(_ element: DrawnElement) -> Bool {
+        // Historical text may be an inert nil/blank record or have no origin.
+        // Preserve the prior nil-bounds skip instead of blocking unrelated Wand work.
+        if element.tool == .text { return element.selectionBounds != nil }
+        let filled = element.shape?.fillColor != nil || element.fillColor != nil
+        if element.tool == .circle { return filled && element.points.count == 2 }
+        return element.tool == .rectangle && filled && element.points.count == 2 && (element.shape?.cornerRadius ?? 0) > 0
+    }
+
+    /// Exact original glyph/filled-shape alpha, rendered only within its clipped integer
     /// bounds. Pixel work/memory is charged before allocation by the compact rectangle,
     /// not once per full document for every small circle.
     @MainActor
     static func wandElementCoverage(document: StudioDocument, frame: AnimationFrame,
                                     element: DrawnElement, maximumPixels: Int) throws -> StudioSelectionElementHitTest.AlphaCoverage? {
         try Task.checkCancellation()
-        guard element.tool == .circle, element.points.count == 2,
-              element.shape?.fillColor != nil || element.fillColor != nil,
-              frame.elements.contains(element), document.width > 0, document.height > 0,
+        guard wandRequiresAlphaCoverage(element), frame.elements.contains(element), document.width > 0, document.height > 0,
               let bounds = element.selectionBounds,
               [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].allSatisfy(\.isFinite) else { throw Failure.selection }
         let canvas = CGRect(x: 0, y: 0, width: document.width, height: document.height)

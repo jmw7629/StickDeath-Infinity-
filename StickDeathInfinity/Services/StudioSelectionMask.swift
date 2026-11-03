@@ -223,6 +223,26 @@ enum StudioSelectionElementHitTest {
         let x: Int, y: Int, width: Int, height: Int, rowStride: Int
         let bytes: [UInt8]
     }
+    /// Finite native butt-capped line shaft in its original source coordinates.
+    /// The two inverse-affine axes map a canvas pixel centre back to distances
+    /// along/across the source shaft. This clips endpoint probe disks without
+    /// allocating a diagonal line's entire canvas bounding rectangle.
+    struct ButtStroke: Equatable, Sendable {
+        let startX: Double, startY: Double
+        let alongX: Double, alongY: Double, acrossX: Double, acrossY: Double
+        let length: Double, halfWidth: Double
+        var isValid: Bool {
+            [startX, startY, alongX, alongY, acrossX, acrossY, length, halfWidth].allSatisfy(\.isFinite)
+                && length > 0 && halfWidth > 0 && hypot(alongX, alongY).isFinite && hypot(acrossX, acrossY).isFinite
+                && hypot(alongX, alongY) > 0 && hypot(acrossX, acrossY) > 0
+        }
+        func contains(x: Double, y: Double) -> Bool {
+            let dx = x - startX, dy = y - startY
+            let along = dx * alongX + dy * alongY
+            let across = dx * acrossX + dy * acrossY
+            return along >= 0 && along <= length && abs(across) <= halfWidth
+        }
+    }
     struct Candidate: Equatable, Sendable {
         let id: String
         /// Canvas-space centreline samples after the element's transform.
@@ -232,8 +252,10 @@ enum StudioSelectionElementHitTest {
         /// Exact source-body alpha from the canonical renderer for a filled ellipse.
         /// It is already in top-left canvas coordinates, including the element transform.
         var alphaCoverage: AlphaCoverage? = nil
+        /// Plain `.line` uses the renderer's butt shaft, not round endpoint caps.
+        var buttStroke: ButtStroke? = nil
         static func == (lhs: Candidate, rhs: Candidate) -> Bool {
-            lhs.id == rhs.id && lhs.radius == rhs.radius && lhs.alphaCoverage == rhs.alphaCoverage && lhs.points.count == rhs.points.count &&
+            lhs.id == rhs.id && lhs.radius == rhs.radius && lhs.alphaCoverage == rhs.alphaCoverage && lhs.buttStroke == rhs.buttStroke && lhs.points.count == rhs.points.count &&
                 zip(lhs.points, rhs.points).allSatisfy { $0.x == $1.x && $0.y == $1.y }
         }
     }
@@ -277,6 +299,7 @@ enum StudioSelectionElementHitTest {
                   candidate.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 1_000_000 && abs($0.y) <= 1_000_000 }) else {
                 throw StudioSelectionMask.Failure.invalidSettings
             }
+            if let shaft = candidate.buttStroke, !shaft.isValid { throw StudioSelectionMask.Failure.invalidSettings }
             var visited = Set<Int>(), covered = 0
             let reach = max(0.5, candidate.radius)
             func probe(_ cx: Double, _ cy: Double) throws {
@@ -289,6 +312,9 @@ enum StudioSelectionElementHitTest {
                         guard dx * dx + dy * dy <= reach * reach else { continue }
                         probes += 1
                         guard probes <= StudioSelectionMask.maximumElementProbes else { throw StudioSelectionMask.Failure.workLimit }
+                        // Charge every original disk probe to the same work budget,
+                        // then exclude pixels beyond the native butt shaft.
+                        if let shaft = candidate.buttStroke, !shaft.contains(x: Double(px) + 0.5, y: Double(py) + 0.5) { continue }
                         let index = py * width + px
                         if coverage[index] >= threshold && visited.insert(index).inserted { covered += 1 }
                     }

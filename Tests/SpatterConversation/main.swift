@@ -525,14 +525,14 @@ private final class NetworkTrap: URLProtocol {
                     try require(expected.allSatisfy { answer.contains($0) } && answer.contains("Guidance only"), "Account/rooms guidance missing fact: \(question)")
                 }
                 try require(calls == 0 && SpatterAIViewModel.currentGuideVersion == "2026-10-13.1", "Guide used cloud or version was not bumped")
-                for fact in ["catalog v\(SpatterInstructionCatalog.version)", "selectionTranslate", "imagePlacement", "textUpdate", "pan L100–R100 and solo",
+                for fact in ["catalog v\(SpatterInstructionCatalog.version)", "selectionTranslate", "imagePlacement", "textCreate", "textUpdate", "pan L100–R100 and solo",
                              "SHA-256", "In-app account deletion is not available yet", "revocable, expiring code",
                              "multiClauseBrief", "tween", "frameClipboard", "projectSettings", "brushStroke", "batch",
                              "USD 4.99 per month (Creator), USD 9.99 per month (Pro) and USD 19.99 per month (Unlimited)", "Preview plan", "Revert Spatter edit",
                              "areaSelection", "wandSelection", "libraryPicture", "projectExport"] {
                     try require(SpatterAIViewModel.currentStudioCapabilities.contains(fact), "Capability text missing: \(fact)")
                 }
-                try require(SpatterInstructionCatalog.version == 9 && SpatterInstructionCatalog.grammars.count == 48 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                try require(SpatterInstructionCatalog.version == 10 && SpatterInstructionCatalog.grammars.count == 49 && SpatterInstructionCatalog.commandNames.contains("translateElements")
                     && SpatterInstructionCatalog.commandNames.contains("fillAtPoint") && SpatterInstructionCatalog.commandNames.contains("selectElements")
                     && SpatterInstructionCatalog.commandNames.contains("setSourceReference")
                     && SpatterInstructionCatalog.commandNames.contains("updateText") && SpatterInstructionCatalog.commandNames.contains("appendFrames")
