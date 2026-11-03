@@ -19,6 +19,9 @@ struct SpatterMotionRecipePanel: View {
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = SpatterStudioEditSession()
+    @StateObject private var packActions = SpatterImagePackActionSession()
+    private var isPackDraft: Bool { SpatterImagePackInstruction.isInstruction(draft) }
+    private var isPackCancelDraft: Bool { (try? SpatterImagePackInstruction.parse(draft))?.action == .cancel }
     @State private var draft = ""
     @State private var planPreview: String?
     /// The context the visible plan preview was prepared against (#203).
@@ -60,7 +63,7 @@ struct SpatterMotionRecipePanel: View {
     private var isImagePlacementDraft: Bool { SpatterImagePlacementInstruction.isInstruction(draft) }
     private var isImageEditDraft: Bool { isImageRotationDraft || isImageCropDraft || isImagePlacementDraft }
     private var isTextUpdateDraft: Bool { SpatterTextUpdateInstruction.isInstruction(draft) }
-    private var isAudioDraft: Bool { !isLayerDraft && !isSelectionDraft && !isImageEditDraft && !isTextUpdateDraft && !SpatterTextCreateInstruction.isInstruction(draft) && SpatterAudioInstruction.isAudioInstruction(draft) }
+    private var isAudioDraft: Bool { !isPackDraft && !isLayerDraft && !isSelectionDraft && !isImageEditDraft && !isTextUpdateDraft && !SpatterTextCreateInstruction.isInstruction(draft) && SpatterAudioInstruction.isAudioInstruction(draft) }
     private var isOrderDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterArtworkOrderInstruction.isInstruction(draft) }
     private var isImageDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterImageReflectionInstruction.isInstruction(draft) }
     private var selectedImage: StudioViewModel.ImageMoveCapture? {
@@ -73,7 +76,7 @@ struct SpatterMotionRecipePanel: View {
         guard let kind = SpatterInstructionRouter.classify(draft) else { return nil }
         switch kind {
         case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke, .freehandStroke, .shape, .textCreate,
-             .areaSelection, .wandSelection, .libraryPicture, .librarySound, .projectExport, .gradientFill, .pixelEffect: return kind
+             .areaSelection, .wandSelection, .libraryPicture, .librarySound, .projectExport, .gradientFill, .pixelEffect, .imagePack: return kind
         default: return nil
         }
     }
@@ -94,6 +97,7 @@ struct SpatterMotionRecipePanel: View {
         case .gradientFill?: return "Apply an editable canvas gradient"
         case .librarySound?: return "Add a licensed library sound"
         case .libraryPicture?: return "Add an Image Library picture"
+        case .imagePack?: return "Manage an optional picture pack"
         case .projectExport?: return "Export the saved project"
         default: return nil
         }
@@ -115,6 +119,7 @@ struct SpatterMotionRecipePanel: View {
         case .gradientFill?: return "Uses Studio’s native Gradient tool: the current drawing/Wand selection limits coverage; no selection fills the active layer. Explicit settings remain editable in the saved project. One Undo removes it; your selected tool and remembered settings stay unchanged."
         case .librarySound?: return "Verifies and decodes one licensed Sound Library asset by its ID, then attaches its real audio bytes to the requested track/time through the same managed-asset operation as Add Sound. One Undo removes the clip. No network, playback or export is started."
         case .libraryPicture?: return "Adds one bundled Image Library picture, verified like Add Picture, to the active frame on a new layer in one Undo step. Files, Photos and the camera stay in Add Picture."
+        case .imagePack?: return "Check, install, remove or cancel one known optional picture pack through the same operation owner as the Image Library. Results are verified app actions, not project edits; no Undo entry or automatic picture placement is created."
         case .projectExport?: return "Starts Studio's direct MP4 or GIF export of the saved revision to a file on this device. Nothing is uploaded, shared or published."
         default: return nil
         }
@@ -136,6 +141,7 @@ struct SpatterMotionRecipePanel: View {
         case .gradientFill?: return "Specify linear or radial, both canvas points, colors (or fade to transparent), opacity above 0–100%, interpolation sRGB/linear-light, and dither on/off. Show a Free layer; stop playback. Image-pixel selections are unavailable; native gradient limit is 4,194,304 pixels."
         case .librarySound?: return "Use Copy Spatter instruction on a Sound Library title, then paste it here. The command keeps the chosen track (1–4) and time (0–1000 seconds). The current account, project, frame, selection and playhead must stay unchanged until the sound is attached."
         case .libraryPicture?: return "Use \(SpatterLibraryPictureInstruction.example) with a picture's title or ID from Add Picture → Image Library. Stop playback first."
+        case .imagePack?: return "Choose Optional picture packs in the instruction menu, pick a pack and action, Preview, then Apply. Install may need a connection; Remove keeps project-owned pictures. Cancel reaches only this panel's active run and waits for its actual terminal result."
         case .projectExport?: return "Use \(SpatterProjectExportInstruction.example) or \(SpatterProjectExportInstruction.gifExample) Save the project first; the export uses the saved revision."
         default: return nil
         }
@@ -157,6 +163,7 @@ struct SpatterMotionRecipePanel: View {
         case .gradientFill?: return SpatterGradientInstruction.linearExample
         case .librarySound?: return SpatterLibrarySoundInstruction.example
         case .libraryPicture?: return SpatterLibraryPictureInstruction.example
+        case .imagePack?: return SpatterImagePackInstruction.example
         case .projectExport?: return SpatterProjectExportInstruction.example
         default: break
         }
@@ -314,10 +321,10 @@ struct SpatterMotionRecipePanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button("Back to advice") { session.close(); onBack() }
+                Button("Back to advice") { session.close(); packActions.close(); onBack() }
                     .accessibilityIdentifier("spatter.motion.back")
                 Spacer()
-                Text("LOCAL EDITS").font(.specialElite(12, relativeTo: .caption))
+                Text(isPackDraft ? "LIBRARY ACTION" : "LOCAL EDITS").font(.specialElite(12, relativeTo: .caption))
             }
             .foregroundColor(.red).padding(16)
 
@@ -553,6 +560,17 @@ struct SpatterMotionRecipePanel: View {
                         Button("Copy frame") { draft = SpatterFrameClipboardInstruction.copyExample }
                         Button("Paste frame after active frame") { draft = SpatterFrameClipboardInstruction.pasteExample }
                         Button("Add licensed Impact Metal sound") { draft = SpatterLibrarySoundInstruction.example }
+                        Menu("Optional picture packs") {
+                            ForEach(SpatterImagePackInstruction.packs) { pack in
+                                Menu(pack.title) {
+                                    ForEach(SpatterImagePackInstruction.Action.allCases, id: \.rawValue) { action in
+                                        Button(action.rawValue.capitalized) {
+                                            draft = SpatterImagePackInstruction.example(action, packID: pack.id)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Button("Project size") { draft = SpatterProjectSettingsInstruction.sizeExample }
                         Button("Project frame rate") { draft = SpatterProjectSettingsInstruction.fpsExample }
                         Button("Project size and frame rate") { draft = SpatterProjectSettingsInstruction.bothExample }
@@ -598,7 +616,7 @@ struct SpatterMotionRecipePanel: View {
                         .accessibilityLabel("Local Studio instruction")
                         .accessibilityIdentifier("spatter.motion.input")
                         .focused($draftFocused)
-                    Text("\(draft.utf8.count) / 1,024 bytes · " + (isFrameActionDraft ? "Active frame" : isOrderDraft ? "Selected artwork" : isImageDraft ? "Selected image" : isLayerDraft ? "Active layer" : isExposureDraft ? "Selected frame · \(vm.fps) FPS" : isErasureDraft ? "Selected drawings" : isGlowDraft ? "Active layer glow" : isRenameDraft ? "Project name" : isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
+                    Text("\(draft.utf8.count) / 1,024 bytes · " + (isPackDraft ? "Optional picture pack" : isFrameActionDraft ? "Active frame" : isOrderDraft ? "Selected artwork" : isImageDraft ? "Selected image" : isLayerDraft ? "Active layer" : isExposureDraft ? "Selected frame · \(vm.fps) FPS" : isErasureDraft ? "Selected drawings" : isGlowDraft ? "Active layer glow" : isRenameDraft ? "Project name" : isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
                         .font(.caption).foregroundColor(.white.opacity(0.6))
                     // Plan preview (#205): parses and prepares against the current document
                     // without mutating anything; refusals appear as text before Apply.
@@ -619,16 +637,21 @@ struct SpatterMotionRecipePanel: View {
                                 .accessibilityIdentifier("spatter.plan.stale")
                         }
                     }
-                    Button("Apply local edit") {
+                    Button(isPackDraft ? "Apply pack action" : "Apply local edit") {
                         draftFocused = false
                         planPreview = nil; previewSnapshot = nil
                         let submitted = draft
                         let account = authVM.userId
-                        session.submit(submitted, in: vm, accountID: account, currentScope: { scope })
+                        if isPackDraft {
+                            packActions.submit(submitted, in: vm, accountID: account, currentScope: { scope })
+                        } else {
+                            session.submit(submitted, in: vm, accountID: account, currentScope: { scope })
+                        }
                         // Keep the exact draft on success, rejection and cancellation.
                     }
                     .buttonStyle(.borderedProminent).tint(.red)
-                    .disabled(session.isWorking || session.isClosed || !scope.isStudioVisible ||
+                    .disabled(session.isWorking || session.isClosed || packActions.isClosed || !scope.isStudioVisible ||
+                              (packActions.isWorking && !isPackCancelDraft) ||
                               draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("spatter.motion.apply")
                     if session.isWorking {
@@ -636,11 +659,21 @@ struct SpatterMotionRecipePanel: View {
                         Button("Cancel local edit") { session.cancel() }
                             .accessibilityIdentifier("spatter.motion.cancel")
                     }
-                    if let notice = session.notice {
+                    if !isPackDraft, let notice = session.notice {
                         Text(notice).font(.specialElite(15, relativeTo: .subheadline))
                             .accessibilityIdentifier("spatter.motion.result")
                     }
-                    if session.appliedEdit != nil {
+                    if packActions.isWorking {
+                        ProgressView("Waiting for the owned picture-pack operation…")
+                        Button("Cancel pack operation") { packActions.cancel() }
+                            .disabled(packActions.isClosed || packActions.status != .running)
+                            .accessibilityIdentifier("spatter.pack.cancel")
+                    }
+                    if isPackDraft || packActions.isWorking, let notice = packActions.notice {
+                        Text(notice).font(.specialElite(15, relativeTo: .subheadline))
+                            .accessibilityIdentifier("spatter.pack.result")
+                    }
+                    if !isPackDraft, session.appliedEdit != nil {
                         Text(session.saveState(in: vm, currentScope: scope).text)
                             .font(.caption)
                             .accessibilityIdentifier("spatter.motion.save-state")
@@ -731,13 +764,14 @@ struct SpatterMotionRecipePanel: View {
             session.libraryPictureResolver = SpatterLibraryPictureSource.resolve
             session.librarySoundResolver = SpatterLibrarySoundSource.resolve
         }
-        .onDisappear { isVisible = false; session.close() }
+        .onDisappear { isVisible = false; session.close(); packActions.close() }
         .onChange(of: session.exportHandoff) { _ in startHandedOffExport() }
         .onChange(of: scenePhase) { phase in
             isForeground = phase == .active
-            if !isForeground { session.cancel() }
+            if !isForeground { session.cancel(); packActions.contextDidChange(in: vm, currentScope: scope) }
         }
-        .onChange(of: authVM.userId) { _ in session.close() }
+        .onChange(of: authVM.userId) { _ in session.close(); packActions.close() }
+        .onChange(of: contextSnapshot) { _ in packActions.contextDidChange(in: vm, currentScope: scope) }
     }
 
     /// A typed projectExport instruction (#204) reaches the same direct MP4/GIF

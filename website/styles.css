@@ -205,6 +205,7 @@ footer div a{display:inline-flex;align-items:center;justify-content:center;min-h
 .policy th{color:var(--text);font-weight:400;font-family:var(--display);font-size:13px;letter-spacing:.08em}
 .policy p,.policy li,.policy td,.policy th,.policy pre,.policy code,.policy dd{overflow-wrap:anywhere}
 .policy td a,.policy li>a,.policy .text-link{display:inline-flex;align-items:center;min-height:44px}
+.policy td a{min-width:44px}
 .meta-list{display:grid;grid-template-columns:auto 1fr;gap:6px 18px;font-size:14px;margin:0 0 24px;color:var(--muted)}
 .meta-list dt{color:var(--muted);font-family:var(--display);letter-spacing:.08em;font-size:12px;padding-top:3px}
 .meta-list dd{margin:0}

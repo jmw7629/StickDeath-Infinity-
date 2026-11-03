@@ -41,6 +41,9 @@ enum SpatterStudioControlRegistry {
         var explanation: String {
             switch route {
             case .instructions(let names):
+                if names.contains("imagePack") {
+                    return "\(title): explicit Apply can verify/install/remove/cancel known optional picture packs through the shared owner. Pack actions change only library copies, not the project or Undo history; adding a picture is a separate edit."
+                }
                 let list = names.count == 1 ? "the " + names[0] + " instruction" : "these instructions: " + names.joined(separator: ", ")
                 return "\(title): Spatter can prepare \(list) for this control. You still choose Apply, and one Undo reverses it."
             case .manual(let reason): return "\(title): manual only. \(reason)"
@@ -111,7 +114,7 @@ enum SpatterStudioControlRegistry {
         .init(id: "panel.stickerEmoji", surface: .panel, title: "Stickers", route: .manual("Stickers are placed by touch.")),
         // Files, Photos and the camera stay with you: no instruction names a path,
         // URL or Photos item, and Spatter never opens those pickers itself.
-        .init(id: "panel.addImage", surface: .panel, title: "Add picture", route: .instructions(["libraryPicture"])),
+        .init(id: "panel.addImage", surface: .panel, title: "Add picture", route: .instructions(["libraryPicture", "imagePack"])),
         .init(id: "panel.backgroundLibrary", surface: .panel, title: "Backgrounds", route: .manual("Backgrounds are chosen and added by you; generated background images are not available.")),
         .init(id: "panel.menu", surface: .panel, title: "Studio menu", route: .manual("Menu commands such as saving copies are performed by you.")),
         .init(id: "panel.aiVoice", surface: .panel, title: "Voice", route: .manual("Voice recording and import are started by you; Spatter edits the resulting clip only after it is on the timeline.")),

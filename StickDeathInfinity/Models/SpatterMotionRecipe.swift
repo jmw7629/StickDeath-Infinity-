@@ -3652,7 +3652,7 @@ enum SpatterInstructionRouter {
         case selectedErasure, projectRename, frameExposure, layerUpdate, layerDuplicate, layerGlow, audioClip
         case multiClauseBrief, twoActorBrief, sceneBrief, stickFigure, circleMotion
         case fill, selectByID, sourceReference
-        case areaSelection, wandSelection, libraryPicture, librarySound, projectExport, gradientFill, pixelEffect
+        case areaSelection, wandSelection, libraryPicture, librarySound, projectExport, gradientFill, pixelEffect, imagePack
         /// Grammars whose preparation needs only the captured document, not a selection.
         var isContextOnly: Bool {
             switch self {
@@ -3665,6 +3665,7 @@ enum SpatterInstructionRouter {
     }
     static func classify(_ draft: String) -> Kind? {
         if SpatterInstructionBatch.isBatch(draft) { return .batch }
+        if SpatterImagePackInstruction.isInstruction(draft) { return .imagePack }
         if SpatterSourceInstruction.isInstruction(draft) { return .sourceReference }
         if SpatterAreaSelectInstruction.isInstruction(draft) { return .areaSelection }
         if SpatterWandSelectInstruction.isInstruction(draft) { return .wandSelection }
@@ -3941,6 +3942,8 @@ enum SpatterInstructionPreview {
             case .librarySound:
                 let sound = try SpatterLibrarySoundInstruction.parse(text)
                 return "Plan: verify and decode the requested licensed Sound Library sound, then add its real audio to track \(sound.track) at \(String(format: "%.6g", sound.startSeconds)) seconds through Studio's managed-audio attachment, as one Undo step. Missing, changed or unlicensed assets are refused. Playback and export are not started. Nothing has changed yet."
+            case .imagePack:
+                return "Plan: " + (try SpatterImagePackInstruction.parse(text)).preview + " No project edit or Undo entry; explicit Apply is required."
             case .projectExport:
                 let export = try SpatterProjectExportInstruction.parse(text)
                 return "Plan: start Studio's direct \(export.format.rawValue.uppercased()) export of the saved current revision to a file on this device. The project does not change; nothing is uploaded, shared or published. Requires a saved project. Nothing has changed yet."
@@ -4199,5 +4202,58 @@ struct SpatterQualityReport: Equatable {
         if !thresholds.allowTimingMismatch, let mismatch = findings.first(where: { $0.kind == .timingMismatch }) { failures.append(mismatch.detail) }
         for finding in findings where [.movieFrameCount, .movieDuration, .audioOffset].contains(finding.kind) { failures.append(finding.detail) }
         return .init(passes: failures.isEmpty, failures: failures)
+    }
+}
+
+/// Explicit local app action. IDs name only bundled, release-pinned descriptors;
+/// no URL, path, native owner token or provider response is executable authority.
+struct SpatterImagePackInstruction: Equatable {
+    enum Action: String, CaseIterable { case check, install, remove, cancel }
+    struct Pack: Identifiable {
+        let id: String
+        let title: String
+    }
+    static let packs: [Pack] = [
+        .init(id: "kenney.1-bit-scenery.v1", title: "1-Bit Scenery"),
+        .init(id: "kenney.1-bit-expansion.v1", title: "1-Bit Characters and Props"),
+        .init(id: "kenney.1-bit-platformer.v1", title: "1-Bit Platformer"),
+        .init(id: "kenney.monochrome-rpg.v1", title: "Monochrome RPG"),
+        .init(id: "kenney.micro-roguelike.v1", title: "Micro Roguelike"),
+        .init(id: "kenney.smoke-particles.v1", title: "Smoke and Explosions")
+    ]
+    static var packIDs: [String] { packs.map(\.id) }
+    let action: Action
+    let packID: String
+    static let example = "Check image pack kenney.micro-roguelike.v1."
+    static func example(_ action: Action, packID: String = "kenney.micro-roguelike.v1") -> String {
+        action.rawValue.capitalized + " image pack " + packID + "."
+    }
+    enum Failure: LocalizedError {
+        case unsupported
+        var errorDescription: String? {
+            "Use Check, Install, Remove or Cancel image pack followed by one exact bundled pack ID. URLs, paths, owner tokens and batches are unavailable."
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return Action.allCases.contains { value.hasPrefix($0.rawValue + " image pack") }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw Failure.unsupported }
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasSuffix(".") { value.removeLast() }
+        let parts = value.split(separator: " ").map(String.init)
+        guard parts.count == 4, let action = Action(rawValue: parts[0].lowercased()),
+              parts[1].lowercased() == "image", parts[2].lowercased() == "pack",
+              packIDs.contains(parts[3]) else { throw Failure.unsupported }
+        return .init(action: action, packID: parts[3])
+    }
+    var preview: String {
+        switch action {
+        case .check: return "Verify the installed local library copy of " + packID + ". A busy or damaged copy is not reported as absent."
+        case .install: return "Install or verify the release-pinned publisher pack " + packID + ". A connection may be needed. Nothing is added to a project."
+        case .remove: return "Remove only the downloaded library copy of " + packID + "; project-owned pictures remain."
+        case .cancel: return "Request cancellation only of this Spatter panel's active " + packID + " operation. An unrelated manual operation is untouched; completed installation/removal is not rolled back."
+        }
     }
 }

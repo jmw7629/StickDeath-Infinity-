@@ -1393,3 +1393,215 @@ enum SpatterSHA256 {
         digest(of: data).map { String(format: "%02x", $0) }.joined()
     }
 }
+
+
+/// Explicit pack app actions use the same owner as manual downloads, outside
+/// SpatterStudioEditSession's fifteen-second reversible-document-edit lease.
+@MainActor
+final class SpatterImagePackActionSession: ObservableObject {
+    typealias Scope = SpatterStudioEditSession.Scope
+    typealias ScopeProvider = @MainActor () -> Scope
+    typealias Descriptors = @MainActor () throws -> [StudioImagePackCache.Descriptor]
+    typealias Fetch = @Sendable (StudioImagePackCache.Descriptor) async throws -> Data
+    enum Status: Equatable { case idle, running, cancelling, finished, cancelled, rejected, stale, closed }
+    struct Receipt: Equatable {
+        let submissionID: UUID
+        let operationID: UUID?
+        let packID: String
+        let action: SpatterImagePackInstruction.Action
+        let summary: String
+    }
+    @Published private(set) var status: Status = .idle
+    @Published private(set) var notice: String?
+    @Published private(set) var receipt: Receipt?
+    @Published private(set) var isWorking = false
+    @Published private(set) var isClosed = false
+    private let operations: StudioImagePackOperations
+    private let descriptors: Descriptors
+    private let fetch: Fetch?
+    private let checkpoint: @MainActor () async throws -> Void
+    private let ownerID = UUID()
+    private var handle: StudioImagePackOperations.Handle?
+    private var task: Task<Void, Never>?
+    private var runID: UUID?
+    private var generation = UUID()
+    private var accepted = Set<UUID>()
+    private var instruction: SpatterImagePackInstruction?
+    private var captured: Capture?
+    private struct Capture: Equatable {
+        let accountID: String?
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let layerID: String
+        let displayedFrameID: String?
+        let panel: StudioPanelType
+    }
+    init(operations: StudioImagePackOperations = .shared,
+         descriptors: @escaping Descriptors = { try StudioImagePackCache.descriptors() },
+         fetch: Fetch? = nil,
+         checkpoint: @escaping @MainActor () async throws -> Void = { await Task.yield(); try Task.checkCancellation() }) {
+        self.operations = operations; self.descriptors = descriptors
+        self.fetch = fetch; self.checkpoint = checkpoint
+    }
+    deinit { task?.cancel() }
+    private func capture(_ studio: StudioViewModel, scope: Scope, accountID: String?) throws -> Capture {
+        let screen = studio.commandScreenContext
+        guard scope.isStudioVisible, scope.accountID == accountID, studio.isEditing, screen.activePanel == .spatterAI, !screen.isPlaying,
+              !studio.isSaving, let document = screen.document,
+              screen.displayedFrameID == document.activeFrameID else { throw ActionError.stale }
+        return .init(accountID: accountID, projectID: document.projectID, revision: document.revision,
+                     frameID: document.activeFrameID, layerID: document.activeLayerID,
+                     displayedFrameID: screen.displayedFrameID, panel: screen.activePanel)
+    }
+    private func current(_ capture: Capture, studio: StudioViewModel, scope: Scope) -> Bool {
+        (try? self.capture(studio, scope: scope, accountID: capture.accountID)) == capture
+    }
+    private enum ActionError: LocalizedError {
+        case stale, unavailable, busy
+        var errorDescription: String? {
+            switch self {
+            case .stale: return "The current account or Studio context changed. Submit the pack action again in the current editor."
+            case .unavailable: return "This exact release-pinned picture pack is unavailable here."
+            case .busy: return "A picture-pack operation is already running or changed during verification. Wait for its actual result and check again."
+            }
+        }
+    }
+    @discardableResult
+    func submit(_ draft: String, in studio: StudioViewModel, accountID: String?,
+                submissionID: UUID = UUID(), currentScope: @escaping ScopeProvider) -> Bool {
+        guard !isClosed else { return false }
+        do {
+            let parsed = try SpatterImagePackInstruction.parse(draft)
+            guard !accepted.contains(submissionID), accepted.count < SpatterStudioEditSession.maximumSubmissions else {
+                notice = "This pack action was already handled or this panel reached its request limit."; return false
+            }
+            let capture = try self.capture(studio, scope: currentScope(), accountID: accountID)
+            if parsed.action == .cancel {
+                guard isWorking, instruction?.packID == parsed.packID, captured == capture, status == .running else {
+                    notice = "This panel has no matching active pack operation to cancel. Other owners are untouched."; return false
+                }
+                accepted.insert(submissionID)
+                return cancel()
+            }
+            guard !isWorking else { notice = "Wait for this pack action's actual result or cancel it first."; return false }
+            guard let descriptor = try descriptors().first(where: { $0.id == parsed.packID }) else { throw ActionError.unavailable }
+            accepted.insert(submissionID); generation = submissionID; runID = submissionID
+            instruction = parsed; captured = capture; receipt = nil; notice = parsed.preview
+            status = .running; isWorking = true
+            task = Task { [weak self, weak studio] in
+                guard let self else { return }
+                defer {
+                    if self.runID == submissionID {
+                        self.task = nil; self.runID = nil; self.handle = nil; self.isWorking = false
+                    }
+                }
+                do {
+                    try await self.checkpoint()
+                    try Task.checkCancellation()
+                    guard let studio, self.generation == submissionID,
+                          self.current(capture, studio: studio, scope: currentScope()) else { throw ActionError.stale }
+                    let summary: String
+                    var operationID: UUID? = nil
+                    if parsed.action == .check {
+                        let before = await self.operations.status()
+                        if let before, case .running = before.phase { throw ActionError.busy }
+                        if let before, case .cancelling = before.phase { throw ActionError.busy }
+                        let installed = try await self.operations.installed(descriptor)
+                        let after = await self.operations.status()
+                        try Task.checkCancellation()
+                        guard before == after else { throw ActionError.busy }
+                        summary = installed.map { "\(descriptor.title): \($0.availableImages.count) verified pictures available offline." }
+                            ?? "\(descriptor.title): no installed library copy was found by local verification."
+                    } else {
+                        let action: StudioImagePackOperations.Action = parsed.action == .install ? .install : .remove
+                        let handle = try await self.operations.start(descriptor, action: action, ownerID: self.ownerID, fetch: self.fetch)
+                        self.handle = handle; operationID = handle.request.id
+                        if Task.isCancelled || self.generation != submissionID ||
+                            !self.current(capture, studio: studio, scope: currentScope()) {
+                            _ = await self.operations.cancel(handle.request, ownerID: self.ownerID)
+                        }
+                        let operations = self.operations, ownerID = self.ownerID
+                        let result = try await withTaskCancellationHandler {
+                            try await operations.wait(for: handle, ownerID: ownerID)
+                        } onCancel: {
+                            Task { _ = await operations.cancel(handle.request, ownerID: ownerID) }
+                        }
+                        switch result.receipt.outcome {
+                        case .installed(let count):
+                            summary = "\(descriptor.title): \(count) verified pictures available offline. Nothing was added to the project."
+                        case .removed:
+                            summary = "\(descriptor.title): removal finished; the downloaded library copy is absent. Project-owned pictures remain."
+                        case .cancelled:
+                            summary = "\(descriptor.title): the owned pack operation ended cancelled. No project artwork was changed."
+                        case .failed(let reason): throw StudioImagePackActionFailure(reason: reason)
+                        }
+                        // Atomic success remains success after an explicit cancel tap.
+                        // A revoked account/context instead suppresses this panel's receipt.
+                        if self.generation == submissionID,
+                           self.current(capture, studio: studio, scope: currentScope()) {
+                            self.status = result.receipt.outcome == .cancelled ? .cancelled : .finished
+                        }
+                    }
+                    guard self.generation == submissionID, !self.isClosed else { return }
+                    guard self.current(capture, studio: studio, scope: currentScope()) else {
+                        self.invalidate(); return
+                    }
+                    self.receipt = .init(submissionID: submissionID, operationID: operationID,
+                                         packID: parsed.packID, action: parsed.action, summary: summary)
+                    self.notice = summary
+                    if self.status == .running { self.status = .finished }
+                } catch {
+                    guard self.generation == submissionID, !self.isClosed else { return }
+                    if let studio, !self.current(capture, studio: studio, scope: currentScope()) {
+                        self.invalidate()
+                    } else if error is CancellationError {
+                        self.status = .cancelled; self.notice = "The owned pack action ended cancelled. No project artwork was changed."
+                    } else {
+                        self.status = .rejected
+                        self.notice = String(error.localizedDescription.prefix(512))
+                    }
+                }
+            }
+            return true
+        } catch {
+            if !isWorking { status = .rejected; receipt = nil }
+            notice = String(error.localizedDescription.prefix(512)); return false
+        }
+    }
+    /// Requests only this panel's native capability. Busy remains until the
+    /// shared owner reports completion; cancellation never claims a rollback.
+    @discardableResult
+    func cancel() -> Bool {
+        guard !isClosed, isWorking, status == .running else { return false }
+        status = .cancelling; notice = "Cancellation requested. Waiting for the owned pack operation's actual result."
+        task?.cancel()
+        if let handle {
+            let operations = operations, ownerID = ownerID
+            Task { _ = await operations.cancel(handle.request, ownerID: ownerID) }
+        }
+        return true
+    }
+    private func invalidate() {
+        generation = UUID(); receipt = nil; status = .stale
+        notice = "Pack action context closed. Pending owned work was asked to cancel; check the library for its actual final state."
+        task?.cancel()
+        if let handle {
+            let operations = operations, ownerID = ownerID
+            Task { _ = await operations.cancel(handle.request, ownerID: ownerID) }
+        }
+    }
+    func contextDidChange(in studio: StudioViewModel, currentScope: Scope) {
+        guard !isClosed else { return }
+        if isWorking, let captured, !current(captured, studio: studio, scope: currentScope) { invalidate() }
+        if receipt != nil, let captured, !current(captured, studio: studio, scope: currentScope) { receipt = nil; notice = nil }
+    }
+    func close() {
+        invalidate(); isClosed = true; status = .closed; notice = nil
+    }
+    func waitForCompletion() async { let task = task; await task?.value }
+}
+private struct StudioImagePackActionFailure: LocalizedError {
+    let reason: String
+    var errorDescription: String? { reason }
+}

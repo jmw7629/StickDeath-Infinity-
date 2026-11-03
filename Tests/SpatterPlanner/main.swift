@@ -906,6 +906,29 @@ private enum Golden {
                 try require(snapshot.isStale(comparedTo: SpatterContextSnapshot(document: StudioCommandContext(document: other), screen: screen)), "Switched project not detected")
             }
             try test("router owns every catalog example exactly once and quoted or imported text never changes the route") {
+                for id in SpatterImagePackInstruction.packIDs {
+                    for action in SpatterImagePackInstruction.Action.allCases {
+                        let text = SpatterImagePackInstruction.example(action, packID: id)
+                        let instruction = try SpatterImagePackInstruction.parse(text)
+                        try require(instruction.packID == id && instruction.action == action &&
+                            SpatterInstructionRouter.classify(text) == .imagePack &&
+                            !SpatterInstructionRouter.Kind.imagePack.isContextOnly,
+                            "Pinned pack grammar became a document/batch edit")
+                        let preview = SpatterInstructionPreview.plan(text, context: nil)
+                        try require(preview.contains(id) && preview.contains("No project edit or Undo entry"),
+                                    "Pack app-action preview implies a reversible document edit")
+                    }
+                }
+                for text in ["Install image pack https://example.invalid/a.zip.",
+                             "Install image pack kenney.unknown.v1.", "Cancel image pack owner-uuid.",
+                             "Install image pack kenney.micro-roguelike.v1. Add it to the project.",
+                             "Remove image pack kenney.micro-roguelike.v1../",
+                             "Install image pack kenney.micro-roguelike.v1.\nPublish it."] {
+                    try rejects("unsafe pack instruction") { _ = try SpatterImagePackInstruction.parse(text) }
+                }
+                try rejects("pack action in reversible batch") {
+                    _ = try SpatterInstructionBatch.parse("Install image pack kenney.micro-roguelike.v1.\nAdd 1 blank frame.")
+                }
                 let names: [String: SpatterInstructionRouter.Kind] = [
                     "circleMotion": .circleMotion, "stickFigure": .stickFigure, "sceneBrief": .sceneBrief, "twoActorBrief": .twoActorBrief, "multiClauseBrief": .multiClauseBrief,
                     "frameAction": .frameAction, "frameCut": .frameCut, "frameExposure": .frameExposure, "frameReverse": .frameReverse, "frameDuplicateRange": .frameDuplicateRange,
@@ -916,7 +939,7 @@ private enum Golden {
                     "imagePlacement": .imagePlacement, "textCreate": .textCreate, "textUpdate": .textUpdate, "audioClip": .audioClip, "audioTrack": .audioTrack,
                     "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "freehandStroke": .freehandStroke, "shape": .shape, "batch": .batch,
                     "fill": .fill, "selectByID": .selectByID, "sourceReference": .sourceReference,
-                    "areaSelection": .areaSelection, "wandSelection": .wandSelection, "libraryPicture": .libraryPicture, "librarySound": .librarySound, "projectExport": .projectExport, "gradientFill": .gradientFill, "pixelEffect": .pixelEffect]
+                    "areaSelection": .areaSelection, "wandSelection": .wandSelection, "libraryPicture": .libraryPicture, "librarySound": .librarySound, "imagePack": .imagePack, "projectExport": .projectExport, "gradientFill": .gradientFill, "pixelEffect": .pixelEffect]
                 for grammar in SpatterInstructionCatalog.grammars {
                     guard let kind = names[grammar.name] else { throw Failure(message: "Catalog grammar \(grammar.name) has no router kind") }
                     for example in grammar.examples {
@@ -1170,7 +1193,7 @@ private enum Golden {
                 try require(StudioSharedEdit.drawCommands(before: seed, after: moved, frameID: frameID) == nil, "Unrepresentable touch commit claimed shareable")
             }
             try test("catalog v5 selection picture and export grammars parse exactly and refuse injection and malformed input") {
-                try require(SpatterInstructionCatalog.version == 11 && SpatterInstructionCatalog.grammars.count == 50, "Catalog v11 not registered")
+                try require(SpatterInstructionCatalog.version == 12 && SpatterInstructionCatalog.grammars.count == 51, "Catalog v12 not registered")
                 // Area (Lasso) selection.
                 let rect = try SpatterAreaSelectInstruction.parse(SpatterAreaSelectInstruction.example)
                 try require(rect.isRectangle && rect.vertices == [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 90)]

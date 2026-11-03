@@ -103,6 +103,31 @@ print(json.dumps(receipt), flush=True)
 if receipt["status"] != "passed":
     raise SystemExit(1)
 
+LIBRARY_SCOPE = "isolated native empty project library only; not Studio journey acceptance"
+LIBRARY_ARGUMENTS = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                     "-sdi.guest.chosen.v1", "YES", "-tutorial_completed", "YES"]
+LIBRARY_OFFLINE_SETTINGS = (
+    "SPATTER_BACKEND_URL", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY", "LIVEKIT_WS_URL",
+    "SDI_UPLOAD_SERVICE_URL", "SDI_RENDER_PREVIEW_URL", "SDI_PUBLISHING_CONSENT_VERSION", "SDI_PUBLISHING_TERMS_URL",
+    "SDI_OAUTH_PROVIDERS", "SDI_MICROSOFT_TENANT", "SDI_STOREKIT_PLAN_4_99_PRODUCT_ID",
+    "SDI_STOREKIT_PLAN_9_99_PRODUCT_ID", "SDI_STOREKIT_PLAN_19_99_PRODUCT_ID",
+    "SDI_STOREKIT_PLAN_4_99_ANNUAL_PRODUCT_ID", "SDI_STOREKIT_PLAN_9_99_ANNUAL_PRODUCT_ID",
+    "SDI_STOREKIT_CREDITS_SMALL_PRODUCT_ID", "SDI_STOREKIT_CREDITS_LARGE_PRODUCT_ID",
+    "SDI_BILLING_ANNUAL_OWNER_CONFIGURED",
+)
+
+def library_offline_preflight(info, environment):
+    # Match AppConfig.configuredString: whitespace-only and unexpanded Xcode
+    # settings are unavailable. Refuse every remaining value, including invalid
+    # endpoints, rather than trying to authenticate or probe a configured service.
+    def configured(value):
+        return isinstance(value, str) and bool(value.strip()) and "$(" not in value and "${" not in value
+    for key in LIBRARY_OFFLINE_SETTINGS:
+        if configured(info.get(key)) or configured(environment.get(key)) or configured(environment.get("SIMCTL_CHILD_" + key)):
+            raise RuntimeError("Library capture requires an unconfigured build and launch environment")
+    return {"status": "unconfigured", "checkedSettings": list(LIBRARY_OFFLINE_SETTINGS),
+            "environmentChecked": True, "networkTrafficMeasured": False}
+
 capture = {"sourceCommit": receipt["sourceCommit"], "scope": "isolated native launch only; not Studio journey acceptance",
            "status": "unavailable"}
 owned = None
@@ -127,7 +152,8 @@ try:
     subprocess.run(["xcrun", "simctl", "boot", owned], env=env, capture_output=True, timeout=30, check=True)
     subprocess.run(["xcrun", "simctl", "bootstatus", owned, "-b"], env=env, capture_output=True, timeout=180, check=True)
     subprocess.run(["xcrun", "simctl", "install", owned, str(app)], env=env, capture_output=True, timeout=60, check=True)
-    bundle = plistlib.loads((app / "Info.plist").read_bytes())["CFBundleIdentifier"]
+    built_info = plistlib.loads((app / "Info.plist").read_bytes())
+    bundle = built_info["CFBundleIdentifier"]
     subprocess.run(["xcrun", "simctl", "launch", owned, bundle], env=env, capture_output=True, timeout=30, check=True)
     time.sleep(0.8)
     for name, delay in [("launch-early.png", 0), ("launch-settled.png", 3)]:
@@ -136,6 +162,35 @@ try:
         subprocess.run(["xcrun", "simctl", "io", owned, "screenshot", str(OUT / name)],
                        env=env, capture_output=True, timeout=30, check=True)
     capture.update(status="captured", screenshots={n: sha(OUT / n) for n in ["launch-early.png", "launch-settled.png"]})
+    # This optional second presentation uses the real remembered-guest route.
+    # No document/media is seeded and no editor, project or panel is auto-opened.
+    library = {"sourceCommit": receipt["sourceCommit"], "sourceTree": receipt["sourceTree"],
+               "appExecutableSHA256FromBuildReceipt": receipt["appBinariesSHA256"]["StickDeathInfinity"],
+               "scope": LIBRARY_SCOPE, "status": "unavailable", "projectsSeeded": False,
+               "routeEvidence": "source-derived existing preferences; screenshot inspection required"}
+    capture["library"] = library
+    try:
+        library["offlineConfiguration"] = library_offline_preflight(built_info, env)
+        if bundle != "com.willisbmb.StickDeathInfinity":
+            raise RuntimeError("Unexpected native app identity")
+        subprocess.run(["xcrun", "simctl", "terminate", owned, bundle], env=env, capture_output=True, timeout=30, check=True)
+        subprocess.run(["xcrun", "simctl", "launch", owned, bundle, *LIBRARY_ARGUMENTS],
+                       env=env, capture_output=True, timeout=30, check=True)
+        time.sleep(3)
+        name = "projects-library.png"
+        subprocess.run(["xcrun", "simctl", "io", owned, "screenshot", str(OUT / name)],
+                       env=env, capture_output=True, timeout=30, check=True)
+        library.update(status="captured", launchArguments=LIBRARY_ARGUMENTS,
+                       screenshot={"file": name, "sha256": sha(OUT / name)})
+    except Exception as e:
+        # Keep both valid original launch captures and the passed build receipt.
+        # A partial optional image never becomes a claimed library capture.
+        library.update(status="unavailable", reasonType=type(e).__name__)
+        detail = getattr(e, "stderr", None) or str(e)
+        try:
+            (OUT / "library-capture-error.txt").write_bytes(detail if isinstance(detail, bytes) else str(detail).encode())
+        except OSError:
+            pass  # An optional error log must not relabel the original captures.
 except Exception as e:
     capture.update(status="unavailable", reasonType=type(e).__name__)
     detail = getattr(e, "stderr", None) or str(e)

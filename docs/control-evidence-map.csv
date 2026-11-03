@@ -384,6 +384,8 @@ spatter.own-key.provider,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.
 spatter.own-key.remove,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,button 'Remove key' -> confirmRemove -> store.remove,no,#209 #259,deferred
 spatter.own-key.save,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,button 'Save key on this device' / 'Replace saved key' -> save,no,#209 #259,deferred
 spatter.own-key.saved,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterOwnKeySettingsView,text -> saved provider and model (never the key),no,#209 #259,deferred
+spatter.pack.cancel,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button,no,#204,deferred
+spatter.pack.result,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text,no,#204,deferred
 spatter.picture.apply,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Open Add Picture…',no,#203,testLicensedImageLibraryUndoAndColdReopen
 spatter.plan.free-text-locked,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,text -> vm.freeTextLockReason,no,#209 #259,deferred
 spatter.plan.lockout,StickDeathInfinity/Views/SpatterAI/SpatterPlanControls.swift,SpatterPlanControls,text -> vm.allowanceLockout (server-reported),no,#209 #259,deferred

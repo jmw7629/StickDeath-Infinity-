@@ -3324,6 +3324,164 @@ private final class NetworkTrap: URLProtocol {
                 && export.appliedEdit == nil && export.notice?.contains("nothing is uploaded") == true, "Export handoff wrong")
             try require(export.takeExportHandoff() == handoff && export.takeExportHandoff() == nil, "Export handoff reusable")
         }
+        func pinnedPackFixture() throws -> (StudioImagePackCache.Descriptor, Data) {
+            let source = ProcessInfo.processInfo.environment["SDI_TEST_REPOSITORY"].map { URL(fileURLWithPath: $0) }
+                ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            let directory = source.appendingPathComponent("StickDeathInfinity/Resources/StudioImages")
+            let descriptor = try StudioImagePackCache.descriptor(directory: directory)
+            let zip = try Data(contentsOf: source.appendingPathComponent("Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip"))
+            return (descriptor, zip)
+        }
+        try await test("explicit image pack actions verify install reuse and remove actual pinned media without document history") {
+            let (descriptor, zip) = try pinnedPackFixture()
+            let (vm, _) = try await fixture("pack-app-actions")
+            let before = vm.document, undoBefore = vm.canUndo
+            let operations = StudioImagePackOperations(cache: StudioImagePackCache(root: root.appendingPathComponent("pack-app-cache")))
+            let session = SpatterImagePackActionSession(operations: operations, descriptors: { [descriptor] }, fetch: { _ in zip })
+            let check = SpatterImagePackInstruction.example(.check, packID: descriptor.id)
+            let install = SpatterImagePackInstruction.example(.install, packID: descriptor.id)
+            try require(session.submit(check, in: vm, accountID: nil, currentScope: { guest }), "Pack check not accepted")
+            await session.waitForCompletion()
+            try require(session.status == .finished && session.receipt?.summary.contains("no installed library copy") == true,
+                        "Actual missing cache not reported")
+            let id = UUID()
+            try require(session.submit(install, in: vm, accountID: nil, submissionID: id, currentScope: { guest }), "Pinned install not accepted")
+            await session.waitForCompletion()
+            guard let installed = try await operations.installed(descriptor), let image = installed.availableImages.first else {
+                throw Failure(message: "Actual verified pack not installed: \(session.notice ?? "")")
+            }
+            try require(try installed.checkedPNG(image).count == image.byteCount, "Installed real PNG not usable")
+            try require(session.status == .finished && session.receipt?.summary.contains("\(descriptor.imageCount) verified pictures") == true &&
+                        vm.document == before && vm.canUndo == undoBefore, "Pack action fabricated counts or edited the project/history")
+            let ownerResult = await operations.status()
+            try require(session.receipt?.submissionID == id &&
+                        session.receipt?.operationID == ownerResult?.request.id,
+                        "Receipt does not belong to the actual native owned run")
+            try require(!session.submit(install, in: vm, accountID: nil, submissionID: id, currentScope: { guest }), "Accepted pack token replayed")
+            let afterReplay = await operations.status()
+            try require(afterReplay == ownerResult, "Replay started another owned task")
+            let offline = SpatterImagePackActionSession(operations: operations, descriptors: { [descriptor] },
+                fetch: { _ in throw Failure(message: "Verified offline cache invoked transport") })
+            try require(offline.submit(install, in: vm, accountID: nil, currentScope: { guest }), "Offline install reuse rejected")
+            await offline.waitForCompletion()
+            try require(offline.status == .finished && offline.receipt?.summary.contains("\(descriptor.imageCount) verified pictures") == true,
+                        "Actual verified offline reuse failed")
+            let original = root.appendingPathComponent("independent-project-original.png")
+            let originalBytes = try installed.checkedPNG(image); try originalBytes.write(to: original)
+            try require(session.submit(SpatterImagePackInstruction.example(.remove, packID: descriptor.id),
+                in: vm, accountID: nil, currentScope: { guest }), "Pack removal not accepted")
+            await session.waitForCompletion()
+            let afterRemoval = try await operations.installed(descriptor)
+            try require(session.status == .finished && session.receipt?.summary.contains("Project-owned pictures remain") == true &&
+                        afterRemoval == nil &&
+                        (try Data(contentsOf: original)) == originalBytes && vm.document == before && vm.canUndo == undoBefore,
+                        "Library removal affected independent originals or project history")
+            try require(!session.cancel(), "Completed operation was relabelled cancelled")
+        }
+        try await test("typed cancellation owns only its shared pack run and retains busy until actual cleanup") {
+            let (descriptor, zip) = try pinnedPackFixture()
+            let (vm, _) = try await fixture("pack-cancel")
+            let before = vm.document, gate = Gate()
+            let operations = StudioImagePackOperations(cache: StudioImagePackCache(root: root.appendingPathComponent("pack-cancel-cache")))
+            let session = SpatterImagePackActionSession(operations: operations, descriptors: { [descriptor] },
+                fetch: { _ in try await gate.pause(); return zip })
+            try require(session.submit(SpatterImagePackInstruction.example(.install, packID: descriptor.id),
+                in: vm, accountID: nil, currentScope: { guest }), "Owned held install not accepted")
+            try await gate.waitFor(1)
+            try require(!session.submit("Cancel image pack kenney.micro-roguelike.v1.", in: vm, accountID: nil,
+                currentScope: { guest }), "Mismatched pack cancelled a run")
+            try require(session.submit(SpatterImagePackInstruction.example(.cancel, packID: descriptor.id),
+                in: vm, accountID: nil, currentScope: { guest }) && session.isWorking && session.status == .cancelling,
+                "Cancel claimed completion before the owner quiesced")
+            do { _ = try await operations.start(descriptor, action: .install, ownerID: UUID(), fetch: { _ in zip })
+                throw Failure(message: "Cancelled lease allowed an overlapping operation") }
+            catch StudioImagePackCache.PackError.busy { }
+            try gate.release(1); await session.waitForCompletion()
+            let afterCancellation = try await operations.installed(descriptor)
+            try require(!session.isWorking && session.status == .cancelled &&
+                        afterCancellation == nil && vm.document == before,
+                        "Owned cancellation published a partial pack or changed the project")
+            let manualID = UUID(), manualGate = Gate()
+            let manual = try await operations.start(descriptor, action: .install, ownerID: manualID,
+                fetch: { _ in try await manualGate.pause(); return zip })
+            try await manualGate.waitFor(1)
+            let other = SpatterImagePackActionSession(operations: operations, descriptors: { [descriptor] }, fetch: { _ in zip })
+            try require(!other.submit(SpatterImagePackInstruction.example(.cancel, packID: descriptor.id),
+                in: vm, accountID: nil, currentScope: { guest }), "Typed text cancelled another owner's manual run")
+            try require(other.submit(SpatterImagePackInstruction.example(.check, packID: descriptor.id),
+                in: vm, accountID: nil, currentScope: { guest }), "Busy verification was not accepted for a factual result")
+            await other.waitForCompletion()
+            let stillManual = await operations.status()
+            try require(other.status == .rejected && other.receipt == nil && stillManual?.request == manual.request,
+                        "Busy manual owner was reported absent or displaced")
+            _ = await operations.cancel(manual.request, ownerID: manualID)
+            try manualGate.release(1); _ = try await operations.wait(for: manual, ownerID: manualID)
+        }
+        try await test("pack app actions fence account revision frame layer foreground replay and failed verification") {
+            let (descriptor, zip) = try pinnedPackFixture()
+            for mutation in ["account", "foreground", "revision", "frame", "layer", "panel", "playback"] {
+                let (vm, _) = try await fixture("pack-context-" + mutation), gate = Gate()
+                if mutation == "frame" || mutation == "playback" {
+                    vm.addFrame(); vm.prevFrame()
+                    try require(await vm.save(), "Multi-tick context fixture save failed")
+                }
+                let operations = StudioImagePackOperations(cache: StudioImagePackCache(root: root.appendingPathComponent("pack-context-cache-" + mutation)))
+                var scope = guest
+                let session = SpatterImagePackActionSession(operations: operations, descriptors: { [descriptor] },
+                    fetch: { _ in throw Failure(message: "Stale pack action reached transport") }, checkpoint: { try await gate.pause() })
+                try require(session.submit(SpatterImagePackInstruction.example(.install, packID: descriptor.id),
+                    in: vm, accountID: nil, currentScope: { scope }), "Context fixture refused")
+                try await gate.waitFor(1)
+                switch mutation {
+                case "account": scope = .init(isStudioVisible: true, accountID: "other-account")
+                case "foreground": scope = .init(isStudioVisible: false, accountID: nil)
+                case "revision": vm.addFrame()
+                case "layer": vm.addLayer()
+                case "frame": vm.currentFrameIndex = 1
+                case "playback":
+                    vm.togglePlayback()
+                    try require(vm.isPlaying, "Actual multi-tick playback did not start")
+                default: vm.activePanel = .layers
+                }
+                let afterUserChange = vm.document
+                session.contextDidChange(in: vm, currentScope: scope)
+                try gate.release(1); await session.waitForCompletion()
+                let staleOwner = await operations.status()
+                try require(session.status == .stale && session.receipt == nil && vm.document == afterUserChange &&
+                            staleOwner == nil, "Stale context started a pack or overwrote user work")
+                vm.stopPlayback()
+            }
+            let (vm, _) = try await fixture("pack-live-account")
+            let operations = StudioImagePackOperations(cache: StudioImagePackCache(root: root.appendingPathComponent("pack-live-account-cache")))
+            let gate = Gate(); var scope = guest
+            let session = SpatterImagePackActionSession(operations: operations, descriptors: { [descriptor] },
+                fetch: { _ in try await gate.pause(); return zip })
+            try require(session.submit(SpatterImagePackInstruction.example(.install, packID: descriptor.id),
+                in: vm, accountID: nil, currentScope: { scope }), "Live account fixture refused")
+            try await gate.waitFor(1)
+            scope = .init(isStudioVisible: true, accountID: "new-account")
+            session.contextDidChange(in: vm, currentScope: scope)
+            try require(session.status == .stale && session.isWorking && !session.cancel(),
+                        "Explicit cancel relabelled a revoked context while owned cleanup was pending")
+            try gate.release(1); await session.waitForCompletion()
+            let afterStaleAccount = try await operations.installed(descriptor)
+            try require(session.status == .stale && session.receipt == nil && !session.isWorking &&
+                        afterStaleAccount == nil, "Stale account received old completion or left partial media")
+            session.close(); session.contextDidChange(in: vm, currentScope: guest)
+            try require(session.isClosed && session.status == .closed && !session.cancel(), "Closed owner revived")
+            let unavailable = SpatterImagePackActionSession(operations: operations, descriptors: { [] })
+            try require(!unavailable.submit(SpatterImagePackInstruction.example(.check, packID: descriptor.id),
+                in: vm, accountID: nil, currentScope: { guest }) && unavailable.receipt == nil &&
+                unavailable.status == .rejected, "Missing descriptor was reported as absent or available")
+            let failed = SpatterImagePackActionSession(operations: operations, descriptors: { [descriptor] },
+                fetch: { _ in zip + Data([0]) })
+            try require(failed.submit(SpatterImagePackInstruction.example(.install, packID: descriptor.id),
+                in: vm, accountID: nil, currentScope: { guest }), "Corrupt archive fixture refused before real verification")
+            await failed.waitForCompletion()
+            let afterFailure = try await operations.installed(descriptor)
+            try require(failed.status == .rejected && failed.receipt == nil &&
+                        afterFailure == nil, "Corrupt pack fabricated availability")
+        }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")
         }

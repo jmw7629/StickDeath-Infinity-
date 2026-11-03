@@ -264,7 +264,7 @@ private final class NetworkTrap: URLProtocol {
                 var calls = 0
                 let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
                 for (question, facts) in [
-                    ("Download thousands of pictures from the image library", ["243 pictures", "1818 more", "2061 pictures", "all six verified packs", "not a claim that your device has installed", "not an installation"]),
+                    ("Download thousands of pictures from the image library", ["243 pictures", "1818 more", "2061 pictures", "all six verified packs", "not a claim that your device has installed", "not an installation", "separate local instruction panel", "Only explicit Apply", "do not add pictures to projects"]),
                     ("Remove my downloaded image pack", ["Remove download", "pictures already added to projects are kept", "cannot see whether"]),
                     ("Can Spatter memory learn from my history?", ["off by default", "fixed choices", "each account and guest", "does not learn from conversation history", "not automatically sent to cloud"]),
                     ("Import and export my personal preferences", ["Import preference JSON", "Save is required", "version 1", "at most 2 KB", "no extra fields", "no account identity or conversation"])
@@ -532,7 +532,7 @@ private final class NetworkTrap: URLProtocol {
                              "areaSelection", "wandSelection", "libraryPicture", "projectExport"] {
                     try require(SpatterAIViewModel.currentStudioCapabilities.contains(fact), "Capability text missing: \(fact)")
                 }
-                try require(SpatterInstructionCatalog.version == 11 && SpatterInstructionCatalog.grammars.count == 50 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                try require(SpatterInstructionCatalog.version == 12 && SpatterInstructionCatalog.grammars.count == 51 && SpatterInstructionCatalog.commandNames.contains("translateElements")
                     && SpatterInstructionCatalog.commandNames.contains("fillAtPoint") && SpatterInstructionCatalog.commandNames.contains("selectElements")
                     && SpatterInstructionCatalog.commandNames.contains("setSourceReference")
                     && SpatterInstructionCatalog.commandNames.contains("updateText") && SpatterInstructionCatalog.commandNames.contains("appendFrames")
