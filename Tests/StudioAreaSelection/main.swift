@@ -178,6 +178,183 @@ private struct Failure: Error { let message: String }
         await vm.flush()
         pass("vertex-aligned drawing bounds use robust even-odd enclosure through real freehand and polygon selection")
     }
+    /// Production Wand input must intersect the ellipse's rendered body, never its empty box.
+    static func wandFilledEllipsePixels() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-wand-ellipse-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for rotated in [false, true] { for opacity in [1.0, 0.2] {
+            let name = "\(rotated)-\(opacity)"
+            let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent(name + "/Documents"),
+                cachesDirectory: root.appendingPathComponent(name + "/Cache"))
+            let vm = StudioViewModel(storage: storage)
+            let created = await vm.createProject(name: "Wand ellipse alpha", width: 128, height: 128, fps: 12)
+            try require(created, "Wand ellipse project creation")
+            var ellipse = DrawnElement(id: UUID().uuidString, tool: .circle,
+                points: [.init(x: 32, y: 40), .init(x: 96, y: 88)], color: "#000000",
+                width: 2, opacity: opacity, layerID: vm.activeLayerID,
+                shape: .init(fillColor: "#000000", cornerRadius: 0))
+            if rotated {
+                ellipse.transform = try StudioElementTransform.scaleRotation(x: 0.8, y: 1.1,
+                    degrees: 35, center: CGPoint(x: 64, y: 64))
+            }
+            let other = DrawnElement(id: UUID().uuidString, tool: .line,
+                points: [.init(x: 8, y: 110), .init(x: 24, y: 110)], color: "#0000FF",
+                width: 4, opacity: 1, layerID: vm.activeLayerID)
+            try require(vm.commitElement(ellipse) && vm.commitElement(other), "Actual ellipse/line commits failed")
+            await vm.flush()
+            let before = vm.document, bodyPixels = try render(before)
+            // This is the real visible-canvas compositor the Wand samples: opaque white,
+            // while the canonical ellipse body has actual (possibly faint) black alpha.
+            let visible = try StudioFillService.capture(document: before, frameID: vm.currentFrame.id,
+                layerID: vm.activeLayerID, point: CGPoint(x: 1, y: 1), color: "#000000", opacity: 1,
+                settings: .init(tolerance: 0, contiguous: true, expand: 0, gapClose: 0, antiAlias: false),
+                sampleAllLayers: true)
+            let rgba = [UInt8](visible.rgba)
+            try require(Array(rgba[(1 * 128 + 1) * 4..<(1 * 128 + 1) * 4 + 4]) == [255,255,255,255]
+                && rgba[(64 * 128 + 64) * 4] < 255 && rgba[(64 * 128 + 64) * 4 + 3] == 255,
+                "Fixture is not a real white composite with visible ellipse pixels")
+            vm.selectedTool = .wand; vm.wandTolerance = 0; vm.wandContiguous = true
+            vm.wandSampleVisibleCanvas = true; vm.wandFeather = 0; vm.wandMode = .newSelection
+            let outsideCapture = try vm.captureDrawingWand()
+            let selectedOutside = await vm.selectDrawingRegion(outsideCapture, at: CGPoint(x: 1, y: 1))
+            try require(selectedOutside && vm.selectedElementIDs.isEmpty && vm.document == before,
+                "Visible white region selected an ellipse through its empty bounding-box corners")
+            let outsideIDs = try await vm.wandDrawingIDs(at: CGPoint(x: 1, y: 1), tolerance: 0,
+                sampleAllLayers: true, checkCancellation: { try Task.checkCancellation() })
+            try require(outsideIDs.isEmpty, "Typed Wand still selected an ellipse through empty box pixels")
+            let insideCapture = try vm.captureDrawingWand()
+            let selectedInside = await vm.selectDrawingRegion(insideCapture, at: CGPoint(x: 64, y: 64))
+            try require(selectedInside && vm.selectedElementIDs == [ellipse.id] && vm.document == before,
+                "Real filled/rotated/faint ellipse pixels were not selected independently")
+            let insideIDs = try await vm.wandDrawingIDs(at: CGPoint(x: 64, y: 64), tolerance: 0,
+                sampleAllLayers: true, checkCancellation: { try Task.checkCancellation() })
+            try require(insideIDs == [ellipse.id], "Typed Wand lost canonical ellipse alpha/placement")
+            try require(vm.copySelected(), "Wand ellipse could not enter the production clipboard")
+            vm.paste(); await vm.flush()
+            let copies = vm.currentFrame.elements.filter { $0.id != ellipse.id && $0.id != other.id }
+            try require(copies.count == 1 && copies[0].tool == .circle && copies[0].shape == ellipse.shape
+                && copies[0].opacity == ellipse.opacity && vm.currentFrame.elements.contains(other),
+                "Copy/paste included unrelated artwork or lost the ellipse body")
+            vm.undo(); await vm.flush()
+            try require(vm.document.frames == before.frames && vm.document.layers == before.layers
+                && (try render(vm.document)) == bodyPixels, "One Undo failed to restore the copied ellipse scene")
+            vm.selectedTool = .wand
+            let deleteCapture = try vm.captureDrawingWand()
+            let selectedForDelete = await vm.selectDrawingRegion(deleteCapture, at: CGPoint(x: 64, y: 64))
+            try require(selectedForDelete && vm.selectedElementIDs == [ellipse.id], "Delete fixture lost real Wand selection")
+            vm.deleteSelected(); await vm.flush()
+            try require(vm.currentFrame.elements == [other], "Wand Delete removed unrelated artwork or kept the selected ellipse")
+            vm.undo(); await vm.flush()
+            try require(vm.document.frames == before.frames && (try render(vm.document)) == bodyPixels,
+                "Wand Delete Undo did not restore editable geometry and real pixels")
+
+            // The helper consumes the exact same rendered source alpha, and keeps its
+            // cancellation and invalid-mask boundaries while running on the worker.
+            let isolated = AnimationFrame(id: vm.currentFrame.id, elements: [ellipse])
+            guard let fullAlpha = try StudioFillService.selectionCoverage(document: vm.document,
+                frame: isolated, selectedIDs: [ellipse.id]),
+                  let alpha = try StudioFillService.wandElementCoverage(document: vm.document,
+                    frame: vm.currentFrame, element: ellipse, maximumPixels: StudioSelectionMask.maximumElementProbes) else {
+                throw Failure(message: "No canonical ellipse alpha")
+            }
+            try require(alpha.width * alpha.height < 128 * 128 && alpha.rowStride == alpha.width,
+                "Small ellipse alpha allocated an entire canvas")
+            // Compare two real native renders: full-document alpha versus a translated,
+            // cropped target. This catches top-left origin, row-stride and crop clipping errors.
+            for y in 0..<128 { for x in 0..<128 {
+                let localX = x - alpha.x, localY = y - alpha.y
+                let compact: UInt8 = localX >= 0 && localY >= 0 && localX < alpha.width && localY < alpha.height
+                    ? alpha.bytes[localY * alpha.rowStride + localX] : 0
+                try require(compact == fullAlpha[y * 128 + x], "Cropped ellipse alpha differs from the canonical full render")
+            } }
+            let candidate = StudioSelectionElementHitTest.Candidate(id: ellipse.id, points: [], radius: 0,
+                alphaCoverage: alpha)
+            var checks = 0
+            do {
+                _ = try StudioSelectionElementHitTest.elements(intersecting: [UInt8](repeating: 0, count: 128 * 128),
+                    width: 128, height: 128, candidates: [candidate], checkCancellation: {
+                        checks += 1; if checks == 3 { throw CancellationError() }
+                    })
+                throw Failure(message: "Exact ellipse-alpha hit testing ignored cancellation")
+            } catch is CancellationError { }
+            try rejects {
+                _ = try StudioSelectionElementHitTest.elements(intersecting: [UInt8](repeating: 0, count: 128 * 128),
+                    width: 128, height: 128, candidates: [.init(id: ellipse.id, points: [], radius: 0, alphaCoverage: .init(x: 0, y: 0, width: 2, height: 1, rowStride: 2, bytes: [255]))])
+            }
+            await vm.flush()
+        } }
+        pass("real Wand excludes empty ellipse corners and selects transformed faint bodies for copy/delete/Undo")
+    }
+
+    static func wandPortraitSmallEllipsesStayWithinBudget() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-wand-portrait-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"),
+            cachesDirectory: root.appendingPathComponent("Cache"))
+        let vm = StudioViewModel(storage: storage)
+        let created = await vm.createProject(name: "Portrait Wand many ellipses", width: 1080, height: 1920, fps: 12)
+        try require(created, "Portrait Wand creation")
+        let centers: [CGPoint] = [.init(x: 180, y: 240), .init(x: 720, y: 240), .init(x: 180, y: 900),
+            .init(x: 720, y: 900), .init(x: 420, y: 1450), .init(x: 800, y: 1620)]
+        var elements: [DrawnElement] = []
+        for (index, center) in centers.enumerated() {
+            var element = DrawnElement(id: UUID().uuidString, tool: .circle,
+                points: [.init(x: center.x - 24, y: center.y - 32), .init(x: center.x + 24, y: center.y + 32)],
+                color: "#000000", width: 2, opacity: 1, layerID: vm.activeLayerID,
+                shape: .init(fillColor: "#000000", cornerRadius: 0))
+            if index % 2 == 1 { element.transform = try StudioElementTransform.scaleRotation(x: 0.8, y: 1.1, degrees: 30, center: center) }
+            try require(vm.commitElement(element), "Portrait ellipse commit failed")
+            elements.append(element)
+        }
+        await vm.flush()
+        let before = vm.document
+        var compactPixels = 0
+        for element in elements {
+            guard let alpha = try StudioFillService.wandElementCoverage(document: before, frame: vm.currentFrame,
+                element: element, maximumPixels: StudioSelectionMask.maximumElementProbes - compactPixels) else {
+                throw Failure(message: "Visible portrait ellipse has no compact alpha")
+            }
+            compactPixels += alpha.width * alpha.height
+        }
+        try require(elements.count > 4 && compactPixels < 100_000 && compactPixels < StudioSelectionMask.maximumElementProbes,
+            "Small portrait circles were charged once per whole canvas")
+        vm.selectedTool = .wand; vm.wandTolerance = 0; vm.wandContiguous = true
+        vm.wandSampleVisibleCanvas = true; vm.wandFeather = 0; vm.wandMode = .newSelection
+        let outside = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: CGPoint(x: 1, y: 1))
+        try require(outside && vm.selectedElementIDs.isEmpty && vm.document == before,
+            "Ordinary portrait Wand failed its budget or selected circles through empty corners")
+        let one = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: centers[3])
+        try require(one && vm.selectedElementIDs == [elements[3].id] && vm.document == before,
+            "Portrait Wand did not select only the tapped transformed ellipse")
+        vm.wandContiguous = false
+        let all = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: centers[0])
+        try require(all && vm.selectedElementIDs == Set(elements.map(\.id)) && vm.document == before,
+            "Global color Wand failed to select six actual portrait ellipses within its unchanged budget")
+        await vm.flush()
+        pass("six small native ellipses on a1080x1920 canvas use compact alpha and select within the unchanged work bound")
+    }
+
+    static func fullCanvasSelectionCoverageKeepsExistingLargeDocumentCapacity() throws {
+        var document = try StudioDocument.new(name: "Existing large coverage", width: 2050, height: 2048, fps: 12)
+        let element = DrawnElement(id: UUID().uuidString, tool: .circle,
+            points: [.init(x: 20, y: 20), .init(x: 60, y: 60)], color: "#000000", width: 2,
+            opacity: 1, layerID: document.activeLayerID, shape: .init(fillColor: "#000000", cornerRadius: 0))
+        document.frames[0].elements = [element]
+        document.schemaVersion = max(document.schemaVersion, 5)
+        try document.validate()
+        try require(document.width * document.height > StudioSelectionMask.maximumPixels,
+            "Capacity fixture did not exceed the new compact pixel-tool limit")
+        // Actual original no-crop API, with one small native-rendered source. This
+        // guards legacy selection capacity without requiring a giant artwork fixture.
+        guard let alpha = try StudioFillService.selectionCoverage(document: document,
+            frame: document.frames[0], selectedIDs: [element.id]) else { throw Failure(message: "Large no-crop coverage unavailable") }
+        let painted = alpha.reduce(0) { $0 + ($1 > 0 ? 1 : 0) }
+        try require(alpha.count == 2050 * 2048 && alpha.contains(255) && alpha.contains(0)
+            && painted > 100 && painted < 10_000,
+            "Existing no-crop coverage lost its complete native source alpha or document capacity")
+        pass("native no-crop selection coverage retains a valid2050x2048 document above the compact4MP limit")
+    }
+
     static func main() async throws {
         try await vertexAlignedDrawingEnclosure()
         setbuf(stdout, nil)
@@ -481,6 +658,9 @@ private struct Failure: Error { let message: String }
         try require(locksOpened && locksReopened.layers == lockedDocument.layers && (try render(locksReopened.document)) == lockPixels,
                     "Cold reopen lost locks or changed pixels")
         pass("explicit selected whole-layer locking is atomic reversible cancellation-safe and persistent without changing artwork")
+        try await wandFilledEllipsePixels()
+        try await wandPortraitSmallEllipsesStayWithinBudget()
+        try fullCanvasSelectionCoverageKeepsExistingLargeDocumentCapacity()
         try await moveIgnoresEraserRecords()
         try await restoredSelectionPreferencesDriveActualSelection()
         print("PASS \(passed) production area-selection groups")

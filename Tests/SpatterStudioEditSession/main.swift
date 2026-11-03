@@ -56,18 +56,23 @@ private final class NetworkTrap: URLProtocol {
         let frame = includeOnion ? doc.frames.first(where: { $0.id == doc.activeFrameID })! : doc.frames[0], prepared = try StudioFrameRenderer.prepare(frame: frame)
         let ghosts = includeOnion ? doc.onionGhosts : []
         let ghostBrushes = try ghosts.map { try StudioFrameRenderer.prepare(frame: $0.frame) }
+        let canvasSize = CGSize(width: doc.width, height: doc.height)
+        let effects = try StudioSmudgeReplay.prepare(frame: frame, layers: doc.layers,
+            canvasSize: canvasSize, rasterData: nil)
+        let ghostEffects = try ghosts.map { try StudioSmudgeReplay.prepare(frame: $0.frame,
+            layers: doc.layers, canvasSize: canvasSize, rasterData: nil) }
         var failure: Error?
         let renderer = ImageRenderer(content: Canvas { context, size in
             for (index, ghost) in ghosts.enumerated() {
                 var ghostContext = StudioFrameRenderer.onionContext(context, opacity: ghost.opacity,
                     previous: ghost.previous, tinted: ghost.tinted)
                 if let error = StudioFrameRenderer.draw(context: &ghostContext, frame: ghost.frame, layers: doc.layers,
-                    canvasSize: CGSize(width: doc.width, height: doc.height), size: size, preparedBrushes: ghostBrushes[index]) {
+                    canvasSize: CGSize(width: doc.width, height: doc.height), size: size, preparedBrushes: ghostBrushes[index], preparedSmudges: ghostEffects[index]) {
                     failure = error; return
                 }
             }
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: doc.layers,
-                canvasSize: CGSize(width: doc.width, height: doc.height), size: size, preparedBrushes: prepared)
+                canvasSize: CGSize(width: doc.width, height: doc.height), size: size, preparedBrushes: prepared, preparedSmudges: effects)
         }.frame(width: CGFloat(doc.width), height: CGFloat(doc.height)))
         renderer.scale = 1
         guard let image = renderer.cgImage else { throw Failure(message: "Real erasure render missing") }
@@ -80,6 +85,16 @@ private final class NetworkTrap: URLProtocol {
             context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height)); return true
         }
         try require(decoded, "Real erasure pixel decoding failed"); return bytes
+    }
+    static func rgbaImage(_ image: CGImage) throws -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let decoded = bytes.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height)); return true
+        }
+        try require(decoded, "PNG pixel decoding failed"); return bytes
     }
     static func erasureArtwork(_ vm: StudioViewModel) throws {
         for (id, color) in [("lower-blue", "#0000FF"), ("selected-red", "#FF0000")] {
@@ -2456,6 +2471,344 @@ private final class NetworkTrap: URLProtocol {
                 try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
                     && target.document == held && target.canUndo == undo && target.canRedo == redo && target.projectAudioTracks.isEmpty
                     && (try fm.contentsOfDirectory(atPath: scratch.path)).isEmpty, "Library audio crossed a context/cancel fence or leaked scratch")
+            } }
+        }
+        @MainActor func effectArtwork(_ vm: StudioViewModel, selected: Bool) throws {
+            try require(vm.commitElement(.init(id: "effect-target", tool: .rectangle,
+                points: [.init(x: 4, y: 4), .init(x: 124, y: 92)], color: "#777777", width: 2, opacity: 1,
+                layerID: vm.activeLayerID, shape: .init(fillColor: "#777777"))), "Raster base art failed")
+            try require(vm.commitElement(.init(id: "effect-contrast", tool: .rectangle,
+                points: [.init(x: 60, y: 10), .init(x: 90, y: 86)], color: "#999999", width: 2, opacity: 1,
+                layerID: vm.activeLayerID, shape: .init(fillColor: "#999999"))), "Raster contrast art failed")
+            vm.selectedTool = .move
+            if selected {
+                _ = try vm.applyStudioCommands(.init(requestID: UUID(), projectID: vm.document.id, expectedRevision: vm.document.revision,
+                    action: .apply([.selectElements(.init(frame: .id(vm.currentFrame.id), elementIDs: ["effect-target"]))])))
+            }
+        }
+        @MainActor func manualEffect(_ instruction: SpatterPixelEffectInstruction, _ vm: StudioViewModel) async throws -> Bool {
+            let viewport = CGSize(width: vm.canvasWidth, height: vm.canvasHeight)
+            let points = instruction.points.map { CGPoint(x: $0.x * Double(vm.canvasWidth) / 100, y: $0.y * Double(vm.canvasHeight) / 100) }
+            vm.selectedTool = instruction.settings.tool
+            switch instruction.settings {
+            case .smudge(let value):
+                // The existing touch Smudge default strength is 0.5; its factory
+                // is shared with explicit settings, and this equality fixture uses it.
+                vm.strokeWidth = value.diameter; vm.strokeOpacity = value.opacity
+                guard let context = StudioSmudgeContext.current(vm) else { throw Failure(message: "Manual Smudge context missing") }
+                let layout = StudioSmudgeInput.Layout(viewport: viewport, scale: 1, offset: .zero)
+                var input = StudioSmudgeInput(context: context, layout: layout)
+                for point in points { try input.append(point, current: context, layout: layout, foreground: true) }
+                return await StudioSmudgeSession().apply(vm, input: input)
+            case .blur(let value):
+                vm.strokeWidth = value.diameter; vm.strokeOpacity = value.strength; vm.blurHardness = value.hardness; vm.blurRadius = value.radius
+                guard let context = StudioBlurContext.current(vm) else { throw Failure(message: "Manual Blur context missing") }
+                let layout = StudioBlurInput.Layout(viewport: viewport, scale: 1, offset: .zero)
+                var input = StudioBlurInput(context: context, layout: layout)
+                for point in points { try input.append(point, current: context, layout: layout, foreground: true) }
+                return await StudioBlurSession().apply(vm, input: input)
+            case .sharpen(let value):
+                vm.strokeWidth = value.diameter; vm.strokeOpacity = value.opacity; vm.sharpenHardness = value.hardness
+                vm.sharpenRadius = value.radius; vm.sharpenAmount = value.amount; vm.sharpenThreshold = value.threshold
+                guard let context = StudioSharpenContext.current(vm) else { throw Failure(message: "Manual Sharpen context missing") }
+                let layout = StudioSharpenInput.Layout(viewport: viewport, scale: 1, offset: .zero)
+                var input = StudioSharpenInput(context: context, layout: layout)
+                for point in points { try input.append(point, current: context, layout: layout, foreground: true) }
+                return await StudioSharpenSession().apply(vm, input: input)
+            case .dodgeBurn(let value):
+                vm.strokeWidth = value.diameter; vm.strokeOpacity = value.opacity; vm.dodgeBurnHardness = value.hardness
+                vm.dodgeBurnExposure = value.exposure; vm.dodgeBurnRange = value.range; vm.dodgeBurnProtectTones = value.protectTones
+                guard let context = StudioDodgeBurnContext.current(vm) else { throw Failure(message: "Manual Exposure context missing") }
+                let layout = StudioDodgeBurnInput.Layout(viewport: viewport, scale: 1, offset: .zero)
+                var input = StudioDodgeBurnInput(context: context, layout: layout)
+                for point in points { try input.append(point, current: context, layout: layout, foreground: true) }
+                return await StudioDodgeBurnSession().apply(vm, input: input)
+            }
+        }
+        try await test("all five typed raster tools match manual native pixels preserve settings and remain editable across Undo save reopen and real PNG") {
+            for text in SpatterPixelEffectInstruction.examples { for selected in [false, true] {
+                let instruction = try SpatterPixelEffectInstruction.parse(text)
+                let (vm, store) = try await fixture("effect-typed"), (manual, _) = try await fixture("effect-touch")
+                try effectArtwork(vm, selected: selected); try effectArtwork(manual, selected: selected)
+                await vm.flush(); await manual.flush()
+                try require(await manualEffect(instruction, manual), "Manual native effect failed: \(manual.message ?? "")")
+                vm.strokeWidth = 7; vm.strokeOpacity = 0.27; vm.blurRadius = 1; vm.blurHardness = 0.25
+                vm.sharpenRadius = 5; vm.sharpenAmount = 0.3; vm.sharpenThreshold = 0.4; vm.sharpenHardness = 0.6
+                vm.dodgeBurnRange = .shadows; vm.dodgeBurnExposure = 0.1; vm.dodgeBurnHardness = 0.2; vm.dodgeBurnProtectTones = false
+                _ = vm.applyCustomColorHex("#00FF00")
+                let before = vm.document, originalPixels = try erasurePixels(before), selectedIDs = vm.selectedElementIDs
+                let session = SpatterStudioEditSession()
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                guard session.status == .applied, let edit = session.appliedEdit, let effect = vm.currentFrame.elements.last,
+                      let native = manual.currentFrame.elements.last else { throw Failure(message: "Raster effect failed: \(session.notice ?? "")") }
+                let pixels = try erasurePixels(vm.document)
+                try require(effect.tool == instruction.settings.tool && effect.points == native.points && effect.width == native.width
+                    && effect.opacity == native.opacity && effect.smudge == native.smudge && effect.blur == native.blur
+                    && effect.sharpen == native.sharpen && effect.dodgeBurn == native.dodgeBurn && effect.selectionMask == native.selectionMask
+                    && pixels == (try erasurePixels(manual.document)) && pixels != originalPixels
+                    && Array(vm.currentFrame.elements.dropLast()) == before.frames[0].elements && vm.layers == before.layers,
+                    "Typed native effect changed unrelated content, flattened art or differed from manual pixels")
+                try require(vm.selectedTool == .move && vm.strokeColorHex == "#00FF00" && vm.strokeWidth == 7 && vm.strokeOpacity == 0.27
+                    && vm.blurRadius == 1 && vm.blurHardness == 0.25 && vm.sharpenRadius == 5 && vm.sharpenAmount == 0.3
+                    && vm.sharpenThreshold == 0.4 && vm.sharpenHardness == 0.6 && vm.dodgeBurnRange == .shadows
+                    && vm.dodgeBurnExposure == 0.1 && vm.dodgeBurnHardness == 0.2 && !vm.dodgeBurnProtectTones
+                    && vm.selectedElementIDs == selectedIDs, "Typed preparation mutated the tool or remembered settings")
+                try require(edit.receipt.revision == before.revision + 1 && edit.receipt.createdElementIDs == [effect.id]
+                    && edit.pixelEffect == instruction && edit.pixelEffectSelectedDrawings == selectedIDs.count
+                    && edit.summary.contains(instruction.summary) && edit.summary.contains("real change") && !edit.summary.contains("saved")
+                    && (selected ? effect.selectionMask != nil : effect.selectionMask == nil), "Raster receipt/coverage invented success")
+                if selected { try require(Array(pixels.prefix(4)) == Array(originalPixels.prefix(4)), "Effect changed unselected canvas pixels") }
+                let changed = vm.document
+                try require(session.undoAppliedEdit(in: vm, currentScope: guest) && content(vm.document) == content(before), "Effect was not one Undo")
+                vm.redo(); try require(content(vm.document) == content(changed), "Effect Redo changed editable descriptor")
+                try require(await vm.save(), "Effect save failed")
+                let saved = try store.loadAnimation(id: vm.document.id)!, cold = StudioViewModel(storage: store)
+                try require(await cold.openProject(saved.metadata), "Effect cold open failed")
+                try require(cold.document == vm.document && (try erasurePixels(cold.document)) == pixels, "Effect descriptor/mask lost on cold reopen")
+                let output = try await StudioExportService().export(document: cold.document, format: .pngSequence, outputParent: root, background: .transparent)
+                guard let url = output.imageURLs.first, let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let reopened = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Failure(message: "Raster PNG export did not reopen") }
+                let exported = try StudioExportService().render(cold.currentFrame, document: cold.document, background: .transparent, raster: nil)
+                try require(reopened.width == cold.canvasWidth && reopened.height == cold.canvasHeight && output.imageURLs.count == 1
+                    && (try rgbaImage(reopened)) == (try rgbaImage(exported)), "Actual raster effect export lost pixels/dimensions")
+                await manual.flush(); await cold.flush()
+            } }
+        }
+        try await test("every explicit raster-tool setting changes the actual native operation on real captured artwork") {
+            let (vm, _) = try await fixture("effect-settings")
+            try effectArtwork(vm, selected: false); await vm.flush()
+            let layer = try StudioBlurCapture.capture(document: vm.document, selection: [], raster: nil)
+            let original = try StudioSmudge.Pixels(width: layer.pixels.width, height: layer.pixels.height, rgba: layer.pixels.rgba)
+            for text in SpatterPixelEffectInstruction.examples {
+                let instruction = try SpatterPixelEffectInstruction.parse(text)
+                let element = try instruction.element(id: "base-setting", layerID: vm.activeLayerID, width: vm.canvasWidth, height: vm.canvasHeight)
+                let baseline = try StudioSmudgeReplay.applyPixelEffect(element, to: original)
+                var replacements: [(String, String)] = [("size \(Int(element.width)) px", "size 48 px")]
+                switch instruction.settings {
+                case .smudge: replacements += [("strength 50%", "strength 25%"), ("opacity 80%", "opacity 40%")]
+                case .blur: replacements += [("hardness 50%", "hardness 0%"), ("radius 4 px", "radius 8 px"), ("strength 80%", "strength 40%")]
+                case .sharpen: replacements += [("hardness 50%", "hardness 0%"), ("radius 2 px", "radius 4 px"), ("amount 100%", "amount 50%"), ("threshold 2%", "threshold 100%"), ("opacity 80%", "opacity 40%")]
+                case .dodgeBurn: replacements += [("hardness 50%", "hardness 0%"), ("exposure 25%", "exposure 50%"), ("range midtones", "range highlights"), ("protect tones on", "protect tones off"), ("opacity 80%", "opacity 40%")]
+                }
+                replacements.append(("(80%, 60%)", "(80%, 80%)"))
+                for (old, new) in replacements {
+                    let changed = try SpatterPixelEffectInstruction.parse(text.replacingOccurrences(of: old, with: new))
+                    let variant = try changed.element(id: "variant-setting", layerID: vm.activeLayerID, width: vm.canvasWidth, height: vm.canvasHeight)
+                    let pixels = try StudioSmudgeReplay.applyPixelEffect(variant, to: original)
+                    try require(pixels != baseline, "Explicit \(instruction.settings.tool.rawValue) setting \(old) only changed its label")
+                }
+            }
+        }
+        try await test("native raster effects enforce the current plan before preparation and after asynchronous work for touch and typed edits") {
+            let provider = StudioPlanGate.provider
+            defer { StudioPlanGate.provider = provider }
+            var denied = false
+            StudioPlanGate.provider = { var value = StudioPlanGate.unrestricted; value.advancedTools = !denied; return value }
+            for text in SpatterPixelEffectInstruction.examples {
+                let instruction = try SpatterPixelEffectInstruction.parse(text)
+                let (manual, _) = try await fixture("effect-plan-touch")
+                try effectArtwork(manual, selected: false); await manual.flush()
+                let original = manual.document
+                denied = true
+                try require(!(try await manualEffect(instruction, manual)) && manual.document == original, "Touch effect bypassed existing plan")
+                denied = false
+                for boundary in 1...2 {
+                    let (vm, _) = try await fixture("effect-plan-typed"), gate = Gate()
+                    try effectArtwork(vm, selected: false); await vm.flush()
+                    let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                    let session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                    _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest })
+                    if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                    denied = true
+                    try gate.release(boundary); await session.waitForCompletion()
+                    try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before
+                        && vm.canUndo == undo && vm.canRedo == redo, "Typed effect bypassed revoked plan after async work")
+                    denied = false; await vm.flush()
+                }
+            }
+        }
+        try await test("all native raster effect no-ops reject without history and each route fences live authority") {
+            for text in SpatterPixelEffectInstruction.examples {
+                let (blank, _) = try await fixture("effect-no-op"), noOp = SpatterStudioEditSession()
+                let before = blank.document, undo = blank.canUndo, redo = blank.canRedo
+                _ = noOp.submit(text, in: blank, accountID: nil, currentScope: { guest }); await noOp.waitForCompletion()
+                try require(noOp.status == .rejected && noOp.notice?.contains("does not change any pixels") == true
+                    && noOp.appliedEdit == nil && blank.document == before && blank.canUndo == undo && blank.canRedo == redo,
+                    "Blank effect invented a successful edit or history")
+                for boundary in 1...2 { for change in ["revision", "frame", "coverage", "account", "playback", "cancel"] {
+                    let (vm, _) = try await fixture("effect-fence"), gate = Gate()
+                    try effectArtwork(vm, selected: true); vm.addFrame(); vm.prevFrame(); await vm.flush()
+                    var account: String? = nil
+                    let session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                    _ = session.submit(text, in: vm, accountID: nil, currentScope: { .init(isStudioVisible: true, accountID: account) })
+                    if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                    if change == "revision" { vm.setLayerOpacity(vm.activeLayerID, opacity: 0.5); await vm.flush() }
+                    else if change == "frame" { vm.nextFrame() }
+                    else if change == "coverage" { vm.clearImageRegion() }
+                    else if change == "playback" { vm.togglePlayback() }
+                    else if change == "account" { account = "other" }
+                    else { session.cancel() }
+                    let held = vm.document, canUndo = vm.canUndo, canRedo = vm.canRedo
+                    try gate.release(boundary); await session.waitForCompletion()
+                    try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
+                        && vm.document == held && vm.canUndo == canUndo && vm.canRedo == canRedo, "Native effect crossed captured authority/cancel fence")
+                    if vm.isPlaying { vm.togglePlayback() }; await vm.flush()
+                } }
+                let (locked, _) = try await fixture("effect-lock"), denied = SpatterStudioEditSession()
+                locked.setLayerLockMode(locked.activeLayerID, mode: .alpha); await locked.flush()
+                let held = locked.document
+                _ = denied.submit(text, in: locked, accountID: nil, currentScope: { guest }); await denied.waitForCompletion()
+                try require(denied.status == .rejected && locked.document == held && denied.appliedEdit == nil, "Alpha lock bypassed")
+            }
+            let (image, _, asset, _) = try await imageReflectionFixture("pixel-effect-image-selection")
+            let before = image.document, source = image.originalImageSource(asset), session = SpatterStudioEditSession()
+            _ = session.submit(SpatterPixelEffectInstruction.blurExample, in: image, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+            try require(session.status == .rejected && session.notice?.contains("Deselect the image") == true
+                && image.document == before && image.originalImageSource(asset) == source, "Image selection silently broadened")
+        }
+        try await test("canvas Gradient matches the manual native operation preserves preferences and persists editable mask descriptor pixels") {
+            for selected in [false, true] { for text in [SpatterGradientInstruction.linearExample, SpatterGradientInstruction.radialExample] {
+                let (vm, store) = try await fixture("gradient-typed"), (manual, _) = try await fixture("gradient-touch")
+                for target in [vm, manual] {
+                    if selected { try erasureArtwork(target) }
+                    else { try require(target.commitElement(styledStroke(target)), "Gradient underlying art fixture failed") }
+                    await target.flush()
+                }
+                let instruction = try SpatterGradientInstruction.parse(text)
+                manual.selectedTool = .gradient
+                try require(manual.applyCustomColorHex(instruction.firstColor), "Manual first color failed")
+                if let color = instruction.lastColor { try require(manual.applyCustomColorHex(color, gradientEnd: true), "Manual last color failed") }
+                manual.gradientFadeToTransparent = instruction.lastColor == nil
+                manual.gradientShape = instruction.shape; manual.gradientInterpolation = instruction.interpolation
+                manual.gradientDither = instruction.dither; manual.strokeOpacity = instruction.opacity
+                guard let capture = manual.captureGradient() else { throw Failure(message: "Manual gradient capture unavailable") }
+                let points = try instruction.canvasPoints(width: manual.canvasWidth, height: manual.canvasHeight)
+                try require(await StudioGradientSession().apply(manual, capture: capture, from: points.start, to: points.end), "Manual native gradient failed: \(manual.message ?? "")")
+                // Deliberately different remembered values must not be rewritten
+                // merely to prepare a typed native Gradient operation.
+                vm.selectedTool = .move; vm.gradientShape = .radial; vm.gradientInterpolation = .sRGB
+                vm.gradientDither = false; vm.gradientFadeToTransparent = true; vm.strokeOpacity = 0.33
+                _ = vm.applyCustomColorHex("#00FF00"); _ = vm.applyCustomColorHex("#FFFF00", gradientEnd: true)
+                let before = vm.document, beforePixels = try erasurePixels(before)
+                let tool = vm.selectedTool, firstColor = vm.strokeColorHex, lastColor = vm.brushGradientEndColorHex
+                let selection = vm.selectedElementIDs, session = SpatterStudioEditSession()
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                guard session.status == .applied, let edit = session.appliedEdit, let added = vm.currentFrame.elements.last,
+                      let native = manual.currentFrame.elements.last else { throw Failure(message: "Typed gradient unavailable: \(session.notice ?? "")") }
+                let pixels = try erasurePixels(vm.document)
+                try require(edit.gradientFill == instruction && edit.receipt.createdElementIDs == [added.id]
+                    && edit.receipt.revision == before.revision + 1 && vm.frames.count == before.frames.count
+                    && vm.layers == before.layers && Array(vm.currentFrame.elements.dropLast()) == before.frames[0].elements
+                    && added.tool == .fill && added.brush == nil && added.gradient == native.gradient
+                    && added.fillMask == native.fillMask && added.points == native.points && added.opacity == instruction.opacity
+                    && pixels == (try erasurePixels(manual.document)) && pixels != beforePixels,
+                    "Typed Gradient differed from manual pixels/mask/settings or flattened original art")
+                try require(vm.selectedTool == tool && vm.strokeColorHex == firstColor && vm.brushGradientEndColorHex == lastColor
+                    && vm.strokeOpacity == 0.33 && vm.gradientShape == .radial && vm.gradientInterpolation == .sRGB
+                    && !vm.gradientDither && vm.gradientFadeToTransparent && vm.selectedElementIDs == selection,
+                    "Typed Gradient changed remembered settings/tool/selection")
+                let coverage = added.fillMask!.spans.reduce(0) { $0 + $1.end - $1.start }
+                try require(edit.gradientCoveredPixels == coverage && edit.gradientSelectedDrawingCount == selection.count
+                    && coverage > 0 && (!selected || coverage < vm.canvasWidth * vm.canvasHeight)
+                    && edit.summary.contains(instruction.summary) && edit.summary.contains("real pixel change")
+                    && !edit.summary.contains("saved"), "Gradient receipt invented coverage/save success")
+                if selected { try require(Array(pixels.prefix(4)) == Array(beforePixels.prefix(4)), "Selected gradient changed pixels outside coverage") }
+                let changed = vm.document
+                try require(session.undoAppliedEdit(in: vm, currentScope: guest) && content(vm.document) == content(before), "Gradient was not one Undo")
+                vm.redo(); try require(content(vm.document) == content(changed), "Gradient Redo changed editable payload")
+                try require(await vm.save(), "Gradient save failed")
+                let saved = try store.loadAnimation(id: vm.document.id)!, cold = StudioViewModel(storage: store)
+                try require(await cold.openProject(saved.metadata), "Gradient cold reopen failed")
+                try require(cold.document == vm.document && (try erasurePixels(cold.document)) == pixels, "Gradient mask/descriptor/pixels failed cold reopen")
+                // Export the reopened document with the production compositor.
+                let exporter = StudioExportService()
+                let image = try exporter.render(cold.currentFrame, document: cold.document, background: .transparent, raster: nil)
+                let output = try await exporter.export(document: cold.document, format: .pngSequence,
+                    outputParent: root, background: .transparent)
+                guard let url = output.imageURLs.first,
+                      let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let reopened = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Failure(message: "Gradient export PNG did not reopen") }
+                func rgba(_ image: CGImage) throws -> [UInt8] {
+                    var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+                    let decoded = bytes.withUnsafeMutableBytes { buffer -> Bool in
+                        guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+                            bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+                        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height)); return true
+                    }
+                    try require(decoded, "Gradient PNG pixel decoding failed"); return bytes
+                }
+                try require(output.imageURLs.count == 1 && image.width == cold.canvasWidth && image.height == cold.canvasHeight
+                    && reopened.width == image.width && reopened.height == image.height && (try rgba(image)) == (try rgba(reopened)),
+                    "Reopened gradient export file lost native pixels/dimensions")
+                await manual.flush(); await cold.flush()
+            } }
+        }
+        try await test("explicit native Gradient settings change actual pixels and an identical opaque gradient is a factual no-op") {
+            var renders: [[UInt8]] = []
+            for text in [SpatterGradientInstruction.linearExample,
+                SpatterGradientInstruction.linearExample.replacingOccurrences(of: "linear-light", with: "sRGB"),
+                SpatterGradientInstruction.linearExample.replacingOccurrences(of: "dither on", with: "dither off"),
+                SpatterGradientInstruction.linearExample.replacingOccurrences(of: "opacity 80%", with: "opacity 40%"),
+                SpatterGradientInstruction.linearExample.replacingOccurrences(of: "(90%, 80%)", with: "(20%, 90%)"),
+                SpatterGradientInstruction.linearExample.replacingOccurrences(of: "linear gradient", with: "radial gradient")] {
+                let (vm, _) = try await fixture("gradient-setting"), session = SpatterStudioEditSession()
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == .applied, "Explicit Gradient setting refused: \(session.notice ?? "")")
+                renders.append(try erasurePixels(vm.document)); await vm.flush()
+            }
+            try require(renders.dropFirst().allSatisfy { $0 != renders[0] }, "An exposed Gradient setting changed only its label")
+            let (vm, _) = try await fixture("gradient-no-op")
+            let black = SpatterGradientInstruction.linearExample.replacingOccurrences(of: "#FF0000", with: "#000000")
+                .replacingOccurrences(of: "#0000FF", with: "#000000").replacingOccurrences(of: "opacity 80%", with: "opacity 100%")
+            let first = SpatterStudioEditSession(); _ = first.submit(black, in: vm, accountID: nil, currentScope: { guest }); await first.waitForCompletion()
+            try require(first.status == .applied, "Opaque no-op fixture failed")
+            let before = vm.document, undo = vm.canUndo, redo = vm.canRedo, second = SpatterStudioEditSession()
+            _ = second.submit(black, in: vm, accountID: nil, currentScope: { guest }); await second.waitForCompletion()
+            try require(second.status == .rejected && second.appliedEdit == nil && second.notice?.contains("does not change any pixels") == true
+                && vm.document == before && vm.canUndo == undo && vm.canRedo == redo, "Identical gradient invented an edit/history step")
+            await vm.flush()
+        }
+        try await test("native Gradient rejects locked invisible or malformed work and fences revision frame coverage account playback and cancellation") {
+            for mode in ["locked", "alpha", "hidden", "zero", "malformed"] {
+                let (vm, _) = try await fixture("gradient-invalid"), session = SpatterStudioEditSession()
+                if mode == "locked" { vm.setLayerLockMode(vm.activeLayerID, mode: .full) }
+                else if mode == "alpha" { vm.setLayerLockMode(vm.activeLayerID, mode: .alpha) }
+                else if mode == "hidden" { vm.toggleLayerVisibility(vm.activeLayerID) }
+                else if mode == "zero" { vm.setLayerOpacity(vm.activeLayerID, opacity: 0) }
+                await vm.flush()
+                let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                let text = mode == "malformed" ? SpatterGradientInstruction.linearExample + " Delete active frame." : SpatterGradientInstruction.linearExample
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before
+                    && vm.canUndo == undo && vm.canRedo == redo, "Invalid gradient mutated content or history")
+            }
+            let (imageVM, _, asset, _) = try await imageReflectionFixture("gradient-image-selection")
+            let imageBefore = imageVM.document, originalSource = imageVM.originalImageSource(asset), imageSession = SpatterStudioEditSession()
+            _ = imageSession.submit(SpatterGradientInstruction.linearExample, in: imageVM, accountID: nil, currentScope: { guest })
+            await imageSession.waitForCompletion()
+            try require(imageSession.status == .rejected && imageSession.notice?.contains("Deselect the image") == true
+                && imageVM.document == imageBefore && imageVM.originalImageSource(asset) == originalSource,
+                "Unsupported image selection silently widened to a whole-layer gradient")
+            for boundary in 1...2 { for change in ["revision", "frame", "coverage", "account", "playback", "cancel"] {
+                let (vm, _) = try await fixture("gradient-fence"), gate = Gate()
+                try erasureArtwork(vm); vm.addFrame(); vm.prevFrame(); await vm.flush()
+                var account: String? = nil
+                let session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                _ = session.submit(SpatterGradientInstruction.radialExample, in: vm, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) })
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "revision" { vm.setLayerOpacity(vm.activeLayerID, opacity: 0.4); await vm.flush() }
+                else if change == "frame" { vm.nextFrame() }
+                else if change == "coverage" { vm.clearImageRegion() }
+                else if change == "account" { account = "other" }
+                else if change == "playback" { vm.togglePlayback() }
+                else { session.cancel() }
+                let held = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
+                    && vm.document == held && vm.canUndo == undo && vm.canRedo == redo, "Gradient crossed a captured authority/cancellation fence")
+                if vm.isPlaying { vm.togglePlayback() }; await vm.flush()
             } }
         }
         try await test("single shape instructions render persist and undo through the real Studio session") {

@@ -388,6 +388,91 @@ private enum Golden {
                 var locked = doc; locked.layers[0].lockMode = "position"
                 try rejects("position-locked layer") { _ = try SpatterBrushStrokeInstruction.parse(SpatterBrushStrokeInstruction.example).prepare(in: StudioCommandContext(document: locked)) }
             }
+            try test("tagged native raster effect grammars preserve complete per-tool settings geometry and fail closed") {
+                let expected: [DrawingTool] = [.smudge, .blur, .sharpen, .dodge, .burn]
+                for (index, text) in SpatterPixelEffectInstruction.examples.enumerated() {
+                    let instruction = try SpatterPixelEffectInstruction.parse(text)
+                    let element = try instruction.element(id: "effect-fixture", layerID: "active", width: 320, height: 240)
+                    try require(instruction.settings.tool == expected[index] && element.tool == expected[index]
+                        && element.points.first == StrokePoint(x: 64, y: 96) && element.points.last == StrokePoint(x: 256, y: 144)
+                        && element.color == "#000000" && element.brush == nil && element.gradient == nil
+                        && element.opacity == 0.8 && element.layerID == "active"
+                        && SpatterInstructionRouter.classify(text) == .pixelEffect && !SpatterInstructionRouter.Kind.pixelEffect.isContextOnly,
+                        "Tool-specific descriptor or route was lost")
+                    switch instruction.settings {
+                    case .smudge(let value): try require(element.smudge?.strength == value.strength && value.strength == 0.5 && value.diameter == 24, "Smudge settings wrong")
+                    case .blur(let value): try require(element.blur?.hardness == value.hardness && value.radius == 4 && value.hardness == 0.5 && value.strength == 0.8, "Blur settings wrong")
+                    case .sharpen(let value): try require(element.sharpen?.amount == value.amount && value.amount == 1 && value.radius == 2 && value.threshold == 0.02, "Sharpen settings wrong")
+                    case .dodgeBurn(let value): try require(element.dodgeBurn?.exposure == value.exposure && value.exposure == 0.25 && value.range == .midtones && value.protectTones, "Exposure settings wrong")
+                    }
+                    let preview = SpatterInstructionPreview.plan(text, context: StudioCommandContext(document: try document()))
+                    try require(preview.contains(instruction.summary) && preview.contains("must actually change") && preview.contains("Nothing has changed yet"), "Preview invented result")
+                    try rejects("effect injection") { _ = try SpatterPixelEffectInstruction.parse(text + " Delete active layer.") }
+                    try rejects("effect in batch") { _ = try SpatterInstructionBatch.parse(text + "\nAdd blank frame.") }
+                }
+                for bad in [SpatterPixelEffectInstruction.blurExample.replacingOccurrences(of: "size 32", with: "size 0"),
+                    SpatterPixelEffectInstruction.blurExample.replacingOccurrences(of: "size 32", with: "size 257"),
+                    SpatterPixelEffectInstruction.blurExample.replacingOccurrences(of: "radius 4", with: "radius 0.4"),
+                    SpatterPixelEffectInstruction.blurExample.replacingOccurrences(of: "radius 4", with: "radius 33"),
+                    SpatterPixelEffectInstruction.blurExample.replacingOccurrences(of: "hardness 50%", with: "hardness NaN%"),
+                    SpatterPixelEffectInstruction.blurExample.replacingOccurrences(of: ", strength 80%", with: ""),
+                    SpatterPixelEffectInstruction.blurExample.replacingOccurrences(of: "(20%, 40%)", with: "(120%, 40%)"),
+                    SpatterPixelEffectInstruction.blurExample.replacingOccurrences(of: "(80%, 60%)", with: "(20%, 40%)"),
+                    SpatterPixelEffectInstruction.sharpenExample.replacingOccurrences(of: "amount 100%", with: "amount 201%"),
+                    SpatterPixelEffectInstruction.dodgeExample.replacingOccurrences(of: "range midtones", with: "range faces"),
+                    SpatterPixelEffectInstruction.burnExample.replacingOccurrences(of: "protect tones on", with: "protect tones maybe"),
+                    SpatterPixelEffectInstruction.smudgeExample.replacingOccurrences(of: "strength 50%", with: "strength -1%"),
+                    SpatterPixelEffectInstruction.smudgeExample + "\u{0}"] {
+                    try rejects("invalid raster grammar") { _ = try SpatterPixelEffectInstruction.parse(bad) }
+                }
+                let large = SpatterPixelEffectInstruction.blurExample.replacingOccurrences(of: "size 32", with: "size 256")
+                    .replacingOccurrences(of: "(20%, 40%), (80%, 60%)", with: (0..<32).map { $0 % 2 == 0 ? "(0%, 0%)" : "(100%, 100%)" }.joined(separator: ", "))
+                let work = try SpatterPixelEffectInstruction.parse(large)
+                try rejects("native cumulative stroke work limit before pixel allocation") { _ = try work.element(id: "limit", layerID: "active", width: 2048, height: 2048) }
+                let bounded = try SpatterPixelEffectInstruction.parse(SpatterPixelEffectInstruction.blurExample)
+                try rejects("native image limit") { _ = try bounded.element(id: "limit", layerID: "active", width: 4096, height: 4096) }
+            }
+            try test("canvas Gradient grammar captures native settings distinctly from the Gradient brush and refuses unsafe input") {
+                let linear = try SpatterGradientInstruction.parse(SpatterGradientInstruction.linearExample)
+                let radial = try SpatterGradientInstruction.parse(SpatterGradientInstruction.radialExample)
+                let points = try linear.canvasPoints(width: 200, height: 100), descriptor = try linear.descriptor()
+                try require(linear.shape == .linear && points.start == CGPoint(x: 20, y: 20)
+                    && points.end == CGPoint(x: 180, y: 80) && linear.opacity == 0.8
+                    && descriptor.interpolation == .linearLight && descriptor.dither
+                    && descriptor.stops == [.init(location: 0, color: .init(red: 1, green: 0, blue: 0)),
+                        .init(location: 1, color: .init(red: 0, green: 0, blue: 1))], "Explicit gradient geometry/settings lost")
+                let fade = try radial.descriptor()
+                try require(radial.shape == .radial && radial.lastColor == nil && radial.opacity == 0.7
+                    && fade.interpolation == .sRGB && !fade.dither && fade.stops[1].color == .init(red: 1, green: 0, blue: 0, alpha: 0), "Native transparent fade settings lost")
+                try require(SpatterInstructionRouter.classify(SpatterGradientInstruction.linearExample) == .gradientFill
+                    && SpatterInstructionRouter.classify(SpatterBrushStrokeInstruction.gradientExample) == .brushStroke
+                    && !SpatterInstructionRouter.Kind.gradientFill.isContextOnly
+                    && SpatterStudioControlRegistry.control(for: .gradient)?.grammars == ["gradientFill"], "Canvas/brush routes confused")
+                let context = StudioCommandContext(document: try document())
+                let preview = SpatterInstructionPreview.plan(SpatterGradientInstruction.radialExample, context: context)
+                try require(preview.contains(radial.summary) && preview.contains("selection limits coverage")
+                    && preview.contains("Nothing has changed yet"), "Gradient preview overclaims or omits settings")
+                for bad in [SpatterGradientInstruction.linearExample + " Delete active frame.",
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: "10%", with: "101%"),
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: "10%", with: "NaN%"),
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: "10%", with: "-10%"),
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: "80%, interpolation", with: "0%, interpolation"),
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: "80%, interpolation", with: "101%, interpolation"),
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: "linear gradient", with: "angle gradient"),
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: "linear-light", with: "XYZ"),
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: "#0000FF", with: "#GGGGGG"),
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: ", dither on", with: ""),
+                    SpatterGradientInstruction.linearExample.replacingOccurrences(of: "dither on", with: "dither maybe"),
+                    SpatterGradientInstruction.linearExample + "\u{0}"] {
+                    try rejects("gradient syntax: \(bad)") { _ = try SpatterGradientInstruction.parse(bad) }
+                }
+                let tiny = try SpatterGradientInstruction.parse(SpatterGradientInstruction.linearExample
+                    .replacingOccurrences(of: "(90%, 80%)", with: "(10.01%, 20%)"))
+                try rejects("subpixel gradient direction") { _ = try tiny.canvasPoints(width: 128, height: 96) }
+                try rejects("empty canvas") { _ = try linear.canvasPoints(width: 0, height: 96) }
+                try rejects("native gradient pixel limit") { _ = try linear.canvasPoints(width: 4096, height: 4096) }
+                try rejects("gradient in context-only batch") { _ = try SpatterInstructionBatch.parse(SpatterGradientInstruction.linearExample + "\nAdd blank frame.") }
+            }
             try test("library sound instructions accept only catalogue IDs and explicit bounded timing and lanes") {
                 let parsed = try SpatterLibrarySoundInstruction.parse(SpatterLibrarySoundInstruction.example)
                 try require(parsed.track == 2 && parsed.startSeconds == 0 && parsed.assetID.count == 64
@@ -609,11 +694,9 @@ private enum Golden {
                     && SpatterStudioControlRegistry.control(for: .wand)?.grammars == ["wandSelection"]
                     && SpatterStudioControlRegistry.control(forPanel: "export")?.grammars == ["projectExport"]
                     && SpatterStudioControlRegistry.control(forPanel: "addImage")?.grammars == ["libraryPicture"], "Selection, picture or export route missing")
-                for tool in [DrawingTool.smudge, .blur, .sharpen, .dodge, .burn, .gradient] {
-                    guard let control = SpatterStudioControlRegistry.control(for: tool), case .manual(let reason) = control.route else {
-                        throw Failure(message: "\(tool.rawValue) must stay manual")
-                    }
-                    try require(reason.contains("could not preview or verify"), "Pixel tool \(tool.rawValue) lacks its reason")
+                for tool in [DrawingTool.smudge, .blur, .sharpen, .dodge, .burn] {
+                    guard let control = SpatterStudioControlRegistry.control(for: tool) else { throw Failure(message: "Raster control missing") }
+                    try require(control.grammars == ["pixelEffect"] && control.explanation.contains("pixelEffect"), "Native raster tool route missing or overclaimed")
                 }
                 try require(Set(SpatterStudioControlRegistry.panelKeys).count == SpatterStudioControlRegistry.panelKeys.count, "Panel keys repeat")
                 // The validator catches drift in both directions.
@@ -682,7 +765,7 @@ private enum Golden {
                     "imagePlacement": .imagePlacement, "textUpdate": .textUpdate, "audioClip": .audioClip, "audioTrack": .audioTrack,
                     "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "shape": .shape, "batch": .batch,
                     "fill": .fill, "selectByID": .selectByID, "sourceReference": .sourceReference,
-                    "areaSelection": .areaSelection, "wandSelection": .wandSelection, "libraryPicture": .libraryPicture, "librarySound": .librarySound, "projectExport": .projectExport]
+                    "areaSelection": .areaSelection, "wandSelection": .wandSelection, "libraryPicture": .libraryPicture, "librarySound": .librarySound, "projectExport": .projectExport, "gradientFill": .gradientFill, "pixelEffect": .pixelEffect]
                 for grammar in SpatterInstructionCatalog.grammars {
                     guard let kind = names[grammar.name] else { throw Failure(message: "Catalog grammar \(grammar.name) has no router kind") }
                     for example in grammar.examples {
@@ -936,7 +1019,7 @@ private enum Golden {
                 try require(StudioSharedEdit.drawCommands(before: seed, after: moved, frameID: frameID) == nil, "Unrepresentable touch commit claimed shareable")
             }
             try test("catalog v5 selection picture and export grammars parse exactly and refuse injection and malformed input") {
-                try require(SpatterInstructionCatalog.version == 7 && SpatterInstructionCatalog.grammars.count == 46, "Catalog v7 not registered")
+                try require(SpatterInstructionCatalog.version == 9 && SpatterInstructionCatalog.grammars.count == 48, "Catalog v9 not registered")
                 // Area (Lasso) selection.
                 let rect = try SpatterAreaSelectInstruction.parse(SpatterAreaSelectInstruction.example)
                 try require(rect.isRectangle && rect.vertices == [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 90)]

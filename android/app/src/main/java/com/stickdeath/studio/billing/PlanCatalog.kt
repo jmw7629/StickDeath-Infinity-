@@ -364,7 +364,8 @@ enum class StorePurchaseState { Purchased, Pending, Unspecified }
 sealed class PurchaseVerification {
     /** No Android verification endpoint exists in this build; nothing is granted or finalised. */
     object NotConfigured : PurchaseVerification()
-    data class Granted(val tier: PlanTier?, val creditsBalance: Int?) : PurchaseVerification()
+    /** Trial state is a server verification fact, never inferred from an eligible store offer. */
+    data class Granted(val tier: PlanTier?, val creditsBalance: Int?, val inTrial: Boolean = false) : PurchaseVerification()
     data class Rejected(val reason: String) : PurchaseVerification()
     data class Failed(val reason: String) : PurchaseVerification()
 }
@@ -380,11 +381,29 @@ enum class PurchaseAction {
 }
 
 object PurchasePolicy {
+    /** Only a purchased, server-confirmed paid subscription supplies a plan and trial state.
+     * A credit grant, pending purchase or unavailable verifier supplies neither. */
+    fun verifiedSubscription(kind: PurchaseKind, state: StorePurchaseState, verification: PurchaseVerification): PlanStatus? {
+        if (kind != PurchaseKind.Subscription || state != StorePurchaseState.Purchased || verification !is PurchaseVerification.Granted) return null
+        val tier = verification.tier?.takeIf { it.isPaid } ?: return null
+        return PlanStatus(tier, verification.inTrial)
+    }
+
+    /** Combine only the verified subscriptions returned by the current refresh. The higher tier
+     * wins, and a paid period beats a trial for the same tier regardless of query order. */
+    fun bestSubscription(current: PlanStatus?, candidate: PlanStatus?): PlanStatus? = when {
+        candidate == null -> current
+        current == null -> candidate
+        candidate.tier.rank > current.tier.rank -> candidate
+        candidate.tier == current.tier && current.trialing && !candidate.trialing -> candidate
+        else -> current
+    }
+
     /** Acknowledgement and consumption happen only after the server confirms the grant. */
     fun action(kind: PurchaseKind, state: StorePurchaseState, acknowledged: Boolean, verification: PurchaseVerification): PurchaseAction {
         if (state != StorePurchaseState.Purchased || verification !is PurchaseVerification.Granted) return PurchaseAction.Hold
         return when (kind) {
-            PurchaseKind.Subscription -> if (acknowledged) PurchaseAction.Hold else PurchaseAction.Acknowledge
+            PurchaseKind.Subscription -> if (acknowledged || verifiedSubscription(kind, state, verification) == null) PurchaseAction.Hold else PurchaseAction.Acknowledge
             PurchaseKind.CreditPack -> PurchaseAction.Consume
         }
     }

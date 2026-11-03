@@ -204,6 +204,71 @@ class PlanCatalogTest {
         assertEquals(PurchaseAction.Hold, PurchasePolicy.action(PurchaseKind.CreditPack, StorePurchaseState.Pending, false, granted))
     }
 
+    @Test fun verifiedTrialReachesTheRealStudioAndSpatterRules() {
+        for (tier in listOf(PlanTier.Creator, PlanTier.Pro, PlanTier.Unlimited)) {
+            val grant = PurchaseVerification.Granted(tier, null, inTrial = true)
+            val verified = PurchasePolicy.verifiedSubscription(PurchaseKind.Subscription, StorePurchaseState.Purchased, grant)!!
+            assertEquals(PlanStatus(tier, true), verified)
+            assertTrue(verified.trialing)
+            assertTrue(verified.studioLimits.audioImport)
+            assertFalse(verified.studioLimits.spatterActive)
+            assertEquals(SpatterGate.TrialPreview, SpatterGate.decide(verified.studioLimits, null, false, inTrial = verified.trialing))
+            // A genuine purchased trial still needs acknowledging with Play.
+            assertEquals(PurchaseAction.Acknowledge, PurchasePolicy.action(PurchaseKind.Subscription, StorePurchaseState.Purchased, false, grant))
+        }
+    }
+
+    @Test fun verifiedPaidRenewalClearsTrialWithoutGuessingFromTheOffer() {
+        val oldTrial = PlanStatus(PlanTier.Pro, true)
+        val paid = PurchasePolicy.verifiedSubscription(PurchaseKind.Subscription, StorePurchaseState.Purchased,
+            PurchaseVerification.Granted(PlanTier.Pro, null, inTrial = false))!!
+        assertFalse(paid.trialing)
+        assertTrue(paid.studioLimits.spatterActive)
+        assertEquals(paid, PurchasePolicy.bestSubscription(oldTrial, paid))
+        assertEquals(paid, PurchasePolicy.bestSubscription(paid, oldTrial))
+        // Existing two-argument verified receipts still mean a non-trial period.
+        assertEquals(paid, PurchasePolicy.verifiedSubscription(PurchaseKind.Subscription, StorePurchaseState.Purchased,
+            PurchaseVerification.Granted(PlanTier.Pro, null)))
+    }
+
+    @Test fun pendingOrUnverifiedPurchasesCannotSupplyAPlanOrTrial() {
+        val grant = PurchaseVerification.Granted(PlanTier.Unlimited, null, inTrial = true)
+        for (state in listOf(StorePurchaseState.Pending, StorePurchaseState.Unspecified)) {
+            assertNull(PurchasePolicy.verifiedSubscription(PurchaseKind.Subscription, state, grant))
+            assertEquals(PurchaseAction.Hold, PurchasePolicy.action(PurchaseKind.Subscription, state, false, grant))
+        }
+        for (verification in listOf(PurchaseVerification.NotConfigured, PurchaseVerification.Rejected("no"), PurchaseVerification.Failed("offline"))) {
+            assertNull(PurchasePolicy.verifiedSubscription(PurchaseKind.Subscription, StorePurchaseState.Purchased, verification))
+            assertNull(PurchasePolicy.bestSubscription(null,
+                PurchasePolicy.verifiedSubscription(PurchaseKind.Subscription, StorePurchaseState.Purchased, verification)))
+        }
+    }
+
+    @Test fun creditOrIncompleteGrantsNeverBecomeSubscriptionEntitlements() {
+        val credit = PurchaseVerification.Granted(null, 42)
+        assertNull(PurchasePolicy.verifiedSubscription(PurchaseKind.CreditPack, StorePurchaseState.Purchased, credit))
+        assertEquals(PurchaseAction.Consume, PurchasePolicy.action(PurchaseKind.CreditPack, StorePurchaseState.Purchased, false, credit))
+        for (grant in listOf(credit, PurchaseVerification.Granted(PlanTier.Free, null, inTrial = true))) {
+            assertNull(PurchasePolicy.verifiedSubscription(PurchaseKind.Subscription, StorePurchaseState.Purchased, grant))
+            assertEquals(PurchaseAction.Hold, PurchasePolicy.action(PurchaseKind.Subscription, StorePurchaseState.Purchased, false, grant))
+        }
+        val paid = PlanStatus(PlanTier.Creator, false)
+        assertEquals(paid, PurchasePolicy.bestSubscription(paid,
+            PurchasePolicy.verifiedSubscription(PurchaseKind.CreditPack, StorePurchaseState.Purchased, credit)))
+    }
+
+    @Test fun queriedSubscriptionsKeepTheHighestVerifiedTierAndItsTrialState() {
+        val creator = PlanStatus(PlanTier.Creator, false)
+        val proTrial = PlanStatus(PlanTier.Pro, true)
+        assertEquals(proTrial, PurchasePolicy.bestSubscription(creator, proTrial))
+        assertEquals(proTrial, PurchasePolicy.bestSubscription(proTrial, creator))
+        assertEquals(proTrial, PurchasePolicy.bestSubscription(null, proTrial))
+        assertEquals(proTrial, PurchasePolicy.bestSubscription(proTrial, null))
+        assertNull(PurchasePolicy.bestSubscription(null, null))
+        val unlimited = PlanStatus(PlanTier.Unlimited, false)
+        assertEquals(unlimited, PurchasePolicy.bestSubscription(proTrial, unlimited))
+    }
+
     @Test fun copyUsesStorePricesOnly() {
         assertEquals("Price shown when configured", PlanCopy.price(null))
         assertEquals("Price shown when configured", PlanCopy.price(" "))

@@ -101,7 +101,20 @@ final class SpatterStudioEditSession: ObservableObject {
         var librarySound: SpatterLibrarySoundInstruction? = nil
         var librarySoundTitle: String? = nil
         var librarySoundDuration: Double? = nil
+        var gradientFill: SpatterGradientInstruction? = nil
+        var gradientSelectedDrawingCount: Int = 0
+        var gradientCoveredPixels: Int = 0
+        var pixelEffect: SpatterPixelEffectInstruction? = nil
+        var pixelEffectSelectedDrawings: Int = 0
         var summary: String {
+            if let pixelEffect {
+                let coverage = pixelEffectSelectedDrawings == 0 ? "the active layer" : "the current drawing/Wand coverage (\(pixelEffectSelectedDrawings) drawings)"
+                return "Applied editable \(pixelEffect.summary) to \(coverage), after verifying a real change in existing pixels. One Undo removes the effect; original artwork remains editable. Tool preferences, export and publication were unchanged."
+            }
+            if let gradientFill {
+                let scope = gradientSelectedDrawingCount == 0 ? "the active layer" : "the current drawing/Wand selection (\(gradientSelectedDrawingCount) drawings)"
+                return "Applied an editable \(gradientFill.summary) to \(scope), with \(gradientCoveredPixels) pixels of mask coverage, after verifying a real pixel change. One Undo removes it; original artwork remains editable. Tool preferences, export and publication were unchanged."
+            }
             if let librarySound, let librarySoundTitle, let librarySoundDuration {
                 return "Added licensed Sound Library sound \u{201C}\(librarySoundTitle)\u{201D}, \(String(format: "%.6g", librarySoundDuration)) seconds of verified audio, to track \(librarySound.track) at \(String(format: "%.6g", librarySound.startSeconds)) seconds in one Undo step. Playback, export and publication were not started."
             }
@@ -359,9 +372,10 @@ final class SpatterStudioEditSession: ObservableObject {
         /// Only library-sound creation owns a captured playhead; unrelated
         /// instruction routes keep their existing context contract.
         let librarySoundPlayhead: Double?
+        let gradient: StudioViewModel.GradientCapture?
         init(accountID: String?, screen: StudioViewModel.CommandScreenContext, document: StudioCommandContext,
              selectedImage: StudioViewModel.ImageMoveCapture?, selectedArtwork: StudioViewModel.SelectionHandleCapture?, mixedArtwork: Bool,
-             captureLibrarySoundPlayhead: Bool = false) {
+             captureLibrarySoundPlayhead: Bool = false, gradient: StudioViewModel.GradientCapture? = nil) {
             self.accountID = accountID; projectID = document.projectID; revision = document.revision
             activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
             displayedFrameID = screen.displayedFrameID; selectedElementIDs = screen.selectedElementIDs
@@ -369,6 +383,7 @@ final class SpatterStudioEditSession: ObservableObject {
             self.selectedImage = selectedImage; self.selectedArtwork = selectedArtwork; self.mixedArtwork = mixedArtwork
             activePanel = screen.activePanel; isPlaying = screen.isPlaying
             librarySoundPlayhead = captureLibrarySoundPlayhead ? screen.audioPlayheadTime : nil
+            self.gradient = gradient
         }
     }
     private enum SessionError: LocalizedError {
@@ -413,7 +428,8 @@ final class SpatterStudioEditSession: ObservableObject {
         guard let document = screen.document else { reject(SessionError.outsideStudio); return false }
         let captured = Capture(accountID: accountID, screen: screen, document: document,
                                selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork,
-                               captureLibrarySoundPlayhead: SpatterLibrarySoundInstruction.isInstruction(draft))
+                               captureLibrarySoundPlayhead: SpatterLibrarySoundInstruction.isInstruction(draft),
+                               gradient: (SpatterGradientInstruction.isInstruction(draft) || SpatterPixelEffectInstruction.isInstruction(draft)) ? studio.capturePixelEffect() : nil)
         let started = now()
         let deadline = started.advanced(by: budget)
         acceptedIDs.insert(submissionID)
@@ -513,6 +529,8 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isWandSelect = SpatterWandSelectInstruction.isInstruction(draft)
                 let isLibraryPicture = SpatterLibraryPictureInstruction.isInstruction(draft)
                 let isLibrarySound = SpatterLibrarySoundInstruction.isInstruction(draft)
+                let isGradientFill = SpatterGradientInstruction.isInstruction(draft)
+                let isPixelEffect = SpatterPixelEffectInstruction.isInstruction(draft)
                 let isProjectExport = SpatterProjectExportInstruction.isInstruction(draft)
                 var selectionRoute: SelectionRoute?
                 var selectedCount = 0
@@ -527,6 +545,18 @@ final class SpatterStudioEditSession: ObservableObject {
                                                               revision: document.revision, accountID: captured.accountID), format: format)
                     self.status = .handedOff
                     self.notice = "Starting Studio's direct \(format.rawValue.uppercased()) export of saved revision \(document.revision) to a file on this device. The project did not change; nothing is uploaded, shared or published."
+                    return
+                } else if !isBatch && isPixelEffect {
+                    let result = try await self.applyPixelEffect(draft, captured: captured, studio: studio,
+                        submissionID: submissionID, check: check, currentScope: currentScope)
+                    self.appliedAccountID = captured.accountID
+                    self.appliedEdit = result; self.status = .applied; self.notice = result.summary
+                    return
+                } else if !isBatch && isGradientFill {
+                    let result = try await self.applyGradient(draft, captured: captured, studio: studio,
+                        submissionID: submissionID, check: check, currentScope: currentScope)
+                    self.appliedAccountID = captured.accountID
+                    self.appliedEdit = result; self.status = .applied; self.notice = result.summary
                     return
                 } else if !isBatch && isLibrarySound {
                     let result = try await self.addLibrarySound(draft, document: document, captured: captured, studio: studio,
@@ -918,6 +948,92 @@ final class SpatterStudioEditSession: ObservableObject {
             renamedProjectName: nil, addedAudioClipCount: 0, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
             addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, libraryPictureName: imported.name)
     }
+    private func applyPixelEffect(_ draft: String, captured: Capture, studio: StudioViewModel,
+                                  submissionID: UUID, check: () throws -> Void,
+                                  currentScope: ScopeProvider) async throws -> AppliedEdit {
+        let instruction = try SpatterPixelEffectInstruction.parse(draft)
+        guard !captured.isPlaying, let capture = captured.gradient, studio.capturePixelEffect() == capture else {
+            throw SessionError.unavailable("Stop playback, finish drafts, and show an active layer with Free lock before applying an effect. Nothing changed.")
+        }
+        guard capture.imageSelectionID == nil, !capture.imagePixelsSelected else {
+            throw SessionError.unavailable("Spatter raster effects support drawing/Wand coverage or the full active layer. Deselect the image or image-pixel selection first. Nothing changed.")
+        }
+        guard studio.planAllowsTool(instruction.settings.tool) else { throw SessionError.unavailable(studio.planLimits.upgradeNote) }
+        let input = try instruction.element(id: "effect-" + submissionID.uuidString, layerID: capture.layerID, width: capture.width, height: capture.height)
+        let element = try studio.preparePixelEffect(input, capture: capture, checkCancellation: check)
+        let layer = try StudioBlurCapture.capturePixelEffect(element: element, document: studio.document,
+            selection: studio.selectedElementIDs, raster: studio.rasterData(studio.currentFrame.rasterAssetID),
+            rasterDataByID: studio.rasterSources(for: studio.currentFrame))
+        let original = try StudioSmudge.Pixels(width: layer.pixels.width, height: layer.pixels.height, rgba: layer.pixels.rgba)
+        let worker = Task.detached(priority: .userInitiated) { () throws -> StudioSmudge.Pixels in
+            try StudioSmudgeReplay.applyPixelEffect(element, to: original)
+        }
+        let pixels = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+        try await checkpoint(); try check()
+        try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+        guard !worker.isCancelled, studio.capturePixelEffect() == capture,
+              layer.isCurrent(studio.document, selection: studio.selectedElementIDs) else { throw SessionError.contextChanged }
+        guard pixels != original else { throw SessionError.unavailable("This raster effect does not change any pixels here. Nothing was added.") }
+        let receipt = try studio.commitPixelEffect(element, capture: capture, requestID: submissionID, checkCancellation: {
+            try check()
+            try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+        })
+        return AppliedEdit(receipt: receipt, selectedErasureMaskCount: 0, gridInstruction: nil, onionInstruction: nil,
+            frameExposureTicks: nil, frameAction: nil, isLayerGlowEdit: false, isLayerDuplicate: false, isLayerUpdate: false,
+            layerVisibility: nil, layerOrderUp: nil, artworkOrderForward: nil, imageReflectionAxis: nil, isAudioEdit: false,
+            renamedProjectName: nil, addedAudioClipCount: 0, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
+            addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, pixelEffect: instruction,
+            pixelEffectSelectedDrawings: capture.selection.count)
+    }
+
+    /// Runs the same native Gradient capture, replay, mask and canonical editor
+    /// commit as a touch drag. Typed settings never mutate the user's tool state.
+    private func applyGradient(_ draft: String, captured: Capture, studio: StudioViewModel,
+                               submissionID: UUID, check: () throws -> Void,
+                               currentScope: ScopeProvider) async throws -> AppliedEdit {
+        let instruction = try SpatterGradientInstruction.parse(draft)
+        guard !captured.isPlaying, let gradientCapture = captured.gradient,
+              studio.captureGradient(requiringGradientTool: false) == gradientCapture else {
+            throw SessionError.unavailable("Stop playback, finish drafts, and show an active layer with Free lock before applying a gradient. Nothing changed.")
+        }
+        guard gradientCapture.imageSelectionID == nil, !gradientCapture.imagePixelsSelected else {
+            throw SessionError.unavailable("Spatter gradients support drawing/Wand selections or the full active layer. Deselect the image or image-pixel selection first. Nothing changed.")
+        }
+        guard gradientCapture.width <= StudioGradientFill.maximumPixels / gradientCapture.height else {
+            throw SessionError.unavailable("This gradient exceeds the native 4,194,304-pixel limit. Use a smaller canvas. Nothing changed.")
+        }
+        let points = try instruction.canvasPoints(width: gradientCapture.width, height: gradientCapture.height)
+        let element = try studio.gradientElement(gradientCapture, from: points.start, to: points.end,
+            descriptor: instruction.descriptor(), color: instruction.firstColor, opacity: instruction.opacity,
+            id: "gradient-" + submissionID.uuidString, requiringGradientTool: false, checkCancellation: check)
+        let layer = try StudioBlurCapture.captureGradient(element: element, document: studio.document,
+            selection: studio.selectedElementIDs, raster: studio.rasterData(studio.currentFrame.rasterAssetID),
+            rasterDataByID: studio.rasterSources(for: studio.currentFrame))
+        let original = try StudioSmudge.Pixels(width: layer.pixels.width, height: layer.pixels.height, rgba: layer.pixels.rgba)
+        let worker = Task.detached(priority: .userInitiated) { () throws -> StudioSmudge.Pixels in
+            try StudioSmudgeReplay.applyGradient(element, to: original)
+        }
+        let pixels = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+        try await checkpoint(); try check()
+        try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+        guard !worker.isCancelled, studio.captureGradient(requiringGradientTool: false) == gradientCapture,
+              layer.isCurrent(studio.document, selection: studio.selectedElementIDs) else { throw SessionError.contextChanged }
+        guard pixels != original else {
+            throw SessionError.unavailable("This gradient does not change any pixels in the current layer or selection. Nothing was added.")
+        }
+        let receipt = try studio.commitGradient(element, capture: gradientCapture, requestID: submissionID,
+            requiringGradientTool: false, checkCancellation: {
+                try check()
+                try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+            })
+        let covered = element.fillMask?.spans.reduce(0) { $0 + $1.end - $1.start } ?? 0
+        return AppliedEdit(receipt: receipt, selectedErasureMaskCount: 0, gridInstruction: nil, onionInstruction: nil,
+            frameExposureTicks: nil, frameAction: nil, isLayerGlowEdit: false, isLayerDuplicate: false, isLayerUpdate: false,
+            layerVisibility: nil, layerOrderUp: nil, artworkOrderForward: nil, imageReflectionAxis: nil, isAudioEdit: false,
+            renamedProjectName: nil, addedAudioClipCount: 0, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
+            addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, gradientFill: instruction,
+            gradientSelectedDrawingCount: gradientCapture.selection.count, gradientCoveredPixels: covered)
+    }
     /// Same licensed decoder and atomic managed-asset attachment as the manual
     /// Sound Library. No URL/path from a prompt or provider reaches this path.
     private func addLibrarySound(_ draft: String, document: StudioCommandContext, captured: Capture, studio: StudioViewModel,
@@ -977,7 +1093,8 @@ final class SpatterStudioEditSession: ObservableObject {
         guard let document = screen.document,
               Capture(accountID: scope.accountID, screen: screen, document: document,
                       selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork,
-                      captureLibrarySoundPlayhead: captured.librarySoundPlayhead != nil) == captured else { throw SessionError.contextChanged }
+                      captureLibrarySoundPlayhead: captured.librarySoundPlayhead != nil,
+                      gradient: captured.gradient == nil ? nil : studio.captureGradient(requiringGradientTool: false)) == captured else { throw SessionError.contextChanged }
     }
     private func reject(_ error: Error) {
         if let sessionError = error as? SessionError {

@@ -217,14 +217,23 @@ enum StudioWandRegion {
 /// Maps a canvas selection to the drawn elements it touches, so Wand can
 /// select editable vector artwork without flattening it (#153).
 enum StudioSelectionElementHitTest {
+    /// Compact canonical alpha rectangle in top-left document pixels. Row stride
+    /// is explicit so no full-canvas allocation is required for a small object.
+    struct AlphaCoverage: Equatable, Sendable {
+        let x: Int, y: Int, width: Int, height: Int, rowStride: Int
+        let bytes: [UInt8]
+    }
     struct Candidate: Equatable, Sendable {
         let id: String
         /// Canvas-space centreline samples after the element's transform.
         let points: [(x: Double, y: Double)]
         /// Half the rendered stroke width in canvas pixels.
         let radius: Double
+        /// Exact source-body alpha from the canonical renderer for a filled ellipse.
+        /// It is already in top-left canvas coordinates, including the element transform.
+        var alphaCoverage: AlphaCoverage? = nil
         static func == (lhs: Candidate, rhs: Candidate) -> Bool {
-            lhs.id == rhs.id && lhs.radius == rhs.radius && lhs.points.count == rhs.points.count &&
+            lhs.id == rhs.id && lhs.radius == rhs.radius && lhs.alphaCoverage == rhs.alphaCoverage && lhs.points.count == rhs.points.count &&
                 zip(lhs.points, rhs.points).allSatisfy { $0.x == $1.x && $0.y == $1.y }
         }
     }
@@ -234,12 +243,36 @@ enum StudioSelectionElementHitTest {
     static func elements(intersecting coverage: [UInt8], width: Int, height: Int, candidates: [Candidate],
                          threshold: UInt8 = 128, minimumCoveredProbes: Int = 1,
                          checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [String] {
-        guard width > 0, height > 0, coverage.count == width * height, threshold > 0, minimumCoveredProbes > 0 else {
+        guard width > 0, height > 0, width <= 4096, height <= 4096,
+              width <= StudioSelectionMask.maximumPixels / height,
+              coverage.count == width * height, threshold > 0, minimumCoveredProbes > 0 else {
             throw StudioSelectionMask.Failure.invalidMask
         }
         var probes = 0, selected: [String] = []
         for candidate in candidates {
             try checkCancellation()
+            if let alpha = candidate.alphaCoverage {
+                guard alpha.x >= 0, alpha.y >= 0, alpha.x < width, alpha.y < height,
+                      alpha.width > 0, alpha.height > 0, alpha.width <= width - alpha.x,
+                      alpha.height <= height - alpha.y, alpha.rowStride >= alpha.width,
+                      alpha.rowStride <= StudioSelectionMask.maximumElementProbes / alpha.height,
+                      alpha.bytes.count == alpha.rowStride * alpha.height else { throw StudioSelectionMask.Failure.invalidMask }
+                var covered = 0, localProbes = 0
+                for row in 0..<alpha.height where covered < minimumCoveredProbes {
+                    for column in 0..<alpha.width where covered < minimumCoveredProbes {
+                        if localProbes % 1024 == 0 { try checkCancellation() }
+                        localProbes += 1; probes += 1
+                        guard probes <= StudioSelectionMask.maximumElementProbes else { throw StudioSelectionMask.Failure.workLimit }
+                        // Selection threshold belongs to the Wand/feather mask. Any actually
+                        // painted source alpha counts, including faint or antialiased artwork.
+                        let source = row * alpha.rowStride + column
+                        let target = (alpha.y + row) * width + alpha.x + column
+                        if alpha.bytes[source] > 0 && coverage[target] >= threshold { covered += 1 }
+                    }
+                }
+                if covered >= minimumCoveredProbes { selected.append(candidate.id) }
+                continue
+            }
             guard candidate.radius.isFinite, candidate.radius >= 0, candidate.radius <= 512, !candidate.points.isEmpty,
                   candidate.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 1_000_000 && abs($0.y) <= 1_000_000 }) else {
                 throw StudioSelectionMask.Failure.invalidSettings

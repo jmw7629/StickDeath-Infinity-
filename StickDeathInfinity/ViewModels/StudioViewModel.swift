@@ -4285,6 +4285,7 @@ final class StudioViewModel: ObservableObject {
     /// filled shapes and transformed fills a bounded sweep of their visible box.
     private func drawingWandCandidates(frame: AnimationFrame, layerID: String) throws -> DrawingWandCandidates {
         var result = DrawingWandCandidates()
+        var capturedAlphaPixels = 0
         let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
         for element in frame.elements where element.layerID == layerID {
             guard element.opacity > 0, element.tool != .eraser, element.eraser == nil, !element.hasPixelEffect else { continue }
@@ -4317,6 +4318,15 @@ final class StudioViewModel: ObservableObject {
                     }
                 }
                 result.strokes.append(.init(id: element.id, points: outline, radius: radius))
+                continue
+            }
+            if element.tool == .circle, filled, element.points.count == 2 {
+                let alpha = try StudioFillService.wandElementCoverage(document: document,
+                    frame: frame, element: element,
+                    maximumPixels: StudioSelectionMask.maximumElementProbes - capturedAlphaPixels)
+                guard let alpha else { continue } // No visible source pixels on this canvas.
+                capturedAlphaPixels += alpha.width * alpha.height
+                result.strokes.append(.init(id: element.id, points: [], radius: 0, alphaCoverage: alpha))
                 continue
             }
             guard let bounds = element.selectionBounds?.intersection(canvas), !bounds.isNull, !bounds.isEmpty else { continue }
@@ -4485,14 +4495,22 @@ final class StudioViewModel: ObservableObject {
         let projectID: UUID, revision: Int, frameID: String, layerID: String
         let width: Int, height: Int
         let selection: Set<String>
+        let tool: DrawingTool
+        let selectionGeneration: UUID
+        let imageSelectionID: UUID?
+        let imagePixelsSelected: Bool
     }
-    func captureGradient() -> GradientCapture? {
-        guard isEditing, !isPlaying, !isSaving, selectedTool == .gradient, activeStrokeID == nil,
+    /// Typed requests capture the current tool instead of changing it to
+    /// Gradient. Physical drags still require Gradient and may own a stroke.
+    func captureGradient(requiringGradientTool: Bool = true, ownedStroke: String? = nil) -> GradientCapture? {
+        guard isEditing, !isPlaying, !isSaving, (!requiringGradientTool || selectedTool == .gradient), activeStrokeID == ownedStroke,
               pendingBrushStroke == nil, textDraft == nil,
               let layer = layers.first(where: { $0.id == activeLayerID }), layer.visible, layer.opacity > 0,
               !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
         return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
-                     layerID: activeLayerID, width: canvasWidth, height: canvasHeight, selection: selectedElementIDs)
+                     layerID: activeLayerID, width: canvasWidth, height: canvasHeight, selection: selectedElementIDs,
+                     tool: selectedTool, selectionGeneration: imageRegionGeneration,
+                     imageSelectionID: imageMoveTarget?.selectionID, imagePixelsSelected: imageRegionSelection != nil)
     }
     /// The editable gradient element for a drag, before any pixel work.
     func gradientElement(_ capture: GradientCapture, from start: CGPoint, to end: CGPoint,
@@ -4504,19 +4522,113 @@ final class StudioViewModel: ObservableObject {
         let descriptor = StudioGradientDescriptor(shape: gradientShape, interpolation: gradientInterpolation, dither: gradientDither,
             stops: [.init(location: 0, color: .init(red: first.red, green: first.green, blue: first.blue, alpha: 1)),
                     .init(location: 1, color: .init(red: last.red, green: last.green, blue: last.blue, alpha: last.alpha))])
-        // A selection limits the gradient; otherwise it covers the whole layer.
+        guard activeStrokeID == nil || activeStrokeID == id else { throw StudioCommandError.staleRevision }
+        return try gradientElement(capture, from: start, to: end, descriptor: descriptor, color: strokeColorHex,
+            opacity: strokeOpacity, id: id, ownedStroke: activeStrokeID)
+    }
+    /// Shared editable element factory for touch and explicit Spatter settings.
+    /// It never mutates the selected tool, paint colors or remembered options.
+    func gradientElement(_ capture: GradientCapture, from start: CGPoint, to end: CGPoint,
+                         descriptor: StudioGradientDescriptor, color: String, opacity: Double, id: String,
+                         requiringGradientTool: Bool = true, ownedStroke: String? = nil,
+                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> DrawnElement {
+        try checkCancellation()
+        guard captureGradient(requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke) == capture,
+              !id.isEmpty, id.count <= 128, opacity.isFinite, opacity > 0, opacity <= 1 else { throw StudioCommandError.staleRevision }
+        _ = try StudioBrushGeometryCache.color(color)
+        // A drawing/Wand selection limits the gradient. Never silently widen a
+        // nonempty but unrenderable selection to the whole layer.
         let coverage: StudioFillMask
-        if let selected = try effectSelectionMask() { coverage = selected }
-        else {
+        if !capture.selection.isEmpty {
+            guard let selected = try effectSelectionMask() else {
+                throw StudioDocumentError.unavailable("This selection has no drawable gradient coverage. Deselect or select visible drawings; nothing changed.")
+            }
+            coverage = selected
+        } else {
             coverage = StudioFillMask(width: capture.width, height: capture.height,
                 spans: (0..<capture.height).map { .init(row: $0, start: 0, end: capture.width, alpha: 255) })
         }
         let element = DrawnElement(id: id, tool: .fill,
             points: [.init(x: start.x, y: start.y), .init(x: end.x, y: end.y)],
-            color: strokeColorHex, width: 1, opacity: strokeOpacity, layerID: capture.layerID,
+            color: color, width: 1, opacity: opacity, layerID: capture.layerID,
             fillMask: coverage, gradient: descriptor)
         try descriptor.validate(element: element, width: capture.width, height: capture.height)
+        try checkCancellation()
+        guard captureGradient(requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke) == capture else { throw StudioCommandError.staleRevision }
         return element
+    }
+
+    func capturePixelEffect(ownedStroke: String? = nil) -> GradientCapture? {
+        captureGradient(requiringGradientTool: false, ownedStroke: ownedStroke)
+    }
+    func preparePixelEffect(_ input: DrawnElement, capture: GradientCapture, ownedStroke: String? = nil,
+                            checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> DrawnElement {
+        try checkCancellation()
+        guard planAllowsTool(input.tool) else { throw StudioDocumentError.unavailable(planLimits.upgradeNote) }
+        guard capturePixelEffect(ownedStroke: ownedStroke) == capture, input.layerID == capture.layerID,
+              capture.imageSelectionID == nil, !capture.imagePixelsSelected,
+              ownedStroke == nil || input.id == ownedStroke else { throw StudioCommandError.staleRevision }
+        var element = input
+        if !capture.selection.isEmpty {
+            guard let mask = try effectSelectionMask() else {
+                throw StudioDocumentError.unavailable("The selection has no drawable effect coverage. Nothing changed.")
+            }
+            element.selectionMask = mask
+        } else { element.selectionMask = nil }
+        try StudioPixelEffectSettings.validate(element, width: capture.width, height: capture.height)
+        try checkCancellation()
+        guard capturePixelEffect(ownedStroke: ownedStroke) == capture else { throw StudioCommandError.staleRevision }
+        return element
+    }
+    @discardableResult
+    func commitPixelEffect(_ element: DrawnElement, capture: GradientCapture, requestID: UUID = UUID(),
+                           ownedStroke: String? = nil,
+                           checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandReceipt {
+        guard planAllowsTool(element.tool) else { throw StudioDocumentError.unavailable(planLimits.upgradeNote) }
+        try StudioPixelEffectSettings.validate(element, width: capture.width, height: capture.height)
+        return try commitEditablePixelEffect(element, capture: capture, requestID: requestID,
+            requiringGradientTool: false, ownedStroke: ownedStroke, checkCancellation: checkCancellation)
+    }
+
+    /// The same canonical editor commit as a touch gradient, with fresh context
+    /// and clipboard fences around preflight. The gradient remains an editable
+    /// descriptor and mask, never a flattened replacement for the original art.
+    @discardableResult
+    func commitGradient(_ element: DrawnElement, capture: GradientCapture, requestID: UUID = UUID(),
+                        requiringGradientTool: Bool = true, ownedStroke: String? = nil,
+                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandReceipt {
+        guard element.gradient != nil else { throw StudioGradientDescriptor.Failure.invalid }
+        return try commitEditablePixelEffect(element, capture: capture, requestID: requestID,
+            requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke, checkCancellation: checkCancellation)
+    }
+    private func commitEditablePixelEffect(_ element: DrawnElement, capture: GradientCapture, requestID: UUID,
+                                          requiringGradientTool: Bool, ownedStroke: String?,
+                                          checkCancellation: () throws -> Void) throws -> StudioCommandReceipt {
+        try checkCancellation()
+        guard planAllowsTool(element.tool) else { throw StudioDocumentError.unavailable(planLimits.upgradeNote) }
+        guard captureGradient(requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke) == capture,
+              ownedStroke == nil || element.id == ownedStroke,
+              element.layerID == capture.layerID else { throw StudioCommandError.staleRevision }
+        if let descriptor = element.gradient { _ = try descriptor.validate(element: element, width: capture.width, height: capture.height) }
+        else { try StudioPixelEffectSettings.validate(element, width: capture.width, height: capture.height) }
+        let clipboard = editor.clipboardVersion, selectedClip = selectedAudioClip?.id, before = editor.document
+        var candidate = editor
+        try candidate.commit(element, frameID: capture.frameID)
+        try preflightRasterDocument(candidate.document)
+        try checkCancellation()
+        guard planAllowsTool(element.tool) else { throw StudioDocumentError.unavailable(planLimits.upgradeNote) }
+        guard captureGradient(requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke) == capture,
+              editor.document == before, editor.clipboardVersion == clipboard, selectedAudioClip?.id == selectedClip else {
+            throw StudioCommandError.staleRevision
+        }
+        editor = candidate
+        let after = candidate.document
+        StudioEditObservers.elementsCommitted?(before, after, capture.frameID)
+        pruneManagedAudio(); scheduleSave()
+        return StudioCommandReceipt(requestID: requestID, projectID: after.id, previousRevision: before.revision,
+            revision: after.revision, outcome: .applied, created: [:], createdFrameIDs: [], deletedFrameIDs: [],
+            createdLayerIDs: [], deletedLayerIDs: [], createdElementIDs: [element.id], deletedElementIDs: [], changedAudioClipIDs: [],
+            clipboardElementCount: 0, clipboardID: nil)
     }
 
     enum ImageRegionAction { case copy, cut, delete, move, lift }

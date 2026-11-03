@@ -63,6 +63,7 @@ sealed class AuthException(message: String) : Exception(message) {
     class ProviderDenied(detail: String) : AuthException(detail)
     class InvalidCallback : AuthException("That sign-in link was not started here or has already been used. Start sign-in again.")
     class SessionEnded : AuthException("Your session ended. Sign in again.")
+    class StaleOperation : AuthException("This account action was superseded by a newer sign-in or sign-out.")
 }
 
 /** PKCE (RFC 7636, S256) helpers for the hosted OAuth flow. */
@@ -165,8 +166,9 @@ class GoTrueClient(private val config: BackendConfig, private val transport: Htt
     fun exchangeCode(code: String, verifier: String, providerName: String): StoredSession =
         session(post("/auth/v1/token", mapOf("grant_type" to "pkce"), JSONObject().put("auth_code", code).put("code_verifier", verifier)), providerName)
 
-    /** Server-side revocation; local sign-out proceeds regardless of the outcome. */
-    fun logout(accessToken: String) { runCatching { post("/auth/v1/logout", emptyMap(), JSONObject(), bearer = accessToken) } }
+    /** Revoke this captured session only: a delayed logout must not revoke a later sign-in or
+     * sessions on other devices. Local sign-out proceeds regardless of the outcome. */
+    fun logout(accessToken: String) { runCatching { post("/auth/v1/logout", mapOf("scope" to "local"), JSONObject(), bearer = accessToken) } }
 
     private fun session(response: HttpResponse, provider: String): StoredSession {
         check(response)
@@ -243,7 +245,10 @@ class SessionManager(
 ) {
     private val lock = Any()
     private var session: StoredSession? = null
-    private var busy = false
+    private data class Operation(val id: Long, val epoch: Long)
+    private var operationSequence = 0L
+    private var operationEpoch = 0L
+    private var busyOperation: Long? = null
     /** In-memory PKCE verifier for the one redirect in flight: an OAuth provider, or null for a password reset. */
     private var pending: Pair<OAuthProvider?, String>? = null
     /** Increments on every identity change so replies for an earlier account can be discarded. */
@@ -265,11 +270,21 @@ class SessionManager(
     fun providers(): Set<OAuthProvider> = if (isConfigured) config!!.oauthProviders else emptySet()
     fun currentUserId(): String? = synchronized(lock) { session?.userId }
 
-    private inline fun <T> exclusive(block: () -> T): T {
-        synchronized(lock) { if (busy) throw AuthException.Busy(); busy = true }
-        try { return block() } finally { synchronized(lock) { busy = false } }
+    private inline fun <T> exclusive(block: (Operation) -> T): T {
+        val operation = synchronized(lock) {
+            if (busyOperation != null) throw AuthException.Busy()
+            Operation(++operationSequence, operationEpoch).also { busyOperation = it.id }
+        }
+        try { return block(operation) }
+        finally { synchronized(lock) { if (busyOperation == operation.id) busyOperation = null } }
     }
-    private fun adopt(next: StoredSession?) = synchronized(lock) {
+    /** Call with lock held: cancellation invalidates both replies and their right to release busy. */
+    private fun isCurrentOperationLocked(operation: Operation) = operation.epoch == operationEpoch && busyOperation == operation.id
+    private fun ensureCurrent(operation: Operation) = synchronized(lock) {
+        if (!isCurrentOperationLocked(operation)) throw AuthException.StaleOperation()
+    }
+    private fun adopt(next: StoredSession?, operation: Operation) = synchronized(lock) {
+        if (!isCurrentOperationLocked(operation)) throw AuthException.StaleOperation()
         if (next?.userId != session?.userId) generation++
         session = next
         if (next == null) vault.clear() else vault.write(SessionCodec.encode(next))
@@ -277,69 +292,91 @@ class SessionManager(
     }
 
     /** Launch-time restoration. An expired session is refreshed, never promoted; transient failures keep it. */
-    fun restore(): AccountState = exclusive {
+    fun restore(): AccountState = exclusive { operation ->
         if (!isConfigured) return@exclusive state
         val stored = vault.read()
         val saved = SessionCodec.decode(stored)
-        if (saved == null) {
-            if (stored != null) vault.clear()
-            synchronized(lock) { session = null; state = AccountState.SignedOut }
-            return@exclusive state
+        ensureCurrent(operation)
+        if (saved == null) { adopt(null, operation); return@exclusive state }
+        if (saved.expiresAt > now() + REFRESH_MARGIN) { adopt(saved, operation); return@exclusive state }
+        synchronized(lock) {
+            if (!isCurrentOperationLocked(operation)) throw AuthException.StaleOperation()
+            state = AccountState.Restoring
         }
-        if (saved.expiresAt > now() + REFRESH_MARGIN) { adopt(saved); return@exclusive state }
-        state = AccountState.Restoring
-        try { adopt(client().refresh(saved.refreshToken, saved.provider)) }
-        catch (e: AuthException.SessionEnded) { endSession("Your session ended. Sign in again.") }
-        catch (e: AuthException.InvalidCredentials) { endSession("Your session ended. Sign in again.") }
-        catch (e: AuthException.Network) { synchronized(lock) { session = null; state = AccountState.RetryableFailure("Your session could not be refreshed.") } }
-        catch (e: AuthException) { endSession("Your session could not be restored. Sign in again.") }
+        try { adopt(client().refresh(saved.refreshToken, saved.provider), operation) }
+        catch (e: AuthException.SessionEnded) { endSession("Your session ended. Sign in again.", operation) }
+        catch (e: AuthException.InvalidCredentials) { endSession("Your session ended. Sign in again.", operation) }
+        catch (e: AuthException.Network) { synchronized(lock) {
+            if (isCurrentOperationLocked(operation)) { session = null; state = AccountState.RetryableFailure("Your session could not be refreshed.") }
+        } }
+        catch (e: AuthException.StaleOperation) { /* A newer account action owns the current state and vault. */ }
+        catch (e: AuthException) { endSession("Your session could not be restored. Sign in again.", operation) }
         state
     }
 
-    private fun endSession(reason: String) = synchronized(lock) {
+    private fun endSession(reason: String, operation: Operation) = synchronized(lock) {
+        if (!isCurrentOperationLocked(operation)) return@synchronized
         if (session != null) generation++
         session = null; vault.clear(); state = AccountState.SignInRequired(reason)
     }
 
-    fun signIn(email: String, password: String): AccountState = exclusive {
+    fun signIn(email: String, password: String): AccountState = exclusive { operation ->
         require(email.isNotBlank() && password.isNotEmpty()) { "Enter an email and password." }
-        adopt(client().signInWithPassword(email, password)); state
+        adopt(client().signInWithPassword(email, password), operation); state
     }
     /** True when signed in immediately; false when the email must be confirmed first. */
-    fun signUp(email: String, password: String, username: String): Boolean = exclusive {
+    fun signUp(email: String, password: String, username: String): Boolean = exclusive { operation ->
         require(email.isNotBlank() && password.length >= 8) { "Use an email and a password of at least 8 characters." }
         val created = client().signUp(email, password, username.trim().take(40))
-        if (created != null) adopt(created)
+        ensureCurrent(operation)
+        if (created != null) adopt(created, operation)
         created != null
     }
-    fun signInAsGuest(): AccountState = exclusive { adopt(client().signInAnonymously()); state }
+    fun signInAsGuest(): AccountState = exclusive { operation -> adopt(client().signInAnonymously(), operation); state }
 
     /** Returns the hosted authorize URL to open in the browser; the verifier stays in memory only. */
     fun beginOAuth(provider: OAuthProvider): String {
         if (provider !in providers()) throw AuthException.ProviderUnavailable(provider)
         val verifier = Pkce.verifier(random)
-        synchronized(lock) { pending = provider to verifier }
+        synchronized(lock) {
+            operationEpoch++
+            busyOperation = null
+            pending = provider to verifier
+        }
         return client().authorizeUrl(provider, Pkce.challenge(verifier))
     }
     /** One-shot: the pending verifier is consumed before any exchange, so a replay cannot sign in. */
-    fun completeOAuth(callback: String): AccountState = exclusive {
-        val started = synchronized(lock) { pending.also { pending = null } } ?: throw AuthException.InvalidCallback()
+    fun completeOAuth(callback: String): AccountState = exclusive { operation ->
+        val started = synchronized(lock) {
+            if (!isCurrentOperationLocked(operation)) throw AuthException.StaleOperation()
+            pending.also { pending = null }
+        } ?: throw AuthException.InvalidCallback()
         OAuthCallback.denial(callback)?.let { throw AuthException.ProviderDenied(it) }
         val code = OAuthCallback.code(callback) ?: throw AuthException.InvalidCallback()
-        adopt(client().exchangeCode(code, started.second, started.first?.wireName ?: RECOVERY_PROVIDER)); state
+        adopt(client().exchangeCode(code, started.second, started.first?.wireName ?: RECOVERY_PROVIDER), operation); state
     }
     /** Abandons the redirect in flight; a later callback for it is refused and nothing is exchanged. */
-    fun cancelOAuth() = synchronized(lock) { pending = null }
+    fun cancelOAuth() = synchronized(lock) {
+        pending = null
+        operationEpoch++
+        busyOperation = null
+    }
 
     /** Emails a reset link that returns here; the verifier stays in memory, so the link must be opened on
      * this device before the app is closed. Replaces any sign-in redirect still in flight. */
-    fun requestPasswordReset(email: String) = exclusive {
+    fun requestPasswordReset(email: String) = exclusive { operation ->
         require(email.isNotBlank() && email.contains('@')) { "Enter the email address of your account." }
         val c = client()
         val verifier = Pkce.verifier(random)
-        synchronized(lock) { pending = null to verifier }
-        try { c.recover(email, Pkce.challenge(verifier)) }
-        catch (e: AuthException) { synchronized(lock) { if (pending?.second == verifier) pending = null }; throw e }
+        synchronized(lock) {
+            if (!isCurrentOperationLocked(operation)) throw AuthException.StaleOperation()
+            pending = null to verifier
+        }
+        try { c.recover(email, Pkce.challenge(verifier)); ensureCurrent(operation) }
+        catch (e: AuthException) {
+            synchronized(lock) { if (isCurrentOperationLocked(operation) && pending?.second == verifier) pending = null }
+            throw e
+        }
     }
 
     /** True while the session came from a reset link and still needs a new password. */
@@ -349,9 +386,11 @@ class SessionManager(
     fun updatePassword(password: String): AccountState {
         require(password.length >= 8) { "Use a password of at least 8 characters." }
         val token = accessToken() ?: throw AuthException.SessionEnded()
-        return exclusive {
+        return exclusive { operation ->
+            val captured = synchronized(lock) { session?.takeIf { it.accessToken == token } }
+                ?: throw AuthException.SessionEnded()
             client().updatePassword(token, password)
-            synchronized(lock) { session }?.let { current -> adopt(if (current.provider == RECOVERY_PROVIDER) current.copy(provider = "email") else current) }
+            adopt(if (captured.provider == RECOVERY_PROVIDER) captured.copy(provider = "email") else captured, operation)
             state
         }
     }
@@ -360,20 +399,39 @@ class SessionManager(
     fun accessToken(): String? {
         val current = synchronized(lock) { session } ?: return null
         if (current.expiresAt > now() + REFRESH_MARGIN) return current.accessToken
-        return exclusive {
+        return exclusive { operation ->
             val latest = synchronized(lock) { session } ?: return@exclusive null
             if (latest.expiresAt > now() + REFRESH_MARGIN) return@exclusive latest.accessToken
-            try { client().refresh(latest.refreshToken, latest.provider).also { adopt(it) }.accessToken }
-            catch (e: AuthException.SessionEnded) { endSession("Your session ended. Sign in again."); null }
-            catch (e: AuthException.InvalidCredentials) { endSession("Your session ended. Sign in again."); null }
+            try { client().refresh(latest.refreshToken, latest.provider).also { adopt(it, operation) }.accessToken }
+            catch (e: AuthException) {
+                val stale = synchronized(lock) { !isCurrentOperationLocked(operation) }
+                when {
+                    stale -> null
+                    e is AuthException.SessionEnded || e is AuthException.InvalidCredentials -> {
+                        endSession("Your session ended. Sign in again.", operation); null
+                    }
+                    else -> throw e
+                }
+            }
         }
     }
 
     /** Local sign-out always completes; server revocation is attempted once. */
     fun signOut() {
-        val current = synchronized(lock) { session }
-        if (current != null && isConfigured) client().logout(current.accessToken)
-        adopt(null)
+        // Invalidate before the network: a refresh or PKCE reply already in flight must never
+        // repopulate the vault, and its finally block must not release a newer operation.
+        val previous = synchronized(lock) {
+            operationEpoch++
+            busyOperation = null
+            pending = null
+            generation++
+            session.also {
+                session = null
+                state = AccountState.SignedOut
+                vault.clear()
+            }
+        }
+        if (previous != null && isConfigured) client().logout(previous.accessToken)
     }
 
     companion object { const val REFRESH_MARGIN = 60L }

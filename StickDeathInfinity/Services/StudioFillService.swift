@@ -113,11 +113,39 @@ enum StudioFillService {
             opacity: opacity, settings: settings)
     }
 
+    /// Exact original filled-ellipse alpha, rendered only within its clipped integer
+    /// bounds. Pixel work/memory is charged before allocation by the compact rectangle,
+    /// not once per full document for every small circle.
+    @MainActor
+    static func wandElementCoverage(document: StudioDocument, frame: AnimationFrame,
+                                    element: DrawnElement, maximumPixels: Int) throws -> StudioSelectionElementHitTest.AlphaCoverage? {
+        try Task.checkCancellation()
+        guard element.tool == .circle, element.points.count == 2,
+              element.shape?.fillColor != nil || element.fillColor != nil,
+              frame.elements.contains(element), document.width > 0, document.height > 0,
+              let bounds = element.selectionBounds,
+              [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].allSatisfy(\.isFinite) else { throw Failure.selection }
+        let canvas = CGRect(x: 0, y: 0, width: document.width, height: document.height)
+        // Selection bounds already include native stroke width and affine placement.
+        // Retain two document pixels for the renderer's antialiased edge.
+        let crop = bounds.insetBy(dx: -2, dy: -2).integral.intersection(canvas)
+        guard !crop.isNull, !crop.isEmpty else { return nil }
+        guard crop.width <= 4096, crop.height <= 4096 else { throw Failure.selection }
+        let width = Int(crop.width), height = Int(crop.height)
+        guard maximumPixels > 0, width <= maximumPixels / height else { throw StudioSelectionMask.Failure.workLimit }
+        let isolated = AnimationFrame(id: frame.id, elements: [element])
+        guard let alpha = try selectionCoverage(document: document, frame: isolated,
+            selectedIDs: [element.id], crop: crop) else { throw Failure.selection }
+        return .init(x: Int(crop.minX), y: Int(crop.minY), width: width, height: height,
+            rowStride: width, bytes: [UInt8](alpha))
+    }
+
     /// Source-body alpha only: layer opacity/glow/blending belong to the final
     /// paint layer, not to selection clipping. No raster or bounding-box proxy.
     @MainActor
     static func selectionCoverage(document: StudioDocument, frame: AnimationFrame,
-                                          selectedIDs: Set<String>, imageLayerID: String? = nil, sources: [String: Data] = [:]) throws -> Data? {
+                                          selectedIDs: Set<String>, imageLayerID: String? = nil, sources: [String: Data] = [:],
+                                          crop: CGRect? = nil) throws -> Data? {
         guard !selectedIDs.isEmpty || imageLayerID != nil else { return nil }
         guard selectedIDs.count <= 1024 else { throw Failure.selection }
         let elements = frame.elements.filter { selectedIDs.contains($0.id) }
@@ -160,24 +188,39 @@ enum StudioFillService {
         let images = try StudioFrameRenderer.prepareRasters(frame: isolated, layers: layers, sourceData: sources, maximumDimension: 8192)
         let prepared = try StudioFrameRenderer.prepare(frame: isolated)
         let size = CGSize(width: document.width, height: document.height)
+        let rect = crop ?? CGRect(origin: .zero, size: size)
+        guard !rect.isNull, !rect.isEmpty, rect == rect.integral,
+              rect.minX >= 0, rect.minY >= 0, rect.maxX <= size.width, rect.maxY <= size.height,
+              rect.width <= 4096, rect.height <= 4096 else { throw Failure.selection }
+        let width = Int(rect.width), height = Int(rect.height)
+        // The new compact Wand path is bounded to the pixel-tool budget. Existing
+        // no-crop callers retain their validated document capacity (up to4096 per
+        // side); a new selection feature must not cap their previously valid canvases.
+        if crop != nil {
+            guard width <= StudioSelectionMask.maximumPixels / height else { throw Failure.limit }
+        }
         var failure: Error?
-        let renderer = ImageRenderer(content: Canvas { context, actual in
+        let renderer = ImageRenderer(content: Canvas { context, _ in
+            // Keep the production renderer at document scale; only the target is
+            // cropped. Moving its coordinate origin does not rewrite element data,
+            // transforms, reflections or embedded selection erasures.
+            context.translateBy(x: -rect.minX, y: -rect.minY)
             failure = StudioFrameRenderer.draw(context: &context, frame: isolated, layers: layers,
-                canvasSize: size, size: actual, preparedBrushes: prepared, rasterSources: sources, preparedRasters: images)
-        }.frame(width: size.width, height: size.height))
+                canvasSize: size, size: size, preparedBrushes: prepared, rasterSources: sources, preparedRasters: images)
+        }.frame(width: rect.width, height: rect.height))
         renderer.scale = 1; renderer.isOpaque = false
-        guard let image = renderer.cgImage, image.width == document.width, image.height == document.height,
+        guard let image = renderer.cgImage, image.width == width, image.height == height,
               let space = CGColorSpace(name: CGColorSpace.sRGB) else { throw Failure.render }
         if let failure { throw failure }
-        var rgba = [UInt8](repeating: 0, count: document.width * document.height * 4)
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
         let decoded = rgba.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(data: buffer.baseAddress, width: document.width, height: document.height,
-                bitsPerComponent: 8, bytesPerRow: document.width * 4, space: space,
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
-            context.setBlendMode(.copy); context.draw(image, in: CGRect(origin: .zero, size: size)); return true
+            context.setBlendMode(.copy); context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height)); return true
         }
         guard decoded else { throw Failure.render }
-        var alpha = Data(count: document.width * document.height)
+        var alpha = Data(count: width * height)
         for index in 0..<alpha.count {
             if index % 4096 == 0 { try Task.checkCancellation() }
             alpha[index] = rgba[index * 4 + 3]

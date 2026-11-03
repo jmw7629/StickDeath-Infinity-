@@ -925,7 +925,11 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                         if (event.changes.any { it.id != down.id && it.pressed }) break
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         val current = point(change.position.x, change.position.y)
-                        if (tool == Tool.Move && bounds != null) transformed = movement(current).apply(doc.frame, ids, bounds)
+                        if (tool == Tool.Move && bounds != null) {
+                            val preview = movement(current).preview(doc.frame, ids, bounds, transformed ?: doc.frame)
+                            transformed = preview.frame
+                            preview.refusal?.let(vm::report)
+                        }
                         else if (tool == Tool.Fill || tool == Tool.Eyedropper || tool == Tool.Text) {
                             val dx = current.x - first.x; val dy = current.y - first.y
                             val tolerance = 8f * doc.width / size.width / vm.viewportZoom

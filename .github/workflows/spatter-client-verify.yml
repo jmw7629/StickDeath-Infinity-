@@ -1980,6 +1980,13 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
+            StickDeathInfinity/Services/StudioSmudgeSession.swift \
+            StickDeathInfinity/Services/StudioSharpenSession.swift \
+            StickDeathInfinity/Services/StudioDodgeBurnSession.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioAudioMixService.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -2027,6 +2034,13 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            StickDeathInfinity/Services/StudioSoundCredits.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioAudioMixService.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -2179,6 +2193,10 @@ jobs:
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
             Tests/SpatterStickFigure/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-stick-figure-tests"
           "$RUNNER_TEMP/sdi-spatter-stick-figure-tests"
@@ -2227,6 +2245,10 @@ jobs:
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
             StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift \
             Tools/SpatterDraftRenderer/MacPlatform.swift \
             Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift \
@@ -2612,6 +2634,9 @@ jobs:
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioVideoFraming.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \

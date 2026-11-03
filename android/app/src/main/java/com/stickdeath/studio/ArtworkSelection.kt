@@ -19,7 +19,18 @@ data class ArtworkBounds(val left: Float, val top: Float, val right: Float, val 
     }
 }
 
+/** Transient gesture output only; a refusal retains the last valid preview, never changes history. */
+data class ArtworkTransformPreview(val frame: Frame, val refusal: String? = null)
+
 data class ArtworkTransform(val dx: Float = 0f, val dy: Float = 0f, val scale: Float = 1f, val angle: Float = 0f, val heightScale: Float = scale) {
+    /** Keep validation failures inside pointer input. Commit still calls [apply] directly through the
+     * guarded Studio edit path, so a refused resize never clamps or mutates canonical geometry. */
+    fun preview(frame: Frame, ids: Set<String>, bounds: ArtworkBounds, lastValidFrame: Frame = frame): ArtworkTransformPreview =
+        try { ArtworkTransformPreview(apply(frame, ids, bounds)) }
+        catch (refused: IllegalArgumentException) {
+            ArtworkTransformPreview(lastValidFrame, refused.message ?: "Selection preview is unavailable. Nothing changed.")
+        }
+
     fun apply(frame: Frame, ids: Set<String>, bounds: ArtworkBounds): Frame {
         require(listOf(dx,dy,scale,heightScale,angle).all { it.isFinite() } && scale in 0.25f..4f && heightScale in 0.25f..4f && angle in -360f..360f)
         val a = angle * PI / 180

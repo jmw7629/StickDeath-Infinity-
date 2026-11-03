@@ -76,14 +76,14 @@ enum SpatterStudioControlRegistry {
         .init(id: "tool.rectangle", surface: .toolbar, title: "Rect", route: .instructions(["shape"])),
         .init(id: "tool.circle", surface: .toolbar, title: "Circle", route: .instructions(["shape"])),
         .init(id: "tool.fill", surface: .toolbar, title: "Fill", route: .instructions(["fill"])),
-        .init(id: "tool.gradient", surface: .toolbar, title: "Gradient", route: .manual(pixelToolNote)),
+        .init(id: "tool.gradient", surface: .toolbar, title: "Gradient", route: .instructions(["gradientFill"])),
         .init(id: "tool.eyedropper", surface: .toolbar, title: "Dropper", route: .manual("Sampling a color reads the canvas under your finger; give colors to Spatter as #RRGGBB instead.")),
         .init(id: "tool.eraser", surface: .toolbar, title: "Eraser", route: .instructions(["selectedErasure"])),
-        .init(id: "tool.smudge", surface: .toolbar, title: "Smudge", route: .manual(pixelToolNote)),
-        .init(id: "tool.sharpen", surface: .toolbar, title: "Sharpen", route: .manual(pixelToolNote)),
-        .init(id: "tool.dodge", surface: .toolbar, title: "Dodge", route: .manual(pixelToolNote)),
-        .init(id: "tool.burn", surface: .toolbar, title: "Burn", route: .manual(pixelToolNote)),
-        .init(id: "tool.blur", surface: .toolbar, title: "Blur", route: .manual(pixelToolNote)),
+        .init(id: "tool.smudge", surface: .toolbar, title: "Smudge", route: .instructions(["pixelEffect"])),
+        .init(id: "tool.sharpen", surface: .toolbar, title: "Sharpen", route: .instructions(["pixelEffect"])),
+        .init(id: "tool.dodge", surface: .toolbar, title: "Dodge", route: .instructions(["pixelEffect"])),
+        .init(id: "tool.burn", surface: .toolbar, title: "Burn", route: .instructions(["pixelEffect"])),
+        .init(id: "tool.blur", surface: .toolbar, title: "Blur", route: .instructions(["pixelEffect"])),
         .init(id: "tool.text", surface: .toolbar, title: "Text", route: .instructions(["textUpdate"])),
         .init(id: "tool.hand", surface: .toolbar, title: "Hand", route: .manual(viewNote)),
         .init(id: "tool.zoom", surface: .toolbar, title: "Zoom", route: .manual(viewNote)),
@@ -98,7 +98,7 @@ enum SpatterStudioControlRegistry {
         // Panels and the single options popup.
         .init(id: "panel.none", surface: .canvas, title: "Canvas", route: .instructions(["navigation"])),
         .init(id: "panel.colorPicker", surface: .panel, title: "Color picker", route: .manual("Choosing a color is manual; instructions take colors inline as #RRGGBB.")),
-        .init(id: "panel.gradientEndColor", surface: .panel, title: "Gradient end color", route: .manual("Gradient brush instructions take both colors inline as #RRGGBB to #RRGGBB.")),
+        .init(id: "panel.gradientEndColor", surface: .panel, title: "Gradient end color", route: .manual("Gradient brush and canvas Gradient instructions take both colors inline; canvas Gradient also accepts a fade to transparent.")),
         .init(id: "panel.shapeFillColor", surface: .panel, title: "Shape fill color", route: .manual("Choosing a shape fill color is manual.")),
         .init(id: "panel.toolSettings", surface: .panel, title: "Tool options popup", route: .manual("Tool sizes, opacity, Hand, Zoom and Fit are set in the options popup by touch; instructions carry their own size and opacity.")),
         .init(id: "panel.projectSettings", surface: .panel, title: "Project settings", route: .instructions(["projectSettings", "projectRename", "grid", "onionSkin"])),
@@ -311,6 +311,11 @@ struct SpatterContextSnapshot: Codable, Equatable {
             guard activeFrameNumber != nil, activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "position" else {
                 return .needs("Show the active drawing layer and set its lock to Free or Position.")
             }
+        case "pixelEffect", "gradientFill":
+            guard activeLayerVisible, activeLayerLockMode == "free", selectedImageCount == 0 else {
+                return .needs("Show the active layer with Free lock and deselect images; drawing/Wand selection is supported.")
+            }
+            guard height > 0, width > 0, width <= 4_194_304 / height else { return .needs("Use a canvas with at most 4,194,304 pixels for native raster effects.") }
         case "librarySound":
             guard activeFrameNumber != nil else { return .needs("Open the project frame before adding a library sound.") }
         case "libraryPicture":

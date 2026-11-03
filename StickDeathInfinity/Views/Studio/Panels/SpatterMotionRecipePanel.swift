@@ -73,7 +73,7 @@ struct SpatterMotionRecipePanel: View {
         guard let kind = SpatterInstructionRouter.classify(draft) else { return nil }
         switch kind {
         case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke, .shape,
-             .areaSelection, .wandSelection, .libraryPicture, .librarySound, .projectExport: return kind
+             .areaSelection, .wandSelection, .libraryPicture, .librarySound, .projectExport, .gradientFill, .pixelEffect: return kind
         default: return nil
         }
     }
@@ -88,6 +88,8 @@ struct SpatterMotionRecipePanel: View {
         case .brushStroke?: return "Draw a brush stroke"
         case .areaSelection?: return "Select drawings inside an outline"
         case .wandSelection?: return "Select drawings by color"
+        case .pixelEffect?: return "Apply an editable raster effect"
+        case .gradientFill?: return "Apply an editable canvas gradient"
         case .librarySound?: return "Add a licensed library sound"
         case .libraryPicture?: return "Add an Image Library picture"
         case .projectExport?: return "Export the saved project"
@@ -105,6 +107,8 @@ struct SpatterMotionRecipePanel: View {
         case .brushStroke?: return "Draws one straight stroke in the chosen brush family on the active frame and layer, with a request-stable seed. The stroke is editable like a hand-drawn one; one Undo removes it."
         case .areaSelection?: return "Selects the drawings a rectangle or polygon fully encloses on the active frame, with the Lasso's rules. Selection never changes the project."
         case .wandSelection?: return "Runs the Wand on the active drawing layer at a canvas point and selects the drawings its color region touches. Selection never changes the project."
+        case .pixelEffect?: return "Smudge, Blur, Sharpen, Dodge and Burn act on existing layer pixels using the same native factories, selection masks, engines and reversible edit as touch input. Nothing is committed unless pixels actually change. Your selected tool and remembered settings stay unchanged."
+        case .gradientFill?: return "Uses Studio’s native Gradient tool: the current drawing/Wand selection limits coverage; no selection fills the active layer. Explicit settings remain editable in the saved project. One Undo removes it; your selected tool and remembered settings stay unchanged."
         case .librarySound?: return "Verifies and decodes one licensed Sound Library asset by its ID, then attaches its real audio bytes to the requested track/time through the same managed-asset operation as Add Sound. One Undo removes the clip. No network, playback or export is started."
         case .libraryPicture?: return "Adds one bundled Image Library picture, verified like Add Picture, to the active frame on a new layer in one Undo step. Files, Photos and the camera stay in Add Picture."
         case .projectExport?: return "Starts Studio's direct MP4 or GIF export of the saved revision to a file on this device. Nothing is uploaded, shared or published."
@@ -113,7 +117,7 @@ struct SpatterMotionRecipePanel: View {
     }
     private var routedGuidance: String? {
         switch routedKind {
-        case .batch?: return "Each line must be a complete frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename, shape or brush-stroke instruction. Selection, image, text, audio-clip, library-sound and brief instructions run on their own. Stop playback, then Preview plan or Apply."
+        case .batch?: return "Each line must be a complete frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename, shape or brush-stroke instruction. Selection, image, text, audio-clip, library-sound, canvas-gradient, raster-effect and brief instructions run on their own. Stop playback, then Preview plan or Apply."
         case .multiClauseBrief?: return "Use: \(SpatterMultiClauseBrief.example) Add actors with semicolons, directions with left to right / right to left, per-clause durations with for N seconds, a total with N seconds and an optional seed N. Falls and explodes must come last for an actor."
         case .tween?: return "Use Tween 4 in-betweens between frames 1 and 2 with ease-in-out easing. Easings: linear, ease-in, ease-out, ease-in-out, easy-ease. Frames are one-based and must be adjacent with matching drawings."
         case .frameClipboard?: return "Use Copy frame 1 and paste it after frame 2., Copy frame 1., or Paste frame after active frame. Frame numbers are one-based; the project must have room for one more frame."
@@ -122,6 +126,8 @@ struct SpatterMotionRecipePanel: View {
         case .brushStroke?: return "Use Draw a round brush line from (10%, 20%) to (90%, 20%) in #000000, size 6 px, opacity 100%. Gradient needs in #RRGGBB to #RRGGBB. Size 1–50 px; the active layer must be visible and not fully or position-locked."
         case .areaSelection?: return "Use \(SpatterAreaSelectInstruction.example) or a polygon of 3–32 points. Only drawings on visible layers locked to Free are selected."
         case .wandSelection?: return "Use \(SpatterWandSelectInstruction.optionsExample) Tolerance 0–128; the active layer must be a visible drawing layer locked to Free or Position."
+        case .pixelEffect?: return "Use the tool-specific examples below with every setting and 2–32 canvas-percent path points. Show a Free layer and stop playback. Drawing/Wand coverage limits the operation; no drawing selection affects the full layer. Deselect image/image pixels. Native work limits apply; blank or unchanged pixels are a factual no-op."
+        case .gradientFill?: return "Specify linear or radial, both canvas points, colors (or fade to transparent), opacity above 0–100%, interpolation sRGB/linear-light, and dither on/off. Show a Free layer; stop playback. Image-pixel selections are unavailable; native gradient limit is 4,194,304 pixels."
         case .librarySound?: return "Use Copy Spatter instruction on a Sound Library title, then paste it here. The command keeps the chosen track (1–4) and time (0–1000 seconds). The current account, project, frame, selection and playhead must stay unchanged until the sound is attached."
         case .libraryPicture?: return "Use \(SpatterLibraryPictureInstruction.example) with a picture's title or ID from Add Picture → Image Library. Stop playback first."
         case .projectExport?: return "Use \(SpatterProjectExportInstruction.example) or \(SpatterProjectExportInstruction.gifExample) Save the project first; the export uses the saved revision."
@@ -139,6 +145,8 @@ struct SpatterMotionRecipePanel: View {
         case .brushStroke?: return SpatterBrushStrokeInstruction.example
         case .areaSelection?: return SpatterAreaSelectInstruction.example
         case .wandSelection?: return SpatterWandSelectInstruction.example
+        case .pixelEffect?: return SpatterPixelEffectInstruction.blurExample
+        case .gradientFill?: return SpatterGradientInstruction.linearExample
         case .librarySound?: return SpatterLibrarySoundInstruction.example
         case .libraryPicture?: return SpatterLibraryPictureInstruction.example
         case .projectExport?: return SpatterProjectExportInstruction.example

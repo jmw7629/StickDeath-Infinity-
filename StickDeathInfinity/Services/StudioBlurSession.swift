@@ -64,12 +64,8 @@ struct StudioBlurInput {
     }
     func element(id: String) throws -> DrawnElement {
         guard !isCancelled else { throw CancellationError() }
-        let result = DrawnElement(id: id, tool: .blur,
-            points: points.map { .init(x: $0.x, y: $0.y) }, color: "#000000",
-            width: context.settings.diameter, opacity: context.settings.strength, layerID: context.layerID,
-            blur: .init(hardness: context.settings.hardness, radius: context.settings.radius))
-        try result.blur!.validate(element: result, width: context.width, height: context.height)
-        return result
+        return try StudioPixelEffectSettings.blur(context.settings).element(id: id, layerID: context.layerID,
+            points: points.map { .init(x: $0.x, y: $0.y) }, width: context.width, height: context.height)
     }
 }
 
@@ -91,24 +87,15 @@ struct StudioBlurInput {
         isApplying = true
         defer { work = nil; isApplying = false; vm.finishStrokeInput(id: id) }
         do {
-            var element = try input.element(id: id)
-            // A selection limits the effect (#149): its coverage is captured
-            // once, clips the result and is persisted with the operation.
-            let selectionMask = try vm.effectSelectionMask()
-            element.selectionMask = selectionMask
-            let coverage = try selectionMask?.denseCoverage()
-            // Reject cumulative document budgets before rendering any bitmap.
-            var frame = vm.currentFrame; frame.elements.append(element)
-            try StudioSmudgeDescriptor.validateFrame(frame, width: input.context.width, height: input.context.height)
-            let captured = try StudioBlurCapture.capture(document: vm.document,
+            guard let capture = vm.capturePixelEffect(ownedStroke: id) else { throw StudioCommandError.staleRevision }
+            let element = try vm.preparePixelEffect(input.element(id: id), capture: capture, ownedStroke: id)
+            let captured = try StudioBlurCapture.capturePixelEffect(element: element, document: vm.document,
                 selection: vm.selectedElementIDs, raster: vm.rasterData(vm.currentFrame.rasterAssetID),
-                rasterDataByID: vm.rasterSources(for: vm.currentFrame), clipsToSelection: selectionMask != nil)
+                rasterDataByID: vm.rasterSources(for: vm.currentFrame))
             let worker = Task.detached(priority: .userInitiated) { () throws -> StudioBlur.Pixels in
-                let effected = try StudioBlur.apply(to: captured.pixels, path: input.points, settings: input.context.settings)
-                guard let coverage else { return effected }
-                return try StudioBlur.Pixels(width: effected.width, height: effected.height,
-                    rgba: StudioSelectionMask.clip(original: captured.pixels.rgba, effected: effected.rgba,
-                        coverage: coverage, width: effected.width, height: effected.height))
+                let original = try StudioSmudge.Pixels(width: captured.pixels.width, height: captured.pixels.height, rgba: captured.pixels.rgba)
+                let effected = try StudioSmudgeReplay.applyPixelEffect(element, to: original)
+                return try StudioBlur.Pixels(width: effected.width, height: effected.height, rgba: effected.rgba)
             }
             work = worker
             let pixels = try await withTaskCancellationHandler(operation: { try await worker.value },
@@ -123,9 +110,9 @@ struct StudioBlurInput {
                 vm.message = "This drag did not change the layer."
                 return false
             }
-            let committed = vm.commitElement(element, frameID: input.context.frameID)
-            if committed { vm.message = "Blurred \(selectionMask == nil ? "the active layer" : "the selected area"). Undo restores the original." }
-            return committed
+            _ = try vm.commitPixelEffect(element, capture: capture, ownedStroke: id)
+            vm.message = "Blurred \(element.selectionMask == nil ? "the active layer" : "the selected area"). Undo restores the original."
+            return true
         } catch is CancellationError {
             vm.message = "Blur cancelled. Nothing was added."
             return false
@@ -156,13 +143,8 @@ struct StudioBlurInput {
         defer { work = nil; isApplying = false; vm.finishStrokeInput(id: id) }
         do {
             let element = try vm.gradientElement(capture, from: start, to: end, id: id)
-            // Reject cumulative document budgets before rendering any bitmap.
-            var frame = vm.currentFrame; frame.elements.append(element)
-            try StudioSmudgeDescriptor.validateFrame(frame, width: capture.width, height: capture.height)
-            // The gradient carries any selection in its own fill mask.
-            let captured = try StudioBlurCapture.capture(document: vm.document, selection: vm.selectedElementIDs,
-                raster: vm.rasterData(vm.currentFrame.rasterAssetID), rasterDataByID: vm.rasterSources(for: vm.currentFrame),
-                clipsToSelection: true)
+            let captured = try StudioBlurCapture.captureGradient(element: element, document: vm.document, selection: vm.selectedElementIDs,
+                raster: vm.rasterData(vm.currentFrame.rasterAssetID), rasterDataByID: vm.rasterSources(for: vm.currentFrame))
             let original = try StudioSmudge.Pixels(width: captured.pixels.width, height: captured.pixels.height, rgba: captured.pixels.rgba)
             let worker = Task.detached(priority: .userInitiated) { () throws -> StudioSmudge.Pixels in
                 try StudioSmudgeReplay.applyGradient(element, to: original)
@@ -182,12 +164,10 @@ struct StudioBlurInput {
                 vm.message = "This gradient does not change any pixels here. Nothing was added."
                 return false
             }
-            let committed = vm.commitElement(element, frameID: capture.frameID)
-            if committed {
-                vm.message = (capture.selection.isEmpty ? "Filled the active layer" : "Filled the selected area")
-                    + " with a \(element.gradient?.shape == .radial ? "radial" : "linear") gradient. Undo removes it; the artwork below stays editable."
-            }
-            return committed
+            _ = try vm.commitGradient(element, capture: capture, ownedStroke: id)
+            vm.message = (capture.selection.isEmpty ? "Filled the active layer" : "Filled the selected area")
+                + " with a \(element.gradient?.shape == .radial ? "radial" : "linear") gradient. Undo removes it; the artwork below stays editable."
+            return true
         } catch is CancellationError {
             vm.message = "Gradient cancelled. Nothing was added."
             return false

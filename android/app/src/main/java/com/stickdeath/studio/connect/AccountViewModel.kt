@@ -56,6 +56,9 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     var spatterReply by mutableStateOf<Load<SpatterReply>>(Load.Idle); private set
     /** Server-reported plan, allowance and credits; the device never counts prompts itself. */
     var spatterUsage by mutableStateOf<Load<SpatterUsage>>(Load.Idle); private set
+    private val feedLikes = FeedLikeMutations()
+    var pendingFeedLikes by mutableStateOf<Set<String>>(emptySet()); private set
+    private var accountOperation = 0L
 
     val configured get() = manager.isConfigured
     val providers get() = manager.providers()
@@ -64,11 +67,13 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
 
     init { if (manager.isConfigured && state is AccountState.SignedOut) perform("Restoring your session…") { manager.restore() } }
 
-    private fun perform(progress: String, done: String = "", block: () -> Any?) {
-        if (working) return
+    private fun perform(progress: String, done: String = "", interruptPending: Boolean = false, block: () -> Any?) {
+        if (working && !interruptPending) return
+        val operation = ++accountOperation
         working = true; notice = progress
         viewModelScope.launch {
             val failure = withContext(Dispatchers.IO) { runCatching { block() }.exceptionOrNull() }
+            if (operation != accountOperation) return@launch
             working = false
             state = manager.state
             notice = when (failure) { null -> done; is CancellationException -> ""; else -> failure.message ?: "That did not complete." }
@@ -94,7 +99,14 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
         if (!manager.signUp(email, password, username)) throw IllegalStateException("Check your email to confirm the account, then sign in.")
     }
     fun signInAsGuest() = perform("Starting a guest session…") { manager.signInAsGuest() }
-    fun signOut() = perform("Signing out…") { manager.signOut() }
+    fun signOut() {
+        // The account controls disappear immediately. The manager independently invalidates
+        // its session/operation epoch before best-effort server revocation.
+        state = AccountState.SignedOut
+        feed = Load.Idle; records = Load.Idle; invitation = Load.Idle; spatterReply = Load.Idle; spatterUsage = Load.Idle
+        PlanRuntime.reportServerPlan(null)
+        perform("Signing out…", interruptPending = true) { manager.signOut() }
+    }
     /** The hosted authorize URL for the browser, or null with a notice when unavailable. */
     fun beginOAuth(provider: OAuthProvider): String? = runCatching { manager.beginOAuth(provider) }
         .onFailure { notice = it.message ?: "Sign-in could not start." }.getOrNull()
@@ -130,19 +142,31 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
             } else next
         }) { feedClient.page(category, cursor, current.asOf) }
     }
-    /** Optimistic ±1 on the tapped card only, rolled back unless the server confirms. */
+    /** One pending request per card; old replies cannot undo a newer query or account. */
     fun toggleLike(post: FeedPost) {
+        if (!signedInMember) return
         val page = (feed as? Load.Loaded)?.value ?: return
-        val optimistic = post.copy(liked = !post.liked, likes = (post.likes + if (post.liked) -1 else 1).coerceAtLeast(0))
-        feed = Load.Loaded(page.copy(posts = page.posts.map { if (it.id == post.id) optimistic else it }))
-        val generation = manager.generation
+        val current = page.posts.firstOrNull { it.id == post.id } ?: return
+        val mutation = feedLikes.begin(current, manager.generation, feedRequest) ?: return
+        pendingFeedLikes = feedLikes.pendingIds
+        feed = Load.Loaded(page.copy(posts = page.posts.map { if (it.id == post.id) mutation.optimistic else it }))
         viewModelScope.launch {
-            val confirmed = withContext(Dispatchers.IO) { runCatching { feedClient.like(post.id, optimistic.liked) } }
-            if (generation != manager.generation) return@launch
-            if (confirmed.getOrDefault(false) != true) {
-                val latest = (feed as? Load.Loaded)?.value ?: return@launch
-                feed = Load.Loaded(latest.copy(posts = latest.posts.map { if (it.id == post.id) post else it }))
-                notice = confirmed.exceptionOrNull()?.message ?: "The like was not confirmed and was undone."
+            var result: Result<Boolean>? = null
+            try {
+                result = withContext(Dispatchers.IO) { runCatching { feedClient.like(current.id, mutation.optimistic.liked) } }
+            } finally {
+                val latest = (feed as? Load.Loaded)?.value
+                val completion = feedLikes.finish(mutation, manager.generation, feedRequest,
+                    latest?.posts?.firstOrNull { it.id == current.id }, result?.getOrDefault(false) == true)
+                pendingFeedLikes = feedLikes.pendingIds
+                when (completion) {
+                    is FeedLikeMutations.Completion.Rollback -> if (latest != null) {
+                        feed = Load.Loaded(latest.copy(posts = latest.posts.map { if (it.id == current.id) completion.original else it }))
+                        notice = result?.exceptionOrNull()?.message ?: "The like was not confirmed and was undone."
+                    }
+                    FeedLikeMutations.Completion.Refresh -> if (signedInMember) loadFeed()
+                    FeedLikeMutations.Completion.Confirmed, FeedLikeMutations.Completion.Stale -> Unit
+                }
             }
         }
     }

@@ -47,7 +47,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
     when (state) {
         is AccountState.RetryableFailure -> Button({ account.retryRestore() }, enabled = !account.working) { Text("Retry") }
         is AccountState.SignedIn -> {
-            TextButton({ account.signOut() }, enabled = !account.working) { Text("Sign out") }
+            TextButton({ account.signOut() }) { Text("Sign out") }
             if (account.needsNewPassword) NewPasswordForm(account) else CommunitySection(account)
         }
         is AccountState.Restoring -> Unit
@@ -116,7 +116,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
                         Text("${post.title.ifBlank { "Untitled" }} — ${post.creatorName}")
                         if (post.caption.isNotBlank()) Text(post.caption, style = MaterialTheme.typography.bodySmall)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton({ account.toggleLike(post) }, enabled = account.signedInMember) { Text(if (post.liked) "Liked · ${post.likes}" else "Like · ${post.likes}") }
+                            TextButton({ account.toggleLike(post) }, enabled = account.signedInMember && post.id !in account.pendingFeedLikes) {
+                                Text(if (post.id in account.pendingFeedLikes) "Saving like…" else if (post.liked) "Liked · ${post.likes}" else "Like · ${post.likes}")
+                            }
                             post.safeUrl?.let { url -> TextButton({ runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }) { Text("Watch") } }
                             TextButton({ account.report(post, FeedReportReason.Abuse) }, enabled = account.signedInMember) { Text("Report") }
                         }
