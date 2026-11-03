@@ -520,6 +520,9 @@ private final class NetworkTrap: URLProtocol {
                     ("Cancel my account deletion now", ["While a request is pending", "Cancel deletion", "I cannot delete an account, request or cancel deletion", "from this conversation"]),
                     ("Can I sign in with Microsoft and keep guest projects?", ["separate guest scope", "does not merge"]),
                     ("How do room invites work?", ["revocable, expiring code", "never an account sign-in token", "no chat, direct messaging"]),
+                    ("How do I edit a shared project in a room?", ["When room services are configured and you are signed in", "Review invitation", "Request admission", "owner uses Approve", "Make editor", "Open shared project in Studio", "Download shared project", "not a verified live connection"]),
+                    ("Why is my room unavailable?", ["not-configured, unavailable or connection error", "not proof of an active shared session", "Read the room and Studio synchronisation status"]),
+                    ("Create a room and send an invite for me", ["I cannot create rooms, send invites, approve members, inspect membership or perform room editing", "from this conversation"]),
                     ("Can we chat or call inside a collaboration room?", ["have been removed", "Watch Together"]),
                     ("Is Watch Together a video call?", ["it is not a call"])
                 ] {
@@ -531,6 +534,9 @@ private final class NetworkTrap: URLProtocol {
                         "Account/rooms guidance claimed a cloud result or executed action")
                     try require(!answer.contains("In-app account deletion is not available yet") && !answer.contains("screen does not offer a delete button"),
                         "Account guidance denied the implemented Profile controls")
+                    try require(!answer.contains("Connected room editing of a shared project is not available yet")
+                        && !answer.contains("connected rooms are not available yet") && !answer.contains("Collaboration rooms are planned"),
+                        "Rooms guidance denied implemented conditional controls")
                 }
                 try require(studio.document == before && NetworkTrap.count == networkAttempts,
                     "Account/rooms guidance edited the project or attempted a network action")

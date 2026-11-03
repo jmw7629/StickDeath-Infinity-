@@ -839,12 +839,15 @@ private enum Golden {
                     && [DrawingTool.line, .rectangle, .circle].allSatisfy { SpatterStudioControlRegistry.control(for: $0)?.grammars == ["shape"] }
                     && SpatterFreehandInstruction.tools.allSatisfy { SpatterStudioControlRegistry.control(for: $0)?.grammars == ["freehandStroke"] }
                     && SpatterStudioControlRegistry.control(for: .hand)?.grammars.isEmpty == true, "Tool routes overclaim or underclaim")
-                // Catalog v5 (#204): selections, Image Library pictures and export have typed routes;
-                // pixel effects stay manual with a stated reason.
+                // Catalog v12 (#204): retain selection, picture placement and export routes;
+                // optional-pack app actions additionally share the Add picture panel.
                 try require(SpatterStudioControlRegistry.control(for: .lasso)?.grammars == ["areaSelection", "selectByID"]
                     && SpatterStudioControlRegistry.control(for: .wand)?.grammars == ["wandSelection"]
                     && SpatterStudioControlRegistry.control(forPanel: "export")?.grammars == ["projectExport"]
-                    && SpatterStudioControlRegistry.control(forPanel: "addImage")?.grammars == ["libraryPicture"], "Selection, picture or export route missing")
+                    && SpatterStudioControlRegistry.control(forPanel: "addImage")?.grammars == ["libraryPicture", "imagePack"], "Selection, picture or export route missing")
+                try require(SpatterStudioControlRegistry.controls(forGrammar: "imagePack").map(\.id) == ["panel.addImage"]
+                    && SpatterInstructionCatalog.names.filter { $0 == "imagePack" } == ["imagePack"],
+                    "Optional picture-pack grammar must be reachable exactly once through panel.addImage")
                 for tool in [DrawingTool.smudge, .blur, .sharpen, .dodge, .burn] {
                     guard let control = SpatterStudioControlRegistry.control(for: tool) else { throw Failure(message: "Raster control missing") }
                     try require(control.grammars == ["pixelEffect"] && control.explanation.contains("pixelEffect"), "Native raster tool route missing or overclaimed")
