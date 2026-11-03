@@ -145,10 +145,10 @@ struct StudioGIFExportControls: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(session.needsCleanup ? "GIF needs recovery" : "GIF ready on this device")
                         .font(.specialElite(9)).foregroundColor(.white.opacity(0.5)).tracking(1)
-                    Text(output.gifURL.lastPathComponent).font(.system(size: 12, weight: .bold, design: .monospaced))
+                    Text(output.gifURL.lastPathComponent).font(.specialElite(12)).bold()
                         .accessibilityIdentifier("studio.export.gif.filename")
                     Text("\(output.receipt.width) × \(output.receipt.height) · \(output.receipt.frameIDs.count) frames · \(output.receipt.sourceFPS) fps · revision \(output.receipt.revision)")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.export.gif.receipt")
                     if let credits = output.receipt.imageCredits, !credits.isEmpty {
                         Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
@@ -157,7 +157,7 @@ struct StudioGIFExportControls: View {
                             .accessibilityIdentifier("studio.export.gif.image-credits")
                     }
                     Text("\(output.receipt.encodedBytes) encoded bytes · \(output.receipt.delaysCentiseconds.reduce(0, +)) centiseconds · white · no audio")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                         .accessibilityIdentifier("studio.export.gif.media")
                     if let image = previewImage {
                         Image(decorative: image, scale: 1).resizable().scaledToFit()
@@ -178,8 +178,11 @@ struct StudioGIFExportControls: View {
                     Button {
                         shareStartError = beginNativeShare()
                     } label: {
-                        Label("Share GIF / Save to Files", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        Label {
+                            Text("Share GIF / Save to Files").font(.specialElite(12)).bold()
+                        } icon: {
+                            Image(systemName: "square.and.arrow.up").font(.system(size: 12, weight: .bold, design: .monospaced))
+                        }
                             .frame(maxWidth: .infinity).padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                     }
@@ -188,8 +191,11 @@ struct StudioGIFExportControls: View {
                     Button {
                         saveRequest = session.beginSharing(scope: scope)
                     } label: {
-                        Label("Save to Files", systemImage: "folder")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        Label {
+                            Text("Save to Files").font(.specialElite(12)).bold()
+                        } icon: {
+                            Image(systemName: "folder").font(.system(size: 12, weight: .bold, design: .monospaced))
+                        }
                             .frame(maxWidth: .infinity).padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                     }

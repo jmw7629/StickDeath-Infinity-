@@ -13,7 +13,12 @@ StickDeathInfinity/Resources/StudioSounds/catalogue.json it checks:
   * labels are bounded, waveform peaks (and optional RMS) are 256 finite values
     in 0...1 with RMS never above the peak;
   * no file in the directory is unaccounted for (apart from the manifest and
-    licence text files), so no unlisted binary ships.
+    licence text files), so no unlisted binary ships;
+  * optional bundled pack metadata is admitted only with the exact compiled
+    descriptor pin and two exact pinned, fully validated metadata catalogues.
+
+Metadata never stands in for audio verification. Passing an actual optional
+pack directory uses the same complete audio-file checks as the bundled library.
 
 The script prints a per-category/per-author/per-source summary and exits
 non-zero on the first inconsistency. It never modifies files.
@@ -24,7 +29,9 @@ import collections
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -38,10 +45,67 @@ LICENSE = "CC0-1.0"
 LICENSE_URL = "https://creativecommons.org/publicdomain/zero/1.0/"
 MAX_BYTES = 16 * 1024 * 1024
 BIN_COUNT = 256
+MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_PACK_MANIFEST_BYTES = 512 * 1024
+DESCRIPTOR_SHA256 = "e5a58b24d84d1112481f54676f55b2cdb48ecc8929bb32e691dd1ea823bbbf66"
+PACK_MANIFESTS = {
+    "ambience-nature-cc0-v1": "004d60b4b1bad48497df729d20096d1e7123888c26414a681f7f9123d41e1d34",
+    "comedy-cartoon-cc0-v1": "27b3c71240c5c5dae86b3a49728d455e63d1bde50c923da9559b976d8337a033",
+}
 
 
 class ProvenanceError(Exception):
     pass
+
+
+def directory_identity(path: Path) -> tuple[int, int]:
+    before = path.lstat()
+    if not stat.S_ISDIR(before.st_mode):
+        raise ProvenanceError(f"not a regular directory (links refused): {path}")
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(descriptor)
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ProvenanceError(f"directory changed while opening: {path}")
+        return opened.st_dev, opened.st_ino
+    finally:
+        os.close(descriptor)
+
+
+def check_directory(path: Path, identity: tuple[int, int]) -> None:
+    if directory_identity(path) != identity:
+        raise ProvenanceError(f"directory changed during verification: {path}")
+
+
+def read_regular(path: Path, limit: int) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or not 1 <= before.st_size <= limit:
+            raise ProvenanceError(f"not a bounded regular file: {path}")
+        data = bytearray()
+        while len(data) <= limit:
+            chunk = os.read(descriptor, min(65536, limit + 1 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+        after = os.fstat(descriptor)
+        if len(data) != before.st_size or len(data) > limit or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ProvenanceError(f"file changed during verification: {path}")
+        return bytes(data)
+    finally:
+        os.close(descriptor)
+
+
+def decode_json(data: bytes) -> object:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ProvenanceError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+    return json.loads(data.decode("utf-8"), object_pairs_hook=unique)
 
 
 def sha256_of(path: Path) -> str:
@@ -61,11 +125,10 @@ def bins_ok(values: object) -> bool:
             and all(isinstance(v, (int, float)) and math.isfinite(v) and 0 <= v <= 1 for v in values))
 
 
-def verify(directory: Path) -> dict:
-    manifest_path = directory / "catalogue.json"
-    if not manifest_path.is_file():
-        raise ProvenanceError(f"missing manifest: {manifest_path}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+def _verify_sounds(directory: Path, manifest: dict, *, check_audio_files: bool) -> dict:
+    """One rights/schema validator; metadata-only callers must pin bytes first."""
+    if not isinstance(manifest, dict):
+        raise ProvenanceError("manifest must be an object")
     if manifest.get("schemaVersion") != 1:
         raise ProvenanceError("unsupported schemaVersion")
     sounds = manifest.get("sounds")
@@ -79,13 +142,15 @@ def verify(directory: Path) -> dict:
     total_bytes = 0
     with_rms = 0
     for index, sound in enumerate(sounds):
+        if not isinstance(sound, dict):
+            raise ProvenanceError(f"sound[{index}] must be an object")
         where = f"sound[{index}] {sound.get('id', '?')[:12]}"
         for key in ("id", "title", "category", "author", "sourceURL", "license", "licenseURL",
                     "originalSHA256", "filename", "sha256", "byteCount", "duration", "sampleRate", "channels", "waveformPeaks"):
             if key not in sound:
                 raise ProvenanceError(f"{where}: missing {key}")
         digest, original = sound["sha256"], sound["originalSHA256"]
-        if not (HEX64.match(digest) and HEX64.match(original)):
+        if not (isinstance(digest, str) and isinstance(original, str) and HEX64.match(digest) and HEX64.match(original)):
             raise ProvenanceError(f"{where}: digests must be 64 lowercase hex characters")
         if sound["id"] != digest:
             raise ProvenanceError(f"{where}: id must equal sha256")
@@ -95,17 +160,26 @@ def verify(directory: Path) -> dict:
             raise ProvenanceError(f"{where}: duplicate publisher original {original}")
         seen_ids.add(digest); seen_originals.add(original)
         filename = sound["filename"]
+        if not isinstance(filename, str):
+            raise ProvenanceError(f"{where}: filename must be text")
         stem, _, extension = filename.rpartition(".")
         if stem != digest or extension not in ALLOWED_EXTENSIONS or "/" in filename:
             raise ProvenanceError(f"{where}: filename must be <sha256>.<ext>, got {filename}")
-        path = directory / filename
-        if path.is_symlink() or not path.is_file():
-            raise ProvenanceError(f"{where}: shipped file missing or not a regular file: {filename}")
-        size = path.stat().st_size
-        if size != sound["byteCount"] or not 1 <= size <= MAX_BYTES:
-            raise ProvenanceError(f"{where}: byteCount {sound['byteCount']} does not match file size {size}")
-        if sha256_of(path) != digest:
-            raise ProvenanceError(f"{where}: file digest mismatch for {filename}")
+        if check_audio_files:
+            path = directory / filename
+            if path.is_symlink() or not path.is_file():
+                raise ProvenanceError(f"{where}: shipped file missing or not a regular file: {filename}")
+            size = path.stat().st_size
+            if size != sound["byteCount"] or not 1 <= size <= MAX_BYTES:
+                raise ProvenanceError(f"{where}: byteCount {sound['byteCount']} does not match file size {size}")
+            if sha256_of(path) != digest:
+                raise ProvenanceError(f"{where}: file digest mismatch for {filename}")
+        else:
+            # Only the exact release-pinned metadata path uses this branch.
+            # General verify()/CLI calls always require the actual audio bytes.
+            size = sound["byteCount"]
+            if type(size) is not int or not 1 <= size <= MAX_BYTES:
+                raise ProvenanceError(f"{where}: byteCount out of range")
         seen_files.add(filename)
         total_bytes += size
         if not (label_ok(sound["title"]) and label_ok(sound["category"]) and label_ok(sound["author"])):
@@ -137,15 +211,91 @@ def verify(directory: Path) -> dict:
         authors[sound["author"]] += 1
         sources[parts.hostname] += 1
 
-    unexpected = sorted(p.name for p in directory.iterdir()
-                        if p.name not in seen_files and p.name != "catalogue.json" and p.suffix != ".txt" and not p.name.startswith("."))
-    if unexpected:
-        raise ProvenanceError(f"unlisted files in the sound directory: {unexpected[:5]}")
     return {
         "sounds": len(sounds), "distinctShipped": len(seen_ids), "distinctOriginals": len(seen_originals),
         "bytes": total_bytes, "withRMS": with_rms, "categories": dict(categories),
         "authors": dict(authors), "sourceHosts": dict(sources),
     }
+
+
+def _verify_optional_metadata(directory: Path, bundled: dict) -> list[dict]:
+    descriptor_path = directory / "sound-packs.json"
+    if not os.path.lexists(descriptor_path):
+        return []
+    root_identity = directory_identity(directory)
+    data = read_regular(descriptor_path, 32 * 1024)
+    if hashlib.sha256(data).hexdigest() != DESCRIPTOR_SHA256:
+        raise ProvenanceError("optional sound descriptor pin mismatch")
+    descriptors = decode_json(data)
+    if (not isinstance(descriptors, list) or len(descriptors) != 2
+            or {item.get("id") for item in descriptors if isinstance(item, dict)} != set(PACK_MANIFESTS)):
+        raise ProvenanceError("optional sound descriptors do not name the exact two released packs")
+    metadata_root = directory / "pack-catalogues"
+    metadata_identity = directory_identity(metadata_root)
+    if {path.name for path in metadata_root.iterdir()} != set(PACK_MANIFESTS):
+        raise ProvenanceError("unexpected or missing optional metadata pack directory")
+    shipped = {sound["sha256"] for sound in bundled["sounds"]}
+    originals = {sound["originalSHA256"] for sound in bundled["sounds"]}
+    result = []
+    for descriptor in descriptors:
+        pack_id = descriptor["id"]
+        expected_base = f"https://raw.githubusercontent.com/jmw7629/StickDeath-Infinity-/sdi-sound-packs-v1/assets/sound-packs/{pack_id}/"
+        if (not label_ok(descriptor["title"]) or descriptor["baseURL"] != expected_base
+                or descriptor["manifestURL"] != expected_base + "catalogue.json"
+                or descriptor["manifestSHA256"] != PACK_MANIFESTS[pack_id]
+                or type(descriptor["manifestBytes"]) is not int or not 1 <= descriptor["manifestBytes"] <= MAX_PACK_MANIFEST_BYTES
+                or type(descriptor["soundCount"]) is not int or not 1 <= descriptor["soundCount"] <= 128
+                or type(descriptor["totalAudioBytes"]) is not int or not 1 <= descriptor["totalAudioBytes"] <= 64 * 1024 * 1024):
+            raise ProvenanceError(f"{pack_id}: invalid pinned descriptor")
+        check_directory(directory, root_identity); check_directory(metadata_root, metadata_identity)
+        pack_directory = metadata_root / pack_id
+        pack_identity = directory_identity(pack_directory)
+        if {path.name for path in pack_directory.iterdir()} != {"catalogue.json"}:
+            raise ProvenanceError(f"{pack_id}: unlisted optional metadata file")
+        manifest_data = read_regular(pack_directory / "catalogue.json", MAX_PACK_MANIFEST_BYTES)
+        if (len(manifest_data) != descriptor["manifestBytes"]
+                or hashlib.sha256(manifest_data).hexdigest() != descriptor["manifestSHA256"]):
+            raise ProvenanceError(f"{pack_id}: optional metadata manifest pin mismatch")
+        manifest = decode_json(manifest_data)
+        summary = _verify_sounds(pack_directory, manifest, check_audio_files=False)
+        if summary["sounds"] != descriptor["soundCount"] or summary["bytes"] != descriptor["totalAudioBytes"]:
+            raise ProvenanceError(f"{pack_id}: optional metadata count or audio-byte total mismatch")
+        for sound in manifest["sounds"]:
+            if sound["sha256"] in shipped or sound["originalSHA256"] in originals:
+                raise ProvenanceError(f"{pack_id}: duplicate bundled/optional sound or publisher original")
+            shipped.add(sound["sha256"]); originals.add(sound["originalSHA256"])
+        check_directory(directory, root_identity); check_directory(metadata_root, metadata_identity); check_directory(pack_directory, pack_identity)
+        result.append({"id": pack_id, "sounds": summary["sounds"], "audioBytes": summary["bytes"],
+                       "manifestSHA256": descriptor["manifestSHA256"], "metadataOnly": True})
+    check_directory(directory, root_identity); check_directory(metadata_root, metadata_identity)
+    return result
+
+
+def verify(directory: Path) -> dict:
+    root_identity = directory_identity(directory)
+    manifest_path = directory / "catalogue.json"
+    if not manifest_path.is_file():
+        raise ProvenanceError(f"missing manifest: {manifest_path}")
+    manifest = decode_json(read_regular(manifest_path, MAX_MANIFEST_BYTES))
+    summary = _verify_sounds(directory, manifest, check_audio_files=True)
+    optional = _verify_optional_metadata(directory, manifest)
+    recognized_metadata = {"sound-packs.json", "pack-catalogues"} if optional else set()
+    seen_files = {sound["filename"] for sound in manifest["sounds"]}
+    unexpected = sorted(p.name for p in directory.iterdir()
+                        if p.name not in seen_files and p.name != "catalogue.json" and p.suffix != ".txt" and not p.name.startswith(".")
+                        and p.name not in recognized_metadata)
+    if unexpected:
+        raise ProvenanceError(f"unlisted files in the sound directory: {unexpected[:5]}")
+    # Existing licence/hidden-file allowances never authorize directories or
+    # links. The one admitted directory was fully checked above.
+    for path in directory.iterdir():
+        if path.name not in recognized_metadata and (path.is_symlink() or not path.is_file()):
+            raise ProvenanceError(f"unlisted or nonregular path in the sound directory: {path.name}")
+    check_directory(directory, root_identity)
+    if optional:
+        summary["optionalPacks"] = optional
+        summary["availableDistinctWithOptional"] = summary["sounds"] + sum(pack["sounds"] for pack in optional)
+    return summary
 
 
 def main(argv: list[str]) -> int:

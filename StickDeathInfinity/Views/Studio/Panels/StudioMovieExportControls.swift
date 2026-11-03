@@ -47,7 +47,7 @@ struct StudioMovieExportControls: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("VIDEO QUALITY").font(.specialElite(9)).foregroundColor(.white.opacity(0.4)).tracking(1)
             Text("Original canvas · \(vm.document.width) × \(vm.document.height)")
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .font(.specialElite(12)).bold()
             Picker("MP4 resolution", selection: $preset) {
                 if presetAllowed(.original) {
                     Text("Original").tag(StudioMovieExportService.RenderPreset.original)
@@ -68,7 +68,7 @@ struct StudioMovieExportControls: View {
             }
             if let plan = try? StudioMovieExportService.RenderPlan.make(canvasWidth: vm.document.width, canvasHeight: vm.document.height, preset: preset) {
                 Text("Output \(plan.outputWidth) × \(plan.outputHeight)" + (plan.paddingRight + plan.paddingBottom > 0 ? " · 1 white pixel added on the \(plan.paddingRight > 0 ? "right" : "")\(plan.paddingRight > 0 && plan.paddingBottom > 0 ? " and " : "")\(plan.paddingBottom > 0 ? "bottom" : "") so the encoder gets even dimensions" : "") + (plan.scale != 1 ? String(format: " · scaled ×%.3f", plan.scale) : ""))
-                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
+                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.7))
                     .accessibilityIdentifier("studio.export.movie.output-size")
             }
             Picker("MP4 codec", selection: $codec) {
@@ -145,18 +145,18 @@ struct StudioMovieExportControls: View {
             if let output = session.output, !output.isCleaned {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(session.needsCleanup ? "MP4 needs recovery" : "MP4 ready on this device").font(.specialElite(9)).foregroundColor(.white.opacity(0.5)).tracking(1)
-                    Text(output.movieURL.lastPathComponent).font(.system(size: 12, weight: .bold, design: .monospaced))
+                    Text(output.movieURL.lastPathComponent).font(.specialElite(12)).bold()
                         .accessibilityIdentifier("studio.export.movie.filename")
                     Text("\(output.manifest.width) × \(output.manifest.height) · \(output.manifest.frameIDs.count) frames · \(output.manifest.fps) fps · revision \(output.manifest.documentRevision)")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.export.movie.receipt")
                     if let rule = output.manifest.renderRule, output.manifest.renderPlan.map({ $0.scale != 1 || $0.paddingRight + $0.paddingBottom > 0 }) == true {
-                        Text(rule).font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                        Text(rule).font(.specialElite(9)).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("studio.export.movie.render-rule")
                     }
                     if let gain = output.audioAppliedGain {
                         Text(String(format: "Audio normalized to −1 dBFS · gain ×%.3f recorded in manifest", gain))
-                            .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                            .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("studio.export.movie.normalized")
                     }
                     if let credits = output.manifest.imageCredits, !credits.isEmpty {
@@ -177,7 +177,7 @@ struct StudioMovieExportControls: View {
                             .accessibilityIdentifier("studio.export.movie.sound-credits.notice")
                     }
                     Text("\(output.manifest.encodedBytes) encoded bytes · \(output.manifest.codec) · white · \(output.manifest.audioIncluded ? "stereo audio" : "no audio")")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                         .accessibilityIdentifier("studio.export.movie.media")
                     if let player = preview.player {
                         StudioMoviePreviewSurface(player: player)
@@ -208,7 +208,7 @@ struct StudioMovieExportControls: View {
                                 .accessibilityLabel("Movie preview position")
                                 .accessibilityIdentifier("studio.export.movie.preview.seek")
                             Text(String(format: "%.2f / %.2f s", preview.currentTime, preview.duration))
-                                .font(.system(size: 9, design: .monospaced)).monospacedDigit()
+                                .font(.specialElite(9)).monospacedDigit()
                                 .accessibilityIdentifier("studio.export.movie.preview.time")
                         }
                         Text(preview.didFinish ? "Playback finished" : preview.isPlaying ? "Playing rendered MP4" : preview.isWaiting ? "Preparing playback…" : preview.isReady ? "Preview ready" : "Loading rendered MP4…")
@@ -218,8 +218,11 @@ struct StudioMovieExportControls: View {
                     Button {
                         shareStartError = beginNativeShare()
                     } label: {
-                        Label("Share MP4 / Save to Files", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        Label {
+                            Text("Share MP4 / Save to Files").font(.specialElite(12)).bold()
+                        } icon: {
+                            Image(systemName: "square.and.arrow.up").font(.system(size: 12, weight: .bold, design: .monospaced))
+                        }
                             .frame(maxWidth: .infinity).padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                     }
@@ -228,8 +231,11 @@ struct StudioMovieExportControls: View {
                     Button {
                         saveRequest = session.beginSharing(scope: scope)
                     } label: {
-                        Label("Save to Files", systemImage: "folder")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        Label {
+                            Text("Save to Files").font(.specialElite(12)).bold()
+                        } icon: {
+                            Image(systemName: "folder").font(.system(size: 12, weight: .bold, design: .monospaced))
+                        }
                             .frame(maxWidth: .infinity).padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                     }
