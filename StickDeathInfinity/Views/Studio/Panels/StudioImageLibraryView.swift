@@ -15,6 +15,8 @@ struct StudioImageLibraryView: View {
     @State private var packs: [StudioImagePackCache.Descriptor] = []
     @State private var activePackID: String?
     @State private var packTask: Task<Void, Never>?
+    @State private var packOwnerID = UUID()
+    @State private var packOperation: StudioImagePackOperations.Handle?
     @State private var packBusy = false
     @State private var packsNeedingRemoval = Set<String>()
     @State private var packNotice: String?
@@ -224,7 +226,7 @@ struct StudioImageLibraryView: View {
         }
         .onChange(of: scenePhase) {
             if scenePhase != .active { cancelPack() }
-            else { loadID = UUID() }
+            else if !packBusy { loadID = UUID() }
         }
     }
     @ViewBuilder
@@ -251,24 +253,50 @@ struct StudioImageLibraryView: View {
         }.foregroundColor(.white.opacity(0.8))
     }
     private func cancelPack() {
-        packRequest = UUID(); packTask?.cancel(); packTask = nil; packBusy = false; activePackID = nil
+        guard packBusy else { return }
+        // Cancels a pending start too. The monitor stays until the owned cache
+        // operation settles, so a second tap cannot take over an unwinding run.
+        packTask?.cancel()
+        packNotice = "Cancellation requested. Waiting for the picture-pack operation to finish."
+        if let operation = packOperation {
+            let owner = packOwnerID
+            Task { _ = await StudioImagePackOperations.shared.cancel(operation.request, ownerID: owner) }
+        }
     }
     private func changePack(_ pack: StudioImagePackCache.Descriptor, remove: Bool) {
         guard !packBusy else { return }
         let request = UUID(); packRequest = request; packBusy = true; activePackID = pack.id; packNotice = nil
+        let owner = packOwnerID
         packTask = Task {
+            defer {
+                if packRequest == request {
+                    packBusy = false; activePackID = nil; packTask = nil; packOperation = nil
+                }
+            }
             do {
-                if remove { try await StudioImagePackCache.shared.remove(pack) }
-                else { _ = try await StudioImagePackCache.shared.download(pack) }
-                let installed = try await StudioImagePackCache.shared.installed(pack)
-                try Task.checkCancellation()
+                let operation = try await StudioImagePackOperations.shared.start(pack,
+                    action: remove ? .remove : .install, ownerID: owner)
+                packOperation = operation
+                if Task.isCancelled || packRequest != request {
+                    _ = await StudioImagePackOperations.shared.cancel(operation.request, ownerID: owner)
+                }
+                let completed = try await StudioImagePackOperations.shared.wait(for: operation, ownerID: owner)
                 guard packRequest == request else { return }
-                optionalCatalogues[pack.id] = installed; packsNeedingRemoval.remove(pack.id); packBusy = false; activePackID = nil; packTask = nil
-                packNotice = remove ? "Downloaded library copy removed. Pictures already added to your projects are kept." : "Pictures verified and available offline."
-            } catch is CancellationError { }
-            catch {
-                guard packRequest == request else { return }
-                packBusy = false; activePackID = nil; packTask = nil; packNotice = error.localizedDescription
+                switch completed.receipt.outcome {
+                case .installed:
+                    optionalCatalogues[pack.id] = completed.catalogue; packsNeedingRemoval.remove(pack.id)
+                    packNotice = "Pictures verified and available offline."
+                case .removed:
+                    optionalCatalogues[pack.id] = nil; packsNeedingRemoval.remove(pack.id)
+                    packNotice = "Downloaded library copy removed. Pictures already added to your projects are kept."
+                case .cancelled:
+                    packNotice = "Picture-pack operation cancelled. Pictures already added to your projects are kept."
+                case .failed(let reason): packNotice = reason
+                }
+            } catch is CancellationError {
+                if packRequest == request { packNotice = "Picture-pack request cancelled before it started." }
+            } catch {
+                if packRequest == request { packNotice = error.localizedDescription }
             }
         }
     }

@@ -177,10 +177,31 @@ jobs:
         run: python3 scripts/verify_retired_communications.py
       - name: Verify control evidence map matches source and native UI tests
         run: python3 scripts/verify_control_index.py
+  native-app-compile:
+    # Compile the actual app before the long production run; Mac jobs remain serial.
+    needs: [source-security, spatter-production-tests]
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build the checked-in unsigned iOS app and capture isolated launch evidence
+        run: python3 scripts/native-smoke/build_app_ci.py
+      - name: Preserve exact-source native compilation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-app-compile-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdi-native-compile-evidence/
+          retention-days: 3
+          if-no-files-found: error
+
   native-production-tests:
     # Fail fast before allocating the long native suite; the final aggregate
     # still requires every production and simulator gate to succeed.
-    needs: [source-security, spatter-production-tests]
+    needs: [source-security, spatter-production-tests, native-app-compile]
     runs-on: macos-15
     # Production took 47m09s on run 37668843963 before image-region dependencies.
     # Forty-five VM recipes now compile the region service and the new admin
@@ -2858,6 +2879,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 Tests/StudioImagePack/prepare_fixture_transport_tests.py
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             Tests/StudioImagePack/main.swift \

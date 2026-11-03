@@ -8,32 +8,48 @@ func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
 actor Calls { var count = 0; func record() { count += 1 } }
 
 final class PackTransportStub: URLProtocol {
-    enum Mode { case bytes(Data), redirect }
+    enum Reply { case bytes(Data), redirect(URL), hold }
+    enum Mode { case bytes(Data), redirect, routes([String: Reply]) }
     private static let lock = NSLock()
     private static var mode: Mode = .bytes(Data())
     private static var urls: [String] = []
-    static func configure(_ value: Mode) { lock.lock(); mode = value; urls = []; lock.unlock() }
+    private static var sensitive: [String] = []
+    static func configure(_ value: Mode) { lock.lock(); mode = value; urls = []; sensitive = []; lock.unlock() }
     static var requests: [String] { lock.lock(); defer { lock.unlock() }; return urls }
+    static var sensitiveHeaders: [String] { lock.lock(); defer { lock.unlock() }; return sensitive }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        Self.lock.lock(); let mode = Self.mode; Self.urls.append(request.url!.absoluteString); Self.lock.unlock()
+        Self.lock.lock(); let mode = Self.mode; Self.urls.append(request.url!.absoluteString)
+        for name in ["Authorization", "Cookie", "Proxy-Authorization"] where request.value(forHTTPHeaderField: name) != nil {
+            Self.sensitive.append(name)
+        }
+        Self.lock.unlock()
+        let reply: Reply
         switch mode {
+        case .bytes(let data): reply = .bytes(data)
+        case .redirect: reply = .redirect(URL(string: "https://example.invalid/disallowed.zip")!)
+        case .routes(let routes):
+            guard let found = routes[request.url!.absoluteString] else {
+                client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL)); return
+            }
+            reply = found
+        }
+        switch reply {
         case .bytes(let bytes):
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/zip"])!
+                headerFields: ["Content-Type": "application/octet-stream"])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            // Separate chunks exercise AsyncBytes' actual streaming bound.
             for offset in stride(from: 0, to: bytes.count, by: 8192) {
                 client?.urlProtocol(self, didLoad: bytes.subdata(in: offset..<min(offset+8192, bytes.count)))
             }
             client?.urlProtocolDidFinishLoading(self)
-        case .redirect:
-            let destination = URL(string: "https://example.invalid/disallowed.zip")!
+        case .redirect(let destination):
             let response = HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: "HTTP/1.1",
                 headerFields: ["Location": destination.absoluteString])!
             client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: destination), redirectResponse: response)
             client?.urlProtocolDidFinishLoading(self)
+        case .hold: break
         }
     }
     override func stopLoading() { }
@@ -56,6 +72,23 @@ final class CropCheckpoint: @unchecked Sendable {
             try Task.checkCancellation()
         }
     }
+}
+
+/// Deterministic uncooperative transport: cancellation must keep ownership
+/// until this held await returns and the real installer finishes cleanup.
+actor PackOperationGate {
+    private var entered = false
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    func pause() async {
+        entered = true; enteredWaiter?.resume(); enteredWaiter = nil
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { enteredWaiter = $0 }
+    }
+    func release() { releaseWaiter?.resume(); releaseWaiter = nil }
 }
 
 @main struct Main {
@@ -189,15 +222,163 @@ final class CropCheckpoint: @unchecked Sendable {
         catch is StudioImagePackCache.PackError { }
         catch is URLError { }
         try require(PackTransportStub.requests == [descriptor.archiveURL], "URLSession followed unapproved redirect")
+        let asset = Data("assets/1-bit-pack".utf8).map { String(format: "%02x", $0) }.joined()
+        let page = URL(string: "https://kenney.nl/assets/1-bit-pack")!
+        let endpoint = "https://kenney.nl/download-link/" + asset
+        let expiry = Int(Date().timeIntervalSince1970) + 300
+        let signed = "https://kenney.nl/download/" + asset + "/" + String(repeating: "a", count: 64) + "?expires=\(expiry)"
+        func metadata(_ url: Any) throws -> Data { try JSONSerialization.data(withJSONObject: ["url": url]) }
+        func routes(_ data: Data, final: PackTransportStub.Reply? = nil) -> [String: PackTransportStub.Reply] {
+            [descriptor.archiveURL: .redirect(page), endpoint: .bytes(data), signed: final ?? .bytes(zip)]
+        }
+        PackTransportStub.configure(.routes(try routes(metadata(signed))))
+        let resolved = try await StudioImagePackCache.fetch(descriptor, protocolClasses: [PackTransportStub.self])
+        try require(resolved == zip && PackTransportStub.requests == [descriptor.archiveURL, endpoint, signed] &&
+                    PackTransportStub.sensitiveHeaders.isEmpty, "Known publisher flow changed bytes, headers or request scope")
+        let invalidURLs = [
+            signed.replacingOccurrences(of: "https://kenney.nl", with: "http://kenney.nl"),
+            signed.replacingOccurrences(of: "https://kenney.nl", with: "https://example.invalid"),
+            signed.replacingOccurrences(of: "https://kenney.nl", with: "https://user@kenney.nl"),
+            signed.replacingOccurrences(of: "https://kenney.nl", with: "https://kenney.nl:443"),
+            signed.replacingOccurrences(of: asset + "/", with: "wrong-asset/"),
+            signed + "&extra=1", signed + "#fragment",
+            signed.replacingOccurrences(of: "?expires=\(expiry)", with: "?expires=1"),
+            signed.replacingOccurrences(of: "?expires=\(expiry)", with: "?expires=\(expiry + 3600)")
+        ]
+        for value in invalidURLs {
+            PackTransportStub.configure(.routes(try routes(metadata(value))))
+            do { _ = try await StudioImagePackCache.fetch(descriptor, protocolClasses: [PackTransportStub.self]); throw Failure(message: "Unsafe resolved route accepted") }
+            catch is StudioImagePackCache.PackError { }
+            try require(PackTransportStub.requests == [descriptor.archiveURL, endpoint], "Unsafe download reached a destination")
+        }
+        for data in [Data("{bad".utf8), try metadata(7), Data(repeating: 32, count: 16 * 1024 + 1)] {
+            PackTransportStub.configure(.routes(routes(data)))
+            do { _ = try await StudioImagePackCache.fetch(descriptor, protocolClasses: [PackTransportStub.self]); throw Failure(message: "Invalid metadata accepted") }
+            catch is StudioImagePackCache.PackError { }
+            try require(PackTransportStub.requests == [descriptor.archiveURL, endpoint], "Invalid metadata issued archive request")
+        }
+        PackTransportStub.configure(.routes([
+            descriptor.archiveURL: .redirect(page), endpoint: .redirect(URL(string: signed)!)
+        ]))
+        do { _ = try await StudioImagePackCache.fetch(descriptor, protocolClasses: [PackTransportStub.self]); throw Failure(message: "Metadata redirect accepted") }
+        catch is StudioImagePackCache.PackError { } catch is URLError { }
+        try require(PackTransportStub.requests == [descriptor.archiveURL, endpoint], "Metadata redirect was followed")
+        PackTransportStub.configure(.routes(try routes(metadata(signed), final: .redirect(page))))
+        do { _ = try await StudioImagePackCache.fetch(descriptor, protocolClasses: [PackTransportStub.self]); throw Failure(message: "Resolved archive redirect accepted") }
+        catch is StudioImagePackCache.PackError { } catch is URLError { }
+        try require(PackTransportStub.requests == [descriptor.archiveURL, endpoint, signed], "Resolved archive redirected onward")
+        var resolvedCorrupt = zip; resolvedCorrupt[resolvedCorrupt.count - 1] ^= 1
+        for payload in [resolvedCorrupt, zip.dropLast(), zip + Data([0])] {
+            PackTransportStub.configure(.routes(try routes(metadata(signed), final: .bytes(Data(payload)))))
+            do { _ = try await StudioImagePackCache.fetch(descriptor, protocolClasses: [PackTransportStub.self]); throw Failure(message: "Resolution widened archive pins") }
+            catch is StudioImagePackCache.PackError { }
+        }
+        PackTransportStub.configure(.routes([descriptor.archiveURL: .redirect(page), endpoint: .hold]))
+        let pendingResolution = Task { try await StudioImagePackCache.fetch(descriptor, protocolClasses: [PackTransportStub.self]) }
+        defer { pendingResolution.cancel() }
+        for _ in 0..<200 {
+            if PackTransportStub.requests.contains(endpoint) { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try require(PackTransportStub.requests == [descriptor.archiveURL, endpoint], "Cancellation fixture never held the metadata request")
+        pendingResolution.cancel()
+        do { _ = try await pendingResolution.value; throw Failure(message: "Cancelled metadata resolution returned") }
+        catch is CancellationError { }
+        try require(PackTransportStub.requests == [descriptor.archiveURL, endpoint], "Cancelled resolution issued an archive request")
         print("PASS actual session delegate refuses redirect before destination request")
+        try await sharedOperationOwnership(descriptor: descriptor, archive: zip)
         if CommandLine.arguments.count > 3 {
             try await expandedPacks(directory: descriptorDirectory, legacyZIP: zip,
                                     mappingURL: URL(fileURLWithPath: CommandLine.arguments[3]))
-            print("STUDIO_IMAGE_PACK_TESTS=PASS groups=19 expandedPictures=2025")
+            print("STUDIO_IMAGE_PACK_TESTS=PASS groups=20 expandedPictures=2061")
         } else {
-            print("STUDIO_IMAGE_PACK_TESTS=PASS groups=14 expandedPacks=NOT_RUN")
+            print("STUDIO_IMAGE_PACK_TESTS=PASS groups=15 expandedPacks=NOT_RUN")
         }
     }
+    static func sharedOperationOwnership(descriptor: StudioImagePackCache.Descriptor, archive: Data) async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("sdi-pack-owner-" + UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let cache = StudioImagePackCache(root: root)
+        let operations = StudioImagePackOperations(cache: cache)
+        let ownerA = UUID(), ownerB = UUID(), calls = Calls(), gateA = PackOperationGate()
+        let initial = try await operations.installed(descriptor)
+        let initialStatus = await operations.status()
+        try require(initial == nil && initialStatus == nil, "Owner invented initial installed/running state")
+        let first = try await operations.start(descriptor, action: .install, ownerID: ownerA, fetch: { _ in
+            await calls.record(); await gateA.pause(); return archive
+        })
+        await gateA.waitUntilEntered()
+        let running = await operations.status()
+        let wrongCancel = await operations.cancel(first.request, ownerID: ownerB)
+        try require(running?.request == first.request && running?.phase == .running && !wrongCancel,
+            "Running receipt or wrong-owner cancellation changed the actual operation")
+        let requested = await operations.cancel(first.request, ownerID: ownerA)
+        let cancelling = await operations.status()
+        try require(requested && cancelling?.phase == .cancelling, "Owned cancellation was not represented as pending")
+        do {
+            _ = try await operations.start(descriptor, action: .install, ownerID: ownerB,
+                fetch: { _ in throw Failure(message: "Busy takeover reached transport") })
+            throw Failure(message: "Cancelled but still unwinding operation released its lease early")
+        } catch StudioImagePackCache.PackError.busy { }
+        await gateA.release()
+        let cancelled = try await operations.wait(for: first, ownerID: ownerA)
+        let absent = try await operations.installed(descriptor)
+        let terminalCancelled = await operations.status()
+        try require(cancelled.receipt.request == first.request && cancelled.receipt.outcome == .cancelled
+            && cancelled.catalogue == nil && absent == nil && terminalCancelled?.phase == .finished(cancelled.receipt),
+            "Cancelled operation claimed installation or lost its factual terminal receipt")
+        let residue = try fm.contentsOfDirectory(atPath: root.path)
+        try require(residue.isEmpty, "Owned cancelled download retained a staging/published directory")
+
+        let gateB = PackOperationGate()
+        let second = try await operations.start(descriptor, action: .install, ownerID: ownerB, fetch: { _ in
+            await calls.record(); await gateB.pause(); return archive
+        })
+        await gateB.waitUntilEntered()
+        let staleCancel = await operations.cancel(first.request, ownerID: ownerA)
+        let foreignCancel = await operations.cancel(second.request, ownerID: ownerA)
+        try require(second.request.id != first.request.id && !staleCancel && !foreignCancel,
+            "Old run token or wrong owner cancelled a newer user's run")
+        await gateB.release()
+        let installed = try await operations.wait(for: second, ownerID: ownerB)
+        guard let catalogue = installed.catalogue, let image = catalogue.images.first else {
+            throw Failure(message: "Owned real archive install returned no verified catalogue")
+        }
+        let actualPNG = try catalogue.checkedPNG(image)
+        try require(installed.receipt.request == second.request && installed.receipt.outcome == .installed(availablePictures: 458)
+            && catalogue.availableImages.count == 458 && !actualPNG.isEmpty,
+            "Owner reported success without actual pinned install/verified PNGs")
+        let lateCancel = await operations.cancel(second.request, ownerID: ownerB)
+        let offline = try await operations.installed(descriptor)
+        try require(!lateCancel && offline?.images.count == 458, "Postcommit cancellation claimed rollback or removed installed pictures")
+        do {
+            _ = try await operations.wait(for: second, ownerID: ownerA)
+            throw Failure(message: "Wrong owner consumed another operation's completion")
+        } catch StudioImagePackOperations.OwnershipError.wrongOwner { }
+        let reuse = try await operations.start(descriptor, action: .install, ownerID: ownerA,
+            fetch: { _ in throw Failure(message: "Verified cached install unnecessarily requested HTTP") })
+        let reused = try await operations.wait(for: reuse, ownerID: ownerA)
+        let transports = await calls.count
+        try require(reused.receipt.outcome == .installed(availablePictures: 458) && transports == 2,
+            "Shared owner bypassed the actual offline/cache reuse path")
+        let retained = fm.temporaryDirectory.appendingPathComponent("sdi-pack-retained-" + UUID().uuidString + ".png")
+        defer { try? fm.removeItem(at: retained) }
+        try actualPNG.write(to: retained)
+        let remove = try await operations.start(descriptor, action: .remove, ownerID: ownerA)
+        let removed = try await operations.wait(for: remove, ownerID: ownerA)
+        let afterRemoval = try await operations.installed(descriptor)
+        let retainedPNG = try Data(contentsOf: retained)
+        try require(removed.receipt.outcome == .removed && removed.catalogue == nil && afterRemoval == nil && retainedPNG == actualPNG,
+            "Owned removal changed user-retained media or fabricated absence")
+        let corrupt = try await operations.start(descriptor, action: .install, ownerID: ownerB, fetch: { _ in Data([1,2,3]) })
+        let failed = try await operations.wait(for: corrupt, ownerID: ownerB)
+        guard case .failed = failed.receipt.outcome else { throw Failure(message: "Corrupt owned install did not report failure") }
+        let afterFailure = try await operations.installed(descriptor)
+        try require(failed.catalogue == nil && afterFailure == nil, "Failed owned install fabricated available pictures")
+        print("PASS shared pack owner retains cancellation lease, fences owner/run IDs, and reports real install/offline/remove/failure receipts")
+    }
+
     static func expandedPacks(directory: URL, legacyZIP: Data, mappingURL: URL) async throws {
         let mapping = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: mappingURL))
         let descriptors = try StudioImagePackCache.descriptors(directory: directory)
@@ -219,9 +400,9 @@ final class CropCheckpoint: @unchecked Sendable {
             let representative = try installed.checkedPNG(installed.images[0])
             retained.append((descriptor, installed, representative)); images += installed.images
         }
-        try require(images.count == 2025 && Set(images.map(\.id)).count == 2025, "False combined ID count")
-        try require(Set(images.map { "\($0.width):\($0.height):\($0.pixelSHA256)" }).count == 2025, "Duplicate decoded pictures inflated combined count")
-        print("PASS all six actual publisher packs and bundled originals yield2025 distinct ImageIO-verified pictures")
+        try require(images.count == 2061 && Set(images.map(\.id)).count == 2061, "False combined ID count")
+        try require(Set(images.map { "\($0.width):\($0.height):\($0.pixelSHA256)" }).count == 2061, "Duplicate decoded pictures inflated combined count")
+        print("PASS all six actual publisher packs and bundled originals yield2061 distinct ImageIO-verified pictures")
         let reopened = StudioImagePackCache(root: root)
         for (descriptor, installed, _) in retained {
             let offline = try await reopened.installed(descriptor)
