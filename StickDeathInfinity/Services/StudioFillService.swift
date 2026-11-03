@@ -81,7 +81,9 @@ enum StudioFillService {
                 preparedBrushes: brushes, preparedSmudges: smudges, rasterSources: sources, preparedRasters: images)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: canvas)
-        renderer.scale = 1; renderer.isOpaque = sampleAllLayers
+        // Use an alpha-capable render target like the live Canvas;
+        // the white backdrop remains explicit scene content.
+        renderer.scale = 1; renderer.isOpaque = false
         guard let rendered = renderer.cgImage, rendered.width == document.width,
               rendered.height == document.height,
               let space = CGColorSpace(name: CGColorSpace.sRGB) else { throw Failure.render }

@@ -191,6 +191,53 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify real rectangle and freehand selection cancellation history persistence and pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
+            StickDeathInfinity/Models/StudioCraftAudio.swift \
+            StickDeathInfinity/Models/StudioCraftLayers.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioVideoFraming.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioAreaSelection/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioSoundCredits.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-area-selection-tests"
+          "$RUNNER_TEMP/sdi-area-selection-tests"
       - name: Verify truthful admin overview authorization and data lifecycle
         shell: bash
         run: |
@@ -615,53 +662,6 @@ jobs:
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             -o "$RUNNER_TEMP/sdi-selection-clipboard-tests"
           "$RUNNER_TEMP/sdi-selection-clipboard-tests"
-      - name: Verify real rectangle and freehand selection cancellation history persistence and pixels
-        shell: bash
-        run: |
-          set -euo pipefail
-          swiftc -swift-version 5 -parse-as-library \
-            StickDeathInfinity/Services/StudioFillService.swift \
-            StickDeathInfinity/Services/StudioGradientFill.swift \
-            StickDeathInfinity/Services/StudioSelectionMask.swift \
-            StickDeathInfinity/Models/StudioCraftAudio.swift \
-            StickDeathInfinity/Models/StudioCraftLayers.swift \
-            StickDeathInfinity/App/AppConfig.swift \
-            StickDeathInfinity/App/SpatterBackendClient.swift \
-            StickDeathInfinity/Extensions/Color+SD.swift \
-            StickDeathInfinity/Models/Models.swift \
-            StickDeathInfinity/Models/StudioVideoFraming.swift \
-            StickDeathInfinity/Models/StudioSmudge.swift \
-            StickDeathInfinity/Models/StudioBlur.swift \
-            StickDeathInfinity/Models/StudioSharpen.swift \
-            StickDeathInfinity/Models/StudioDodgeBurn.swift \
-            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
-            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
-            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
-            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
-            StickDeathInfinity/Models/StudioBrush.swift \
-            StickDeathInfinity/Models/StudioCommands.swift \
-            StickDeathInfinity/Models/StudioDocument.swift \
-            StickDeathInfinity/Services/StudioBrushRenderer.swift \
-            StickDeathInfinity/Services/StudioExportService.swift \
-            StickDeathInfinity/Services/StudioChannelRendition.swift \
-            StickDeathInfinity/Services/StudioImageImportService.swift \
-            StickDeathInfinity/Services/StudioRasterImage.swift \
-            StickDeathInfinity/Storage/DeviceStorageManager.swift \
-            StickDeathInfinity/Services/StudioImageRegionService.swift \
-            StickDeathInfinity/Services/StudioFillRegion.swift \
-            StickDeathInfinity/ViewModels/StudioViewModel.swift \
-            StickDeathInfinity/Services/StudioAudioImportService.swift \
-            StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
-            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
-            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
-            StickDeathInfinity/Services/StudioColorSamplingService.swift \
-            Tests/StudioAreaSelection/main.swift \
-            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
-            StickDeathInfinity/Services/StudioMovieExportService.swift \
-            StickDeathInfinity/Services/StudioSoundCredits.swift \
-            StickDeathInfinity/Services/StudioMuxCapture.swift \
-            -o "$RUNNER_TEMP/sdi-area-selection-tests"
-          "$RUNNER_TEMP/sdi-area-selection-tests"
       - name: Verify independent persisted tool settings and actual rendered stroke pixels
         shell: bash
         run: |

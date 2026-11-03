@@ -372,7 +372,8 @@ final class StudioExportService {
         }.frame(width: output.width, height: output.height)
         let renderer = ImageRenderer(content: content)
         renderer.scale = 1
-        renderer.isOpaque = background == .white
+        // Match Studio's alpha-capable target; white remains explicit scene content.
+        renderer.isOpaque = false
         guard let image = renderer.cgImage, image.width == Int(output.width), image.height == Int(output.height) else {
             throw ExportError.renderFailed
         }
