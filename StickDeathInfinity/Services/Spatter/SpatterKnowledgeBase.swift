@@ -1997,7 +1997,7 @@ struct SpatterInstructionGrammar: Equatable {
 }
 
 enum SpatterInstructionCatalog {
-    static let version = 10
+    static let version = 11
     static let grammars: [SpatterInstructionGrammar] = [
         .init(name: "multiClauseBrief", examples: ["A red stick figure walks left to right for 1 second, then punches, then falls; 3 seconds.",
                                                    "A red stick figure runs left to right, then kicks; a blue stick figure ducks, then jumps; 2.5 seconds.",
@@ -2025,6 +2025,8 @@ enum SpatterInstructionCatalog {
                                         "Draw a rectangle from (20%, 20%) to (80%, 70%) in #000000, size 3 px, opacity 100%, fill #FF0000, radius 8 px.",
                                         "Draw a circle centered at (50%, 50%), radius 20 px, in #000000, size 3 px, opacity 100%, fill #FF0000."],
               commands: ["draw"], summary: "One editable line, rectangle or true circle on the active frame/layer, with explicit geometry, color, size and opacity; optional rectangle/circle fill and rectangle corner radius. No new frames."),
+        .init(name: "freehandStroke", examples: SpatterFreehandInstruction.tools.map { SpatterFreehandInstruction.example($0) },
+              commands: ["draw"], summary: "One editable native Pencil/Pen/Marker/Crayon stroke along an explicit 2–32-point canvas path. Family, smoothing, color, size and opacity are explicit; rough pen texture, grain texture/grain or calligraphy angle are validated by family. Uses the manual touch capture/brush engine; no live tool preferences, pressure/tilt, mirror or ruler state."),
         .init(name: "brushStroke", examples: ["Draw a round brush line from (10%, 20%) to (90%, 20%) in #000000, size 6 px, opacity 100%.",
                                               "Draw a gradient brush line from (10%, 40%) to (90%, 40%) in #FF0000 to #0000FF, size 8 px, opacity 100%."],
               commands: ["draw"], summary: "One straight stroke on the active frame/layer in any brush family (round, stipple, grain, rough pen, calligraphy, dip pen, halftone, hatch right/left, gradient, airbrush, watercolor, neon)."),

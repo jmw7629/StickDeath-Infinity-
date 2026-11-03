@@ -501,6 +501,77 @@ private enum Golden {
                 try require(SpatterStudioControlRegistry.control(forPanel: "soundLibrary")?.grammars == ["librarySound"]
                     && SpatterInstructionPreview.plan(SpatterLibrarySoundInstruction.example, context: nil).contains("track 2 at 0 seconds"), "Sound route or factual preview missing")
             }
+            try test("native freehand tools retain explicit paths descriptors ownership and one atomic Undo") {
+                for tool in SpatterFreehandInstruction.tools {
+                    let doc = try document(width: 320, height: 640), context = StudioCommandContext(document: doc)
+                    let text = SpatterFreehandInstruction.example(tool), instruction = try SpatterFreehandInstruction.parse(text)
+                    try require(instruction.tool == tool && instruction.points.count == 3
+                        && SpatterInstructionRouter.classify(text) == .freehandStroke, "Native tool or path routing lost")
+                    var editor = try StudioDocumentEditor(document: doc)
+                    let request = try instruction.prepare(in: context), receipt = try execute(request, on: &editor)
+                    guard let stroke = editor.document.frames[0].elements.last, let brush = stroke.brush else { throw Failure(message: "Native brush descriptor missing") }
+                    try require(stroke.tool == tool && stroke.layerID == doc.activeLayerID && stroke.points.count == 3
+                        && stroke.color == instruction.color && Double(stroke.width) == instruction.size && stroke.opacity == instruction.opacity
+                        && brush.family == instruction.family && brush.smoothing == instruction.smoothing && !brush.pressureEnabled && brush.tiltEnabled != true
+                        && stroke.points.allSatisfy { $0.pressure == nil && $0.tilt == nil }
+                        && stroke.points[1].y > stroke.points[0].y && stroke.points[1].y > stroke.points[2].y
+                        && editor.document.frames[0].elements.first == doc.frames[0].elements.first
+                        && editor.document.frames.count == 1 && editor.document.layers == doc.layers
+                        && receipt.createdElementIDs == [stroke.id] && editor.document.revision == doc.revision + 1, "Native tool flattened art or ignored the path/settings")
+                    if let texture = instruction.texture { try require(brush.texture == texture, "Explicit texture ignored") }
+                    if let grain = instruction.grain { try require(brush.grain == grain, "Explicit grain ignored") }
+                    if let tip = instruction.tipAngle { try require(brush.tipAngleDegrees == tip, "Explicit tip angle ignored") }
+                    let changed = editor.document
+                    let decoded = try StudioDocumentArchive.decode(StudioDocumentArchive(document: changed, rasterFrameIndices: [:]).encoded()).document
+                    try require(decoded == changed, "Native freehand descriptor did not round-trip")
+                    editor.undo(); try require(content(editor.document) == content(doc), "Native freehand not one Undo")
+                    editor.redo(); try require(content(editor.document) == content(changed), "Native freehand Redo changed geometry/identity")
+                    let preview = SpatterInstructionPreview.plan(text, context: context)
+                    try require(preview.contains(instruction.summary) && preview.contains("1× draw") && preview.contains("Nothing has changed"), "Native freehand preview omitted actual geometry/settings")
+                }
+                let doc = try document(), text = SpatterFreehandInstruction.example(.pencil)
+                var editor = try StudioDocumentEditor(document: doc)
+                _ = try execute(SpatterInstructionBatch.parse(text + "\n" + text).prepare(in: .init(document: doc)), on: &editor)
+                try require(editor.document.frames[0].elements.count == 3 && Set(editor.document.frames[0].elements.map(\.id)).count == 3
+                    && editor.document.revision == doc.revision + 1, "Native stroke batch reused identity or multiple revisions")
+                editor.undo(); try require(content(editor.document) == content(doc), "Native stroke batch not one Undo")
+            }
+            try test("native freehand refuses ignored settings invalid paths locks stale revisions and cancellation") {
+                let text = SpatterFreehandInstruction.example(.pencil)
+                let bad = [text + " Delete active layer.", text + "\nPublish it.", text.replacingOccurrences(of: "10%", with: "nan%"),
+                    text.replacingOccurrences(of: "10%", with: "101%"), text.replacingOccurrences(of: "10%", with: "-1%"),
+                    text.replacingOccurrences(of: "size 2", with: "size 0"), text.replacingOccurrences(of: "size 2", with: "size 51"),
+                    text.replacingOccurrences(of: "opacity 100%", with: "opacity 0%"), text.replacingOccurrences(of: "smoothing 2", with: "smoothing 11"),
+                    text.replacingOccurrences(of: "family round", with: "family watercolor"), text.replacingOccurrences(of: "smoothing 2.", with: "smoothing 2, texture 50%."),
+                    text.replacingOccurrences(of: "(50%, 70%)", with: "(10%, 20%)"), text.replacingOccurrences(of: "smoothing 2.", with: "smoothing 2, pressure on."),
+                    SpatterFreehandInstruction.example(.pen).replacingOccurrences(of: ", texture 50%", with: ""),
+                    SpatterFreehandInstruction.example(.marker).replacingOccurrences(of: "tip 45", with: "tip 180"),
+                    SpatterFreehandInstruction.example(.crayon).replacingOccurrences(of: "grain 30%", with: "grain 101%")]
+                for line in bad { try rejects("native freehand malformed") { _ = try SpatterFreehandInstruction.parse(line) } }
+                let longPath = (0..<33).map { "(\($0)%, 20%)" }.joined(separator: ", ")
+                try rejects("native path limit") { _ = try SpatterFreehandInstruction.parse("Draw a pencil stroke along " + longPath + " in #000000, size 2 px, opacity 100%, family round, smoothing 2.") }
+                let doc = try document(), instruction = try SpatterFreehandInstruction.parse(text)
+                for state in ["full", "position", "hidden", "zero-opacity"] {
+                    var locked = doc
+                    if state == "hidden" { locked.layers[0].visible = false }
+                    else if state == "zero-opacity" { locked.layers[0].opacity = 0 }
+                    else { locked.layers[0].lockMode = state }
+                    try rejects("native layer state") { _ = try instruction.prepare(in: .init(document: locked)) }
+                }
+                var checks = 0
+                try rejects("cancel native input capture") {
+                    _ = try instruction.prepare(in: .init(document: doc), checkCancellation: { checks += 1; if checks == 3 { throw CancellationError() } })
+                }
+                try require(checks == 3, "Native capture did not check cancellation per point")
+                var editor = try StudioDocumentEditor(document: doc)
+                let stale = try instruction.prepare(in: .init(document: doc))
+                _ = try execute(SpatterFrameExposureInstruction.parse("Set selected frame exposure to 2 ticks.").prepare(in: .init(document: doc)), on: &editor)
+                let held = editor.document
+                try rejects("stale native freehand") { _ = try execute(stale, on: &editor) }
+                try require(editor.document == held, "Native freehand overwrote a later revision")
+                try require(SpatterInstructionRouter.classify(SpatterBrushStrokeInstruction.example) == .brushStroke
+                    && SpatterInstructionRouter.classify(SpatterShapeInstruction.lineExample) == .shape, "Native route stole old draw grammars")
+            }
             try test("single shape instructions draw editable geometry through the real executor and reverse in one Undo") {
                 let doc = try document(width: 320, height: 640), context = StudioCommandContext(document: doc)
                 for kind in SpatterShapeInstruction.Kind.allCases {
@@ -766,7 +837,7 @@ private enum Golden {
                     && SpatterStudioControlRegistry.control(forPanel: "spatterAI")?.grammars.contains("sourceReference") == true, "New grammars unreachable")
                 try require(SpatterStudioControlRegistry.control(for: .brush)?.grammars == ["brushStroke"]
                     && [DrawingTool.line, .rectangle, .circle].allSatisfy { SpatterStudioControlRegistry.control(for: $0)?.grammars == ["shape"] }
-                    && SpatterStudioControlRegistry.control(for: .pencil)?.grammars.isEmpty == true
+                    && SpatterFreehandInstruction.tools.allSatisfy { SpatterStudioControlRegistry.control(for: $0)?.grammars == ["freehandStroke"] }
                     && SpatterStudioControlRegistry.control(for: .hand)?.grammars.isEmpty == true, "Tool routes overclaim or underclaim")
                 // Catalog v5 (#204): selections, Image Library pictures and export have typed routes;
                 // pixel effects stay manual with a stated reason.
@@ -843,7 +914,7 @@ private enum Golden {
                     "drawingDuplicate": .drawingDuplicate, "artworkOrder": .artworkOrder, "selectionTranslate": .selectionTranslate, "selectionTransform": .selectionTransform,
                     "selectionReflect": .selectionReflect, "imageReflection": .imageReflection, "imageRotation": .imageRotation, "imageCrop": .imageCrop,
                     "imagePlacement": .imagePlacement, "textCreate": .textCreate, "textUpdate": .textUpdate, "audioClip": .audioClip, "audioTrack": .audioTrack,
-                    "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "shape": .shape, "batch": .batch,
+                    "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "freehandStroke": .freehandStroke, "shape": .shape, "batch": .batch,
                     "fill": .fill, "selectByID": .selectByID, "sourceReference": .sourceReference,
                     "areaSelection": .areaSelection, "wandSelection": .wandSelection, "libraryPicture": .libraryPicture, "librarySound": .librarySound, "projectExport": .projectExport, "gradientFill": .gradientFill, "pixelEffect": .pixelEffect]
                 for grammar in SpatterInstructionCatalog.grammars {
@@ -1099,7 +1170,7 @@ private enum Golden {
                 try require(StudioSharedEdit.drawCommands(before: seed, after: moved, frameID: frameID) == nil, "Unrepresentable touch commit claimed shareable")
             }
             try test("catalog v5 selection picture and export grammars parse exactly and refuse injection and malformed input") {
-                try require(SpatterInstructionCatalog.version == 10 && SpatterInstructionCatalog.grammars.count == 49, "Catalog v10 not registered")
+                try require(SpatterInstructionCatalog.version == 11 && SpatterInstructionCatalog.grammars.count == 50, "Catalog v11 not registered")
                 // Area (Lasso) selection.
                 let rect = try SpatterAreaSelectInstruction.parse(SpatterAreaSelectInstruction.example)
                 try require(rect.isRectangle && rect.vertices == [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 90)]

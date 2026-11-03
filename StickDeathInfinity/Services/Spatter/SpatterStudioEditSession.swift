@@ -83,6 +83,7 @@ final class SpatterStudioEditSession: ObservableObject {
         var frameClipboard: SpatterFrameClipboardInstruction? = nil
         var projectSettings: SpatterProjectSettingsInstruction? = nil
         var brushStroke: SpatterBrushStrokeInstruction? = nil
+        var freehandStroke: SpatterFreehandInstruction? = nil
         var shape: SpatterShapeInstruction? = nil
         /// Content of the frames and layers this edit created, captured right after
         /// apply, so a typed revert can prove they are still untouched later.
@@ -170,6 +171,9 @@ final class SpatterStudioEditSession: ObservableObject {
             }
             if let shape {
                 return "Drew one editable \(shape.summary) on the active frame and layer in one Undo step. No frames were added or exported."
+            }
+            if let freehandStroke {
+                return "Drew one editable native \(freehandStroke.summary) on the active frame/layer in one Undo step. Pressure/tilt, mirror and ruler were off. Remembered tool preferences, export and publication were unchanged."
             }
             if let brushStroke {
                 return "Drew one \(SpatterBrushStrokeInstruction.name(brushStroke.family)) brush stroke on the active layer in one Undo step. It is an editable stroke with its own brush settings."
@@ -502,6 +506,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isFrameClipboard = SpatterFrameClipboardInstruction.isInstruction(draft)
                 let isProjectSettings = SpatterProjectSettingsInstruction.isInstruction(draft)
                 let isBrushStroke = SpatterBrushStrokeInstruction.isInstruction(draft)
+                let isFreehandStroke = SpatterFreehandInstruction.isInstruction(draft)
                 let isShape = SpatterShapeInstruction.isInstruction(draft)
                 var batchSummary: String?
                 var storyboard: SpatterStoryboard?
@@ -509,6 +514,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 var frameClipboardInstruction: SpatterFrameClipboardInstruction?
                 var projectSettingsInstruction: SpatterProjectSettingsInstruction?
                 var brushStrokeInstruction: SpatterBrushStrokeInstruction?
+                var freehandStrokeInstruction: SpatterFreehandInstruction?
                 var shapeInstruction: SpatterShapeInstruction?
                 var exposureInstruction: SpatterFrameExposureInstruction?
                 var reverseInstruction: SpatterFrameReverseInstruction?
@@ -811,6 +817,11 @@ final class SpatterStudioEditSession: ObservableObject {
                     let instruction = try SpatterShapeInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
                     shapeInstruction = instruction
+                } else if isFreehandStroke {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before drawing with Spatter.") }
+                    let instruction = try SpatterFreehandInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    freehandStrokeInstruction = instruction
                 } else if isBrushStroke {
                     guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before drawing with Spatter.") }
                     let instruction = try SpatterBrushStrokeInstruction.parse(draft)
@@ -898,7 +909,7 @@ final class SpatterStudioEditSession: ObservableObject {
                     selectionTranslate: selectionTranslate, selectionTransform: selectionTransform, selectionReflectAxis: selectionReflectAxis,
                     imageRotation: imageRotation, imageCrop: imageCrop, imagePlacement: imagePlacement, textCreate: textCreate, textUpdate: textUpdate,
                     storyboard: storyboard, batchSummary: batchSummary, tween: tweenInstruction, frameClipboard: frameClipboardInstruction,
-                    projectSettings: projectSettingsInstruction, brushStroke: brushStrokeInstruction, shape: shapeInstruction,
+                    projectSettings: projectSettingsInstruction, brushStroke: brushStrokeInstruction, freehandStroke: freehandStrokeInstruction, shape: shapeInstruction,
                     createdFrames: studio.document.frames.filter { newIDs.contains($0.id) },
                     createdLayers: studio.document.layers.filter { Set(receipt.createdLayerIDs).contains($0.id) },
                     fill: fillInstruction, selectByID: selectByIDInstruction, source: sourceInstruction,

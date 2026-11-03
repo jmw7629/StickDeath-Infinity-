@@ -570,7 +570,7 @@ private struct Failure: Error { let message: String }
                 sampleAllLayers: true)
             let region = try StudioWandRegion.select(rgba: visible.rgba, width: before.width, height: before.height,
                 x: 1, y: 1, settings: .init(tolerance: 0, contiguous: true, feather: 0,
-                    mode: .replace, rejectTransparentSeed: false))
+                    mode: .replace, rejectTransparentSeed: false), previous: nil)
             func details(_ x: Int, _ y: Int, _ compact: UInt8) -> String {
                 let index = y * before.width + x, pixel = index * 4
                 return "x=\(x),y=\(y),compact=\(compact),full=\(full[index]),rgba=\(Array(visible.rgba[pixel..<pixel+4])),region=\(region[index])"

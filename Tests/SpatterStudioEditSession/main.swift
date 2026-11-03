@@ -2967,6 +2967,136 @@ private final class NetworkTrap: URLProtocol {
                 if vm.isPlaying { vm.togglePlayback() }; await vm.flush()
             } }
         }
+        try await test("native freehand matches actual manual tool capture preserves preferences and exports editable pixels") {
+            for (width, height) in [(128, 96), (320, 640)] { for tool in SpatterFreehandInstruction.tools {
+                let store = storage("native-freehand-\(tool.rawValue)-\(width)")
+                let vm = StudioViewModel(storage: store)
+                try require(await vm.createProject(name: "Native freehand", width: width, height: height, fps: 24), "Native fixture creation")
+                let original = styledStroke(vm)
+                try require(vm.commitElement(original), "Native seed artwork")
+                vm.selectedTool = .brush; vm.strokeColor = Color(red: 0, green: 1, blue: 0); vm.strokeWidth = 7; vm.strokeOpacity = 0.27
+                vm.brushFamily = .watercolor; vm.smoothing = 8; vm.brushTexture = 0.81; vm.brushGrain = 0.22
+                vm.activePanel = .spatterAI; await vm.flush()
+                let before = vm.document, beforePixels = try erasurePixels(before)
+                let text = SpatterFreehandInstruction.example(tool), instruction = try SpatterFreehandInstruction.parse(text)
+                let session = SpatterStudioEditSession()
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                guard session.status == .applied, let edit = session.appliedEdit,
+                      let element = vm.currentFrame.elements.last, let brush = element.brush else { throw Failure(message: "Native stroke failed: \(session.notice ?? "")") }
+                let manual = StudioViewModel(storage: storage("native-manual-\(tool.rawValue)-\(width)"))
+                try require(await manual.createProject(name: "Actual manual native stroke", width: width, height: height, fps: 24), "Manual native create")
+                var manualOriginal = original; manualOriginal.layerID = manual.activeLayerID
+                try require(manual.commitElement(manualOriginal), "Manual original artwork")
+                manual.selectedTool = tool; manual.strokeColor = .black; manual.strokeWidth = instruction.size; manual.strokeOpacity = instruction.opacity
+                manual.brushFamily = instruction.family; manual.smoothing = instruction.smoothing; manual.pressureSensitivity = false; manual.pencilTiltEnabled = false
+                let defaults = StudioBrushDescriptor(family: instruction.family, seed: 0)
+                manual.brushTipAngle = instruction.tipAngle ?? defaults.tipAngleDegrees
+                manual.brushTexture = instruction.texture ?? defaults.texture; manual.brushGrain = instruction.grain ?? defaults.grain
+                let capturedBrush = try manual.brushDescriptor(elementID: element.id)
+                let began = Date(timeIntervalSince1970: 0), dimensions = CGSize(width: width, height: height)
+                var touch = StudioStrokeInput(id: element.id, frameID: manual.currentFrame.id, layerID: manual.activeLayerID,
+                    tool: manual.selectedTool, color: manual.strokeColorHex, width: manual.strokeWidth, opacity: manual.capturedStrokeOpacity,
+                    brush: capturedBrush, documentSize: dimensions, viewportSize: dimensions, startedAt: began)
+                for (index, point) in instruction.points.enumerated() {
+                    try touch.append(location: CGPoint(x: point.x * Double(width) / 100, y: point.y * Double(height) / 100),
+                        time: began.addingTimeInterval(Double(index) / 60))
+                }
+                touch.finishEstimatedUpdates()
+                try require(manual.commitElement(touch.element), "Actual native manual capture rejected")
+                let pixels = try erasurePixels(vm.document)
+                try require(edit.freehandStroke == instruction && edit.receipt.createdElementIDs == [element.id]
+                    && vm.document.revision == before.revision + 1 && vm.frames.count == before.frames.count && vm.layers == before.layers
+                    && vm.currentFrame.elements.first == original && vm.currentFrame.elements.count == 2 && element.tool == tool
+                    && element.layerID == vm.activeLayerID && element.points == touch.element.points && brush == capturedBrush
+                    && element.color == touch.element.color && element.width == touch.element.width && element.opacity == touch.element.opacity
+                    && pixels == (try erasurePixels(manual.document)) && pixels != beforePixels, "Native freehand changed unrelated content or differed from manual pixels/settings")
+                try require(vm.selectedTool == .brush && vm.strokeColorHex == "#00FF00" && vm.strokeWidth == 7 && vm.strokeOpacity == 0.27
+                    && vm.brushFamily == .watercolor && vm.smoothing == 8 && vm.brushTexture == 0.81 && vm.brushGrain == 0.22
+                    && vm.activePanel == .spatterAI, "Native preparation mutated remembered tool preferences")
+                try require(edit.summary.contains(instruction.summary) && edit.summary.contains("one Undo") && !edit.summary.contains("saved"), "Native receipt omitted settings or invented saving")
+                let changed = vm.document
+                try require(session.undoAppliedEdit(in: vm, currentScope: guest) && content(vm.document) == content(before), "Native stroke not one Undo")
+                vm.redo(); try require(content(vm.document) == content(changed), "Native Redo lost descriptor/identity")
+                try require(await vm.save(), "Native freehand save")
+                let saved = try store.loadAnimation(id: vm.document.id)!, cold = StudioViewModel(storage: store)
+                try require(await cold.openProject(saved.metadata) && cold.document == vm.document
+                    && (try erasurePixels(cold.document)) == pixels, "Native descriptor/pixels did not cold reopen")
+                let exporter = StudioExportService(), image = try StudioExportService().render(cold.currentFrame, document: cold.document, background: .transparent, raster: nil)
+                let output = try await exporter.export(document: cold.document, format: .pngSequence, outputParent: root, background: .transparent)
+                guard let url = output.imageURLs.first, let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let reopened = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Failure(message: "Native PNG missing") }
+                try require(output.imageURLs.count == 1 && image.width == width && image.height == height
+                    && (try rgbaImage(reopened)) == (try rgbaImage(image)), "Native PNG lost compositor pixels/dimensions")
+                cold.selectedTool = .move; cold.selectionMode = .new
+                _ = try cold.applyStudioCommands(.init(requestID: UUID(), projectID: cold.document.id, expectedRevision: cold.document.revision,
+                    action: .apply([.selectElements(.init(frame: .id(cold.currentFrame.id), elementIDs: [element.id]))])))
+                let moveBounds = cold.beginSelectionHandle()?.bounds
+                guard let moveBounds, let move = cold.beginMove(at: CGPoint(x: moveBounds.midX, y: moveBounds.midY)) else { throw Failure(message: "Native stroke not selectable for Move: tool=\(tool.rawValue) canvas=\(width)x\(height) mode=\(cold.selectionMode.rawValue) saving=\(cold.isSaving) bounds=\(String(describing: moveBounds))") }
+                try require(cold.finishMove(move, delta: CGSize(width: 2, height: 3)), "Native stroke could not move")
+                let moved = cold.currentFrame.elements.last!
+                try require(moved.id == element.id && moved.tool == tool && moved.brush == brush && moved.points == element.points
+                    && moved.transform == .init(tx: 2, ty: 3) && moved.translation == element.translation, "Move flattened or reshaped native freehand")
+                cold.undo(); try require(content(cold.document) == content(changed), "Native Move Undo")
+                cold.deleteSelected(); try require(cold.currentFrame.elements.count == 1 && cold.currentFrame.elements.first == original, "Native delete changed unrelated artwork")
+                cold.undo(); try require(content(cold.document) == content(changed), "Native delete Undo lost editable stroke")
+                await manual.flush(); await cold.flush()
+            } }
+        }
+        try await test("native freehand rejects malformed settings locked layers unfinished input and stale authority") {
+            let text = SpatterFreehandInstruction.example(.pencil)
+            for bad in [text + " Publish it.", text.replacingOccurrences(of: "10%", with: "101%"),
+                        text.replacingOccurrences(of: "opacity 100%", with: "opacity 0%"),
+                        text.replacingOccurrences(of: "smoothing 2.", with: "smoothing 2, texture 50%."),
+                        SpatterFreehandInstruction.example(.pen).replacingOccurrences(of: ", texture 50%", with: "")] {
+                let (vm, _) = try await fixture("native-bad"), session = SpatterStudioEditSession()
+                await vm.flush(); let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                _ = session.submit(bad, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before
+                    && vm.canUndo == undo && vm.canRedo == redo, "Invalid native stroke changed history")
+            }
+            for state in ["full", "position", "hidden", "zero-opacity"] {
+                let (vm, _) = try await fixture("native-layer-\(state)")
+                let settings: StudioCommandLayerSettings = state == "hidden" ? .init(visible: false)
+                    : state == "zero-opacity" ? .init(opacity: 0) : .init(lock: StudioCommandLock(rawValue: state)!)
+                _ = try vm.applyStudioCommands(.init(requestID: UUID(), projectID: vm.document.id, expectedRevision: vm.document.revision,
+                    action: .apply([.updateLayer(.init(layer: .id(vm.activeLayerID), settings: settings))])))
+                await vm.flush(); let held = vm.document, undo = vm.canUndo, redo = vm.canRedo, session = SpatterStudioEditSession()
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && vm.document == held
+                    && vm.canUndo == undo && vm.canRedo == redo, "Native stroke bypassed layer \(state)")
+            }
+            let (inputVM, _) = try await fixture("native-existing-touch")
+            try require(inputVM.beginStrokeInput(id: "live-native-touch"), "Actual touch guard fixture")
+            let heldInput = inputVM.document, inputSession = SpatterStudioEditSession()
+            _ = inputSession.submit(text, in: inputVM, accountID: nil, currentScope: { guest }); await inputSession.waitForCompletion()
+            try require(inputSession.status == .rejected && inputSession.appliedEdit == nil && inputVM.document == heldInput,
+                "Native command overwrote active touch input")
+            inputVM.finishStrokeInput(id: "live-native-touch"); await inputVM.flush()
+            for boundary in 1...2 { for change in ["revision", "account", "cancel", "frame", "selection", "tool", "playback", "background"] {
+                let (vm, _) = try await fixture("native-fence"), gate = Gate()
+                try erasureArtwork(vm); vm.addFrame(); vm.prevFrame(); vm.selectedTool = .move; vm.clearElementSelection()
+                vm.activePanel = .spatterAI; await vm.flush()
+                var account: String? = nil, foreground = true
+                let session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { .init(isStudioVisible: foreground, accountID: account) })
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                switch change {
+                case "revision": vm.showOnionSkin = true; await vm.flush()
+                case "account": account = "other"
+                case "cancel": session.cancel()
+                case "frame": vm.currentFrameIndex = 1
+                case "selection": try require(vm.selectElement(at: CGPoint(x: 20, y: 20)) != nil, "Actual native selection fixture missed")
+                case "tool": vm.selectedTool = .eraser
+                case "playback": vm.togglePlayback()
+                default: foreground = false
+                }
+                let held = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil && vm.document == held
+                    && vm.canUndo == undo && vm.canRedo == redo, "Native stroke crossed \(change) authority boundary \(boundary)")
+                vm.stopPlayback(); await vm.flush()
+            } }
+        }
         try await test("single shape instructions render persist and undo through the real Studio session") {
             for kind in SpatterShapeInstruction.Kind.allCases {
                 let (vm, store) = try await fixture("shape-\(kind.rawValue)"), session = SpatterStudioEditSession()

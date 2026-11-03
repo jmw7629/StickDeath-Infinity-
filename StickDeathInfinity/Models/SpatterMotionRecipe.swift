@@ -3648,7 +3648,7 @@ enum SpatterInstructionRouter {
     enum Kind: String, CaseIterable {
         case batch, frameDuplicateRange, frameReverse, navigation, layerStructure, grid, onionSkin, frameAction, layerOrder, audioTrack
         case frameCut, drawingDuplicate, artworkOrder, imageReflection, selectionTranslate, selectionTransform, selectionReflect
-        case imageRotation, imageCrop, imagePlacement, textCreate, textUpdate, tween, frameClipboard, projectSettings, brushStroke, shape
+        case imageRotation, imageCrop, imagePlacement, textCreate, textUpdate, tween, frameClipboard, projectSettings, brushStroke, freehandStroke, shape
         case selectedErasure, projectRename, frameExposure, layerUpdate, layerDuplicate, layerGlow, audioClip
         case multiClauseBrief, twoActorBrief, sceneBrief, stickFigure, circleMotion
         case fill, selectByID, sourceReference
@@ -3657,7 +3657,7 @@ enum SpatterInstructionRouter {
         var isContextOnly: Bool {
             switch self {
             case .frameDuplicateRange, .frameReverse, .navigation, .layerStructure, .grid, .onionSkin, .frameAction, .layerOrder, .audioTrack,
-                 .tween, .frameClipboard, .projectSettings, .projectRename, .frameExposure, .layerUpdate, .layerDuplicate, .layerGlow, .brushStroke, .shape:
+                 .tween, .frameClipboard, .projectSettings, .projectRename, .frameExposure, .layerUpdate, .layerDuplicate, .layerGlow, .brushStroke, .freehandStroke, .shape:
                 return true
             default: return false
             }
@@ -3706,6 +3706,7 @@ enum SpatterInstructionRouter {
         if SpatterFrameClipboardInstruction.isInstruction(draft) { return .frameClipboard }
         if SpatterProjectSettingsInstruction.isInstruction(draft) { return .projectSettings }
         if SpatterShapeInstruction.isInstruction(draft) { return .shape }
+        if SpatterFreehandInstruction.isInstruction(draft) { return .freehandStroke }
         if SpatterBrushStrokeInstruction.isInstruction(draft) { return .brushStroke }
         if SpatterSelectedErasureInstruction.isInstruction(draft) { return .selectedErasure }
         if isRename { return .projectRename }
@@ -3749,6 +3750,7 @@ enum SpatterInstructionRouter {
         case .layerDuplicate: return try SpatterLayerDuplicateInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
         case .layerGlow: return try SpatterLayerGlowInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
         case .shape: return try SpatterShapeInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
+        case .freehandStroke: return try SpatterFreehandInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
         case .brushStroke: return try SpatterBrushStrokeInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
         default: throw SpatterInstructionBatch.Failure.unsupportedLine(0, line)
         }
@@ -3794,7 +3796,7 @@ struct SpatterInstructionBatch: Equatable {
         var errorDescription: String? {
             switch self {
             case .lineCount: return "A batch holds 2–8 complete instructions, one per line. Nothing changed."
-            case .unsupportedLine(let number, let text): return "Line \(number) is not a complete context-only instruction (\u{201C}\(text.prefix(48))\u{201D}). Batches accept frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename, shape and brush-stroke instructions; selection, image, text, audio-clip, library-sound, canvas-gradient, raster-effect and brief instructions run on their own. Nothing changed."
+            case .unsupportedLine(let number, let text): return "Line \(number) is not a complete context-only instruction (\u{201C}\(text.prefix(48))\u{201D}). Batches accept frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename, shape, native-freehand and brush-stroke instructions; selection, image, text, audio-clip, library-sound, canvas-gradient, raster-effect and brief instructions run on their own. Nothing changed."
             case .tooManyCommands: return "This batch expands to more than 96 typed commands. Split it into two batches. Nothing changed."
             }
         }
@@ -3942,6 +3944,11 @@ enum SpatterInstructionPreview {
             case .projectExport:
                 let export = try SpatterProjectExportInstruction.parse(text)
                 return "Plan: start Studio's direct \(export.format.rawValue.uppercased()) export of the saved current revision to a file on this device. The project does not change; nothing is uploaded, shared or published. Requires a saved project. Nothing has changed yet."
+            case .freehandStroke:
+                let freehand = try SpatterFreehandInstruction.parse(text)
+                guard let context else { return "Plan: add one editable \(freehand.summary). Open the project to validate its canvas and active layer. Nothing has changed yet." }
+                _ = try freehand.prepare(in: context, requestID: probe, checkCancellation: {})
+                return "Plan: add one editable \(freehand.summary) through Studio’s native touch capture and 1× draw at revision \(context.revision), as one Undo step. Pressure/tilt, mirror and ruler are off; remembered tool preferences are unchanged. Nothing has changed yet."
             case .shape:
                 let shape = try SpatterShapeInstruction.parse(text)
                 guard let context else { return "Plan: add one editable \(shape.summary). Open the project to validate its canvas bounds and active layer. Nothing has changed yet." }

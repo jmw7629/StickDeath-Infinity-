@@ -56,7 +56,6 @@ enum SpatterStudioControlRegistry {
     /// what it would change before Apply.
     static let pixelToolNote = "This tool paints pixel effects along your touch path; a typed route could not preview or verify the result before Apply, so use the tool directly."
     static let viewNote = "View navigation only. It never changes the project, so Spatter does not operate it."
-    static let freehandNote = "Spatter has no instruction for this tool yet. Draw with the tool directly; Spatter's brush-stroke instruction covers brush families only."
 
     /// Panel keys are StudioPanelType raw values. The SwiftUI panel maps the
     /// enum with an exhaustive switch, so a new panel cannot compile unmapped.
@@ -68,10 +67,10 @@ enum SpatterStudioControlRegistry {
         .init(id: "tool.lasso", surface: .toolbar, title: "Lasso", route: .instructions(["areaSelection", "selectByID"])),
         .init(id: "tool.wand", surface: .toolbar, title: "Wand", route: .instructions(["wandSelection"])),
         .init(id: "tool.brush", surface: .toolbar, title: "Brush", route: .instructions(["brushStroke"])),
-        .init(id: "tool.pencil", surface: .toolbar, title: "Pencil", route: .manual(freehandNote)),
-        .init(id: "tool.pen", surface: .toolbar, title: "Pen", route: .manual(freehandNote)),
-        .init(id: "tool.marker", surface: .toolbar, title: "Marker", route: .manual(freehandNote)),
-        .init(id: "tool.crayon", surface: .toolbar, title: "Crayon", route: .manual(freehandNote)),
+        .init(id: "tool.pencil", surface: .toolbar, title: "Pencil", route: .instructions(["freehandStroke"])),
+        .init(id: "tool.pen", surface: .toolbar, title: "Pen", route: .instructions(["freehandStroke"])),
+        .init(id: "tool.marker", surface: .toolbar, title: "Marker", route: .instructions(["freehandStroke"])),
+        .init(id: "tool.crayon", surface: .toolbar, title: "Crayon", route: .instructions(["freehandStroke"])),
         .init(id: "tool.line", surface: .toolbar, title: "Line", route: .instructions(["shape"])),
         .init(id: "tool.rectangle", surface: .toolbar, title: "Rect", route: .instructions(["shape"])),
         .init(id: "tool.circle", surface: .toolbar, title: "Circle", route: .instructions(["shape"])),
@@ -324,7 +323,7 @@ struct SpatterContextSnapshot: Codable, Equatable {
             guard activeLayerVisible, activeLayerLockMode != "full" else { return .needs("Show and unlock the active layer.") }
         case "projectExport":
             guard !isDirty else { return .needs("Save the project first; export uses the saved revision.") }
-        case "brushStroke", "shape":
+        case "brushStroke", "freehandStroke", "shape":
             guard activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "alpha" else { return .needs("Show and unlock the active layer.") }
         default: break
         }
