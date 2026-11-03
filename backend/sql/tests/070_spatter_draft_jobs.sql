@@ -82,13 +82,16 @@ begin
  perform sdi_test.check((select state from sdi_private.spatter_draft_jobs where target_date=today-2)='missed','old planned job becomes missed');
  perform sdi_test.login(viewer,'aal2');
  r:=sdi_private.spatter_draft_status(today-3,today);
+ perform sdi_test.check(r->>'error'='Current owner permission and MFA are required.','delegated reviewers cannot read private draft status');
+ perform sdi_test.login(owner,'aal2');
+ r:=sdi_private.spatter_draft_status(today-3,today);
  perform sdi_test.check(jsonb_array_length(r->'days')=4 and r->'days'->0->>'state'='missed' and r->'days'->2->>'state'='missed' and r->'days'->3->>'state'='approved'
   and r->>'capacity' like 'owner-gated%','status lists missed and unplanned days truthfully: '||r::text);
  r:=sdi_private.spatter_draft_status(today-100,today);
  perform sdi_test.check(r->>'error' like 'Choose a range%','status range is bounded');
  perform sdi_test.login(member);
  r:=sdi_private.spatter_draft_status(today-1,today);
- perform sdi_test.check(r->>'error' like 'Current video-review permission%','members cannot read the queue');
+ perform sdi_test.check(r->>'error'='Current owner permission and MFA are required.','members cannot read the queue');
  perform sdi_test.check(sdi_test.denied('authenticated','select public.sdi_spatter_draft_claim(current_date,''x'',1,''v'',''{}'')'),'clients cannot claim draft jobs');
  perform sdi_test.check(sdi_test.denied('authenticated','select public.sdi_spatter_draft_progress(gen_random_uuid(),''x'',''failed'')'),'clients cannot progress draft jobs');
 end $$;

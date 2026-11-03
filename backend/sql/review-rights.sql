@@ -4,14 +4,15 @@ create function sdi_private.review_rights(review uuid,digest text,version bigint
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews; artifact sdi_private.render_artifacts; is_owner boolean;
 begin
- if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true then
   return jsonb_build_object('error','Current review permission and MFA required.');end if;
  if review is null or digest is null or version is null or cleared is null or note is null
   or length(trim(note)) not between 1 and 2000 then return jsonb_build_object('error','Document the rights evidence or revocation reason.');end if;
- select * into r from sdi_private.render_reviews where id=review for update;
+ select exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) into is_owner;
+ select * into r from sdi_private.render_reviews rr where rr.id=review
+  and (is_owner or not sdi_private.review_is_daily_spatter_draft(rr.id)) for update;
  if not found or r.render_digest<>digest or r.version<>version then
   return jsonb_build_object('error','Render changed. Refresh before recording rights.');end if;
- select owner into is_owner from sdi_private.admin_roles where user_id=auth.uid() and enabled;
  if r.spatter_generated and not coalesce(is_owner,false) then
   return jsonb_build_object('error','Owner review is required for this render.');end if;
  if r.rights_cleared=cleared then return jsonb_build_object('status','confirmed');end if;

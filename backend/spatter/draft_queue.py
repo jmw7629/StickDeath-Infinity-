@@ -38,6 +38,15 @@ COLORS = ("red", "blue", "green", "black", "orange", "purple", "cyan", "magenta"
 DIRECTIONS = ("left to right", "right to left")
 TRAVELLING = {"walks", "runs", "jumps"}
 CAPACITY_NOT_CONFIGURED = "Render capacity is not configured (OWNER-GATED). No draft was rendered; nothing was purchased."
+DRAFT_STOPPED = "The draft lease ended or the agent was stopped."
+DRAFT_RENDER_FAILED = "Private draft rendering failed."
+DRAFT_QUALITY_FAILED = "The private draft did not pass its quality check."
+DRAFT_QUALITY_INCOMPLETE = "The private draft quality report was incomplete."
+DRAFT_PLAN_CHANGED = "The saved draft plan differs from this worker's planner. Nothing was rendered."
+
+
+class DraftStopped(RuntimeError):
+    """A render cannot continue under its current lease."""
 
 BRIEF_PATTERN = re.compile(
     r"^(?:a|an) (?P<color>[a-z]+) stick figure (?P<clauses>[a-z ,0-9.]+?)(?:; (?:a|an) [a-z]+ stick figure [a-z ,0-9.]+?)*; "
@@ -218,7 +227,8 @@ def configured_renderer(environ: Optional[Mapping[str, str]] = None,
 
 
 def run_once(store: Store, *, owner: str, reviewer: str, now: Callable[[], _dt.datetime],
-             renderer: Optional[Renderer] = None, target_date: Optional[_dt.date] = None) -> RunOutcome:
+             renderer: Optional[Renderer] = None, target_date: Optional[_dt.date] = None,
+             safe_diagnostics: bool = False) -> RunOutcome:
     """One worker pass for one day. Idempotent: a re-run after a crash either
     reclaims (within three attempts) or reports why not. Never raises on refusal."""
     day = target_date or now().astimezone(_dt.timezone.utc).date()
@@ -234,20 +244,35 @@ def run_once(store: Store, *, owner: str, reviewer: str, now: Callable[[], _dt.d
     started = store.progress(job, owner, "rendering")
     if started.get("status") != "confirmed":
         return RunOutcome(day, True, "refused", str(started.get("reason", "")), job, attempt=attempt, plan=plan)
+    # The database retains the first plan for this date across retries. A
+    # changed planner must not render a different plan into that existing row.
+    if claim.get("brief", plan.as_record()) != plan.as_record() or claim.get("planner_seed", plan.seed) != plan.seed:
+        reason = DRAFT_PLAN_CHANGED
+        recorded = store.progress(job, owner, "failed", error=reason)
+        return RunOutcome(day, True, "failed" if recorded.get("status") == "confirmed" else "refused", reason,
+                          job, attempt=attempt, plan=plan)
+
+    def heartbeat() -> None:
+        if store.progress(job, owner, "rendering").get("status") != "confirmed":
+            raise DraftStopped(DRAFT_STOPPED)
+
     try:
-        result = renderer.render(plan, lambda: store.progress(job, owner, "rendering"))
-    except Exception as error:  # the renderer's own message is public-safe by contract; never a traceback
-        reason = f"Render failed: {type(error).__name__}: {error}"[:2000]
-        store.progress(job, owner, "failed", error=reason)
-        return RunOutcome(day, True, "failed", reason, job, attempt=attempt, plan=plan)
+        result = renderer.render(plan, heartbeat)
+    except Exception as error:
+        failure = DRAFT_STOPPED if isinstance(error, DraftStopped) else DRAFT_RENDER_FAILED
+        reason = failure if safe_diagnostics else f"Render failed: {type(error).__name__}: {error}"[:2000]
+        recorded = store.progress(job, owner, "failed", error=failure)
+        state = "failed" if recorded.get("status") == "confirmed" else "refused"
+        return RunOutcome(day, True, state, reason, job, attempt=attempt, plan=plan)
     if not result.quality.get("passes"):
-        reason = "Quality gate failed: " + "; ".join(str(f) for f in result.quality.get("failures", []))[:1900]
-        store.progress(job, owner, "failed", quality=result.quality, error=reason)
+        reason = DRAFT_QUALITY_FAILED if safe_diagnostics else (
+            "Quality gate failed: " + "; ".join(str(f) for f in result.quality.get("failures", []))[:1900])
+        store.progress(job, owner, "failed", quality=result.quality, error=DRAFT_QUALITY_FAILED)
         return RunOutcome(day, True, "failed", reason, job, attempt=attempt, plan=plan)
     incomplete = quality_record_problem(result.quality)
     if incomplete:
-        reason = "Quality report incomplete: " + incomplete
-        store.progress(job, owner, "failed", quality=result.quality, error=reason)
+        reason = DRAFT_QUALITY_INCOMPLETE if safe_diagnostics else "Quality report incomplete: " + incomplete
+        store.progress(job, owner, "failed", quality=result.quality, error=DRAFT_QUALITY_INCOMPLETE)
         return RunOutcome(day, True, "failed", reason, job, attempt=attempt, plan=plan)
     review = {"creator": reviewer, "preview_url": result.preview_url, "source_project_digest": result.source_project_digest,
               "title": f"Spatter daily draft {day.isoformat()}", "source_revision": f"draft:{day.isoformat()}:seed:{plan.seed}"}

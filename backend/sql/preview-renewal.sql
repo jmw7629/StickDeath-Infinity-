@@ -12,20 +12,20 @@ language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews; a sdi_private.render_artifacts; u sdi_private.upload_registrations; permit uuid;
  draft boolean; upload_id uuid;
 begin
- if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true then
   return jsonb_build_object('error','Current review permission and MFA required.');end if;
  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(auth.uid()::text,811));
  delete from sdi_private.preview_permits where actor=auth.uid() and expires_at<clock_timestamp();
  if (select count(*) from sdi_private.preview_permits where actor=auth.uid())>=20 then
   return jsonb_build_object('error','Too many preview requests. Wait one minute.');end if;
- draft:=sdi_private.review_spatter_draft_retained(review);
- select * into r from sdi_private.render_reviews where id=review;
- if not found or r.version<>version or r.render_digest<>digest or length(r.consent_version)=0
+ select * into r from sdi_private.render_reviews rr where rr.id=review
+  and (not sdi_private.review_is_daily_spatter_draft(rr.id)
+   or exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner));
+ if not found then return jsonb_build_object('error','This review changed or is unavailable.');end if;
+ draft:=sdi_private.review_spatter_draft_retained(r.id);
+ if r.version is distinct from version or r.render_digest is distinct from digest or length(r.consent_version)=0
   or (cardinality(r.destinations)=0 and not draft) or r.state not in('pending','approved','changes') then
   return jsonb_build_object('error','This review changed or is unavailable.');end if;
- -- Spatter daily drafts are previewed by the owner only.
- if draft and not exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) then
-  return jsonb_build_object('error','Owner review is required for this render.');end if;
  select * into a from sdi_private.render_artifacts where review_id=r.id and render_artifacts.version=r.version
   and render_digest=r.render_digest and expires_at>clock_timestamp();
  if not found then return jsonb_build_object('error','The retained render has expired. Request a new upload.');end if;
@@ -64,11 +64,11 @@ begin
   or not exists(select 1 from sdi_private.admin_roles where user_id=p.actor and enabled and (owner or 'reviews'=any(permissions)))
   or exists(select 1 from sdi_private.account_controls where user_id=p.actor and state<>'active') then
   return jsonb_build_object('error','Review authorization changed.');end if;
- select * into r from sdi_private.render_reviews where id=p.review_id for update;
- if r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0
+ select * into r from sdi_private.render_reviews rr where rr.id=p.review_id
+  and (not sdi_private.review_is_daily_spatter_draft(rr.id)
+   or exists(select 1 from sdi_private.admin_roles where user_id=p.actor and enabled and owner)) for update;
+ if not found or r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0
   or (cardinality(r.destinations)=0 and not sdi_private.review_spatter_draft_retained(r.id))
-  or (sdi_private.review_spatter_draft_retained(r.id)
-   and not exists(select 1 from sdi_private.admin_roles where user_id=p.actor and enabled and owner))
   or r.state not in('pending','approved','changes')
   or exists(select 1 from sdi_private.account_controls where user_id=r.creator and state<>'active')
   or not exists(select 1 from sdi_private.render_artifacts where review_id=r.id and version=r.version and render_digest=r.render_digest and expires_at>clock_timestamp()) then

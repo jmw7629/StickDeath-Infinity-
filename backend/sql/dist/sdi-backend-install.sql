@@ -455,7 +455,7 @@ revoke all on function public.sdi_feed_action(text,uuid,uuid,boolean,text,intege
 grant execute on function public.sdi_feed_action(text,uuid,uuid,boolean,text,integer,text,timestamptz) to authenticated;
 commit;
 
--- ===== admin-approval.sql (sha256 1a298038405d845a) =====
+-- ===== admin-approval.sql (sha256 c73b434d6a1f8412) =====
 -- Unapplied candidate. Provision role records through a protected owner operation,
 -- never from a client-supplied password, profile, username or email.
 begin;
@@ -524,6 +524,17 @@ begin
  return report;
 end $$;
 revoke all on function sdi_private.review_quality_report(uuid) from public,anon,authenticated;
+-- Private visibility follows the job link even after its retained copy expires.
+-- The table is installed later by spatter-draft-jobs.sql.
+create function sdi_private.review_is_daily_spatter_draft(review uuid) returns boolean
+language plpgsql stable set search_path='' as $$
+declare linked boolean;
+begin
+ if review is null or to_regclass('sdi_private.spatter_draft_jobs') is null then return false; end if;
+ execute 'select exists(select 1 from sdi_private.spatter_draft_jobs where review_id=$1)' into linked using review;
+ return linked;
+end $$;
+revoke all on function sdi_private.review_is_daily_spatter_draft(uuid) from public,anon,authenticated;
 -- True only for a Spatter daily draft (spatter-draft-jobs.sql, installed later)
 -- whose exact current bytes are retained (render_artifacts, publishing-jobs.sql).
 -- Such a draft may be approved by the owner with no destinations: "approved, not
@@ -546,8 +557,9 @@ create function sdi_private.review_action(action text,review uuid default null,d
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews; is_owner boolean; result jsonb;
 begin
- if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then return jsonb_build_object('error','Current video-review permission and MFA are required.'); end if;
- select owner into is_owner from sdi_private.admin_roles where user_id=auth.uid();
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true then
+  return jsonb_build_object('error','Current video-review permission and MFA are required.'); end if;
+ select exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) into is_owner;
  if action='list' then
   -- Storyboard and source-project digest columns are installed by
   -- spatter-draft-jobs.sql; read them through the row so this list keeps working
@@ -557,13 +569,15 @@ begin
     rr.rights_cleared,rr.destinations,rr.spatter_generated,rr.state,rr.version,
     to_jsonb(rr)->'storyboard' as storyboard,to_jsonb(rr)->>'source_project_digest' as source_project_digest,
     sdi_private.review_quality_report(rr.id) as quality_report
-   from sdi_private.render_reviews rr where rr.state='pending' order by rr.created_at limit 50
+   from sdi_private.render_reviews rr where rr.state='pending'
+    and (is_owner or not sdi_private.review_is_daily_spatter_draft(rr.id)) order by rr.created_at limit 50
   ) item;
   return jsonb_build_object('reviews',result,'owner',is_owner);
  end if;
  if action is null or action<>'decide' or review is null or digest is null or version is null or decision is null or note is null or decision not in('approved','rejected','changes') or length(note)>2000 then
   return jsonb_build_object('error','Invalid review decision.'); end if;
- select * into r from sdi_private.render_reviews where id=review for update;
+ select * into r from sdi_private.render_reviews rr where rr.id=review
+  and (is_owner or not sdi_private.review_is_daily_spatter_draft(rr.id)) for update;
  if not found or r.render_digest<>digest or r.version<>version or r.state<>'pending' then
   return jsonb_build_object('error','This render changed or was already reviewed. Reload the queue.'); end if;
  if decision='approved' and (not r.rights_cleared or length(r.consent_version)=0
@@ -586,15 +600,17 @@ grant execute on function public.sdi_review_action(text,uuid,text,bigint,text,te
 -- metadata or an expired private preview link.
 create function sdi_private.review_history(page integer default 0) returns jsonb
 language plpgsql security definer set search_path='' as $$
-declare result jsonb;
+declare result jsonb; is_owner boolean;
 begin
- if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true then
   return jsonb_build_object('error','Current administrator MFA session required.');end if;
+ select exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) into is_owner;
  if page is null or page not between 0 and 199 then return jsonb_build_object('error','Invalid history page.');end if;
  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into result from (
   select id,review_id,actor,owner_at_decision,render_title,source_revision,rights_summary,
    render_digest,review_version,consent_version,destinations,decision,note,created_at
-  from sdi_private.render_decisions order by created_at desc,id limit 50 offset page*50
+  from sdi_private.render_decisions d where is_owner or not sdi_private.review_is_daily_spatter_draft(d.review_id)
+  order by created_at desc,id limit 50 offset page*50
  ) item;
  return jsonb_build_object('decisions',result);
 end $$;
@@ -1460,21 +1476,22 @@ revoke all on function public.sdi_creator_review(text,uuid,bigint) from public,a
 grant execute on function public.sdi_creator_review(text,uuid,bigint) to authenticated;
 commit;
 
--- ===== review-rights.sql (sha256 120e67b8eaf5c0b5) =====
+-- ===== review-rights.sql (sha256 cf9cd1cadcf31e8e) =====
 -- Unapplied candidate. Requires publishing-jobs.sql, admin-approval.sql and withdrawal triggers.
 begin;
 create function sdi_private.review_rights(review uuid,digest text,version bigint,cleared boolean,note text) returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews; artifact sdi_private.render_artifacts; is_owner boolean;
 begin
- if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true then
   return jsonb_build_object('error','Current review permission and MFA required.');end if;
  if review is null or digest is null or version is null or cleared is null or note is null
   or length(trim(note)) not between 1 and 2000 then return jsonb_build_object('error','Document the rights evidence or revocation reason.');end if;
- select * into r from sdi_private.render_reviews where id=review for update;
+ select exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) into is_owner;
+ select * into r from sdi_private.render_reviews rr where rr.id=review
+  and (is_owner or not sdi_private.review_is_daily_spatter_draft(rr.id)) for update;
  if not found or r.render_digest<>digest or r.version<>version then
   return jsonb_build_object('error','Render changed. Refresh before recording rights.');end if;
- select owner into is_owner from sdi_private.admin_roles where user_id=auth.uid() and enabled;
  if r.spatter_generated and not coalesce(is_owner,false) then
   return jsonb_build_object('error','Owner review is required for this render.');end if;
  if r.rights_cleared=cleared then return jsonb_build_object('status','confirmed');end if;
@@ -1793,7 +1810,7 @@ revoke all on function public.sdi_publish_status(integer) from public,anon;
 grant execute on function public.sdi_publish_status(integer) to authenticated;
 commit;
 
--- ===== preview-renewal.sql (sha256 587eb1bc09d2299d) =====
+-- ===== preview-renewal.sql (sha256 ff79bfe8b6631d48) =====
 -- Unapplied candidate. Requires upload-registration.sql and upload-preview.sql.
 begin;
 create table sdi_private.preview_permits (
@@ -1808,20 +1825,20 @@ language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews; a sdi_private.render_artifacts; u sdi_private.upload_registrations; permit uuid;
  draft boolean; upload_id uuid;
 begin
- if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true then
   return jsonb_build_object('error','Current review permission and MFA required.');end if;
  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(auth.uid()::text,811));
  delete from sdi_private.preview_permits where actor=auth.uid() and expires_at<clock_timestamp();
  if (select count(*) from sdi_private.preview_permits where actor=auth.uid())>=20 then
   return jsonb_build_object('error','Too many preview requests. Wait one minute.');end if;
- draft:=sdi_private.review_spatter_draft_retained(review);
- select * into r from sdi_private.render_reviews where id=review;
- if not found or r.version<>version or r.render_digest<>digest or length(r.consent_version)=0
+ select * into r from sdi_private.render_reviews rr where rr.id=review
+  and (not sdi_private.review_is_daily_spatter_draft(rr.id)
+   or exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner));
+ if not found then return jsonb_build_object('error','This review changed or is unavailable.');end if;
+ draft:=sdi_private.review_spatter_draft_retained(r.id);
+ if r.version is distinct from version or r.render_digest is distinct from digest or length(r.consent_version)=0
   or (cardinality(r.destinations)=0 and not draft) or r.state not in('pending','approved','changes') then
   return jsonb_build_object('error','This review changed or is unavailable.');end if;
- -- Spatter daily drafts are previewed by the owner only.
- if draft and not exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) then
-  return jsonb_build_object('error','Owner review is required for this render.');end if;
  select * into a from sdi_private.render_artifacts where review_id=r.id and render_artifacts.version=r.version
   and render_digest=r.render_digest and expires_at>clock_timestamp();
  if not found then return jsonb_build_object('error','The retained render has expired. Request a new upload.');end if;
@@ -1860,11 +1877,11 @@ begin
   or not exists(select 1 from sdi_private.admin_roles where user_id=p.actor and enabled and (owner or 'reviews'=any(permissions)))
   or exists(select 1 from sdi_private.account_controls where user_id=p.actor and state<>'active') then
   return jsonb_build_object('error','Review authorization changed.');end if;
- select * into r from sdi_private.render_reviews where id=p.review_id for update;
- if r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0
+ select * into r from sdi_private.render_reviews rr where rr.id=p.review_id
+  and (not sdi_private.review_is_daily_spatter_draft(rr.id)
+   or exists(select 1 from sdi_private.admin_roles where user_id=p.actor and enabled and owner)) for update;
+ if not found or r.version<>p.review_version or r.render_digest<>p.digest or length(r.consent_version)=0
   or (cardinality(r.destinations)=0 and not sdi_private.review_spatter_draft_retained(r.id))
-  or (sdi_private.review_spatter_draft_retained(r.id)
-   and not exists(select 1 from sdi_private.admin_roles where user_id=p.actor and enabled and owner))
   or r.state not in('pending','approved','changes')
   or exists(select 1 from sdi_private.account_controls where user_id=r.creator and state<>'active')
   or not exists(select 1 from sdi_private.render_artifacts where review_id=r.id and version=r.version and render_digest=r.render_digest and expires_at>clock_timestamp()) then
@@ -6077,7 +6094,7 @@ revoke all on function public.sdi_marketing_claim(),public.sdi_marketing_finish(
 grant execute on function public.sdi_marketing_claim(),public.sdi_marketing_finish(uuid,uuid,text,text,text),public.sdi_marketing_cadence_due() to service_role;
 commit;
 
--- ===== spatter-draft-jobs.sql (sha256 da33f8140fe78ce0) =====
+-- ===== spatter-draft-jobs.sql (sha256 cc6298408d0bf78d) =====
 -- Unapplied deployment candidate (#212, #214). Install after agent-controls.sql
 -- and admin-approval.sql. Spatter's daily original-draft queue: one durable job
 -- per calendar day, bounded retries and leases, private drafts only, and the
@@ -6235,12 +6252,14 @@ begin
  return jsonb_build_object('status','refused','reason','Transition '||j.state||' → '||coalesce(p_state,'?')||' is not allowed.');
 end $$;
 
--- Owner/admin view: every day in the range with its real state, so missed and
+-- Owner view: every day in the range with its real state, so missed and
 -- failed days are visible rather than a daily-success claim.
 create function sdi_private.spatter_draft_status(p_from date,p_to date) returns jsonb language plpgsql security definer set search_path='' as $$
 declare result jsonb;
 begin
- if not sdi_private.admin_can('reviews') then return jsonb_build_object('error','Current video-review permission and MFA are required.'); end if;
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true
+  or not exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) then
+  return jsonb_build_object('error','Current owner permission and MFA are required.'); end if;
  if p_from is null or p_to is null or p_to<p_from or p_to-p_from>62 then return jsonb_build_object('error','Choose a range of at most 62 days.'); end if;
  perform sdi_private.spatter_draft_sweep();
  select coalesce(jsonb_agg(jsonb_build_object('date',d::date,'state',coalesce(j.state,case when d::date<(clock_timestamp() at time zone 'utc')::date then 'missed' else 'unplanned' end),

@@ -155,12 +155,14 @@ begin
  return jsonb_build_object('status','refused','reason','Transition '||j.state||' → '||coalesce(p_state,'?')||' is not allowed.');
 end $$;
 
--- Owner/admin view: every day in the range with its real state, so missed and
+-- Owner view: every day in the range with its real state, so missed and
 -- failed days are visible rather than a daily-success claim.
 create function sdi_private.spatter_draft_status(p_from date,p_to date) returns jsonb language plpgsql security definer set search_path='' as $$
 declare result jsonb;
 begin
- if not sdi_private.admin_can('reviews') then return jsonb_build_object('error','Current video-review permission and MFA are required.'); end if;
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true
+  or not exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) then
+  return jsonb_build_object('error','Current owner permission and MFA are required.'); end if;
  if p_from is null or p_to is null or p_to<p_from or p_to-p_from>62 then return jsonb_build_object('error','Choose a range of at most 62 days.'); end if;
  perform sdi_private.spatter_draft_sweep();
  select coalesce(jsonb_agg(jsonb_build_object('date',d::date,'state',coalesce(j.state,case when d::date<(clock_timestamp() at time zone 'utc')::date then 'missed' else 'unplanned' end),

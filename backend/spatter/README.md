@@ -148,7 +148,24 @@ report). Unset, every job still fails with the OWNER-GATED capacity message.
 Optional: `SDI_DRAFT_RENDER_DIR` (private output root), `SDI_DRAFT_RENDER_FPS`/
 `_WIDTH`/`_HEIGHT` (default 24 FPS, 640×360) and
 `SDI_DRAFT_RENDER_TIMEOUT_SECONDS` (default 600, at most 840 so a render ends
-inside the 15-minute lease; the lease is renewed every 60 s while it runs).
+inside the 15-minute draft lease). The production render timeout must exceed 20
+seconds. The renderer waits in slices of at most 20 seconds between heartbeat
+checks. A preceding RPC may use its own budget. Each RPC budgets at most 20
+seconds from before process creation, including DNS, TLS, headers and body.
+It reserves up to one second for kill and reap. Process creation and scheduling
+can take longer under the OS. A late child receives no request bytes, and the
+caller makes no unbounded reap wait. Near the render deadline, the worker
+stops asking for heartbeats while the child is live. It checks again only
+after the exit is confirmed, before retaining the preview and before sending
+the private review. A claim without a valid item allowance cannot launch the
+renderer.
+
+The render host can explicitly call `draft_worker.run_daily_draft_once` with
+its configured HTTPS backend origin, server-only Supabase secret API key and
+`CLIRenderer` backed by a `DraftPreviewStore`. The preview store supplies the
+owner account for the review. The worker uses the existing service-only
+claim, progress and agent-heartbeat RPCs. It stops after `review_pending` and
+leaves review decisions and release to their existing owner-controlled routes.
 
 The adapter re-hashes the movie, manifest and editable project named by the
 receipt, requires `private_draft: true` / `published: false`, matches brief,
@@ -156,7 +173,8 @@ seed and size to the job, and fails a passing verdict whose decoded frame count
 or duration disagrees with the plan. A `publish_preview(movie, sha256, plan)`
 callable must return the private HTTPS preview URL for the owner's review row;
 without one the render fails before running. Drafts stay in the output root for
-review; failed runs are deleted. Nothing is uploaded, released or scheduled:
+review. A failed run preserves its private scratch if renderer exit could not
+be confirmed within the bounded reap wait. Nothing is uploaded, released or scheduled:
 release still needs the owner's approval of the exact render digest.
 Daily plans use `briefs.v3`: `plan_brief` shortens a plan (never below 2 s)
 until it fits the app planner's element budget at 24 FPS (`fits_element_budget`
