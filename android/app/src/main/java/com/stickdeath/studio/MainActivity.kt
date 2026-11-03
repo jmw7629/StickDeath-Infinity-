@@ -835,13 +835,6 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
     DiagnosticsSettingsSection(remember { DiagnosticsStore(diagnosticsContext) })
 }
 
-private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, radius: Float): List<Pair<String, Point>> {
-    fun clipped(x: Float, y: Float) = Point(x.coerceIn(radius, width-radius), y.coerceIn(radius, height-radius))
-    return listOf("rotate" to clipped(bounds.center.x, if (bounds.top > radius*3) bounds.top-radius*2 else bounds.bottom+radius*2),
-        "scale" to clipped(bounds.left,bounds.top), "scale" to clipped(bounds.right,bounds.top),
-        "scale" to clipped(bounds.left,bounds.bottom), "scale" to clipped(bounds.right,bounds.bottom))
-}
-
 @Composable private fun DrawingSurface(vm: StudioViewModel, doc: Document, frame: Frame, playing: Boolean, onion: Boolean) {
     var pending by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<List<Point>>(emptyList()) }
     var pendingSeed by remember(doc.id) { mutableStateOf(0) }
@@ -891,9 +884,8 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                 val preservesAspect = vm.selectionPreservesAspect
                 val bounds = ArtworkSelection.bounds(doc.frame, ids)
                 val radius = minOf(22f * doc.width / size.width / vm.viewportZoom, minOf(doc.width,doc.height)/4f)
-                val handle = if (tool == Tool.Move && bounds != null) selectionHandles(bounds,doc.width,doc.height,radius)
-                    .filter { kotlin.math.hypot(it.second.x-first.x,it.second.y-first.y) <= radius }
-                    .minByOrNull { kotlin.math.hypot(it.second.x-first.x,it.second.y-first.y) }?.first else null
+                val handle = if (tool == Tool.Move && bounds != null)
+                    ArtworkSelection.transformHandleAt(bounds,doc.width,doc.height,radius,first) else null
                 if (tool == Tool.Move && (bounds == null || (handle == null && !bounds.contains(first)))) return@awaitEachGesture
                 fun movement(current: Point): ArtworkTransform {
                     val b = bounds ?: return ArtworkTransform()
@@ -1010,7 +1002,7 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                         canvas.drawRect(bounds.left,bounds.top,bounds.right,bounds.bottom,paint)
                         if (vm.tool == Tool.Move) {
                             val radius = minOf(22f*unit,minOf(doc.width,doc.height)/4f)
-                            selectionHandles(bounds,doc.width,doc.height,radius).forEach { (kind,p) ->
+                            ArtworkSelection.transformHandles(bounds,doc.width,doc.height,radius).forEach { (kind,p) ->
                                 paint.pathEffect = null; paint.style = android.graphics.Paint.Style.FILL
                                 paint.color = if (kind == "rotate") 0xffe52b38.toInt() else 0xffffffff.toInt()
                                 canvas.drawCircle(p.x,p.y,6f*unit,paint)

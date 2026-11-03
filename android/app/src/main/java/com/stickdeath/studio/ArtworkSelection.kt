@@ -69,6 +69,29 @@ enum class ArtworkOrder { Forward, Backward, Front, Back }
 enum class SelectionShape { Freehand, Rectangle }
 enum class SelectionMode { Replace, Add, Subtract }
 object ArtworkSelection {
+    /** Shared positions for the drawn handles and their touch targets; no layout change. */
+    fun transformHandles(bounds: ArtworkBounds, width: Int, height: Int, radius: Float): List<Pair<String, Point>> {
+        fun clipped(x: Float, y: Float) = Point(x.coerceIn(radius, width-radius), y.coerceIn(radius, height-radius))
+        return listOf("rotate" to clipped(bounds.center.x, if (bounds.top > radius*3) bounds.top-radius*2 else bounds.bottom+radius*2),
+            "scale" to clipped(bounds.left,bounds.top), "scale" to clipped(bounds.right,bounds.top),
+            "scale" to clipped(bounds.left,bounds.bottom), "scale" to clipped(bounds.right,bounds.bottom))
+    }
+
+    /** Keep a small selection's centre draggable without swallowing actual clamped knobs.
+     * Explicit Rotate wins; interior Move wins only when the centre is at least as close as
+     * the nearest corner target. Ties stay Move for exactly overlapping tiny geometry. */
+    fun transformHandleAt(bounds: ArtworkBounds, width: Int, height: Int, radius: Float, point: Point): String? {
+        val nearest = transformHandles(bounds, width, height, radius)
+            .filter { hypot(it.second.x-point.x,it.second.y-point.y) <= radius }
+            .minByOrNull { hypot(it.second.x-point.x,it.second.y-point.y) } ?: return null
+        if (nearest.first == "rotate") return "rotate"
+        val center = bounds.center
+        if (bounds.contains(point) && abs(point.x-center.x) <= bounds.width/4f &&
+            abs(point.y-center.y) <= bounds.height/4f &&
+            hypot(point.x-center.x,point.y-center.y) <= hypot(nearest.second.x-point.x,nearest.second.y-point.y)) return null
+        return nearest.first
+    }
+
     fun eligible(frame: Frame, layers: List<Layer>): Set<String> {
         // Selection drives move/resize/delete, which iOS allows only on free layers.
         val editable = layers.filter { it.isEditable && it.lockMode.allowsTransform }.map { it.id }.toSet()

@@ -26,6 +26,56 @@ class ArtworkTransformPreviewTest {
         catch (_: IllegalArgumentException) { }
     }
 
+    @Test fun tinySelectionCenterCanMoveWhenAllCornerTouchTargetsOverlap() {
+        val original = frame(mark(8f, BrushFamily.Round).copy(points = listOf(Point(400f, 400f), Point(404f, 404f))))
+        val bounds = bounds(original)
+        val touchRadius = 22f
+        // These are the actual production handle positions for this real selected stroke.
+        assertTrue(ArtworkSelection.transformHandles(bounds, 1024, 1024, touchRadius)
+            .filter { it.first == "scale" }.all { kotlin.math.hypot(it.second.x-bounds.center.x, it.second.y-bounds.center.y) < touchRadius })
+        assertNull(ArtworkSelection.transformHandleAt(bounds, 1024, 1024, touchRadius, bounds.center))
+        val moved = ArtworkTransform(dx = 12f, dy = 7f).apply(original, ids, bounds)
+        assertEquals(listOf(Point(412f, 407f), Point(416f, 411f)), moved.strokes.single().points)
+        assertEquals(listOf(Point(400f, 400f), Point(404f, 404f)), original.strokes.single().points)
+        assertEquals(original.strokes.single().id, moved.strokes.single().id)
+    }
+
+    @Test fun smallSelectionCornersAndRotationRemainReachable() {
+        val original = frame(mark(8f, BrushFamily.Round).copy(points = listOf(Point(400f, 400f), Point(404f, 404f))))
+        val bounds = bounds(original)
+        val handles = ArtworkSelection.transformHandles(bounds, 1024, 1024, 22f)
+        assertEquals(listOf("rotate", "scale", "scale", "scale", "scale"), handles.map { it.first })
+        handles.forEach { (kind, point) ->
+            assertEquals(kind, ArtworkSelection.transformHandleAt(bounds, 1024, 1024, 22f, point))
+        }
+    }
+
+    @Test fun centralMoveRegionSurvivesLargerZoomedOutTouchTargets() {
+        val original = frame(mark(8f, BrushFamily.Round).copy(points = listOf(Point(400f, 400f), Point(404f, 404f))))
+        val bounds = bounds(original)
+        listOf(11f, 22f, 44f, 88f).forEach { touchRadius ->
+            assertNull(ArtworkSelection.transformHandleAt(bounds, 1024, 1024, touchRadius, bounds.center))
+        }
+    }
+
+    @Test fun oversizedValidSelectionPreservesEveryClampedKnobAndItsMoveCenter() {
+        val source = mark(128f, BrushFamily.Round).copy(points = listOf(Point(0f, 0f), Point(128f, 128f)))
+        val selectedFrame = Frame(id = "frame", strokes = listOf(source))
+        val document = Document.create("Oversized selection bounds", 128, 128, 12).copy(
+            frames = listOf(selectedFrame), layers = listOf(Layer(id = "ink", name = "Ink")),
+            activeFrameID = selectedFrame.id, activeLayerID = "ink").validated()
+        val bounds = bounds(document.frame)
+        assertEquals(ArtworkBounds(-64f, -64f, 192f, 192f), bounds)
+        val handles = ArtworkSelection.transformHandles(bounds, 128, 128, 22f)
+        assertEquals(listOf("rotate", "scale", "scale", "scale", "scale"), handles.map { it.first })
+        handles.forEach { (kind, point) ->
+            assertTrue(point.x in 0f..128f && point.y in 0f..128f)
+            assertEquals(kind, ArtworkSelection.transformHandleAt(bounds, 128, 128, 22f, point))
+        }
+        assertNull(ArtworkSelection.transformHandleAt(bounds, 128, 128, 22f, bounds.center))
+        assertEquals(listOf(source), document.frame.strokes)
+    }
+
     @Test fun enlargedMaximumTexturedBrushIsARefusalInsteadOfAnUncaughtPreviewError() {
         val original = frame(mark(128f, BrushFamily.Stipple))
         val transform = ArtworkTransform(scale = 1.1f)

@@ -5296,8 +5296,24 @@ struct StudioSelectionHandleGeometry {
     }
     func hit(_ point: CGPoint) -> Kind? {
         guard point.x.isFinite, point.y.isFinite else { return nil }
-        return handles.filter { hypot($0.point.x-point.x,$0.point.y-point.y) <= hitRadius }
-            .min { hypot($0.point.x-point.x,$0.point.y-point.y) < hypot($1.point.x-point.x,$1.point.y-point.y) }?.kind
+        guard let handle = handles.filter({ hypot($0.point.x-point.x,$0.point.y-point.y) <= hitRadius })
+            .min(by: { hypot($0.point.x-point.x,$0.point.y-point.y) < hypot($1.point.x-point.x,$1.point.y-point.y) }) else { return nil }
+        let sx = viewport.width / documentSize.width, sy = viewport.height / documentSize.height
+        let body = CGRect(x: bounds.minX * sx, y: bounds.minY * sy,
+                          width: bounds.width * sx, height: bounds.height * sy)
+        // Clamping the minimum-size handles at a canvas edge can put their
+        // enlarged touch areas over a tiny object's entire body. Reserve the
+        // central half for Move only where the actual selection center is at
+        // least as close as the nearest handle. Oversized selections can put
+        // every clamped corner inside that central half, so preserve their
+        // genuine knob centers. A tiny clamped corner can coincide with the
+        // object's center, where scaling has a zero start vector: ties belong
+        // to Move. Keep visual geometry unchanged and Rotate explicit.
+        let moveBody = body.insetBy(dx: body.width / 4, dy: body.height / 4)
+        if handle.kind != .rotate, point.x > moveBody.minX, point.x < moveBody.maxX,
+           point.y > moveBody.minY, point.y < moveBody.maxY,
+           hypot(point.x-body.midX, point.y-body.midY) <= hypot(point.x-handle.point.x, point.y-handle.point.y) { return nil }
+        return handle.kind
     }
     func values(kind: Kind, start: CGPoint, current: CGPoint, preservesAspect: Bool = true) throws -> Values {
         guard [start.x,start.y,current.x,current.y].allSatisfy(\.isFinite) else { throw StudioElementTransform.Failure.settings }

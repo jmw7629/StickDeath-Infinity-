@@ -56,6 +56,119 @@ private struct Failure: Error { let message: String }
     static func channel(_ pixels: [UInt8], _ x: Int, _ y: Int, _ c: Int = 3, width: Int = 128) -> UInt8 {
         pixels[(y * width + x) * 4 + c]
     }
+    static func selectionBodyWinsClampedCornerSlop() throws {
+        let document = CGSize(width: 128, height: 128)
+        // These exact canvas-origin bounds previously put every body point
+        // inside the clamped top-left corner's 22-point admission circle.
+        let origin = StudioSelectionHandleGeometry(bounds: .init(x: 0, y: 0, width: 5, height: 5),
+            documentSize: document, viewport: document, zoom: 1)!
+        let corner = origin.handles.first { $0.kind == .topLeft }!
+        try require(corner.point == CGPoint(x: 8, y: 8) && origin.hitRadius == 22,
+                    "Fixture must retain the existing visible corner and touch radius")
+        try require(hypot(corner.point.x-2.5, corner.point.y-2.5) < origin.hitRadius,
+                    "Tiny-origin fixture did not exercise real handle/body overlap")
+        for side in [5.0, 16.0] {
+            let bounds = [CGRect(x: 0, y: 0, width: side, height: side),
+                          CGRect(x: 128-side, y: 0, width: side, height: side),
+                          CGRect(x: 0, y: 128-side, width: side, height: side),
+                          CGRect(x: 128-side, y: 128-side, width: side, height: side),
+                          CGRect(x: 64-side/2, y: 64-side/2, width: side, height: side)]
+            for rect in bounds { for axis in [false, true] {
+                // False is also the actual image-resize geometry policy; the
+                // Canvas now calls this same hit method for images/drawings.
+                let layouts: [(CGSize, Double)] = [(document, 1), (.init(width: 256, height: 256), 0.25),
+                                                   (.init(width: 256, height: 256), 1), (.init(width: 256, height: 256), 5)]
+                for (viewport, zoom) in layouts {
+                    guard let geometry = StudioSelectionHandleGeometry(bounds: rect, documentSize: document,
+                        viewport: viewport, zoom: zoom, allowsAxisHandles: axis) else { throw Failure(message: "Valid small selection geometry rejected") }
+                    for fraction in [0.375, 0.5, 0.625] {
+                        let point = CGPoint(x: (rect.minX + rect.width*fraction) * viewport.width / 128,
+                                            y: (rect.minY + rect.height*fraction) * viewport.height / 128)
+                        try require(geometry.hit(point) == nil, "Central small selection interior was stolen by corner slop")
+                    }
+                }
+            } }
+        }
+        // Strict means boundaries are not swallowed by the Move body.
+        try require(origin.hit(.zero) == .topLeft && origin.hit(.init(x: 6, y: 2.5)) == .topLeft,
+                    "Actual boundary/outside corner admission was lost")
+        try require(origin.hit(.init(x: CGFloat.nan, y: 0)) == nil, "Nonfinite handle point admitted")
+        let large = StudioSelectionHandleGeometry(bounds: .init(x: 24, y: 24, width: 80, height: 80),
+            documentSize: document, viewport: document, zoom: 1, allowsAxisHandles: true)!
+        for handle in large.handles {
+            try require(large.hit(handle.point) == handle.kind, "Ordinary real corner/rotation target no longer transforms")
+        }
+        let largeEdge = StudioSelectionHandleGeometry(bounds: .init(x: 0, y: 0, width: 100, height: 100),
+            documentSize: document, viewport: document, zoom: 1)!
+        let clampedCorner = largeEdge.handles.first { $0.kind == .topLeft }!
+        try require(clampedCorner.point == CGPoint(x: 8, y: 8) && largeEdge.hit(clampedCorner.point) == .topLeft
+            && largeEdge.hit(.init(x: 50, y: 50)) == nil, "Protected Move area swallowed a legitimate large clamped corner")
+        let thin = StudioSelectionHandleGeometry(bounds: .init(x: 8, y: 48, width: 112, height: 32),
+            documentSize: document, viewport: document, zoom: 1, allowsAxisHandles: true)!
+        try require(thin.handles.contains { $0.kind == .bottom } && thin.hit(.init(x: 64, y: 64)) == nil,
+                    "Overlapping axis-handle slop stole interior Move")
+        // Rotate is explicitly painted and remains available even if the full
+        // selection forces that knob to be clamped inside its body.
+        let full = StudioSelectionHandleGeometry(bounds: .init(x: 0, y: 0, width: 128, height: 128),
+            documentSize: document, viewport: document, zoom: 1)!
+        let rotation = full.handles.first { $0.kind == .rotate }!
+        try require(full.hit(rotation.point) == .rotate && full.hit(.init(x: 64, y: 64)) == nil,
+                    "Explicit Rotate target or ordinary interior Move changed")
+        let oversized = StudioSelectionHandleGeometry(bounds: .init(x: -100, y: -100, width: 328, height: 328),
+            documentSize: document, viewport: document, zoom: 1)!
+        let oversizedCorners = oversized.handles.filter { [.topLeft, .topRight, .bottomLeft, .bottomRight].contains($0.kind) }
+        try require(oversizedCorners.count == 4, "Oversized fixture lost visible corner geometry")
+        for corner in oversizedCorners {
+            try require(oversized.hit(corner.point) == corner.kind,
+                        "Oversized selection body swallowed a visible clamped resize knob")
+        }
+        try require(oversized.hit(.init(x: 64, y: 64)) == nil,
+                    "Oversized selection center no longer admits Move")
+        let innerRotation = oversized.handles.first { $0.kind == .rotate }!
+        try require(oversized.hit(innerRotation.point) == .rotate,
+                    "Rotate was lost when its clamped knob lies inside the protected Move region")
+        pass("shared drawing/image handle admission preserves small edge Move and real corner/rotation targets")
+    }
+    static func tinyLassoSelectionMovesAfterSharedAdmission() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-small-edge-move-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for side in [5.0, 16.0] {
+            let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents-\(side)"),
+                                                cachesDirectory: root.appendingPathComponent("Caches-\(side)"))
+            let vm = StudioViewModel(storage: storage)
+            let created = await vm.createProject(name: "Small origin selection", width: 128, height: 128, fps: 12)
+            try require(created, "Small Move project creation")
+            let original = DrawnElement(id: UUID().uuidString, tool: .rectangle,
+                points: [.init(x: 1, y: 1), .init(x: side-1, y: side-1)], color: "#FF0000", width: 2, opacity: 1,
+                layerID: vm.activeLayerID, shape: .init(fillColor: "#FF0000"))
+            try require(vm.commitElement(original), "Small Move artwork rejected"); await vm.flush()
+            vm.selectedTool = .lasso; vm.areaSelectionKind = .rectangle; vm.selectionMode = .new
+            guard let capture = vm.beginAreaSelection() else { throw Failure(message: "Small Lasso capture unavailable") }
+            try require(vm.finishAreaSelection(capture, points: [.zero, .init(x: side+1, y: side+1)])
+                && vm.selectedTool == .move && vm.selectedElementIDs == [original.id], "Small Lasso did not activate actual Move selection")
+            guard let bounds = vm.selectedArtworkBounds(in: vm.currentFrame),
+                  let geometry = StudioSelectionHandleGeometry(bounds: bounds, documentSize: .init(width: 128, height: 128),
+                    viewport: .init(width: 128, height: 128), zoom: 1) else { throw Failure(message: "Small selected artwork geometry unavailable") }
+            try require(bounds == CGRect(x: 0, y: 0, width: side, height: side), "Fixture no longer touches the actual canvas origin")
+            let point = CGPoint(x: bounds.midX, y: bounds.midY)
+            // This is the production Canvas's shared admission decision before
+            // its existing beginMove/finishMove path, not a copied hit model.
+            try require(geometry.hit(point) == nil, "Center drag would enter resize before native Move")
+            let before = vm.document
+            guard let move = vm.beginMove(at: point, viewport: .init(width: 128, height: 128), zoom: 1) else { throw Failure(message: "Small selected body has no real Move capture") }
+            try require(vm.finishMove(move, delta: .init(width: 12, height: 8)), "Real small selection Move failed")
+            guard let element = vm.currentFrame.elements.first, let moved = element.selectionBounds else { throw Failure(message: "Move lost original artwork") }
+            try require(vm.document.revision == before.revision+1 && element.id == original.id && element.shape == original.shape
+                && element.points == original.points && element.width == original.width
+                && moved.width == bounds.width && moved.height == bounds.height && moved.minX == bounds.minX+12 && moved.minY == bounds.minY+8,
+                "Center drag resized/replaced artwork instead of moving it")
+            let after = vm.frames
+            vm.undo(); try require(vm.frames == before.frames, "Small Move was not one reversible transaction")
+            vm.redo(); try require(vm.frames == after, "Small Move Redo changed geometry")
+            await vm.flush()
+        }
+        pass("actual tiny canvas-origin Lasso selection routes into canonical Move with unchanged size and one Undo")
+    }
     static func moveIgnoresEraserRecords() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-move-eraser-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -435,16 +548,22 @@ private struct Failure: Error { let message: String }
             "Small portrait circles were charged once per whole canvas")
         vm.selectedTool = .wand; vm.wandTolerance = 0; vm.wandContiguous = true
         vm.wandSampleVisibleCanvas = true; vm.wandFeather = 0; vm.wandMode = .newSelection
+        func portraitContext(_ stage: String, _ result: Bool) -> String {
+            let selectedIndexes = elements.indices.filter { vm.selectedElementIDs.contains(elements[$0].id) }
+            let unknownSelected = vm.selectedElementIDs.subtracting(Set(elements.map(\.id))).count
+            let message = String((vm.message ?? "<nil>").prefix(240)).replacingOccurrences(of: "\n", with: " ")
+            return " [stage=\(stage) result=\(result) selectedIndexes=\(selectedIndexes) unknownSelected=\(unknownSelected) documentSame=\(vm.document == before) revision=\(vm.document.revision) expectedRevision=\(before.revision) compactPixels=\(compactPixels) maximumProbes=\(StudioSelectionMask.maximumElementProbes) message=\(message)]"
+        }
         let outside = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: CGPoint(x: 1, y: 1))
         try require(outside && vm.selectedElementIDs.isEmpty && vm.document == before,
-            "Ordinary portrait Wand failed its budget or selected circles through empty corners")
+            "Ordinary portrait Wand failed its budget or selected circles through empty corners" + portraitContext("outside", outside))
         let one = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: centers[3])
         try require(one && vm.selectedElementIDs == [elements[3].id] && vm.document == before,
-            "Portrait Wand did not select only the tapped transformed ellipse")
+            "Portrait Wand did not select only the tapped transformed ellipse" + portraitContext("one", one))
         vm.wandContiguous = false
         let all = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: centers[0])
         try require(all && vm.selectedElementIDs == Set(elements.map(\.id)) && vm.document == before,
-            "Global color Wand failed to select six actual portrait ellipses within its unchanged budget")
+            "Global color Wand failed to select six actual portrait ellipses within its unchanged budget" + portraitContext("all", all))
         await vm.flush()
         pass("six small native ellipses on a1080x1920 canvas use compact alpha and select within the unchanged work bound")
     }
@@ -935,6 +1054,8 @@ private struct Failure: Error { let message: String }
         try fullCanvasSelectionCoverageKeepsExistingLargeDocumentCapacity()
         try await wandGlyphAndRoundedCornerCoverage()
         try await wandSkipsInertHistoricalText()
+        try selectionBodyWinsClampedCornerSlop()
+        try await tinyLassoSelectionMovesAfterSharedAdmission()
         try await moveIgnoresEraserRecords()
         try await restoredSelectionPreferencesDriveActualSelection()
         print("PASS \(passed) production area-selection groups")
