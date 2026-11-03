@@ -78,11 +78,11 @@ class NativeSuiteBudget(unittest.TestCase):
         # plus 25 min build/preservation, plus the 22 min auth step on shard zero.
         self.assertIn("            timeout: 334", native_job)
         self.assertIn("            timeout: 313", native_job)
-        # Twenty isolated native auth cases (account export added, #262) share the existing runner in a
+        # Twenty-two isolated native auth cases (including held refresh) share the existing runner in a
         # separately bounded 22-minute step (60 s maximum allowance each).
         self.assertIn("        timeout-minutes: 22", native_job)
         auth_source = (ROOT / "Tests/AuthState/AuthStateTests.swift").read_text()
-        self.assertEqual(auth_source.count("    func test"), 20)
+        self.assertEqual(auth_source.count("    func test"), 22)
         for index, minutes in ((0, 334), (1, 313)):
             shard, _ = budget.build_shard_budget(source, COMMAND, index)
             overhead = (25 + (22 if index == 0 else 0)) * 60
