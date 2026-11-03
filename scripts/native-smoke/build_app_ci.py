@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import plistlib
-import platform
 import re
 import signal
 import subprocess
@@ -58,13 +57,8 @@ before = inputs()
 if not before:
     raise RuntimeError("Native input inventory is empty")
 (OUT / "input-sha256.json").write_text(json.dumps(before, indent=2) + "\n")
-build_architecture = platform.machine()
-if build_architecture not in {"arm64", "x86_64"}:
-    raise RuntimeError("Unsupported simulator runner architecture")
-
 args = ["xcodebuild", "-project", "StickDeathInfinity.xcodeproj", "-scheme", "StickDeathInfinity",
         "-configuration", "Debug", "-destination", "generic/platform=iOS Simulator",
-        "-arch", build_architecture,
         "-derivedDataPath", str(BUILD / "DerivedData"), "-clonedSourcePackagesDirPath", str(BUILD / "Packages"),
         "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
         "-jobs", "2", "CODE_SIGNING_ALLOWED=NO", "build"]
