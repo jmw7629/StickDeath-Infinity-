@@ -1,0 +1,54 @@
+CC0 1.0 Universal audio sources
+
+Night Crickets Loop — Ted Kerr (Wolfgang_)
+https://opengameart.org/content/crickets-ambient-noise-loopable
+Publisher original SHA256: 5b5bd1f744087888c5623543c3ff80be9c2ce106093993e7c8a8492b0280b2c0
+Shipped WAV SHA256: b8f471697f303b4d16b88314cd80ccdfbca9baf2924b8aecbef380670e9cac66
+
+Ambient Bird Sounds — isaiah658
+https://opengameart.org/content/ambient-bird-sounds
+Publisher original SHA256: 359e4e3f9da9d75aac64cede511c7e3ef8b461f9d9f8c230f8f80e44c4b3e35f
+Shipped WAV SHA256: eaba9ecc5d6ec058b5ebb524b2a0ae7ed20cef2232f1788ed939c0e20e693c08
+
+Backyard Bird Chirping — syncopika
+https://opengameart.org/content/bird-chirping-sounds
+Publisher original SHA256: bc6e28bd823b653b2abf3384d4147718603af6bcd98e26166345df71a61eeb08
+Shipped WAV SHA256: bc6e28bd823b653b2abf3384d4147718603af6bcd98e26166345df71a61eeb08
+
+Wind 01 — IgnasD
+https://opengameart.org/content/wind
+Publisher original SHA256: ff4f8a48b824e88ef3a53c5bc726e1da2b9593d84ac1bd6048b4ed6ddd4bad69
+Shipped WAV SHA256: d4b1ebcb4334e4a754572a27388f5f4aaae2c87ae1a4944e9875cd2a9807107b
+
+Wind 02 — IgnasD
+https://opengameart.org/content/wind
+Publisher original SHA256: 28a3eeea0a0d76f88ec686b8ff658ce1524e13ee835746cc9bca98ed9972d89b
+Shipped WAV SHA256: 846ac45b4fcbc9d10c12d83a4ba3a3feb409bca2a9ff62222364d70687524953
+
+Wind 03 — IgnasD
+https://opengameart.org/content/wind
+Publisher original SHA256: be886f6ff11bb6ed2cf4f3d99b921b35d4f3a4efa86f74ad085e4758c177e155
+Shipped WAV SHA256: df27c1ff5c6fa22242717c6c59ec49155d74f7606d8ee39a7bed53ac62d6e2f0
+
+Window Rain Loop 01 — Ylmir
+https://opengameart.org/content/rain-loopable
+Publisher original SHA256: 4f659f68cf5219007d0bb0969a1862491ceee4057fda4c491c6001e8608fa2cb
+Shipped WAV SHA256: f94b18569a4a42a69062992c4564bd14b92da8fb4dcb4e47cc84772ebf420f85
+
+Window Rain Loop 03 — Ylmir
+https://opengameart.org/content/rain-loopable
+Publisher original SHA256: 73a0f5ef19ed9f64599c0425b1fb52d857acfc42c0fd5eab85c4577ace18f0ed
+Shipped WAV SHA256: 0cdbf26220fea81da0d095d71a7f91c2f9c472707540cdd6a70b186db588caeb
+
+Rain Short Loop — rubberduck
+https://opengameart.org/content/30-cc0-sfx-loops
+Publisher original SHA256: 8d153f3f6ee266484f679d7149c80a1afcf4dcfeb9f2c1b6206ed780a12273fb
+Shipped WAV SHA256: 6a11f859b5329d9630fe9055dd262a4e69555ac0dcd29df3dfa9b00f1596fdec
+
+Flowing Water Loop — rubberduck
+https://opengameart.org/content/30-cc0-sfx-loops
+Publisher original SHA256: 1a431f77d61661becdc87a5b1832d47f83a12a5c0b001077e41a202e739797a7
+Shipped WAV SHA256: 113615a39c7af9cd230d49436d4267925a85592feb0ac7190d408c36dcf56264
+
+License: https://creativecommons.org/publicdomain/zero/1.0/
+The source recordings were decoded to PCM16 WAV; the192kHz cartoon propeller is resampled to48kHz for importer compatibility. Native rate and channels are otherwise preserved. No normalization, trimming, or generated audio.

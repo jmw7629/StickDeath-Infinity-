@@ -3,8 +3,26 @@ import UIKit
 import ImageIO
 import UniformTypeIdentifiers
 
+/// A shortcut authorizes sharing this exact already-rendered output once. It
+/// never survives a new session/export or authorizes rendering something later.
+struct StudioQuickShareHandoff: Equatable {
+    let id = UUID()
+    let file: StudioQuickShareFile
+    let accountID: String?
+    let projectID: UUID
+    let revision: Int
+    let sessionID: ObjectIdentifier
+    let outputURL: URL
+
+    func accepts(_ format: ExportFormat) -> Bool {
+        (file == .mp4 && format == .mp4) || (file == .gif && format == .gif)
+    }
+}
+
 struct ExportPanel: View {
     @ObservedObject var vm: StudioViewModel
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.scenePhase) private var scenePhase
     /// The movie and GIF states are owned by StudioView so a completed direct
     /// export's receipt stays observable from the Spatter panel while this panel
     /// is open (#215). Closing this panel still closes both sessions.
@@ -28,6 +46,8 @@ struct ExportPanel: View {
     @State private var quickShare = StudioQuickShareConfiguration.load()
     @State private var quickShareNote: String?
     @State private var customizingQuickShare = false
+    @State private var quickShareHandoff: StudioQuickShareHandoff?
+    @State private var quickShareDeliveryReady = false
 
     private var supportedFormat: StudioExportService.Format? {
         switch vm.exportFormat {
@@ -93,11 +113,11 @@ struct ExportPanel: View {
                     if vm.exportFormat == .mp4 {
                         StudioMovieExportControls(vm: vm, movie: movie, directRequest: directRequest, onDirectRequestConsumed: onDirectRequestConsumed, onReady: {
                             proxy.scrollTo("studio.export.movie.result", anchor: .top)
-                        })
+                        }, quickShareRequest: quickShareDeliveryReady ? quickShareHandoff : nil, onQuickShareHandled: finishQuickShare)
                     } else if vm.exportFormat == .gif {
                         StudioGIFExportControls(vm: vm, gif: gif, directRequest: directGIFRequest, onDirectRequestConsumed: onDirectRequestConsumed, onReady: {
                             proxy.scrollTo("studio.export.gif.result", anchor: .top)
-                        })
+                        }, quickShareRequest: quickShareDeliveryReady ? quickShareHandoff : nil, onQuickShareHandled: finishQuickShare)
                     } else {
                     if vm.isEditing {
                         let document = vm.document
@@ -292,11 +312,33 @@ struct ExportPanel: View {
             }
         }
         .onDisappear {
+            cancelPendingQuickShare()
             // An active UIKit consumer can temporarily cover this panel. Its
             // presenter closes the movie owner on actual representable removal.
             if !movie.session.isSharing { movie.session.close() }
             if !gif.session.isSharing { gif.session.close() }
             if vm.activePanel != .export || !vm.isEditing { session.close() }
+        }
+        .onChange(of: authVM.userId) { _, value in
+            if let pending = quickShareHandoff, pending.accountID != value { cancelPendingQuickShare() }
+        }
+        .onChange(of: vm.document.id) { _, value in
+            if let pending = quickShareHandoff, pending.projectID != value { cancelPendingQuickShare() }
+        }
+        .onChange(of: vm.document.revision) { _, value in
+            if let pending = quickShareHandoff, pending.revision != value { cancelPendingQuickShare() }
+        }
+        .onChange(of: vm.isEditing) { _, value in
+            if !value { cancelPendingQuickShare() }
+        }
+        .onChange(of: vm.exportFormat) { _, value in
+            if let pending = quickShareHandoff, !pending.accepts(value) { cancelPendingQuickShare() }
+        }
+        .onChange(of: vm.activePanel) { _, value in
+            if value != .export { cancelPendingQuickShare() }
+        }
+        .onChange(of: scenePhase) { _, value in
+            if value != .active { cancelPendingQuickShare() }
         }
     }
 
@@ -376,12 +418,22 @@ struct ExportPanel: View {
 
     private func runQuickShare(_ destination: StudioQuickShareDestination, proxy: ScrollViewProxy) {
         var ready: Set<StudioQuickShareFile> = []
-        if movie.session.output != nil { ready.insert(.mp4) }
-        if gif.session.output != nil { ready.insert(.gif) }
+        if let output = movie.session.output, !movie.session.isClosed, !movie.session.needsCleanup, !output.isCleaned,
+           output.manifest.projectID == vm.document.id, output.manifest.documentRevision == vm.document.revision {
+            ready.insert(.mp4)
+        }
+        if let output = gif.session.output, !gif.session.isClosed, !gif.session.needsCleanup, !output.isCleaned,
+           output.receipt.projectID == vm.document.id, output.receipt.revision == vm.document.revision {
+            ready.insert(.gif)
+        }
         if session.output != nil && session.previewImage != nil { ready.insert(.png) }
         let plan = StudioQuickSharePlan.plan(for: destination, configuration: quickShare, ready: ready)
-        guard !(session.isRunning || session.isSharing || movie.isBusy || gif.isBusy) else {
+        guard quickShareHandoff == nil, !(session.isRunning || session.isSharing || movie.isBusy || gif.isBusy) else {
             quickShareNote = "Wait for the current export or share to finish, then use \(destination.title) again."
+            return
+        }
+        guard vm.isEditing, vm.activePanel == .export, scenePhase == .active else {
+            quickShareNote = "Return to the active Studio export panel before sharing. Nothing was shared."
             return
         }
         quickShareNote = plan.instruction
@@ -398,9 +450,58 @@ struct ExportPanel: View {
             // The PNG files are owned by this panel's session: hand them over now.
             shareExport()
         } else if let anchor {
-            // The MP4/GIF Share button lives with its result; bring it into view.
-            DispatchQueue.main.async { withAnimation { proxy.scrollTo(anchor, anchor: .top) } }
+            // The result view owns its native presenter. Its one-shot request
+            // uses the same beginSharing action and owned file lease as Share.
+            let owner: ObjectIdentifier
+            let url: URL
+            if file == .mp4, let output = movie.session.output {
+                owner = ObjectIdentifier(movie.session); url = output.movieURL
+            } else if file == .gif, let output = gif.session.output {
+                owner = ObjectIdentifier(gif.session); url = output.gifURL
+            } else {
+                quickShareNote = "The rendered file is no longer ready. Export it again before sharing."
+                return
+            }
+            let request = StudioQuickShareHandoff(file: file, accountID: authVM.userId,
+                projectID: vm.document.id, revision: vm.document.revision, sessionID: owner, outputURL: url)
+            quickShareDeliveryReady = false
+            quickShareHandoff = request
+            // The presenter's existing visibility check must see its real
+            // result view, not a scrolled-offscreen host. Scroll without an
+            // animation, then deliver on the next UI turn. Both turns retain
+            // the exact request fences; neither queues sharing a later render.
+            DispatchQueue.main.async {
+                guard quickShareHandoff?.id == request.id else { return }
+                guard canDeliverQuickShare(request) else { cancelPendingQuickShare(); return }
+                proxy.scrollTo(anchor, anchor: .top)
+                DispatchQueue.main.async {
+                    guard quickShareHandoff?.id == request.id else { return }
+                    guard canDeliverQuickShare(request) else { cancelPendingQuickShare(); return }
+                    quickShareDeliveryReady = true
+                }
+            }
         }
+    }
+
+    private func finishQuickShare(_ id: UUID, _ failure: String?) {
+        guard quickShareHandoff?.id == id else { return }
+        quickShareHandoff = nil
+        quickShareDeliveryReady = false
+        if let failure { quickShareNote = failure }
+    }
+
+    private func cancelPendingQuickShare() {
+        guard quickShareHandoff != nil else { return }
+        quickShareHandoff = nil
+        quickShareDeliveryReady = false
+        quickShareNote = "Studio changed before sharing could start. Use the shortcut again when the current export is ready."
+    }
+
+    private func canDeliverQuickShare(_ request: StudioQuickShareHandoff) -> Bool {
+        vm.isEditing && vm.activePanel == .export && scenePhase == .active
+            && authVM.userId == request.accountID && vm.document.id == request.projectID
+            && vm.document.revision == request.revision && request.accepts(vm.exportFormat)
+            && !(session.isRunning || session.isSharing || movie.isBusy || gif.isBusy)
     }
 
     private func sectionLabel(_ title: String) -> some View {

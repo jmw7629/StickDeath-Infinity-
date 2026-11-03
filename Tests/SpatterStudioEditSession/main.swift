@@ -1844,7 +1844,10 @@ private final class NetworkTrap: URLProtocol {
             // Measure this actual production transaction's final cancellation
             // barrier, restore through real Undo, then cancel at that barrier.
             var totalProbes = 0
-            _ = try vm.applySpatterArtworkTransform(probe, values: values, requestID: UUID(), checkCancellation: { totalProbes += 1 })
+            _ = try vm.applySpatterArtworkTransform(probe,
+                dx: values.dx, dy: values.dy, scale: values.scale, rotation: values.rotation,
+                flipHorizontal: values.flipHorizontal, flipVertical: values.flipVertical,
+                requestID: UUID(), checkCancellation: { totalProbes += 1 })
             try require(totalProbes > 5, "Actual staged artwork barriers missing")
             vm.undo(); await vm.flush(); try selectTransformArtwork(vm, mixed: true)
             guard let capture = vm.beginSpatterArtworkTransform() else { throw Failure(message: "Final artwork capture") }
@@ -1852,7 +1855,10 @@ private final class NetworkTrap: URLProtocol {
             let source = vm.originalImageSource(asset), other = vm.currentFrame.rasterInstance(on: sibling)
             var probes = 0
             do {
-                _ = try vm.applySpatterArtworkTransform(capture, values: values, requestID: UUID(), checkCancellation: {
+                _ = try vm.applySpatterArtworkTransform(capture,
+                    dx: values.dx, dy: values.dy, scale: values.scale, rotation: values.rotation,
+                    flipHorizontal: values.flipHorizontal, flipVertical: values.flipVertical,
+                    requestID: UUID(), checkCancellation: {
                     probes += 1
                     if probes == totalProbes { throw CancellationError() }
                 })

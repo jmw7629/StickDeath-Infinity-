@@ -2023,11 +2023,12 @@ final class StudioViewModel: ObservableObject {
     /// Uses exactly the manual group request/commit/selection-retention path.
     /// The caller's context check is repeated throughout the staged transaction.
     func applySpatterArtworkTransform(_ capture: SelectionHandleCapture,
-        values: SpatterArtworkTransformInstruction.Values, requestID: UUID,
+        dx: Double = 0, dy: Double = 0, scale: Double = 1, rotation: Double = 0,
+        flipHorizontal: Bool = false, flipVertical: Bool = false, requestID: UUID,
         checkCancellation: () throws -> Void) throws -> StudioCommandReceipt {
         guard beginSpatterArtworkTransform() == capture else { throw StudioCommandError.staleRevision }
-        let request = try artworkRequest(capture, dx: values.dx, dy: values.dy, scale: values.scale,
-            rotation: values.rotation, flipHorizontal: values.flipHorizontal, flipVertical: values.flipVertical,
+        let request = try artworkRequest(capture, dx: dx, dy: dy, scale: scale,
+            rotation: rotation, flipHorizontal: flipHorizontal, flipVertical: flipVertical,
             requestID: requestID)
         let receipt = try applyStudioCommands(request, checkCancellation: {
             try checkCancellation()

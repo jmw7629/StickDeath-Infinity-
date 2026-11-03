@@ -1,0 +1,69 @@
+CC0 1.0 Universal audio sources
+
+Squeak Toy 01 — bart
+https://opengameart.org/content/squeak-toy-sounds
+Publisher original SHA256: a89853f355ce7c6c60ee9695f5e725250c6a74f4a177b549afa0a30ff98ff362
+Shipped WAV SHA256: 8d5eaf3704e9132b049c08bd11a9569fea030b4c394f39258fd7b91914087476
+
+Squeak Toy 02 — bart
+https://opengameart.org/content/squeak-toy-sounds
+Publisher original SHA256: 139a35c13b41b6c0a95b543a8f0d510af761802778a773d863cb9b9e827bd4a4
+Shipped WAV SHA256: d9b94b0197f200ae426135af82504543bf7816194c3ac37a7dd817775e5a9253
+
+Squeak Toy 03 — bart
+https://opengameart.org/content/squeak-toy-sounds
+Publisher original SHA256: bb51223dc20b0f4e691ce624330747a2c866edaf1150c2cdd2b53280154b7212
+Shipped WAV SHA256: 10ebd9e5e94d8a555f73aacc6ff1f6df317c5521f1a96945576a70232c011e8a
+
+Squeak Toy 05 — bart
+https://opengameart.org/content/squeak-toy-sounds
+Publisher original SHA256: 0d23b7c925d2d2d374efdda5848a8aeeee28a592dc3e609ab093775a353e2003
+Shipped WAV SHA256: ee45e22ffa4096a35968a9f475197a2441b6b449b1333fe0b8b92fee2ee18c1c
+
+Door Spring Boing 01 — bart
+https://opengameart.org/content/spring-sounds
+Publisher original SHA256: 4f5ed7c317fe5ae3bb0a12a277dfbc70766f9c0b94a917d069d41978bb4837c1
+Shipped WAV SHA256: 46d1bf52b9b2d5aec5a5dcabee4898928934d593e246f846ff87bbd191e1e293
+
+Door Spring Boing 02 — bart
+https://opengameart.org/content/spring-sounds
+Publisher original SHA256: 09da762d312b673ff55c7e89c8f96329bb6a6d331b805688487d7847dc1aabbd
+Shipped WAV SHA256: 69df23baf2104ac468a284ac2cda60186430849aa5f3a25addc621e7a37c810b
+
+Door Spring Boing 03 — bart
+https://opengameart.org/content/spring-sounds
+Publisher original SHA256: cc22690067055dc88a0811c15608539cccfc8020248194125ae81285d613c841
+Shipped WAV SHA256: fa05d717ab4ba58a0ed57c15c5cb4198fbb02dcbfc1f2e523b09c9ab09fee976
+
+Door Spring Boing 04 — bart
+https://opengameart.org/content/spring-sounds
+Publisher original SHA256: a7f95ee0cb5794258a74e096c0cc22fdd05b47ff5931ce9cc499d3327fdfd300
+Shipped WAV SHA256: 139209147f2f44c9bec4c770c733c9c4cab5d0c5ac547e380344db519297e086
+
+Door Spring Boing 05 — bart
+https://opengameart.org/content/spring-sounds
+Publisher original SHA256: 416db6ac643751083277b180f24534e79abdcaf05ef140513f7c7a6e5995bc4f
+Shipped WAV SHA256: 8edd68a87cf9a41ef9268b37e8ca1266d47f0a3e6f6dbf07e18198102a7cd748
+
+Door Spring Boing 06 — bart
+https://opengameart.org/content/spring-sounds
+Publisher original SHA256: 2db03ed194c295668f31013d116c6c3c84db3f2ad00b65e37a30d1dac2c34e0f
+Shipped WAV SHA256: 8961e0d8b5c67ca4f2ab1050df1915dd8d1ae402b8b13d72634e0b0357dd9f04
+
+Wood Wobble and Swish — qubodup
+https://opengameart.org/content/wood-wobbling-rattling
+Publisher original SHA256: abc3901904082a22578ab74f30c19b15c741fc9e199b30eed7e1f66f174ea317
+Shipped WAV SHA256: 7792606432fa2ea5a50941a7fdd59cae1aa762f78b14026eba4591cc40e36131
+
+Large Spring Boing — Aeva
+https://opengameart.org/content/boing
+Publisher original SHA256: 9c6af38ca79332ad3fa66ad1229179d2a91655c1157d3620e21ef676f54d9fdd
+Shipped WAV SHA256: 89b3965adbe6bdf5411a1c78a5551601adeb21efcbc95e9cf2970a00bfa68ee3
+
+Cartoon Propeller Loop — Mish7913
+https://opengameart.org/content/propeller-cartoon-loop
+Publisher original SHA256: f68c52516d5ef33b1f614a910279722c8d341a3058e1367ce24fae1be52ed3bd
+Shipped WAV SHA256: 82c17a8f279afb6c125197e5c2c26e6c9e0b700c4dd744f742033e7d88191d80
+
+License: https://creativecommons.org/publicdomain/zero/1.0/
+The source recordings were decoded to PCM16 WAV; the192kHz cartoon propeller is resampled to48kHz for importer compatibility. Native rate and channels are otherwise preserved. No normalization, trimming, or generated audio.

@@ -1386,7 +1386,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             Tests/StudioSoundCatalogue/main.swift \
             -o "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests"
-          "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests" StickDeathInfinity/Resources/StudioSounds
+          "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests" StickDeathInfinity/Resources/StudioSounds assets/sound-packs
       - name: Verify licensed image catalogue and every original PNG
         shell: bash
         run: |

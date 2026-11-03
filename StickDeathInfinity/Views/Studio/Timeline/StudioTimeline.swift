@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // ═══════════════════════════════════════════════════════════════════
 // Frame Timeline — < ▶ > | frame thumbnails (red border=selected) | +
@@ -8,9 +9,45 @@ import SwiftUI
 struct StudioTimeline: View {
     @ObservedObject var vm: StudioViewModel
     @StateObject private var audioPlayback = StudioAudioTimelineSession()
+    @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var timingCapture: StudioFrameTimingCapture?
     @State private var tweenCapture: StudioViewModel.TweenCapture?
+    @State private var frameDrag: StudioFrameStripDrag?
+    @State private var hoveredFrame: String?
+    @State private var hoverAfter = false
+
+    private var canReorderFrames: Bool {
+        vm.isEditing && !vm.isManagingProjects && !vm.isSaving && !vm.isPlaying &&
+        vm.activePanel == .none && vm.activeStrokeID == nil && vm.pendingBrushStroke == nil &&
+        vm.textDraft == nil && !audioPlayback.isPreparing && !audioPlayback.isPlaying &&
+        scenePhase == .active && timingCapture == nil && tweenCapture == nil
+    }
+
+    private func clearFrameDrag() {
+        frameDrag = nil; hoveredFrame = nil; hoverAfter = false
+    }
+
+    private func beginFrameDrag(_ frameID: String) -> NSItemProvider {
+        clearFrameDrag()
+        let order = vm.frames.map(\.id)
+        guard canReorderFrames, (2...1000).contains(order.count),
+              Set(order).count == order.count, let index = order.firstIndex(of: frameID) else {
+            return NSItemProvider()
+        }
+        // The strip has one active frame, not a persistent range selection.
+        // Drag only the touched frame; the timing sheet keeps its range actions.
+        let item = StudioFrameStripDrag(accountID: authVM.userId, projectID: vm.document.id,
+            revision: vm.document.revision, activeFrameID: vm.document.activeFrameID,
+            sourceID: frameID, order: order)
+        frameDrag = item
+        let provider = NSItemProvider()
+        let payload = Data(item.token.uuidString.utf8)
+        provider.registerDataRepresentation(forTypeIdentifier: StudioFrameStripDrag.contentType.identifier,
+            visibility: .ownProcess) { completion in completion(payload, nil); return nil }
+        provider.suggestedName = "Frame \(index + 1)"
+        return provider
+    }
 
     /// Projects up to this many frames lay the strip out eagerly, so every frame
     /// button exists for VoiceOver and UI automation even when scrolled out of
@@ -71,7 +108,7 @@ struct StudioTimeline: View {
         .id(frame.id)
         .accessibilityLabel("Frame \(i + 1)")
         .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
-        .accessibilityHint("Exposure: \(frame.durationTicks) ticks at \(vm.fps) FPS")
+        .accessibilityHint("Exposure: \(frame.durationTicks) ticks at \(vm.fps) FPS. When playback is stopped and edits are finished, touch and hold, then drag this single frame before or after another frame.")
         .accessibilityIdentifier("studio.frame." + frame.id)
         .contextMenu {
             Button("Copy frame") { vm.copyFrame(frame.id) }
@@ -123,6 +160,16 @@ struct StudioTimeline: View {
                 .disabled(vm.frames.count <= 1)
                 .accessibilityIdentifier("studio.frame-menu.delete")
         }
+        .overlay(alignment: hoverAfter ? .trailing : .leading) {
+            if hoveredFrame == frame.id {
+                Rectangle().fill(Color.red).frame(width: 2)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
+        .onDrag { beginFrameDrag(frame.id) }
+        .onDrop(of: [StudioFrameStripDrag.contentType], delegate: StudioFrameStripDropDelegate(
+            vm: vm, targetID: frame.id, drag: $frameDrag, hoveredFrame: $hoveredFrame,
+            hoverAfter: $hoverAfter, account: { authVM.userId }, canReorder: { canReorderFrames }))
     }
 
     var body: some View {
@@ -214,9 +261,12 @@ struct StudioTimeline: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color(hex: "0A0A10"))
-        .onDisappear { audioPlayback.close() }
-        .onChange(of: vm.document.id) { _, _ in audioPlayback.close() }
-        .onChange(of: vm.document.revision) { _, _ in audioPlayback.stop() }
+        .onDisappear { clearFrameDrag(); audioPlayback.close() }
+        .onChange(of: vm.document.id) { _, _ in clearFrameDrag(); audioPlayback.close() }
+        .onChange(of: vm.document.revision) { _, _ in clearFrameDrag(); audioPlayback.stop() }
+        .onChange(of: vm.document.activeFrameID) { _, _ in clearFrameDrag() }
+        .onChange(of: authVM.userId) { _, _ in clearFrameDrag() }
+        .onChange(of: canReorderFrames) { _, ready in if !ready { clearFrameDrag() } }
         .onChange(of: vm.playbackLoops) { _, _ in audioPlayback.stop() }
         .onChange(of: vm.activePanel) { _, panel in
             if panel != .none { audioPlayback.stop() }
@@ -225,7 +275,7 @@ struct StudioTimeline: View {
             if !playing && audioPlayback.isPlaying { audioPlayback.stop() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { audioPlayback.close() }
+            if phase != .active { clearFrameDrag(); audioPlayback.close() }
         }
         .onChange(of: audioPlayback.notice) { _, notice in
             if let notice { vm.message = notice }
@@ -264,6 +314,91 @@ struct StudioTimeline: View {
                 vm.displayAudioPlaybackTime(min(duration, StudioAudioTransport.floorSafeSeconds(max(0, time), fps: fps)), playing: playing)
             })
         if let notice = audioPlayback.notice { vm.message = notice }
+    }
+}
+
+/// Mirrors the layer panel's process-owned token transport. Neither project IDs
+/// nor frame data, files, URLs or paths are registered with the drag system.
+private struct StudioFrameStripDrag {
+    static let contentType = UTType(exportedAs: "com.willisnmb.stickdeathinfinity.frame-reorder", conformingTo: .data)
+    let token = UUID()
+    let accountID: String?
+    let projectID: UUID
+    let revision: Int
+    let activeFrameID: String
+    let sourceID: String
+    let order: [String]
+
+    /// moveFrames expects the final start position after removing the source.
+    /// Looking up the target in the remaining strip handles both directions and
+    /// the first/last endpoints without an original-index off-by-one adjustment.
+    func destination(relativeTo targetID: String, after: Bool) -> Int? {
+        guard targetID != sourceID, let source = order.firstIndex(of: sourceID) else { return nil }
+        let remaining = order.filter { $0 != sourceID }
+        guard let target = remaining.firstIndex(of: targetID) else { return nil }
+        let position = target + (after ? 1 : 0)
+        return position == source ? nil : position
+    }
+}
+
+private struct StudioFrameStripDropDelegate: DropDelegate {
+    let vm: StudioViewModel
+    let targetID: String
+    @Binding var drag: StudioFrameStripDrag?
+    @Binding var hoveredFrame: String?
+    @Binding var hoverAfter: Bool
+    let account: () -> String?
+    let canReorder: () -> Bool
+
+    private func isCurrent(_ item: StudioFrameStripDrag) -> Bool {
+        canReorder() && account() == item.accountID && vm.document.id == item.projectID &&
+        vm.document.revision == item.revision && vm.document.activeFrameID == item.activeFrameID &&
+        vm.frames.map(\.id) == item.order
+    }
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let drag, isCurrent(drag) else { return false }
+        return info.hasItemsConforming(to: [StudioFrameStripDrag.contentType]) &&
+            drag.order.contains(targetID)
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        // Admission is independent of the hovered half, so crossing a no-op
+        // half of a neighboring cell can still reach its valid insertion side.
+        guard validateDrop(info: info), let drag,
+              drag.destination(relativeTo: targetID, after: info.location.x >= 18) != nil else {
+            if hoveredFrame == targetID { hoveredFrame = nil }
+            return DropProposal(operation: .cancel)
+        }
+        hoveredFrame = targetID; hoverAfter = info.location.x >= 18
+        return DropProposal(operation: .move)
+    }
+    func dropExited(info: DropInfo) {
+        if hoveredFrame == targetID { hoveredFrame = nil }
+    }
+    func performDrop(info: DropInfo) -> Bool {
+        guard validateDrop(info: info), let expected = drag,
+              expected.destination(relativeTo: targetID, after: info.location.x >= 18) != nil else {
+            drag = nil; hoveredFrame = nil; return false
+        }
+        let providers = info.itemProviders(for: [StudioFrameStripDrag.contentType])
+        guard providers.count == 1, let provider = providers.first else {
+            drag = nil; hoveredFrame = nil; return false
+        }
+        let after = info.location.x >= 18
+        hoveredFrame = nil
+        provider.loadDataRepresentation(forTypeIdentifier: StudioFrameStripDrag.contentType.identifier) { data, error in
+            Task { @MainActor in
+                // A delayed/duplicate response cannot consume a later drag.
+                guard drag?.token == expected.token else { return }
+                defer { drag = nil; hoveredFrame = nil; hoverAfter = false }
+                let payload = Data(expected.token.uuidString.utf8)
+                guard error == nil, let data, data.count == payload.count, data == payload,
+                      isCurrent(expected), let position = expected.destination(relativeTo: targetID, after: after) else { return }
+                // One revision-checked canonical transaction supplies Undo and
+                // save. Hover and no-op drops never call a document command.
+                _ = vm.moveFrames([expected.sourceID], toPosition: position, expectedRevision: expected.revision)
+            }
+        }
+        return true
     }
 }
 

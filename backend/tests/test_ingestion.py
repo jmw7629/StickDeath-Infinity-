@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 import urllib.error
 import uuid
 
@@ -393,6 +394,170 @@ class LicensedAssetRegistryTests(unittest.TestCase):
         self.assertEqual(refused.exception.status, 422)
         plain = self.store.begin(actor, str(uuid.uuid4()), metadata(4096, digest))
         self.assertEqual(plain["state"], "receiving", "renders without library assets still declare nothing")
+
+
+class OptionalSoundRegistryTests(unittest.TestCase):
+    """Trusted local metadata admits optional credits; client input cannot add rights."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.resources = Path(self.temp.name) / "Resources"
+        self.images = self.resources / "StudioImages"
+        self.sounds = self.resources / "StudioSounds"
+        self.images.mkdir(parents=True); self.sounds.mkdir()
+        (self.images / "catalogue.json").write_text(json.dumps({"licenses": [{"id": "cc0", "license": "CC0-1.0"}],
+            "images": [{"licenseID": "cc0", "sha256": "1" * 64, "originalSHA256": "1" * 64}]}))
+        (self.sounds / "catalogue.json").write_text(json.dumps({"sounds": [
+            {"license": "CC0-1.0", "sha256": "2" * 64, "originalSHA256": "2" * 64}]}))
+        self.descriptor_file = self.sounds / "sound-packs.json"
+
+    def write_packs(self):
+        self.descriptors = []
+        for pack_id, digest, original in (("ambience-test-v1", "3" * 64, "4" * 64), ("comedy-test-v1", "5" * 64, "6" * 64)):
+            directory = self.sounds / "pack-catalogues" / pack_id
+            directory.mkdir(parents=True)
+            entry = {"id": digest, "sha256": digest, "originalSHA256": original, "filename": digest + ".wav",
+                     "title": "Optional fixture", "category": "Ambience", "author": "Fixture author",
+                     "sourceURL": "https://opengameart.org/content/fixture", "license": "CC0-1.0",
+                     "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/", "byteCount": 1024,
+                     "duration": 1.0, "sampleRate": 44100, "channels": 1, "waveformPeaks": [0.25] * 256,
+                     "waveformRMS": [0.125] * 256, "tags": ["nature"]}
+            data = json.dumps({"schemaVersion": 1, "sounds": [entry]}).encode()
+            (directory / "catalogue.json").write_bytes(data)
+            base = "https://raw.githubusercontent.com/jmw7629/StickDeath-Infinity-/owned-tag/assets/sound-packs/" + pack_id + "/"
+            self.descriptors.append({"id": pack_id, "title": "Trusted fixture pack", "manifestURL": base + "catalogue.json",
+                                     "baseURL": base, "manifestBytes": len(data), "manifestSHA256": hashlib.sha256(data).hexdigest(),
+                                     "soundCount": 1, "totalAudioBytes": 1024})
+        self.save_descriptors()
+
+    def save_descriptors(self):
+        self.descriptor_file.write_bytes(json.dumps(self.descriptors).encode())
+
+    def pinned(self):
+        # Tests replace the code-owned pin only; production has no request/env pin override.
+        return mock.patch.object(assets_module, "TRUSTED_SOUND_PACK_DESCRIPTORS_SHA256",
+                                 hashlib.sha256(self.descriptor_file.read_bytes()).hexdigest())
+
+    def test_absent_descriptors_preserve_bundled_only_and_custom_environment_roots(self):
+        (self.sounds / "pack-catalogues").mkdir()
+        (self.sounds / "pack-catalogues" / "untrusted.json").write_text("not a catalogue")
+        with mock.patch.dict(os.environ, {"SDI_ASSET_CATALOGUE_ROOT": str(self.resources)}):
+            registry = LicensedAssetRegistry.from_catalogues()
+        self.assertEqual(registry.images, {"1" * 64: "CC0-1.0"})
+        self.assertEqual(registry.sounds, {"2" * 64: "CC0-1.0"})
+        with self.assertRaises(IntakeError):
+            registry.check([{"kind": "sound", "sha256": "3" * 64}])
+
+    def test_pinned_optional_original_and_shipped_digests_reach_stored_credits_without_audio_files(self):
+        self.write_packs()
+        with self.pinned():
+            registry = LicensedAssetRegistry.from_catalogues(self.resources)
+        credits = [{"kind": "sound", "sha256": value * 64} for value in ("2", "3", "4", "5", "6")]
+        self.assertEqual(registry.check(credits), [{**value, "license": "CC0-1.0"} for value in credits])
+        for descriptor in self.descriptors:
+            self.assertEqual([p.name for p in (self.sounds / "pack-catalogues" / descriptor["id"]).iterdir()], ["catalogue.json"])
+        store = UploadStore(Path(self.temp.name) / "uploads", total_quota=64 * 1024 * 1024,
+                            account_quota=32 * 1024 * 1024, licensed_assets=registry)
+        actor = str(uuid.uuid4())
+        upload = store.begin(actor, str(uuid.uuid4()), dict(metadata(4096, "7" * 64), asset_credits=credits))
+        self.assertEqual(store.metadata(actor, upload["id"])["asset_credits"], registry.check(credits))
+        with self.assertRaises(IntakeError):
+            registry.check([{"kind": "sound", "sha256": "8" * 64, "license": "CC0-1.0"}])
+
+    def test_changed_descriptor_or_manifest_bytes_are_refused_without_silent_fallback(self):
+        self.write_packs()
+        with self.pinned():
+            self.descriptor_file.write_bytes(self.descriptor_file.read_bytes() + b" ")
+            with self.assertRaises(ValueError):
+                LicensedAssetRegistry.from_catalogues(self.resources)
+        self.save_descriptors()
+        with self.pinned():
+            path = self.sounds / "pack-catalogues" / self.descriptors[0]["id"] / "catalogue.json"
+            path.write_bytes(path.read_bytes().replace(b"Optional fixture", b"Tampered fixture"))
+            with self.assertRaises(ValueError):
+                LicensedAssetRegistry.from_catalogues(self.resources)
+
+    def test_missing_pinned_local_catalogue_is_not_replaced_by_a_remote_fetch(self):
+        self.write_packs()
+        path = self.sounds / "pack-catalogues" / self.descriptors[0]["id"] / "catalogue.json"
+        path.unlink()
+        with self.pinned(), mock.patch("urllib.request.urlopen", side_effect=AssertionError("No network allowed")) as network:
+            with self.assertRaises(ValueError):
+                LicensedAssetRegistry.from_catalogues(self.resources)
+            network.assert_not_called()
+
+    def test_even_pinned_descriptor_metadata_cannot_escape_paths_or_misstate_totals(self):
+        self.write_packs()
+        good = json.loads(json.dumps(self.descriptors))
+        changes = [("id", "../outside"), ("id", "/absolute"), ("id", "bad.id"), ("id", "Uppercase"),
+                   ("manifestBytes", True), ("manifestBytes", assets_module.MAX_SOUND_PACK_MANIFEST_BYTES + 1),
+                   ("manifestSHA256", "z" * 64), ("soundCount", True), ("soundCount", 2), ("totalAudioBytes", 1025)]
+        for key, value in changes:
+            with self.subTest(key=key, value=value):
+                self.descriptors = json.loads(json.dumps(good)); self.descriptors[0][key] = value; self.save_descriptors()
+                with self.pinned(), self.assertRaises(ValueError):
+                    LicensedAssetRegistry.from_catalogues(self.resources)
+        self.descriptors = [good[0], good[0]]; self.save_descriptors()
+        with self.pinned(), self.assertRaises(ValueError):
+            LicensedAssetRegistry.from_catalogues(self.resources)
+
+    def test_pinned_manifest_refuses_unknown_licence_forged_ids_duplicate_keys_and_bad_waveforms(self):
+        self.write_packs()
+        path = self.sounds / "pack-catalogues" / self.descriptors[0]["id"] / "catalogue.json"
+        good = json.loads(path.read_bytes())
+        changes = [("license", "owner-says-okay"), ("id", "9" * 64), ("originalSHA256", "bad"),
+                   ("filename", "../foreign.wav"), ("byteCount", True), ("waveformPeaks", [0] * 256),
+                   ("waveformRMS", [0.5] * 256), ("tags", ["../private"]), ("sourceURL", "https://example.com/untrusted")]
+        for key, value in changes:
+            with self.subTest(key=key):
+                manifest = json.loads(json.dumps(good)); manifest["sounds"][0][key] = value
+                data = json.dumps(manifest).encode(); path.write_bytes(data)
+                self.descriptors[0]["manifestBytes"] = len(data)
+                self.descriptors[0]["manifestSHA256"] = hashlib.sha256(data).hexdigest(); self.save_descriptors()
+                with self.pinned(), self.assertRaises(ValueError):
+                    LicensedAssetRegistry.from_catalogues(self.resources)
+        data = json.dumps(good).replace('"schemaVersion": 1', '"schemaVersion": 1, "schemaVersion": 1').encode()
+        path.write_bytes(data); self.descriptors[0]["manifestBytes"] = len(data)
+        self.descriptors[0]["manifestSHA256"] = hashlib.sha256(data).hexdigest(); self.save_descriptors()
+        with self.pinned(), self.assertRaises(ValueError):
+            LicensedAssetRegistry.from_catalogues(self.resources)
+
+    def test_symlinked_descriptor_catalogue_and_each_optional_directory_are_refused(self):
+        self.write_packs()
+        paths = [self.descriptor_file, self.sounds, self.sounds / "pack-catalogues",
+                 self.sounds / "pack-catalogues" / self.descriptors[0]["id"],
+                 self.sounds / "pack-catalogues" / self.descriptors[0]["id"] / "catalogue.json"]
+        with self.pinned():
+            for path in paths:
+                with self.subTest(path=path.name):
+                    moved = path.with_name(path.name + ".owned"); path.rename(moved)
+                    try:
+                        path.symlink_to(moved.name, target_is_directory=moved.is_dir())
+                        with self.assertRaises(ValueError):
+                            LicensedAssetRegistry.from_catalogues(self.resources)
+                    finally:
+                        path.unlink(); moved.rename(path)
+
+    def test_nonregular_and_oversized_metadata_fail_before_reading_and_conflicting_licences_fail(self):
+        self.write_packs()
+        catalogue = self.sounds / "pack-catalogues" / self.descriptors[0]["id"] / "catalogue.json"
+        original = catalogue.read_bytes()
+        with self.pinned():
+            catalogue.unlink(); os.mkfifo(catalogue)
+            try:
+                with self.assertRaises(ValueError):
+                    LicensedAssetRegistry.from_catalogues(self.resources)
+            finally:
+                catalogue.unlink(); catalogue.write_bytes(original)
+            with catalogue.open("wb") as file:
+                file.truncate(assets_module.MAX_SOUND_PACK_MANIFEST_BYTES + 1)
+            with self.assertRaises(ValueError):
+                LicensedAssetRegistry.from_catalogues(self.resources)
+            catalogue.write_bytes(original)
+            (self.sounds / "catalogue.json").write_text(json.dumps({"sounds": [
+                {"license": "CC-BY-4.0", "sha256": "3" * 64, "originalSHA256": "3" * 64}]}))
+            with self.assertRaises(ValueError):
+                LicensedAssetRegistry.from_catalogues(self.resources)
 
 
 class UploadApplicationTests(unittest.TestCase):

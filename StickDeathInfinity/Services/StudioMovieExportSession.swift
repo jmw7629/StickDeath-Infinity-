@@ -266,7 +266,7 @@ final class StudioMovieExportSession: ObservableObject {
     }
 
     /// Library credits for the captured audio assets (#191). Digests and the
-    /// bundled catalogue load off the main actor. An unavailable library yields
+    /// bundled and installed-pack credit receipts load off the main actor. An unavailable library yields
     /// no credits plus a notice, never a failed export: every library sound is
     /// CC0 and audio imported from Files has no library attribution anyway.
     static func resolveSoundCredits(for tracks: [AudioTrack]) async -> (credits: [StudioSoundCredit], notice: String?) {
@@ -278,8 +278,7 @@ final class StudioMovieExportSession: ObservableObject {
         }.value
         guard !assets.isEmpty else { return ([], nil) }
         do {
-            let catalogue = try await StudioSoundCatalogue.loadBundled()
-            let table = catalogue.attributionsByDigest
+            let table = try await StudioSoundCatalogue.loadAvailableAttributions()
             return (try StudioSoundCreditResolver.credits(for: assets) { table[$0] }, nil)
         } catch {
             return ([], "Library sound credits were not resolved (\(error.localizedDescription)). The MP4 manifest lists no sound credits.")

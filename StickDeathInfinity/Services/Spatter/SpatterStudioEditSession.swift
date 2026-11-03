@@ -577,7 +577,9 @@ final class SpatterStudioEditSession: ObservableObject {
                     try await self.checkpoint()
                     try check()
                     try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
-                    let receipt = try studio.applySpatterArtworkTransform(target, values: values, requestID: submissionID,
+                    let receipt = try studio.applySpatterArtworkTransform(target,
+                        dx: values.dx, dy: values.dy, scale: values.scale, rotation: values.rotation,
+                        flipHorizontal: values.flipHorizontal, flipVertical: values.flipVertical, requestID: submissionID,
                         checkCancellation: {
                             try check()
                             try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)

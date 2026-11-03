@@ -136,3 +136,23 @@ The native export result now offers Play/Pause for the completed GIF. Playback d
 ### Local sound favorites
 
 The native sound library now offers per-sound stars and a Favorites-only filter combined with category/search/duration/sort. Preferences store only validated catalogue IDs on this device, bounded to 256 entries/64 KiB; unknown IDs are ignored and overflow reports a removable-favorite limit. Filtering resets scroll position; Clear filters returns to all sounds. No audio copies, document mutation or cloud requests. Native UI/persistence/large-library verification remains deferred.
+
+
+## Optional sound packs (#191)
+
+The existing Sound Library now has an initially collapsed Sound Packs section. Trusted versioned packs download only after the user chooses Download. Status, refresh, cancellation, removal and retry use the same bounded cache actor; cancelled or failed requests leave the bundled library available. Removing a pack removes its cached media; imported project originals and pinned credit receipts remain. Spatter resolves installed sounds through the same catalogue as manual Add. MP4 credit resolution reads retained verified receipts.
+
+Ambience/Nature and Comedy/Cartoon contain 23 distinct CC0 clips with measured waveforms, source credits and pinned metadata. Media stays outside the app bundle until installed. Descriptor URLs use the permanent owned sdi-sound-packs-v1 asset tag. Backend intake validates bundled metadata copies against the same pinned descriptor; client-supplied credits do not grant rights.
+
+Source mapping is not native UI acceptance. Touch, network transport, removal/reopen and exported-credit journeys require matching execution evidence; unavailable or failed gates remain open.
+
+
+## Frame drag and ready export shortcuts (#161, #242)
+
+The native frame strip supports dragging one touched thumbnail before or after another frame. A process-owned random token, current account/project/revision/order and editing/playback guards protect the existing canonical moveFrames command; hover and no-op drops create no edit. Existing menu/range reordering remains available.
+
+A ready MP4/GIF destination shortcut now requests the same native Share action and existing completion-bound presenter as its Share button. Requests bind the exact rendered output and current account/project/revision/session; unavailable or stale output requests a new export instead of sharing a later render automatically. The OS share sheet remains responsible for installed destinations. A real external recipient/cancellation journey is still a native gate.
+
+Optional sound credits also resolve from pinned metadata on a receiving device that has never installed the sound pack; this does not download or enable any audio. Native runtime evidence and source review are recorded separately.
+
+Source review and syntax checks are distinct from native gesture, presentation, export and device acceptance. No live posting is a test.

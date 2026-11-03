@@ -831,7 +831,7 @@ enum SpatterLibraryPictureSource {
 enum SpatterLibrarySoundSource {
     @MainActor
     static func resolve(_ instruction: SpatterLibrarySoundInstruction) async throws -> StudioCatalogueSoundSource.Prepared {
-        let catalogue = try await StudioSoundCatalogue.loadBundled()
+        let catalogue = try await StudioSoundCatalogue.loadAvailable()
         let sound = try instruction.resolve(in: catalogue.sounds, id: \.id)
         return try await StudioCatalogueSoundSource.prepare(sound, catalogue: catalogue)
     }

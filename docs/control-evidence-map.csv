@@ -941,3 +941,11 @@ feed.card.export-progress,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeF
 profile.portfolio.retry,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfilePortfolioSection,label -> load,n-a,#224,deferred
 profile.settings.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,label 'Account settings',n-a,#224,deferred
 profile.statistics.retry,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,label 'Sign in to load account totals.',n-a,#224,deferred
+studio.audio.packs,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,label 'Sound Packs',no,#191,deferred
+studio.audio.packs.cancel,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,button 'Cancel this sound-pack operation',no,#191,deferred
+studio.audio.packs.empty,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,text 'No downloadable sound packs are included in this',no,#191,deferred
+studio.audio.packs.error,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,text,no,#191,deferred
+studio.audio.packs.loading,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,ProgressView shows Checking sound packs… while trusted descriptors and installed status are read.,no,#191,deferred
+studio.audio.packs.notice,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,text,no,#191,deferred
+studio.audio.packs.operation,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,container 'studio.audio.packs.operation' (identifier-derived; review source),no,#191,deferred
+studio.audio.packs.refresh,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,button 'Refresh pack status' -> refresh,no,#191,deferred

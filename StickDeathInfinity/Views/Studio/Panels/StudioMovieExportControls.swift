@@ -11,6 +11,8 @@ struct StudioMovieExportControls: View {
     var directRequest: StudioMoviePanelState.DirectRequest? = nil
     var onDirectRequestConsumed: () -> Void = {}
     var onReady: () -> Void = {}
+    var quickShareRequest: StudioQuickShareHandoff? = nil
+    var onQuickShareHandled: (UUID, String?) -> Void = { _, _ in }
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var shareLifetime = StudioMovieShareLifetime.shared
@@ -25,6 +27,9 @@ struct StudioMovieExportControls: View {
     @State private var normalizeAudio = false
     @State private var shareAccountID: String?
     @State private var shareRequest: StudioMovieExportSession.ShareRequest?
+    @State private var shareHandoff: StudioQuickShareHandoff?
+    @State private var handledQuickShareID: UUID?
+    @State private var shareStartError: String?
     @State private var saveRequest: StudioMovieExportSession.ShareRequest?
     @State private var reviewExport: SDIRenderUploadExport?
 
@@ -100,7 +105,7 @@ struct StudioMovieExportControls: View {
                 Text(provenance).font(.specialElite(10))
                     .accessibilityIdentifier("studio.export.movie.spatter-receipt")
             }
-            if let error = session.errorMessage {
+            if let error = session.errorMessage ?? shareStartError {
                 Text(error).foregroundColor(Color(hex: "#FF8888"))
                     .font(.specialElite(11))
                     .accessibilityIdentifier("studio.export.status")
@@ -211,8 +216,7 @@ struct StudioMovieExportControls: View {
                             .accessibilityIdentifier("studio.export.movie.preview.status")
                     }
                     Button {
-                        shareAccountID = scope.accountID
-                        shareRequest = session.beginSharing(scope: scope)
+                        shareStartError = beginNativeShare()
                     } label: {
                         Label("Share MP4 / Save to Files", systemImage: "square.and.arrow.up")
                             .font(.system(size: 12, weight: .bold, design: .monospaced))
@@ -275,11 +279,18 @@ struct StudioMovieExportControls: View {
                 let projectID = session.source?.projectID
                 let accountID = shareAccountID
                 let capturedSession = session
+                let handoff = shareHandoff
                 StudioMovieSharePresenter(request: request, session: capturedSession, isAllowed: { [weak vm, weak authVM, weak capturedSession] in
                     guard let vm, let authVM, let capturedSession else { return false }
                     return !capturedSession.isClosed && holder.value.isStudioVisible && holder.value.isForeground
                         && vm.isEditing && vm.activePanel == .export && vm.document.id == projectID
                         && authVM.userId == accountID
+                        && (handoff.map { expected in
+                            expected.file == .mp4 && expected.accepts(vm.exportFormat)
+                                && expected.accountID == authVM.userId && expected.projectID == vm.document.id
+                                && expected.revision == vm.document.revision && expected.sessionID == ObjectIdentifier(capturedSession)
+                                && capturedSession.output?.movieURL == expected.outputURL
+                        } ?? true)
                 }) { id in
                     if binding.wrappedValue?.id == id { binding.wrappedValue = nil }
                 }
@@ -308,7 +319,9 @@ struct StudioMovieExportControls: View {
                 onDirectRequestConsumed()
             }
             refreshPreview()
+            consumeQuickShare()
         }
+        .onChange(of: quickShareRequest?.id) { _, _ in consumeQuickShare() }
         .onDisappear {
             preview.stop()
             // A full-screen native activity may cover this section without
@@ -325,11 +338,52 @@ struct StudioMovieExportControls: View {
         .onChange(of: vm.isEditing) { refreshScope() }
         .onChange(of: vm.activePanel) { refreshScope() }
         .onChange(of: session.output?.movieURL) { _, output in
+            shareStartError = nil
             if output != nil { onReady() }
             refreshPreview()
         }
         .onChange(of: session.isRunning) { _, _ in refreshPreview() }
         .onChange(of: session.isSharing) { _, _ in refreshPreview() }
+    }
+
+    /// Both the Share button and a ready-file shortcut enter this same owned
+    /// request/presenter route. No export or provider request is started here.
+    private func beginNativeShare(expected: StudioQuickShareHandoff? = nil) -> String? {
+        guard scope.isStudioVisible, scope.isForeground, vm.exportFormat == .mp4,
+              !movie.isBusy, !session.isClosed, !session.needsCleanup,
+              !shareLifetime.isReserved, shareRequest == nil, saveRequest == nil, reviewExport == nil else {
+            return "The MP4 is not ready to share. Finish the current export or share, then try again."
+        }
+        if let expected, !matchesQuickShare(expected) {
+            return "The project or rendered MP4 changed. Export the current revision before sharing."
+        }
+        guard let request = session.beginSharing(scope: scope) else {
+            return session.errorMessage ?? "The MP4 could not be shared in the current Studio state. Export it again before retrying."
+        }
+        if let expected, !matchesQuickShare(expected) {
+            request.finish(completed: false, error: nil)
+            return "Studio changed before MP4 sharing could start. Nothing was shared."
+        }
+        shareAccountID = scope.accountID
+        shareHandoff = expected
+        shareRequest = request
+        return nil
+    }
+
+    private func matchesQuickShare(_ expected: StudioQuickShareHandoff) -> Bool {
+        guard expected.file == .mp4, expected.accepts(vm.exportFormat), expected.accountID == scope.accountID,
+              expected.projectID == vm.document.id, expected.revision == vm.document.revision,
+              expected.sessionID == ObjectIdentifier(session), let output = session.output, !output.isCleaned else { return false }
+        return output.movieURL == expected.outputURL && output.manifest.projectID == expected.projectID
+            && output.manifest.documentRevision == expected.revision
+    }
+
+    private func consumeQuickShare() {
+        guard let request = quickShareRequest, request.file == .mp4, handledQuickShareID != request.id else { return }
+        handledQuickShareID = request.id
+        let failure = beginNativeShare(expected: request)
+        shareStartError = failure
+        onQuickShareHandled(request.id, failure)
     }
     /// A size the plan allows (always true without a size cap).
     private func presetAllowed(_ candidate: StudioMovieExportService.RenderPreset) -> Bool {
