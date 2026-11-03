@@ -3,7 +3,11 @@ package com.stickdeath.studio.connect
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -23,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -101,14 +106,21 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         is Load.Failed -> Text(feed.message)
         is Load.Loaded -> {
             if (feed.value.posts.isEmpty()) Text("No approved videos here yet.")
-            feed.value.posts.forEach { post ->
-                FeedPosterImage(post)
-                Text("${post.title.ifBlank { "Untitled" }} — ${post.creatorName}")
-                if (post.caption.isNotBlank()) Text(post.caption, style = MaterialTheme.typography.bodySmall)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ account.toggleLike(post) }, enabled = account.signedInMember) { Text(if (post.liked) "Liked · ${post.likes}" else "Like · ${post.likes}") }
-                    post.safeUrl?.let { url -> TextButton({ runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }) { Text("Watch") } }
-                    TextButton({ account.report(post, FeedReportReason.Abuse) }, enabled = account.signedInMember) { Text("Report") }
+            // The account panel already scrolls vertically. A finite inner viewport
+            // keeps only visible cards/bitmaps composed and avoids infinite constraints.
+            val feedHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.6f).coerceIn(180.dp, 520.dp)
+            if (feed.value.posts.isNotEmpty()) LazyColumn(Modifier.fillMaxWidth().heightIn(max = feedHeight)) {
+                items(feed.value.posts, key = { it.id }) { post ->
+                    Column {
+                        FeedPosterImage(post)
+                        Text("${post.title.ifBlank { "Untitled" }} — ${post.creatorName}")
+                        if (post.caption.isNotBlank()) Text(post.caption, style = MaterialTheme.typography.bodySmall)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton({ account.toggleLike(post) }, enabled = account.signedInMember) { Text(if (post.liked) "Liked · ${post.likes}" else "Like · ${post.likes}") }
+                            post.safeUrl?.let { url -> TextButton({ runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }) { Text("Watch") } }
+                            TextButton({ account.report(post, FeedReportReason.Abuse) }, enabled = account.signedInMember) { Text("Report") }
+                        }
+                    }
                 }
             }
             if (feed.value.hasMore) TextButton({ account.loadMoreFeed() }) { Text("Load more") }

@@ -1997,7 +1997,7 @@ struct SpatterInstructionGrammar: Equatable {
 }
 
 enum SpatterInstructionCatalog {
-    static let version = 5
+    static let version = 7
     static let grammars: [SpatterInstructionGrammar] = [
         .init(name: "multiClauseBrief", examples: ["A red stick figure walks left to right for 1 second, then punches, then falls; 3 seconds.",
                                                    "A red stick figure runs left to right, then kicks; a blue stick figure ducks, then jumps; 2.5 seconds.",
@@ -2010,6 +2010,12 @@ enum SpatterInstructionCatalog {
               commands: ["copyFrame", "pasteFrame"], summary: "Copy a frame to the frame clipboard and/or paste an editable copy after a frame."),
         .init(name: "projectSettings", examples: ["Set project size to 640 by 480 pixels.", "Set project frame rate to 24 FPS.", "Set project size to 640 by 480 pixels at 24 FPS."],
               commands: ["updateProjectSettings"], summary: "Canvas size 16–4096 px and frame rate 1–60 FPS; artwork coordinates are kept."),
+        .init(name: "librarySound", examples: ["Add library sound 65535d26ae55af5319a98c0ea3acf56b5d2e8bafe847beceb81d54ec1ca6ef39 to track 2 at 0 seconds."],
+              commands: ["attachImportedAudio"], summary: "Verify a licensed bundled sound by its catalogue SHA-256 ID, then attach its real audio bytes to track 1–4 at an explicit time, as one Undo step. No URL/path import or cloud request."),
+        .init(name: "shape", examples: ["Draw a line from (10%, 20%) to (90%, 70%) in #FF0000, size 6 px, opacity 100%.",
+                                        "Draw a rectangle from (20%, 20%) to (80%, 70%) in #000000, size 3 px, opacity 100%, fill #FF0000, radius 8 px.",
+                                        "Draw a circle centered at (50%, 50%), radius 20 px, in #000000, size 3 px, opacity 100%, fill #FF0000."],
+              commands: ["draw"], summary: "One editable line, rectangle or true circle on the active frame/layer, with explicit geometry, color, size and opacity; optional rectangle/circle fill and rectangle corner radius. No new frames."),
         .init(name: "brushStroke", examples: ["Draw a round brush line from (10%, 20%) to (90%, 20%) in #000000, size 6 px, opacity 100%.",
                                               "Draw a gradient brush line from (10%, 40%) to (90%, 40%) in #FF0000 to #0000FF, size 8 px, opacity 100%."],
               commands: ["draw"], summary: "One straight stroke on the active frame/layer in any brush family (round, stipple, grain, rough pen, calligraphy, dip pen, halftone, hatch right/left, gradient, airbrush, watercolor, neon)."),

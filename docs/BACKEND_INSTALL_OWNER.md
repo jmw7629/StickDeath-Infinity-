@@ -123,6 +123,22 @@ The owner password is never in source, issues or chat. Additional administrators
 are added by the owner from the native Admin → Users tab or `sdi_admin_permissions`,
 each with MFA; member accounts sign up in the app and get a `public.users` row.
 
+## Existing billing installs: reapply the existing upgrade
+
+Projects already installed from the bundle must reapply
+`backend/sql/upgrades/2026-10-20-three-tiers.sql` from the current revision, even if
+that file was applied previously. It is rerunnable and now serializes concurrent
+first deliveries for the same provider subscription before reading or upserting
+it. Without that correction, an older first event can overwrite a newer event
+that committed while the older event was still preparing its first insert.
+
+Do not reset a live schema or rerun the fresh-install bundle for this correction.
+Preserve a database backup and apply the existing upgrade through the authorized
+SQL administration route; its transaction updates the function definition and
+retains subscription, event and ledger records. The isolated SQL runner includes
+a two-delivery-session regression; it uses fake records, a controller-held test
+lock and observable PostgreSQL lock states, never a live provider or database.
+
 ## Service workers (later)
 
 Publishing, sweeps and the Spatter draft queue run from a host the owner controls with

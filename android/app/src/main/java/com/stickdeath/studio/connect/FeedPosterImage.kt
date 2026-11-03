@@ -1,5 +1,6 @@
 package com.stickdeath.studio.connect
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -28,9 +29,11 @@ internal val feedPosterLoader by lazy { FeedPosterLoader(UrlConnectionTransport(
  * loads, when none was recorded, or when it cannot be fetched or decoded. Nothing is generated.
  */
 @Composable fun FeedPosterImage(post: FeedPost, loader: FeedPosterLoader = feedPosterLoader) {
-    val poster by produceState<ImageBitmap?>(null, post.safePosterUrl) {
+    val poster by produceState<ImageBitmap?>(null, post.safePosterUrl, loader) {
+        // A reused card must not display the previous URL while its new poster loads.
+        value = null
         value = withContext(Dispatchers.IO) {
-            loader.load(post)?.let { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
+            loader.load(post)?.let { bytes -> decodeFeedPoster(bytes)?.asImageBitmap() }
         }
     }
     val modifier = Modifier.fillMaxWidth().height(180.dp)
@@ -42,4 +45,19 @@ internal val feedPosterLoader by lazy { FeedPosterLoader(UrlConnectionTransport(
             Text(if (post.safePosterUrl == null) "▶ No poster frame" else "▶")
         }
     }
+}
+
+/** Read dimensions without allocating pixels, then decode a bounded thumbnail. */
+internal fun decodeFeedPoster(bytes: ByteArray): Bitmap? {
+    if (!FeedPosterLoader.isCompleteJpeg(bytes)) return null
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outMimeType != "image/jpeg") return null
+    val sample = FeedPosterDecodePolicy.sampleSize(bounds.outWidth, bounds.outHeight) ?: return null
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = sample
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+        inScaled = false
+    }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
 }

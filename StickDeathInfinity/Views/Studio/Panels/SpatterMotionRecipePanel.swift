@@ -72,8 +72,8 @@ struct SpatterMotionRecipePanel: View {
     private var routedKind: SpatterInstructionRouter.Kind? {
         guard let kind = SpatterInstructionRouter.classify(draft) else { return nil }
         switch kind {
-        case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke,
-             .areaSelection, .wandSelection, .libraryPicture, .projectExport: return kind
+        case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke, .shape,
+             .areaSelection, .wandSelection, .libraryPicture, .librarySound, .projectExport: return kind
         default: return nil
         }
     }
@@ -84,9 +84,11 @@ struct SpatterMotionRecipePanel: View {
         case .tween?: return "Tween between two frames"
         case .frameClipboard?: return "Copy or paste a frame"
         case .projectSettings?: return "Change project settings"
+        case .shape?: return "Draw an editable shape"
         case .brushStroke?: return "Draw a brush stroke"
         case .areaSelection?: return "Select drawings inside an outline"
         case .wandSelection?: return "Select drawings by color"
+        case .librarySound?: return "Add a licensed library sound"
         case .libraryPicture?: return "Add an Image Library picture"
         case .projectExport?: return "Export the saved project"
         default: return nil
@@ -99,9 +101,11 @@ struct SpatterMotionRecipePanel: View {
         case .tween?: return "Adds 1–24 interpolated frames between two adjacent frames whose drawings match in count and style, with the chosen easing. One Undo removes them."
         case .frameClipboard?: return "Copy a frame to the frame clipboard and/or paste an editable copy with fresh identities after a frame. A bare paste needs a copied frame; copy alone changes nothing in the document."
         case .projectSettings?: return "Changes the canvas size (16–4096 px) and/or frame rate (1–60 FPS) through the same Project Settings operation. Artwork coordinates are kept; audio keeps its time in seconds. One Undo restores the previous settings."
+        case .shape?: return "Draws one line, rectangle or true circle on the active frame and layer with Studio’s shape tools. Circles use a center and a radius in document pixels; rectangle fill and rounded corners are optional. One Undo removes the shape."
         case .brushStroke?: return "Draws one straight stroke in the chosen brush family on the active frame and layer, with a request-stable seed. The stroke is editable like a hand-drawn one; one Undo removes it."
         case .areaSelection?: return "Selects the drawings a rectangle or polygon fully encloses on the active frame, with the Lasso's rules. Selection never changes the project."
         case .wandSelection?: return "Runs the Wand on the active drawing layer at a canvas point and selects the drawings its color region touches. Selection never changes the project."
+        case .librarySound?: return "Verifies and decodes one licensed Sound Library asset by its ID, then attaches its real audio bytes to the requested track/time through the same managed-asset operation as Add Sound. One Undo removes the clip. No network, playback or export is started."
         case .libraryPicture?: return "Adds one bundled Image Library picture, verified like Add Picture, to the active frame on a new layer in one Undo step. Files, Photos and the camera stay in Add Picture."
         case .projectExport?: return "Starts Studio's direct MP4 or GIF export of the saved revision to a file on this device. Nothing is uploaded, shared or published."
         default: return nil
@@ -109,14 +113,16 @@ struct SpatterMotionRecipePanel: View {
     }
     private var routedGuidance: String? {
         switch routedKind {
-        case .batch?: return "Each line must be a complete frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename or brush-stroke instruction. Selection, image, text, audio-clip and brief instructions run on their own. Stop playback, then Preview plan or Apply."
+        case .batch?: return "Each line must be a complete frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename, shape or brush-stroke instruction. Selection, image, text, audio-clip, library-sound and brief instructions run on their own. Stop playback, then Preview plan or Apply."
         case .multiClauseBrief?: return "Use: \(SpatterMultiClauseBrief.example) Add actors with semicolons, directions with left to right / right to left, per-clause durations with for N seconds, a total with N seconds and an optional seed N. Falls and explodes must come last for an actor."
         case .tween?: return "Use Tween 4 in-betweens between frames 1 and 2 with ease-in-out easing. Easings: linear, ease-in, ease-out, ease-in-out, easy-ease. Frames are one-based and must be adjacent with matching drawings."
         case .frameClipboard?: return "Use Copy frame 1 and paste it after frame 2., Copy frame 1., or Paste frame after active frame. Frame numbers are one-based; the project must have room for one more frame."
         case .projectSettings?: return "Use Set project size to 640 by 480 pixels., Set project frame rate to 24 FPS., or both with at 24 FPS. Resizing keeps artwork coordinates and can be refused when stored effects depend on the current size."
+        case .shape?: return "Use the shape examples below. Line/rectangle endpoints and circle centers use canvas percentages. Circle radius, stroke size and rectangle corner radius use document pixels. The whole shape must fit inside the canvas; the layer must be visible with Free or Alpha lock."
         case .brushStroke?: return "Use Draw a round brush line from (10%, 20%) to (90%, 20%) in #000000, size 6 px, opacity 100%. Gradient needs in #RRGGBB to #RRGGBB. Size 1–50 px; the active layer must be visible and not fully or position-locked."
         case .areaSelection?: return "Use \(SpatterAreaSelectInstruction.example) or a polygon of 3–32 points. Only drawings on visible layers locked to Free are selected."
         case .wandSelection?: return "Use \(SpatterWandSelectInstruction.optionsExample) Tolerance 0–128; the active layer must be a visible drawing layer locked to Free or Position."
+        case .librarySound?: return "Use Copy Spatter instruction on a Sound Library title, then paste it here. The command keeps the chosen track (1–4) and time (0–1000 seconds). The current account, project, frame, selection and playhead must stay unchanged until the sound is attached."
         case .libraryPicture?: return "Use \(SpatterLibraryPictureInstruction.example) with a picture's title or ID from Add Picture → Image Library. Stop playback first."
         case .projectExport?: return "Use \(SpatterProjectExportInstruction.example) or \(SpatterProjectExportInstruction.gifExample) Save the project first; the export uses the saved revision."
         default: return nil
@@ -129,9 +135,11 @@ struct SpatterMotionRecipePanel: View {
         case .tween?: return SpatterTweenInstruction.example
         case .frameClipboard?: return SpatterFrameClipboardInstruction.copyPasteExample
         case .projectSettings?: return SpatterProjectSettingsInstruction.bothExample
+        case .shape?: return SpatterShapeInstruction.lineExample
         case .brushStroke?: return SpatterBrushStrokeInstruction.example
         case .areaSelection?: return SpatterAreaSelectInstruction.example
         case .wandSelection?: return SpatterWandSelectInstruction.example
+        case .librarySound?: return SpatterLibrarySoundInstruction.example
         case .libraryPicture?: return SpatterLibraryPictureInstruction.example
         case .projectExport?: return SpatterProjectExportInstruction.example
         default: break
@@ -528,9 +536,13 @@ struct SpatterMotionRecipePanel: View {
                         Button("Copy frame and paste after") { draft = SpatterFrameClipboardInstruction.copyPasteExample }
                         Button("Copy frame") { draft = SpatterFrameClipboardInstruction.copyExample }
                         Button("Paste frame after active frame") { draft = SpatterFrameClipboardInstruction.pasteExample }
+                        Button("Add licensed Impact Metal sound") { draft = SpatterLibrarySoundInstruction.example }
                         Button("Project size") { draft = SpatterProjectSettingsInstruction.sizeExample }
                         Button("Project frame rate") { draft = SpatterProjectSettingsInstruction.fpsExample }
                         Button("Project size and frame rate") { draft = SpatterProjectSettingsInstruction.bothExample }
+                        ForEach(SpatterShapeInstruction.Kind.allCases, id: \.rawValue) { kind in
+                            Button("Shape: \(kind.rawValue)") { draft = SpatterShapeInstruction.example(kind) }
+                        }
                         ForEach(StudioBrushFamily.allCases, id: \.rawValue) { family in
                             Button("Brush: \(SpatterBrushStrokeInstruction.name(family))") { draft = SpatterBrushStrokeInstruction.example(family) }
                         }
@@ -698,6 +710,7 @@ struct SpatterMotionRecipePanel: View {
         .onAppear {
             isVisible = true; isForeground = scenePhase == .active
             session.libraryPictureResolver = SpatterLibraryPictureSource.resolve
+            session.librarySoundResolver = SpatterLibrarySoundSource.resolve
         }
         .onDisappear { isVisible = false; session.close() }
         .onChange(of: session.exportHandoff) { _ in startHandedOffExport() }
@@ -737,6 +750,17 @@ enum SpatterLibraryPictureSource {
         guard imported.originalData == expected else { throw StudioImageCatalogue.CatalogueError.invalid }
         imported.catalogueAttribution = try catalogue.attribution(for: image)
         return imported
+    }
+}
+
+/// No user/provider path or URL is accepted: a strict ID resolves only against
+/// the installed licensed catalogue, then the manual library's importer runs.
+enum SpatterLibrarySoundSource {
+    @MainActor
+    static func resolve(_ instruction: SpatterLibrarySoundInstruction) async throws -> StudioCatalogueSoundSource.Prepared {
+        let catalogue = try await StudioSoundCatalogue.loadBundled()
+        let sound = try instruction.resolve(in: catalogue.sounds, id: \.id)
+        return try await StudioCatalogueSoundSource.prepare(sound, catalogue: catalogue)
     }
 }
 

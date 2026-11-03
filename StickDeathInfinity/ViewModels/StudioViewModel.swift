@@ -3089,11 +3089,14 @@ final class StudioViewModel: ObservableObject {
                               height: canvasOffset.height + (anchor.y - viewport.height / 2) * delta)
         canvasScale = scale
     }
-    /// The Files session must decode with StudioAudioImportService first. These
+    /// Files and Sound Library callers must decode with StudioAudioImportService first. These
     /// are ownership/metadata checks, not an independent codec validation claim.
+    /// An explicit timeline time shares the same atomic publication and may
+    /// additionally require that the user has not scrubbed since capture.
     @discardableResult
     func attachImportedAudio(_ track: AudioTrack, expectedProjectID: UUID, expectedRevision: Int,
                              frameID: String, trackNumber: Int, atPlayhead: Double? = nil,
+                             atTime: Double? = nil, expectedPlayhead: Double? = nil,
                              videoMapping: StudioVideoSourceMapping? = nil,
                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
         try checkCancellation()
@@ -3123,7 +3126,17 @@ final class StudioViewModel: ObservableObject {
                 throw StudioDocumentError.unavailable("The audio playhead changed. Add the sound again at the current position.")
             }
         }
-        let insertionTime = atPlayhead ?? Double(document.startTick(ofFrame: frame)) / Double(fps)
+        if let atTime {
+            guard atPlayhead == nil, atTime.isFinite, (0...1000).contains(atTime), videoMapping == nil else {
+                throw StudioDocumentError.invalid("The explicit audio placement is invalid. No audio was added.")
+            }
+        }
+        if let expectedPlayhead {
+            guard expectedPlayhead.isFinite, (0...1000).contains(expectedPlayhead), audioPlayheadTime == expectedPlayhead else {
+                throw StudioDocumentError.unavailable("The audio playhead changed. Add the sound again in the current editor.")
+            }
+        }
+        let insertionTime = atTime ?? atPlayhead ?? Double(document.startTick(ofFrame: frame)) / Double(fps)
         let clipboardVersion = editor.clipboardVersion, selectedIDs = editor.selectedElementIDs
         let selectedClipID = selectedAudioClip?.id
         let clip = AudioClip(id: UUID().uuidString, soundName: track.name, track: trackNumber,
@@ -3148,7 +3161,8 @@ final class StudioViewModel: ObservableObject {
               document.id == expectedProjectID, document.revision == expectedRevision,
               document.activeFrameID == frameID, editor.clipboardVersion == clipboardVersion,
               editor.selectedElementIDs == selectedIDs, selectedAudioClip?.id == selectedClipID,
-              atPlayhead == nil || audioPlayheadTime == atPlayhead else {
+              atPlayhead == nil || audioPlayheadTime == atPlayhead,
+              expectedPlayhead == nil || audioPlayheadTime == expectedPlayhead else {
             throw StudioDocumentError.unavailable("The editor changed before the audio could be attached. No audio was added.")
         }
         // Publish the bytes and the single undoable document edit together.

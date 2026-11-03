@@ -7,8 +7,11 @@
 //   billing:   web checkout (#271). null until the owner deploys the stripe-checkout
 //              function (backend/billing/stripe_checkout.py) in test mode. Shape:
 //              { checkoutURL: '<backendURL>/functions/v1/stripe-checkout',
-//                products: { creator: 'sdi.creator.monthly.web', pro: 'sdi.pro.monthly.web' },
+//                products: { creator: 'sdi.creator.monthly.web', pro: 'sdi.pro.monthly.web',
+//                            unlimited: 'sdi.unlimited.monthly.web' },
 //                creditPacks: [{ id: '<approved Stripe credit pack id>', label: '100 Spatter credits' }] }
+//              Product IDs must be approved by the backend catalogue. Leave unlimited
+//              absent until configured; its button stays disabled while other plans work.
 //              The function holds the Stripe secret key server-side; this file never does.
 //              With billing null the page says web checkout is not available yet.
 window.SDI_ACCOUNT_CONFIG = {

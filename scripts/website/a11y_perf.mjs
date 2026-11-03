@@ -309,6 +309,54 @@ async function main() {
     const formStatus = await accountPage.locator('#account-form-status').textContent();
     record('account sign-in validates locally before any request', formStatus.includes('at least 8 characters') && accountRequests.every((u) => u.startsWith(base)), formStatus, 'account.html@390x844');
     await accountContext.close();
+    // Checkout uses an isolated fake transport. No Supabase or Stripe request
+    // leaves the harness; hosted URLs are deliberately absent from the response.
+    for (const includeUnlimited of [false, true]) {
+      const fixtureContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+      const fixturePage = await fixtureContext.newPage();
+      const fixtureBackend = 'https://sdi-billing-fixture.example';
+      const products = { creator: 'sdi.creator.monthly.web', pro: 'sdi.pro.monthly.web' };
+      if (includeUnlimited) products.unlimited = 'sdi.unlimited.monthly.web';
+      const posted = [];
+      await fixtureContext.route(base + 'account-config.js', (route) => route.fulfill({
+        status: 200, contentType: 'application/javascript',
+        body: 'window.SDI_ACCOUNT_CONFIG = ' + JSON.stringify({ backendURL: fixtureBackend,
+          publishableKey: 'sb_publishable_fixture_1234567890', providers: [],
+          billing: { checkoutURL: fixtureBackend + '/functions/v1/stripe-checkout', products, creditPacks: [] } }) + ';'
+      }));
+      await fixtureContext.route(fixtureBackend + '/**', async (route) => {
+        const request = route.request(), pathname = new URL(request.url()).pathname;
+        const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'apikey,authorization,content-type', 'access-control-allow-methods': 'GET,POST,OPTIONS' };
+        if (request.method() === 'OPTIONS') { await route.fulfill({ status: 204, headers }); return; }
+        let body = {};
+        if (pathname === '/auth/v1/token') body = { access_token: 'account-fixture-token', refresh_token: 'fixture-refresh', expires_in: 3600, user: { email: 'billing@example.invalid' } };
+        else if (pathname === '/rest/v1/users') body = [{ username: 'fixture', subscription_tier: 'free' }];
+        else if (pathname === '/functions/v1/stripe-checkout') { posted.push({ body: request.postDataJSON(), token: request.headers().authorization }); body = { url: null }; }
+        await route.fulfill({ status: 200, contentType: 'application/json', headers, body: JSON.stringify(body) });
+      });
+      const fixtureScope = 'account checkout ' + (includeUnlimited ? 'three configured plans' : 'legacy two-plan config');
+      await fixturePage.goto(base + 'account.html', { waitUntil: 'load' });
+      await fixturePage.fill('#account-email', 'billing@example.invalid'); await fixturePage.fill('#account-password', 'fixture-password');
+      await fixturePage.click('#account-form button[type=submit]');
+      await fixturePage.waitForFunction(() => !document.querySelector('#plans-actions').hidden && !document.querySelector('#plans-creator').disabled);
+      const states = await fixturePage.evaluate(() => ({ creator: document.querySelector('#plans-creator').disabled,
+        pro: document.querySelector('#plans-pro').disabled, unlimited: document.querySelector('#plans-unlimited').disabled,
+        status: document.querySelector('#plans-status').textContent }));
+      record('Unlimited follows its configured product without disabling existing plans', !states.creator && !states.pro && states.unlimited === !includeUnlimited &&
+        (includeUnlimited || states.status.includes('Unlimited checkout is not available yet')), JSON.stringify(states), fixtureScope);
+      await fixturePage.click(includeUnlimited ? '#plans-unlimited' : '#plans-creator');
+      await fixturePage.waitForFunction(() => document.querySelector('#plans-status').textContent.includes('did not return a payment page'));
+      const plan = await fixturePage.locator('#profile-plan').textContent();
+      record('checkout sends the selected approved product, own session and safe return without granting a plan', posted.length === 1 &&
+        posted[0].body.action === 'checkout' && posted[0].body.product_id === (includeUnlimited ? products.unlimited : products.creator) &&
+        posted[0].body.return_url === base + 'account.html' && posted[0].token === 'Bearer account-fixture-token' && plan.includes('Free'),
+        JSON.stringify({ posted, plan }), fixtureScope);
+      await fixturePage.click('#profile-signout');
+      await fixturePage.waitForFunction(() => document.querySelector('#plans-actions').hidden && document.querySelector('#plans-unlimited').disabled);
+      const signedOutCheckout = await fixturePage.evaluate(() => ({ hidden: document.querySelector('#plans-actions').hidden, disabled: document.querySelector('#plans-unlimited').disabled }));
+      record('signing out hides checkout and disables Unlimited', signedOutCheckout.hidden && signedOutCheckout.disabled, JSON.stringify(signedOutCheckout), fixtureScope);
+      await fixtureContext.close();
+    }
     // store.html "coming soon" (owner decision 2026-10-15). Default config (enabled:false):
     // concepts without prices or cart, "Voting opens soon", every control disabled, no number, no external request.
     const storeContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const storePage = await storeContext.newPage();

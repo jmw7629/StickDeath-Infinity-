@@ -388,6 +388,106 @@ private enum Golden {
                 var locked = doc; locked.layers[0].lockMode = "position"
                 try rejects("position-locked layer") { _ = try SpatterBrushStrokeInstruction.parse(SpatterBrushStrokeInstruction.example).prepare(in: StudioCommandContext(document: locked)) }
             }
+            try test("library sound instructions accept only catalogue IDs and explicit bounded timing and lanes") {
+                let parsed = try SpatterLibrarySoundInstruction.parse(SpatterLibrarySoundInstruction.example)
+                try require(parsed.track == 2 && parsed.startSeconds == 0 && parsed.assetID.count == 64
+                    && SpatterInstructionRouter.classify(SpatterLibrarySoundInstruction.example) == .librarySound
+                    && !SpatterInstructionRouter.Kind.librarySound.isContextOnly, "Library sound grammar/routing wrong")
+                struct Entry { let id: String }
+                try require(try parsed.resolve(in: [Entry(id: parsed.assetID)], id: \.id).id == parsed.assetID, "Exact library sound ID did not resolve")
+                try rejects("unknown sound") { _ = try parsed.resolve(in: [Entry](), id: \.id) }
+                try rejects("duplicate sound") { _ = try parsed.resolve(in: [Entry(id: parsed.assetID), Entry(id: parsed.assetID)], id: \.id) }
+                let precise = SpatterLibrarySoundInstruction(assetID: parsed.assetID, track: 4, startSeconds: 0.00000001)
+                guard let copied = precise.instructionText else { throw Failure(message: "No copyable sound instruction") }
+                try require(try SpatterLibrarySoundInstruction.parse(copied) == precise, "Copied instruction lost small decimal timing")
+                for text in [
+                    SpatterLibrarySoundInstruction.example + " Export project as MP4.",
+                    SpatterLibrarySoundInstruction.example.replacingOccurrences(of: "track 2", with: "track 5"),
+                    SpatterLibrarySoundInstruction.example.replacingOccurrences(of: "at 0", with: "at -1"),
+                    SpatterLibrarySoundInstruction.example.replacingOccurrences(of: "at 0", with: "at 1001"),
+                    SpatterLibrarySoundInstruction.example.replacingOccurrences(of: "at 0", with: "at NaN"),
+                    "Add library sound /etc/passwd to track 2 at 0 seconds.",
+                    "Add library sound https://example.com/sound.wav to track 2 at 0 seconds.",
+                    "Add library sound Impact Metal to track 2 at 0 seconds."
+                ] { try rejects(text) { _ = try SpatterLibrarySoundInstruction.parse(text) } }
+                try rejects("audio attachment inside context-only batch") {
+                    _ = try SpatterInstructionBatch.parse(SpatterLibrarySoundInstruction.example + "\nAdd blank frame.")
+                }
+                try require(SpatterStudioControlRegistry.control(forPanel: "soundLibrary")?.grammars == ["librarySound"]
+                    && SpatterInstructionPreview.plan(SpatterLibrarySoundInstruction.example, context: nil).contains("track 2 at 0 seconds"), "Sound route or factual preview missing")
+            }
+            try test("single shape instructions draw editable geometry through the real executor and reverse in one Undo") {
+                let doc = try document(width: 320, height: 640), context = StudioCommandContext(document: doc)
+                for kind in SpatterShapeInstruction.Kind.allCases {
+                    let text = SpatterShapeInstruction.example(kind), shape = try SpatterShapeInstruction.parse(text)
+                    try require(shape.kind == kind && SpatterInstructionRouter.classify(text) == .shape, "Shape example routed incorrectly")
+                    var editor = try StudioDocumentEditor(document: doc)
+                    let receipt = try execute(shape.prepare(in: context), on: &editor)
+                    guard let drawn = editor.document.frames[0].elements.last else { throw Failure(message: "No shape drawn") }
+                    try require(receipt.createdElementIDs == [drawn.id] && drawn.tool == kind.tool
+                        && drawn.layerID == doc.activeLayerID && editor.document.frames.count == 1
+                        && editor.document.frames[0].elements.count == 2 && drawn.color == shape.color
+                        && Double(drawn.width) == shape.size && drawn.opacity == shape.opacity, "Shape changed the wrong target or settings")
+                    if kind == .circle {
+                        try require(drawn.points == [.init(x: 140, y: 300), .init(x: 180, y: 340)]
+                            && drawn.shape?.fillColor == "#FF0000", "Circle became distorted on a portrait canvas")
+                    } else if kind == .rectangle {
+                        try require(drawn.points == [.init(x: 64, y: 128), .init(x: 256, y: 448)]
+                            && drawn.shape?.fillColor == "#FF0000" && drawn.shape?.cornerRadius == 8, "Rectangle geometry/fill/corners lost")
+                    } else {
+                        try require(drawn.points == [.init(x: 32, y: 128), .init(x: 288, y: 448)] && drawn.shape == nil, "Line endpoints changed")
+                    }
+                    let changed = editor.document
+                    editor.undo(); try require(content(editor.document) == content(doc), "One Undo did not remove the whole shape")
+                    editor.redo(); try require(content(editor.document) == content(changed), "Redo changed shape identity or settings")
+                    let preview = SpatterInstructionPreview.plan(text, context: context)
+                    try require(preview.contains(shape.summary) && preview.contains("1× draw") && preview.contains("Nothing has changed"), "Shape preview omitted real settings")
+                }
+                let batch = try SpatterInstructionBatch.parse(SpatterShapeInstruction.lineExample + "\n" + SpatterShapeInstruction.lineExample)
+                var editor = try StudioDocumentEditor(document: doc)
+                let receipt = try execute(batch.prepare(in: context), on: &editor)
+                try require(receipt.createdElementIDs.count == 2 && Set(receipt.createdElementIDs).count == 2
+                    && editor.document.frames[0].elements.count == 3, "Repeated shape batch reused an identity")
+                editor.undo(); try require(content(editor.document) == content(doc), "Shape batch was not one Undo step")
+            }
+            try test("shape grammars reject invalid geometry injection locks cancellation and stale revisions without mutation") {
+                for text in [
+                    SpatterShapeInstruction.lineExample + " Delete active layer.",
+                    "Draw a line from (10%, 20%) to (90%, 70%) in #FF0000, size 6 px, opacity 100%, fill #FFFFFF.",
+                    "Draw a rectangle from (20%, 20%) to (20%, 70%) in #000000, size 3 px, opacity 100%.",
+                    "Draw a rectangle from (20%, 20%) to (80%, 70%) in #000000, size 3 px, opacity 100%, radius 51 px.",
+                    "Draw a circle centered at (50%, 50%), radius 0 px, in #000000, size 3 px, opacity 100%.",
+                    "Draw a circle centered at (50%, 50%), radius NaN px, in #000000, size 3 px, opacity 100%.",
+                    "Draw a line from (-1%, 20%) to (90%, 70%) in #FF0000, size 6 px, opacity 100%.",
+                    "Draw a line from (10%, 20%) to (90%, 70%) in #FF0000, size 51 px, opacity 100%."
+                ] { try rejects(text) { _ = try SpatterShapeInstruction.parse(text) } }
+                let doc = try document(), instruction = try SpatterShapeInstruction.parse(SpatterShapeInstruction.lineExample)
+                for mode in ["full", "position"] {
+                    var locked = doc; locked.layers[0].lockMode = mode
+                    try rejects(mode) { _ = try instruction.prepare(in: StudioCommandContext(document: locked)) }
+                }
+                var hidden = doc; hidden.layers[0].visible = false
+                try rejects("hidden") { _ = try instruction.prepare(in: StudioCommandContext(document: hidden)) }
+                let outside = try SpatterShapeInstruction.parse("Draw a circle centered at (0%, 0%), radius 20 px, in #000000, size 3 px, opacity 100%.")
+                try rejects("outside circle") { _ = try outside.prepare(in: StudioCommandContext(document: doc)) }
+                for boundary in 1...2 {
+                    var checks = 0
+                    try rejects("cancelled preparation") {
+                        _ = try instruction.prepare(in: StudioCommandContext(document: doc), checkCancellation: {
+                            checks += 1; if checks == boundary { throw CancellationError() }
+                        })
+                    }
+                }
+                var editor = try StudioDocumentEditor(document: doc)
+                let stale = try instruction.prepare(in: StudioCommandContext(document: doc))
+                _ = try execute(.init(requestID: UUID(), projectID: doc.id, expectedRevision: doc.revision,
+                    action: .apply([.renameProject(.init(name: "Later"))])), on: &editor)
+                let held = editor.document
+                try rejects("stale shape") { _ = try execute(stale, on: &editor) }
+                try require(editor.document == held, "Stale shape overwrote a later edit")
+                try require(SpatterInstructionRouter.classify(SpatterBrushStrokeInstruction.example) == .brushStroke,
+                    "Single shape stole a brush instruction")
+            }
             try test("batches apply several context-only instructions as one revision and fail closed as a whole") {
                 let doc = try document(frames: 2)
                 let context = StudioCommandContext(document: doc)
@@ -500,6 +600,7 @@ private enum Golden {
                     && SpatterStudioControlRegistry.control(for: .move)?.grammars.contains("selectByID") == true
                     && SpatterStudioControlRegistry.control(forPanel: "spatterAI")?.grammars.contains("sourceReference") == true, "New grammars unreachable")
                 try require(SpatterStudioControlRegistry.control(for: .brush)?.grammars == ["brushStroke"]
+                    && [DrawingTool.line, .rectangle, .circle].allSatisfy { SpatterStudioControlRegistry.control(for: $0)?.grammars == ["shape"] }
                     && SpatterStudioControlRegistry.control(for: .pencil)?.grammars.isEmpty == true
                     && SpatterStudioControlRegistry.control(for: .hand)?.grammars.isEmpty == true, "Tool routes overclaim or underclaim")
                 // Catalog v5 (#204): selections, Image Library pictures and export have typed routes;
@@ -579,9 +680,9 @@ private enum Golden {
                     "drawingDuplicate": .drawingDuplicate, "artworkOrder": .artworkOrder, "selectionTranslate": .selectionTranslate, "selectionTransform": .selectionTransform,
                     "selectionReflect": .selectionReflect, "imageReflection": .imageReflection, "imageRotation": .imageRotation, "imageCrop": .imageCrop,
                     "imagePlacement": .imagePlacement, "textUpdate": .textUpdate, "audioClip": .audioClip, "audioTrack": .audioTrack,
-                    "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "batch": .batch,
+                    "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "shape": .shape, "batch": .batch,
                     "fill": .fill, "selectByID": .selectByID, "sourceReference": .sourceReference,
-                    "areaSelection": .areaSelection, "wandSelection": .wandSelection, "libraryPicture": .libraryPicture, "projectExport": .projectExport]
+                    "areaSelection": .areaSelection, "wandSelection": .wandSelection, "libraryPicture": .libraryPicture, "librarySound": .librarySound, "projectExport": .projectExport]
                 for grammar in SpatterInstructionCatalog.grammars {
                     guard let kind = names[grammar.name] else { throw Failure(message: "Catalog grammar \(grammar.name) has no router kind") }
                     for example in grammar.examples {
@@ -835,7 +936,7 @@ private enum Golden {
                 try require(StudioSharedEdit.drawCommands(before: seed, after: moved, frameID: frameID) == nil, "Unrepresentable touch commit claimed shareable")
             }
             try test("catalog v5 selection picture and export grammars parse exactly and refuse injection and malformed input") {
-                try require(SpatterInstructionCatalog.version == 5 && SpatterInstructionCatalog.grammars.count == 44, "Catalog v5 not registered")
+                try require(SpatterInstructionCatalog.version == 7 && SpatterInstructionCatalog.grammars.count == 46, "Catalog v7 not registered")
                 // Area (Lasso) selection.
                 let rect = try SpatterAreaSelectInstruction.parse(SpatterAreaSelectInstruction.example)
                 try require(rect.isRectangle && rect.vertices == [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 90)]

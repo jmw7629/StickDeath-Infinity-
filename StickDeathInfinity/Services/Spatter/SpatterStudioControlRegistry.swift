@@ -72,9 +72,9 @@ enum SpatterStudioControlRegistry {
         .init(id: "tool.pen", surface: .toolbar, title: "Pen", route: .manual(freehandNote)),
         .init(id: "tool.marker", surface: .toolbar, title: "Marker", route: .manual(freehandNote)),
         .init(id: "tool.crayon", surface: .toolbar, title: "Crayon", route: .manual(freehandNote)),
-        .init(id: "tool.line", surface: .toolbar, title: "Line", route: .manual("Draw single lines directly. Spatter's stick-figure and brief instructions generate whole frames of lines on new layers instead.")),
-        .init(id: "tool.rectangle", surface: .toolbar, title: "Rect", route: .manual("Draw rectangles directly; Spatter has no rectangle instruction.")),
-        .init(id: "tool.circle", surface: .toolbar, title: "Circle", route: .manual("Draw single circles directly. Spatter's circle-motion instruction appends whole frames of a moving circle on a new layer instead.")),
+        .init(id: "tool.line", surface: .toolbar, title: "Line", route: .instructions(["shape"])),
+        .init(id: "tool.rectangle", surface: .toolbar, title: "Rect", route: .instructions(["shape"])),
+        .init(id: "tool.circle", surface: .toolbar, title: "Circle", route: .instructions(["shape"])),
         .init(id: "tool.fill", surface: .toolbar, title: "Fill", route: .instructions(["fill"])),
         .init(id: "tool.gradient", surface: .toolbar, title: "Gradient", route: .manual(pixelToolNote)),
         .init(id: "tool.eyedropper", surface: .toolbar, title: "Dropper", route: .manual("Sampling a color reads the canvas under your finger; give colors to Spatter as #RRGGBB instead.")),
@@ -108,7 +108,7 @@ enum SpatterStudioControlRegistry {
         .init(id: "panel.framesViewer", surface: .panel, title: "Frames", route: .instructions([
             "frameAction", "frameCut", "frameExposure", "frameReverse", "frameDuplicateRange", "frameClipboard", "tween", "navigation"])),
         .init(id: "panel.audioTimeline", surface: .panel, title: "Audio timeline", route: .instructions(["audioClip", "audioTrack"])),
-        .init(id: "panel.soundLibrary", surface: .panel, title: "Sound library", route: .manual("You choose, preview and add licensed sounds yourself; Spatter edits clips already on the timeline.")),
+        .init(id: "panel.soundLibrary", surface: .panel, title: "Sound library", route: .instructions(["librarySound"])),
         .init(id: "panel.stickerEmoji", surface: .panel, title: "Stickers", route: .manual("Stickers are placed by touch.")),
         // Files, Photos and the camera stay with you: no instruction names a path,
         // URL or Photos item, and Spatter never opens those pickers itself.
@@ -311,11 +311,13 @@ struct SpatterContextSnapshot: Codable, Equatable {
             guard activeFrameNumber != nil, activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "position" else {
                 return .needs("Show the active drawing layer and set its lock to Free or Position.")
             }
+        case "librarySound":
+            guard activeFrameNumber != nil else { return .needs("Open the project frame before adding a library sound.") }
         case "libraryPicture":
             guard activeLayerVisible, activeLayerLockMode != "full" else { return .needs("Show and unlock the active layer.") }
         case "projectExport":
             guard !isDirty else { return .needs("Save the project first; export uses the saved revision.") }
-        case "brushStroke":
+        case "brushStroke", "shape":
             guard activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "alpha" else { return .needs("Show and unlock the active layer.") }
         default: break
         }

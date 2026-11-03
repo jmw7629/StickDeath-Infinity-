@@ -105,8 +105,11 @@ begin
  perform sdi_test.check((r->>'possible_duplicate')::boolean,'same amount and day flagged as a possible duplicate');
  r:=sdi_private.finance_record('expense',ref=>'neg',amount_minor=>-5,currency=>'USD',occurred_at=>clock_timestamp(),reason=>'Bad.');
  perform sdi_test.check(r ? 'error','negative expense amount refused');
- r:=sdi_private.finance_record('import',reason=>'Provider fee statement.',rows=>'[{"ref":"fee-1","kind":"fee","amount_minor":-30,"currency":"USD","occurred_at":"2026-10-01T00:00:00Z"},
-  {"ref":"fee-1","kind":"fee","amount_minor":-30,"currency":"USD","occurred_at":"2026-10-01T00:00:00Z"},{"ref":"bad","kind":"charge","amount_minor":"1","currency":"USD","occurred_at":"x"}]');
+ -- Keep the valid fee inside the report's rolling 30-day window on every run.
+ r:=sdi_private.finance_record('import',reason=>'Provider fee statement.',rows=>jsonb_build_array(
+  jsonb_build_object('ref','fee-1','kind','fee','amount_minor',-30,'currency','USD','occurred_at',clock_timestamp()-interval '2 days'),
+  jsonb_build_object('ref','fee-1','kind','fee','amount_minor',-30,'currency','USD','occurred_at',clock_timestamp()-interval '2 days'),
+  jsonb_build_object('ref','bad','kind','charge','amount_minor','1','currency','USD','occurred_at','x')));
  perform sdi_test.check((r->>'added')::integer=1 and (r->>'duplicates')::integer=1 and jsonb_array_length(r->'rejected')=1,'import counts added, duplicate and rejected rows: '||r::text);
  r:=sdi_private.finance_record('correct',entry=>entry,amount_minor=>500,note=>'Credit applied by host.',reason=>'Invoice corrected.');
  perform sdi_test.check(r->>'status'='recorded' and (select corrects from sdi_private.finance_ledger where id=(r->>'entry')::uuid)=entry,'correction links to the original');

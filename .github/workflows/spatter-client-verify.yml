@@ -1972,6 +1972,9 @@ jobs:
             StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \

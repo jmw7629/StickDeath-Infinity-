@@ -51,7 +51,7 @@ rm -rf "$DATA"
 "${AS_PG[@]}" "$PGBIN/initdb" -D "$DATA" -A trust -U postgres --no-instructions >"$WORK/initdb.log" 2>&1 \
  || { cat "$WORK/initdb.log" >&2; exit 1; }
 "${AS_PG[@]}" "$PGBIN/pg_ctl" -D "$DATA" -w -s -l "$LOG" \
- -o "-k $SOCKET_DIR -p $PORT -c listen_addresses='' -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c log_min_messages=warning" start \
+ -o "-k $SOCKET_DIR -p $PORT -c listen_addresses='' -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c log_min_messages=warning -c sdi.test_cluster=1" start \
  || { cat "$LOG" >&2; exit 1; }
 PSQL=("$PGBIN/psql" -X -q -v ON_ERROR_STOP=1 -h "$SOCKET_DIR" -p "$PORT" -U postgres -d postgres)
 "${PSQL[@]}" -c "select version();" -tA
@@ -79,7 +79,7 @@ echo "== applied ${#ORDER[@]} candidate files"
 # command against the freshly applied cluster. SDI_SQL_SKIP_TESTS=1 skips the suite.
 if [ -n "${SDI_SQL_AFTER:-}" ]; then
  echo "== after-apply hook: $(basename "$SDI_SQL_AFTER")"
- SDI_PGBIN="$PGBIN" SDI_PGHOST="$SOCKET_DIR" SDI_PGPORT="$PORT" SDI_WORK="$WORK" bash "$SDI_SQL_AFTER" || { echo "after-apply hook failed" >&2; exit 1; }
+ SDI_SQL_TEST_CLUSTER=1 SDI_PGBIN="$PGBIN" SDI_PGHOST="$SOCKET_DIR" SDI_PGPORT="$PORT" SDI_WORK="$WORK" bash "$SDI_SQL_AFTER" || { echo "after-apply hook failed" >&2; exit 1; }
 fi
 if [ "${SDI_SQL_SKIP_TESTS:-0}" = "1" ]; then echo "== sql tests skipped (SDI_SQL_SKIP_TESTS=1)"; exit 0; fi
 
@@ -94,5 +94,14 @@ for test in "$SQL_DIR"/tests/*.sql; do
   echo "FAIL $name"; sed 's/^/    /' "$WORK/$name.out"; failed=$((failed+1)); status=1
  fi
 done
+# Two real provider-delivery sessions plus a controller-held test gate exercise
+# the missing-row race. This helper refuses TCP or an unmarked/live cluster.
+if SDI_SQL_TEST_CLUSTER=1 python3 "$ROOT/scripts/backend/test_billing_concurrency.py" \
+ --psql "$PGBIN/psql" --host "$SOCKET_DIR" --port "$PORT" \
+ >"$WORK/billing-concurrency.out" 2>&1; then
+ echo "PASS billing-concurrency (two concurrent delivery sessions)"; passed=$((passed+1))
+else
+ echo "FAIL billing-concurrency"; sed 's/^/    /' "$WORK/billing-concurrency.out"; failed=$((failed+1)); status=1
+fi
 echo "== sql tests: $passed passed, $failed failed"
 exit $status

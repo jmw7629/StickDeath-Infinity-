@@ -1,5 +1,10 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 struct SoundLibraryPanel: View {
     @ObservedObject var vm: StudioViewModel
@@ -470,6 +475,19 @@ private struct StudioAudioWorkspace: View {
                         .accessibilityIdentifier("studio.audio.catalogue.preview." + sound.id)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(sound.title).font(.specialElite(14)).lineLimit(1)
+                            .contextMenu {
+                                Button("Copy Spatter instruction") {
+                                    let instruction = SpatterLibrarySoundInstruction(assetID: sound.id, track: libraryTrack,
+                                        startSeconds: vm.audioPlayheadTime)
+                                    guard let text = instruction.instructionText else { return }
+                                    #if canImport(UIKit)
+                                    UIPasteboard.general.string = text
+                                    #elseif canImport(AppKit)
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(text, forType: .string)
+                                    #endif
+                                }
+                            }
                         HStack {
                             Text(String(format: "%.2fs", sound.duration)).font(.specialElite(11))
                             MeasuredAudioWaveform(peaks: sound.waveformPeaks, rms: sound.waveformRMS ?? []).frame(width: 56, height: 14)

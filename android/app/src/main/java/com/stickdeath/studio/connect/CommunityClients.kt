@@ -86,6 +86,22 @@ class FeedClient(private val gateway: CommunityGateway) {
     }
 }
 
+/** Bound decoded pixel memory as well as the downloaded JPEG byte count. */
+internal object FeedPosterDecodePolicy {
+    const val MAXIMUM_SOURCE_EDGE = 4096
+    const val MAXIMUM_SOURCE_PIXELS = 4L * 1024 * 1024
+    const val MAXIMUM_DECODED_EDGE = 1024
+
+    fun sampleSize(width: Int, height: Int): Int? {
+        if (width !in 1..MAXIMUM_SOURCE_EDGE || height !in 1..MAXIMUM_SOURCE_EDGE ||
+            width.toLong() * height > MAXIMUM_SOURCE_PIXELS) return null
+        var sample = 1
+        while ((width + sample - 1) / sample > MAXIMUM_DECODED_EDGE ||
+            (height + sample - 1) / sample > MAXIMUM_DECODED_EDGE) sample *= 2
+        return sample
+    }
+}
+
 /**
  * Fetches a feed poster (#217) over HTTPS without account headers, bounded to the server's
  * 256 KiB poster limit, and accepts only a complete JPEG. Null means "show the placeholder".

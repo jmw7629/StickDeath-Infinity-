@@ -63,6 +63,7 @@
     note.textContent = 'This page stores nothing in your browser. Requests go only to the configured backend when you submit a form.';
   }
   async function renderSignedIn() {
+    const started = epoch, token = session.access_token;
     show('account-signin', false); show('account-profile', true);
     const user = session.user || {};
     $('profile-email').textContent = user.email || '(no email)';
@@ -71,11 +72,15 @@
     say(`Signed in as ${user.email || 'your account'}.`, 'Projects stay on your devices; this account carries only identity, access, votes, consents, billing status and job metadata.');
     $('profile-plan').textContent = 'Checking plan status…'; $('profile-handle').textContent = '';
     try {
-      const rows = await call('/rest/v1/users', { method: 'GET', token: session.access_token, query: { select: 'username,role,subscription_tier,onboarded', limit: '1' } });
+      const rows = await call('/rest/v1/users', { method: 'GET', token, query: { select: 'username,role,subscription_tier,onboarded', limit: '1' } });
+      if (started !== epoch || !session || session.access_token !== token) return;
       const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
       $('profile-handle').textContent = row && row.username ? `Handle: ${row.username}` : 'No handle yet: set it in the app during onboarding.';
       $('profile-plan').textContent = row && row.subscription_tier && row.subscription_tier !== 'free' ? `Plan: ${row.subscription_tier} (as recorded by the server)` : 'Plan: Free (as recorded by the server).';
-    } catch (error) { $('profile-plan').textContent = 'Plan status unavailable: the account profile service is not installed yet (the server answered: ' + error.message + ').'; }
+    } catch (error) {
+      if (started !== epoch || !session || session.access_token !== token) return;
+      $('profile-plan').textContent = 'Plan status unavailable: the account profile service is not installed yet (the server answered: ' + error.message + ').';
+    }
     renderPlans(true);
     loadNotices(); loadConsents(); loadSupport();
   }
@@ -263,33 +268,45 @@
     try {
       const u = new URL(b.checkoutURL);
       const idOk = (v) => typeof v === 'string' && /^[a-z0-9._-]{1,200}$/.test(v);
-      if (u.origin !== base || u.search || u.hash || !b.products || !idOk(b.products.creator) || !idOk(b.products.pro)) return null;
+      if (u.origin !== base || u.username || u.password || u.search || u.hash || !b.products || !idOk(b.products.creator) || !idOk(b.products.pro)) return null;
       const packs = Array.isArray(b.creditPacks) ? b.creditPacks.filter((p) => p && idOk(p.id) && typeof p.label === 'string' && p.label.length <= 60) : [];
-      return { url: u.href, creator: b.products.creator, pro: b.products.pro, packs };
+      const unlimited = idOk(b.products.unlimited) && ![b.products.creator, b.products.pro].includes(b.products.unlimited) ? b.products.unlimited : null;
+      return { url: u.href, creator: b.products.creator, pro: b.products.pro, unlimited, packs };
     } catch (_) { return null; }
   })();
   const plansStatus = (t) => { $('plans-status').textContent = t; };
   async function startCheckout(body, button) {
     if (!session || !billing) return;
+    if (body.action === 'checkout' && ![billing.creator, billing.pro, billing.unlimited].filter(Boolean).includes(body.product_id)) return;
+    const started = epoch, token = session.access_token;
+    let navigating = false;
     button.disabled = true; plansStatus('Opening the payment page…');
     try {
-      const data = await call(billing.url, { token: session.access_token, body: { ...body, return_url: location.origin + location.pathname } });
+      const data = await call(billing.url, { token, body: { ...body, return_url: location.origin + location.pathname } });
+      if (started !== epoch || !session || session.access_token !== token) return;
       let target = null; try { target = data && typeof data.url === 'string' ? new URL(data.url) : null; } catch (_) { target = null; }
-      if (target && target.protocol === 'https:' && (target.hostname === 'checkout.stripe.com' || target.hostname === 'billing.stripe.com')) { location.assign(target.href); return; }
+      if (target && target.protocol === 'https:' && !target.username && !target.password && !target.port && (target.hostname === 'checkout.stripe.com' || target.hostname === 'billing.stripe.com')) { location.assign(target.href); navigating = true; return; }
       plansStatus('The checkout service did not return a payment page. Nothing was charged.');
-    } catch (error) { plansStatus(`Checkout is not available right now (${error.message}). Nothing was charged.`); }
-    button.disabled = false;
+    } catch (error) {
+      if (started === epoch) plansStatus(`Checkout is not available right now (${error.message}). Nothing was charged.`);
+    } finally {
+      if (started === epoch && !navigating) button.disabled = false;
+    }
   }
   function renderPlans(signedIn) {
+    signedIn = signedIn && !!session;
     show('plans-actions', signedIn && !!billing);
+    for (const tier of ['creator', 'pro', 'unlimited']) $('plans-' + tier).disabled = !signedIn || !billing || !billing[tier];
+    $('plans-portal').disabled = !signedIn || !billing;
     if (!billing) { plansStatus('Web checkout is not available yet. Nothing is charged from this website; plans will be sold in the app stores and here once the owner connects them.'); return; }
     if (!signedIn) { plansStatus('Sign in to choose a plan or buy Spatter credits. The payment page shows the price before you pay.'); return; }
-    plansStatus('Payment happens on Stripe\'s page, which shows the price before you pay. Your plan changes only after the payment provider confirms it.');
+    plansStatus('Payment happens on Stripe\'s page, which shows the price before you pay. Your plan changes only after the payment provider confirms it.' + (billing.unlimited ? '' : ' Unlimited checkout is not available yet.'));
     const credits = $('plans-credits'); credits.replaceChildren();
     billing.packs.forEach((pack) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = `Buy ${pack.label}`; b.addEventListener('click', () => startCheckout({ action: 'credits', pack_id: pack.id }, b)); credits.append(b); });
   }
   $('plans-creator').addEventListener('click', (e) => startCheckout({ action: 'checkout', product_id: billing && billing.creator }, e.currentTarget));
   $('plans-pro').addEventListener('click', (e) => startCheckout({ action: 'checkout', product_id: billing && billing.pro }, e.currentTarget));
+  $('plans-unlimited').addEventListener('click', (e) => startCheckout({ action: 'checkout', product_id: billing && billing.unlimited }, e.currentTarget));
   $('plans-portal').addEventListener('click', (e) => startCheckout({ action: 'portal' }, e.currentTarget));
   const checkoutReturn = new URLSearchParams(location.search).get('checkout');
   if (checkoutReturn) history.replaceState(null, '', location.pathname + location.hash);

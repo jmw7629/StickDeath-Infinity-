@@ -4654,10 +4654,27 @@ final class StudioSmokeUITests: XCTestCase {
     /// These completion checks need one-shot playback; Studio defaults to looping.
     @MainActor
     private func disableDefaultAudioLoop(_ app: XCUIApplication) throws {
-        app.buttons["studio.audio.timelinePlay"].press(forDuration: 0.7)
+        let play = app.buttons["studio.audio.timelinePlay"]
+        XCTAssertTrue(play.exists && play.isHittable && play.isEnabled)
+        let transportFrame = play.frame
+        play.press(forDuration: 0.7)
         let loop = app.descendants(matching: .any)["studio.audio.loop"].firstMatch
         XCTAssertTrue(loop.waitForExistence(timeout: 5) && loop.isHittable)
         loop.tap()
+        // SwiftUI temporarily reports the lifted context-menu preview as Play.
+        // Wait for the menu to close and the real transport to regain its frame
+        // before callers tap it; hittability alone can describe that preview.
+        let restoredTransport = expectation(for: NSPredicate { _, _ in
+            guard !loop.exists, play.exists, play.isHittable, play.isEnabled else { return false }
+            let frame = play.frame
+            return transportFrame.width > 0 && transportFrame.height > 0
+                && abs(frame.minX - transportFrame.minX) <= 1
+                && abs(frame.minY - transportFrame.minY) <= 1
+                && abs(frame.width - transportFrame.width) <= 1
+                && abs(frame.height - transportFrame.height) <= 1
+        }, evaluatedWith: app)
+        XCTAssertTrue(restoredTransport.waitUntilFulfilled(timeout: 10),
+                      "Audio transport did not return after dismissing the Loop menu")
     }
 
     @MainActor

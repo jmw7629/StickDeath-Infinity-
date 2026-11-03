@@ -23,6 +23,7 @@ final class SpatterStudioEditSession: ObservableObject {
     /// Resolves a libraryPicture instruction to a verified import. The Studio
     /// panel supplies the bundled Image Library; nil means no library here.
     typealias LibraryPictureResolver = @MainActor (SpatterLibraryPictureInstruction) async throws -> StudioImageImportService.ImportedImage
+    typealias LibrarySoundResolver = @MainActor (SpatterLibrarySoundInstruction) async throws -> StudioCatalogueSoundSource.Prepared
     enum SelectionRoute: Equatable { case area, wand }
     enum SaveState: Equatable {
         case unavailable, projectChanged, unsaved, saving, saved
@@ -81,6 +82,7 @@ final class SpatterStudioEditSession: ObservableObject {
         var frameClipboard: SpatterFrameClipboardInstruction? = nil
         var projectSettings: SpatterProjectSettingsInstruction? = nil
         var brushStroke: SpatterBrushStrokeInstruction? = nil
+        var shape: SpatterShapeInstruction? = nil
         /// Content of the frames and layers this edit created, captured right after
         /// apply, so a typed revert can prove they are still untouched later.
         var createdFrames: [AnimationFrame] = []
@@ -96,7 +98,13 @@ final class SpatterStudioEditSession: ObservableObject {
         var selectionRoute: SelectionRoute? = nil
         var selectedDrawingCount: Int = 0
         var libraryPictureName: String? = nil
+        var librarySound: SpatterLibrarySoundInstruction? = nil
+        var librarySoundTitle: String? = nil
+        var librarySoundDuration: Double? = nil
         var summary: String {
+            if let librarySound, let librarySoundTitle, let librarySoundDuration {
+                return "Added licensed Sound Library sound \u{201C}\(librarySoundTitle)\u{201D}, \(String(format: "%.6g", librarySoundDuration)) seconds of verified audio, to track \(librarySound.track) at \(String(format: "%.6g", librarySound.startSeconds)) seconds in one Undo step. Playback, export and publication were not started."
+            }
             if let selectionRoute {
                 let rule = selectionRoute == .area ? "fully inside the outline under the Lasso's rules"
                     : "touched by the Wand's color region (no feather; effects use the drawings' own pixels)"
@@ -145,6 +153,9 @@ final class SpatterStudioEditSession: ObservableObject {
                 let size = projectSettings.width.map { "\($0)×\(projectSettings.height ?? $0) px" }
                 let rate = projectSettings.fps.map { "\($0) FPS" }
                 return "Updated project settings (\([size, rate].compactMap { $0 }.joined(separator: ", "))) in one Undo step. Artwork coordinates are unchanged; audio keeps its time in seconds."
+            }
+            if let shape {
+                return "Drew one editable \(shape.summary) on the active frame and layer in one Undo step. No frames were added or exported."
             }
             if let brushStroke {
                 return "Drew one \(SpatterBrushStrokeInstruction.name(brushStroke.family)) brush stroke on the active layer in one Undo step. It is an editable stroke with its own brush settings."
@@ -301,6 +312,7 @@ final class SpatterStudioEditSession: ObservableObject {
     @Published private(set) var appliedEdit: AppliedEdit?
     @Published private(set) var exportHandoff: ExportHandoff?
     var libraryPictureResolver: LibraryPictureResolver?
+    var librarySoundResolver: LibrarySoundResolver?
     @Published private(set) var isClosed = false
     var isWorking: Bool { status == .preparing }
 
@@ -344,14 +356,19 @@ final class SpatterStudioEditSession: ObservableObject {
         let selectedTool: DrawingTool?
         let activePanel: StudioPanelType
         let isPlaying: Bool
+        /// Only library-sound creation owns a captured playhead; unrelated
+        /// instruction routes keep their existing context contract.
+        let librarySoundPlayhead: Double?
         init(accountID: String?, screen: StudioViewModel.CommandScreenContext, document: StudioCommandContext,
-             selectedImage: StudioViewModel.ImageMoveCapture?, selectedArtwork: StudioViewModel.SelectionHandleCapture?, mixedArtwork: Bool) {
+             selectedImage: StudioViewModel.ImageMoveCapture?, selectedArtwork: StudioViewModel.SelectionHandleCapture?, mixedArtwork: Bool,
+             captureLibrarySoundPlayhead: Bool = false) {
             self.accountID = accountID; projectID = document.projectID; revision = document.revision
             activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
             displayedFrameID = screen.displayedFrameID; selectedElementIDs = screen.selectedElementIDs
             selectedAudioClipID = screen.selectedAudioClipID; selectedTool = screen.selectedTool
             self.selectedImage = selectedImage; self.selectedArtwork = selectedArtwork; self.mixedArtwork = mixedArtwork
             activePanel = screen.activePanel; isPlaying = screen.isPlaying
+            librarySoundPlayhead = captureLibrarySoundPlayhead ? screen.audioPlayheadTime : nil
         }
     }
     private enum SessionError: LocalizedError {
@@ -395,7 +412,8 @@ final class SpatterStudioEditSession: ObservableObject {
         } catch { reject(error); return false }
         guard let document = screen.document else { reject(SessionError.outsideStudio); return false }
         let captured = Capture(accountID: accountID, screen: screen, document: document,
-                               selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork)
+                               selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork,
+                               captureLibrarySoundPlayhead: SpatterLibrarySoundInstruction.isInstruction(draft))
         let started = now()
         let deadline = started.advanced(by: budget)
         acceptedIDs.insert(submissionID)
@@ -462,12 +480,14 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isFrameClipboard = SpatterFrameClipboardInstruction.isInstruction(draft)
                 let isProjectSettings = SpatterProjectSettingsInstruction.isInstruction(draft)
                 let isBrushStroke = SpatterBrushStrokeInstruction.isInstruction(draft)
+                let isShape = SpatterShapeInstruction.isInstruction(draft)
                 var batchSummary: String?
                 var storyboard: SpatterStoryboard?
                 var tweenInstruction: SpatterTweenInstruction?
                 var frameClipboardInstruction: SpatterFrameClipboardInstruction?
                 var projectSettingsInstruction: SpatterProjectSettingsInstruction?
                 var brushStrokeInstruction: SpatterBrushStrokeInstruction?
+                var shapeInstruction: SpatterShapeInstruction?
                 var exposureInstruction: SpatterFrameExposureInstruction?
                 var reverseInstruction: SpatterFrameReverseInstruction?
                 var duplicateRangeInstruction: SpatterFrameDuplicateRangeInstruction?
@@ -492,6 +512,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isAreaSelect = SpatterAreaSelectInstruction.isInstruction(draft)
                 let isWandSelect = SpatterWandSelectInstruction.isInstruction(draft)
                 let isLibraryPicture = SpatterLibraryPictureInstruction.isInstruction(draft)
+                let isLibrarySound = SpatterLibrarySoundInstruction.isInstruction(draft)
                 let isProjectExport = SpatterProjectExportInstruction.isInstruction(draft)
                 var selectionRoute: SelectionRoute?
                 var selectedCount = 0
@@ -506,6 +527,12 @@ final class SpatterStudioEditSession: ObservableObject {
                                                               revision: document.revision, accountID: captured.accountID), format: format)
                     self.status = .handedOff
                     self.notice = "Starting Studio's direct \(format.rawValue.uppercased()) export of saved revision \(document.revision) to a file on this device. The project did not change; nothing is uploaded, shared or published."
+                    return
+                } else if !isBatch && isLibrarySound {
+                    let result = try await self.addLibrarySound(draft, document: document, captured: captured, studio: studio,
+                        submissionID: submissionID, check: check, currentScope: currentScope)
+                    self.appliedAccountID = captured.accountID
+                    self.appliedEdit = result; self.status = .applied; self.notice = result.summary
                     return
                 } else if !isBatch && isLibraryPicture {
                     let result = try await self.addLibraryPicture(draft, document: document, captured: captured, studio: studio,
@@ -738,6 +765,11 @@ final class SpatterStudioEditSession: ObservableObject {
                     let instruction = try SpatterProjectSettingsInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
                     projectSettingsInstruction = instruction
+                } else if isShape {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before drawing with Spatter.") }
+                    let instruction = try SpatterShapeInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    shapeInstruction = instruction
                 } else if isBrushStroke {
                     guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before drawing with Spatter.") }
                     let instruction = try SpatterBrushStrokeInstruction.parse(draft)
@@ -825,7 +857,7 @@ final class SpatterStudioEditSession: ObservableObject {
                     selectionTranslate: selectionTranslate, selectionTransform: selectionTransform, selectionReflectAxis: selectionReflectAxis,
                     imageRotation: imageRotation, imageCrop: imageCrop, imagePlacement: imagePlacement, textUpdate: textUpdate,
                     storyboard: storyboard, batchSummary: batchSummary, tween: tweenInstruction, frameClipboard: frameClipboardInstruction,
-                    projectSettings: projectSettingsInstruction, brushStroke: brushStrokeInstruction,
+                    projectSettings: projectSettingsInstruction, brushStroke: brushStrokeInstruction, shape: shapeInstruction,
                     createdFrames: studio.document.frames.filter { newIDs.contains($0.id) },
                     createdLayers: studio.document.layers.filter { Set(receipt.createdLayerIDs).contains($0.id) },
                     fill: fillInstruction, selectByID: selectByIDInstruction, source: sourceInstruction,
@@ -886,6 +918,47 @@ final class SpatterStudioEditSession: ObservableObject {
             renamedProjectName: nil, addedAudioClipCount: 0, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
             addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, libraryPictureName: imported.name)
     }
+    /// Same licensed decoder and atomic managed-asset attachment as the manual
+    /// Sound Library. No URL/path from a prompt or provider reaches this path.
+    private func addLibrarySound(_ draft: String, document: StudioCommandContext, captured: Capture, studio: StudioViewModel,
+                                 submissionID: UUID, check: () throws -> Void,
+                                 currentScope: ScopeProvider) async throws -> AppliedEdit {
+        let instruction = try SpatterLibrarySoundInstruction.parse(draft)
+        guard !captured.isPlaying, studio.textDraft == nil, let playhead = captured.librarySoundPlayhead else {
+            throw SessionError.unavailable("Stop playback and finish any text draft before adding a library sound. Nothing was added.")
+        }
+        guard studio.planLimits.soundLibrary else { throw SessionError.unavailable(studio.planLimits.upgradeNote) }
+        guard let resolve = librarySoundResolver else { throw SpatterLibrarySoundInstruction.Failure.unavailable }
+        let prepared = try await resolve(instruction)
+        try await checkpoint(); try check()
+        try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+        guard prepared.sound.id == instruction.assetID, prepared.sound.sha256 == instruction.assetID else {
+            throw SpatterLibrarySoundInstruction.Failure.missing
+        }
+        let before = studio.document
+        let clipID = try studio.attachImportedAudio(prepared.audio.track, expectedProjectID: document.projectID,
+            expectedRevision: document.revision, frameID: document.activeFrameID, trackNumber: instruction.track,
+            atTime: instruction.startSeconds, expectedPlayhead: playhead, checkCancellation: {
+                try check()
+                try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                guard studio.planLimits.soundLibrary else { throw SessionError.unavailable(studio.planLimits.upgradeNote) }
+            })
+        // Disposable waveform metadata is written only after a successful edit.
+        // Cache failure never changes the audio or turns the real edit into failure.
+        try? StudioWaveformCache.shared.store(prepared.audio.waveformRecord)
+        let after = studio.document
+        let receipt = StudioCommandReceipt(requestID: submissionID, projectID: after.id, previousRevision: before.revision,
+            revision: after.revision, outcome: .applied, created: [:], createdFrameIDs: [], deletedFrameIDs: [],
+            createdLayerIDs: [], deletedLayerIDs: [], createdElementIDs: [], deletedElementIDs: [], changedAudioClipIDs: [clipID],
+            clipboardElementCount: 0, clipboardID: nil)
+        return AppliedEdit(receipt: receipt, selectedErasureMaskCount: 0, gridInstruction: nil, onionInstruction: nil,
+            frameExposureTicks: nil, frameAction: nil, isLayerGlowEdit: false, isLayerDuplicate: false, isLayerUpdate: false,
+            layerVisibility: nil, layerOrderUp: nil, artworkOrderForward: nil, imageReflectionAxis: nil, isAudioEdit: true,
+            renamedProjectName: nil, addedAudioClipCount: 1, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
+            addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, librarySound: instruction,
+            librarySoundTitle: prepared.sound.title, librarySoundDuration: prepared.audio.duration)
+    }
+
     private static func requireEligible(_ studio: StudioViewModel, screen: StudioViewModel.CommandScreenContext) throws {
         guard screen.route == .editor, screen.document != nil, studio.isEditing else { throw SessionError.outsideStudio }
         guard studio.activeStrokeID == nil else { throw SessionError.unavailable("Finish the current touch stroke before creating a local recipe.") }
@@ -903,7 +976,8 @@ final class SpatterStudioEditSession: ObservableObject {
         try Self.requireEligible(studio, screen: screen)
         guard let document = screen.document,
               Capture(accountID: scope.accountID, screen: screen, document: document,
-                      selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork) == captured else { throw SessionError.contextChanged }
+                      selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork,
+                      captureLibrarySoundPlayhead: captured.librarySoundPlayhead != nil) == captured else { throw SessionError.contextChanged }
     }
     private func reject(_ error: Error) {
         if let sessionError = error as? SessionError {

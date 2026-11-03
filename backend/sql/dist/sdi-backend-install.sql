@@ -3921,7 +3921,7 @@ revoke all on function public.sdi_achievement_catalog() from public,anon;
 grant execute on function public.sdi_achievement_catalog() to authenticated;
 commit;
 
--- ===== billing.sql (sha256 c2a56d61171d0cc3) =====
+-- ===== billing.sql (sha256 b953a8d2072ebbd8) =====
 -- Unapplied candidate. Install after achievements.sql (needs admin-approval.sql and
 -- admin-users.sql). Canonical entitlements come only from signed provider events
 -- (Stripe webhooks, App Store Server Notifications) verified by server-side edge
@@ -4034,6 +4034,14 @@ begin
   elsif status is null or status not in('active','trialing','grace','past_due','cancelled','expired','revoked','refunded') or paid_through is null then
    result:='ignored'; reason:='Subscription status or paid-through date missing.';
   else
+   -- Row locks do not cover a subscription's first event: two deliveries can
+   -- both read no row and then upsert in reverse timestamp order. Serialize
+   -- this provider/subscription identity before reading, including absent rows.
+   -- Transaction scope releases the lock on commit/rollback for pooled clients.
+   -- JSON encoding keeps the namespace and both identifiers unambiguous; a hash
+   -- collision only serializes unrelated subscriptions, never mixes their rows.
+   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+    pg_catalog.jsonb_build_array('sdi.billing.subscription',provider,provider_subscription_id)::text,0));
    select * into existing from sdi_private.subscriptions s where s.provider=billing_apply_event.provider and s.provider_subscription_id=billing_apply_event.provider_subscription_id for update;
    if found and existing.last_event_at>occurred_at then
     result:='ignored'; reason:='Older than the last applied event.';

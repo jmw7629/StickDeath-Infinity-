@@ -2316,6 +2316,186 @@ private final class NetworkTrap: URLProtocol {
             await fresh.flush()
             try require(!fresh.isDirty, "Grammar edits did not persist through autosave")
         }
+        try await test("Spatter adds an actual licensed library sound with explicit timing real mixed PCM Undo and cold reopen") {
+            let catalogue = try StudioSoundCatalogue(directory: URL(fileURLWithPath: "StickDeathInfinity/Resources/StudioSounds"))
+            let instruction = try SpatterLibrarySoundInstruction.parse(SpatterLibrarySoundInstruction.example)
+            let sound = try instruction.resolve(in: catalogue.sounds, id: \.id)
+            let original = try catalogue.checkedResource(sound).data
+            let (vm, store) = try await fixture("library-audio-complete")
+            vm.setFrameHold(vm.currentFrame.id, ticks: 48); await vm.flush()
+            vm.audioPlayheadTime = 0.1
+            let before = vm.document, network = NetworkTrap.count
+            let scratch = root.appendingPathComponent("library-audio-scratch")
+            try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+            let session = SpatterStudioEditSession()
+            session.librarySoundResolver = { request in
+                let selected = try request.resolve(in: catalogue.sounds, id: \.id)
+                return try await StudioCatalogueSoundSource.prepare(selected, catalogue: catalogue, scratchParent: scratch)
+            }
+            let text = SpatterLibrarySoundInstruction.example.replacingOccurrences(of: "track 2 at 0", with: "track 3 at 0.25")
+            try require(session.submit(text, in: vm, accountID: nil, currentScope: { guest }), "Library sound submit rejected")
+            await session.waitForCompletion()
+            guard session.status == .applied, let edit = session.appliedEdit, let clip = vm.audioClips.first,
+                  let assetID = clip.assetID, let track = vm.audioTrack(forAssetID: assetID) else {
+                throw Failure(message: "Library audio did not attach: \(session.notice ?? "")")
+            }
+            try require(vm.audioClips.count == 1 && clip.track == 3 && clip.startTime == 0.25
+                && track.audioData == original && abs(clip.duration - sound.duration) <= 0.001
+                && vm.audioPlayheadTime == 0.1 && vm.frames == before.frames && vm.layers == before.layers,
+                "Library sound changed artwork/playhead or lost real bytes/timing")
+            try require(edit.receipt.previousRevision == before.revision && edit.receipt.revision == before.revision + 1
+                && edit.receipt.changedAudioClipIDs == [clip.id] && edit.addedAudioClipCount == 1
+                && edit.summary.contains(sound.title) && edit.summary.contains("track 3 at 0.25 seconds")
+                && !edit.summary.contains("saved") && !edit.summary.contains(sound.id), "Library sound receipt was not factual")
+            let credits = try StudioSoundCreditResolver.credits(for: [.init(id: assetID, sha256: sound.sha256)],
+                lookup: catalogue.attribution(forSHA256:))
+            try require(credits.count == 1 && credits[0].assetID == assetID && credits[0].license == "CC0-1.0"
+                && credits[0].title == sound.title && credits[0].originalSHA256 == sound.originalSHA256,
+                "Real export attribution did not follow the added audio")
+            let changed = vm.document
+            let output = try await StudioAudioMixService().mix(document: vm.document, retainedAudioTracks: vm.projectAudioTracks,
+                durationSeconds: 1.5, outputParent: root)
+            defer { try? output.cleanup() }
+            let mixed = try samples(output), start = Int(0.25 * 48_000)
+            try require(mixed[0][..<start].allSatisfy { $0 == 0 }
+                && mixed.contains { channel in channel[start...].contains { abs($0) > 0.00001 } },
+                "Exported PCM was silent or began before its requested placement")
+            try require(session.undoAppliedEdit(in: vm, currentScope: guest) && content(vm.document) == content(before), "Library audio was not one Undo")
+            vm.redo(); try require(content(vm.document) == content(changed), "Library audio Redo changed the clip")
+            try require(await vm.save(), "Library audio save failed")
+            let saved = try store.loadAnimation(id: vm.document.id)!, cold = StudioViewModel(storage: store)
+            try require(await cold.openProject(saved.metadata), "Library audio cold reopen failed")
+            try require(cold.document == vm.document && cold.projectAudioTracks.first?.audioData == original
+                && NetworkTrap.count == network && (try fm.contentsOfDirectory(atPath: scratch.path)).isEmpty,
+                "Library audio lost bytes/persistence or leaked scratch/network work")
+            await cold.flush()
+        }
+        try await test("library audio denies absent rights invalid bytes limits unavailable plans and changed contexts without side effects") {
+            let catalogue = try StudioSoundCatalogue(directory: URL(fileURLWithPath: "StickDeathInfinity/Resources/StudioSounds"))
+            let parsed = try SpatterLibrarySoundInstruction.parse(SpatterLibrarySoundInstruction.example)
+            let sound = try parsed.resolve(in: catalogue.sounds, id: \.id)
+            let bytes = try catalogue.checkedResource(sound).data
+            let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(sound)) as! [String: Any]
+            func alteredCatalogue(_ edit: (inout [String: Any]) -> Void, data: Data?) throws -> StudioSoundCatalogue {
+                let directory = root.appendingPathComponent("library-audio-invalid-\(UUID().uuidString)")
+                try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+                var row = raw; edit(&row)
+                try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "sounds": [row]])
+                    .write(to: directory.appendingPathComponent("catalogue.json"))
+                if let data { try data.write(to: directory.appendingPathComponent(sound.filename)) }
+                return try StudioSoundCatalogue(directory: directory)
+            }
+            do {
+                _ = try alteredCatalogue({ $0["license"] = "CC-BY-4.0" }, data: bytes)
+                throw Failure(message: "Non-CC0 rights accepted by library")
+            } catch is StudioSoundCatalogue.CatalogueError { }
+            do {
+                _ = try alteredCatalogue({ $0["byteCount"] = StudioAudioImportService.maximumEncodedBytes + 1 }, data: nil)
+                throw Failure(message: "Oversized library sound accepted")
+            } catch is StudioSoundCatalogue.CatalogueError { }
+            let (vm, _) = try await fixture("library-audio-rejections"), before = vm.document
+            for mode in ["missing", "changed", "metadata"] {
+                let selected: StudioSoundCatalogue
+                if mode == "missing" { selected = try alteredCatalogue({ _ in }, data: nil) }
+                else if mode == "changed" {
+                    var corrupt = bytes; corrupt[0] ^= 0xff
+                    selected = try alteredCatalogue({ _ in }, data: corrupt)
+                } else { selected = try alteredCatalogue({ $0["duration"] = sound.duration + 1 }, data: bytes) }
+                let session = SpatterStudioEditSession()
+                session.librarySoundResolver = { request in
+                    let candidate = try request.resolve(in: selected.sounds, id: \.id)
+                    return try await StudioCatalogueSoundSource.prepare(candidate, catalogue: selected, scratchParent: root)
+                }
+                _ = session.submit(SpatterLibrarySoundInstruction.example, in: vm, accountID: nil, currentScope: { guest })
+                await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before
+                    && vm.projectAudioTracks.isEmpty, "Invalid library audio entered the project: \(mode)")
+            }
+            let unavailable = SpatterStudioEditSession()
+            _ = unavailable.submit(SpatterLibrarySoundInstruction.example, in: vm, accountID: nil, currentScope: { guest })
+            await unavailable.waitForCompletion()
+            try require(unavailable.status == .rejected && vm.document == before, "Missing resolver claimed success")
+            let missingID = SpatterStudioEditSession()
+            missingID.librarySoundResolver = { request in
+                let selected = try request.resolve(in: catalogue.sounds, id: \.id)
+                return try await StudioCatalogueSoundSource.prepare(selected, catalogue: catalogue, scratchParent: root)
+            }
+            let unknown = SpatterLibrarySoundInstruction.example.replacingOccurrences(of: parsed.assetID, with: String(repeating: "0", count: 64))
+            _ = missingID.submit(unknown, in: vm, accountID: nil, currentScope: { guest }); await missingID.waitForCompletion()
+            try require(missingID.status == .rejected && missingID.notice?.contains("not in the available") == true
+                && vm.document == before && vm.projectAudioTracks.isEmpty, "Unknown library ID entered the project")
+            let provider = StudioPlanGate.provider
+            defer { StudioPlanGate.provider = provider }
+            var resolverCalls = 0
+            StudioPlanGate.provider = { var limits = StudioPlanGate.unrestricted; limits.soundLibrary = false; return limits }
+            let denied = SpatterStudioEditSession()
+            denied.librarySoundResolver = { _ in resolverCalls += 1; throw Failure(message: "Plan gate bypassed") }
+            _ = denied.submit(SpatterLibrarySoundInstruction.example, in: vm, accountID: nil, currentScope: { guest })
+            await denied.waitForCompletion()
+            try require(denied.status == .rejected && resolverCalls == 0 && vm.document == before, "Denied plan prepared audio")
+            StudioPlanGate.provider = provider
+            for boundary in 1...2 { for change in ["revision", "account", "playhead", "cancel"] {
+                let (target, _) = try await fixture("library-audio-fence"), gate = Gate()
+                let scratch = root.appendingPathComponent("library-fence-scratch-\(UUID().uuidString)")
+                try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+                var account: String? = nil
+                let session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                session.librarySoundResolver = { request in
+                    let candidate = try request.resolve(in: catalogue.sounds, id: \.id)
+                    return try await StudioCatalogueSoundSource.prepare(candidate, catalogue: catalogue, scratchParent: scratch)
+                }
+                _ = session.submit(SpatterLibrarySoundInstruction.example, in: target, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) })
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "revision" { target.showOnionSkin = true; await target.flush() }
+                else if change == "account" { account = "other" }
+                else if change == "playhead" { target.audioPlayheadTime = 0.5 }
+                else { session.cancel() }
+                let held = target.document, undo = target.canUndo, redo = target.canRedo
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
+                    && target.document == held && target.canUndo == undo && target.canRedo == redo && target.projectAudioTracks.isEmpty
+                    && (try fm.contentsOfDirectory(atPath: scratch.path)).isEmpty, "Library audio crossed a context/cancel fence or leaked scratch")
+            } }
+        }
+        try await test("single shape instructions render persist and undo through the real Studio session") {
+            for kind in SpatterShapeInstruction.Kind.allCases {
+                let (vm, store) = try await fixture("shape-\(kind.rawValue)"), session = SpatterStudioEditSession()
+                let before = vm.document, blank = try erasurePixels(vm.document)
+                _ = session.submit(SpatterShapeInstruction.example(kind), in: vm, accountID: nil, currentScope: { guest })
+                await session.waitForCompletion()
+                guard session.status == .applied, let edit = session.appliedEdit, let shape = edit.shape,
+                      let element = vm.currentFrame.elements.last else { throw Failure(message: "Shape not applied: \(session.notice ?? "")") }
+                try require(shape.kind == kind && edit.receipt.createdElementIDs == [element.id]
+                    && vm.frames.count == 1 && vm.currentFrame.elements.count == 1 && element.tool == kind.tool
+                    && edit.summary.contains(shape.summary) && !edit.summary.contains("saved"), "Shape receipt or document wrong")
+                let pixels = try erasurePixels(vm.document)
+                try require(pixels != blank, "Shape produced no actual canvas pixels")
+                let changed = vm.document
+                try require(session.undoAppliedEdit(in: vm, currentScope: guest) && content(vm.document) == content(before), "One Undo did not remove shape")
+                vm.redo(); try require(content(vm.document) == content(changed), "Redo changed shape")
+                try require(await vm.save(), "Shape save failed")
+                let saved = try store.loadAnimation(id: vm.document.id)!, cold = StudioViewModel(storage: store)
+                try require(await cold.openProject(saved.metadata), "Shape cold reopen failed")
+                try require(cold.document == vm.document && (try erasurePixels(cold.document)) == pixels, "Saved shape geometry or pixels changed")
+                await cold.flush()
+            }
+            for boundary in 1...2 { for change in ["revision", "account", "cancel"] {
+                let (vm, _) = try await fixture("shape-fence"), gate = Gate()
+                var account: String? = nil
+                let session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                _ = session.submit(SpatterShapeInstruction.rectangleExample, in: vm, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) })
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "revision" { vm.showOnionSkin = true; await vm.flush() }
+                else if change == "account" { account = "other" }
+                else { session.cancel() }
+                let held = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
+                    && vm.document == held && vm.canUndo == undo && vm.canRedo == redo, "Shape crossed context/cancellation fence")
+            } }
+        }
         try await test("multi-clause brief builds held frames on new layers with a storyboard and a typed revert that survives unrelated edits") {
             let (vm, store) = try await fixture("multi-clause-brief")
             // The brief appends to a real project: the existing frame carries artwork,
