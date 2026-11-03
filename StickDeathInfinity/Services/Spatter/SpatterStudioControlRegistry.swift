@@ -65,7 +65,7 @@ enum SpatterStudioControlRegistry {
     static let controls: [Control] = [
         // Primary toolbar, in the toolbar's order.
         .init(id: "tool.move", surface: .toolbar, title: "Move", route: .instructions([
-            "selectionTranslate", "selectionTransform", "selectionReflect", "drawingDuplicate", "artworkOrder",
+            "selectionTranslate", "selectionTransform", "selectionReflect", "drawingDuplicate", "artworkOrder", "artworkTransform",
             "imageReflection", "imageRotation", "imageCrop", "imagePlacement", "textUpdate", "selectByID"])),
         .init(id: "tool.lasso", surface: .toolbar, title: "Lasso", route: .instructions(["areaSelection", "selectByID"])),
         .init(id: "tool.wand", surface: .toolbar, title: "Wand", route: .instructions(["wandSelection"])),
@@ -295,6 +295,8 @@ struct SpatterContextSnapshot: Codable, Equatable {
             guard move, selectedDrawingCount > 0, selectedImageCount == 0 else { return .needs("Select one or more drawings with Move, without an image.") }
         case "imageReflection", "imageRotation", "imageCrop", "imagePlacement":
             guard move, selectedImageCount == 1, selectedDrawingCount == 0 else { return .needs("Select one image with Move and deselect drawings.") }
+        case "artworkTransform":
+            guard move, activeFrameNumber != nil, selectedDrawingCount + selectedImageCount > 0, displayedFrameNumber == activeFrameNumber else { return .needs("Select whole artwork with Move on the active frame; pixel-region/Wand selections are unavailable.") }
         case "artworkOrder":
             guard move, selectedDrawingCount + selectedImageCount > 0 else { return .needs("Select artwork with Move.") }
         case "textCreate":

@@ -1965,10 +1965,11 @@ final class StudioViewModel: ObservableObject {
         }
         return bounds.isNull ? nil : bounds
     }
-    private func captureArtworkSelection() -> SelectionHandleCapture? {
-        guard isEditing, !isPlaying, !isSaving, !isMovingImageOnCanvas, selectionMode != .subtract,
+    private func captureArtworkSelection(includeImageOnly: Bool = false) -> SelectionHandleCapture? {
+        let imageOnly = includeImageOnly && selectedElementIDs.isEmpty && currentImageMoveCapture() != nil
+        guard isEditing, !isPlaying, !isSaving, (!isMovingImageOnCanvas || imageOnly), selectionMode != .subtract,
               activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
-              (!selectedElementIDs.isEmpty || isSelectingMixedArtwork), selectedElementIDs.count <= 1024 else { return nil }
+              (!selectedElementIDs.isEmpty || isSelectingMixedArtwork || imageOnly), selectedElementIDs.count <= 1024 else { return nil }
         let elements = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
         guard elements.count == selectedElementIDs.count else { return nil }
         for element in elements {
@@ -1978,8 +1979,10 @@ final class StudioViewModel: ObservableObject {
                   rect.width > 0, rect.height > 0,
                   [rect.minX,rect.minY,rect.maxX,rect.maxY].allSatisfy({ $0.isFinite && abs($0) <= 100_000 }) else { return nil }
         }
-        let image = isSelectingMixedArtwork ? validSelectedArtworkImage : nil
-        guard !isSelectingMixedArtwork || image != nil, let bounds = selectedArtworkBounds(in: currentFrame) else { return nil }
+        let image = isSelectingMixedArtwork || imageOnly ? validSelectedArtworkImage : nil
+        let imageBounds = image.map { StudioImageRotationGeometry(placement: $0.placement, degrees: $0.angle).bounds }
+        guard !(isSelectingMixedArtwork || imageOnly) || image != nil,
+              let bounds = imageOnly ? imageBounds : selectedArtworkBounds(in: currentFrame) else { return nil }
         return .init(preservesAspect: image != nil || selectionPreservesAspect,
             projectID: document.id, revision: document.revision,
             frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode, bounds: bounds,
@@ -2003,11 +2006,42 @@ final class StudioViewModel: ObservableObject {
         if beginSelectionHandle() == nil { return "Finish the current edit or select the artwork again to transform it." }
         return nil
     }
+    /// Local assistant admission is whole-object only. A Wand/pixel selection
+    /// must never silently become a request to transform its complete objects.
+    func beginSpatterArtworkTransform() -> SelectionHandleCapture? {
+        guard selectedTool == .move, areaSelectionTarget != .imagePixels,
+              !wandWorking, !hasDrawingWandSelection, imageRegionSelection == nil else { return nil }
+        // A stale image target remains a refusal sentinel; never transform only
+        // its drawings if the explicit image or its source becomes unavailable.
+        if imageMoveTarget != nil, !isSelectingMixedArtwork {
+            guard selectedElementIDs.isEmpty, currentImageMoveCapture() != nil else { return nil }
+        }
+        guard let capture = captureArtworkSelection(includeImageOnly: true) else { return nil }
+        if let image = capture.image, currentFrame.rasterInstance(on: image.layerID)?.regionMask != nil { return nil }
+        return capture
+    }
+    /// Uses exactly the manual group request/commit/selection-retention path.
+    /// The caller's context check is repeated throughout the staged transaction.
+    func applySpatterArtworkTransform(_ capture: SelectionHandleCapture,
+        values: SpatterArtworkTransformInstruction.Values, requestID: UUID,
+        checkCancellation: () throws -> Void) throws -> StudioCommandReceipt {
+        guard beginSpatterArtworkTransform() == capture else { throw StudioCommandError.staleRevision }
+        let request = try artworkRequest(capture, dx: values.dx, dy: values.dy, scale: values.scale,
+            rotation: values.rotation, flipHorizontal: values.flipHorizontal, flipVertical: values.flipVertical,
+            requestID: requestID)
+        let receipt = try applyStudioCommands(request, checkCancellation: {
+            try checkCancellation()
+            guard self.beginSpatterArtworkTransform() == capture else { throw StudioCommandError.staleRevision }
+        })
+        retainArtworkSelection(capture)
+        return receipt
+    }
     private func artworkRequest(_ capture: SelectionHandleCapture, dx: Double = 0, dy: Double = 0,
                                 scale: Double = 1, rotation: Double = 0,
-                                flipHorizontal: Bool = false, flipVertical: Bool = false) throws -> StudioCommandRequest {
-        guard captureArtworkSelection() == capture else { throw StudioCommandError.staleRevision }
-        return .init(requestID: UUID(), projectID: capture.projectID, expectedRevision: capture.revision,
+                                flipHorizontal: Bool = false, flipVertical: Bool = false,
+                                requestID: UUID = UUID()) throws -> StudioCommandRequest {
+        guard captureArtworkSelection(includeImageOnly: true) == capture else { throw StudioCommandError.staleRevision }
+        return .init(requestID: requestID, projectID: capture.projectID, expectedRevision: capture.revision,
             action: .apply([.transformSelectedArtwork(.init(frame: .id(capture.frameID), elementIDs: capture.ids.sorted(),
                 image: capture.image.map { .init(assetID: $0.assetID, layerID: $0.layerID) },
                 dx: dx, dy: dy, scale: scale, rotation: rotation, flipHorizontal: flipHorizontal, flipVertical: flipVertical))]))

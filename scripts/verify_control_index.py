@@ -136,6 +136,8 @@ PREFIX_ISSUES = [
     ("spatter.studio", "#203 #207", "docs/STUDIO_CONTROL_IMPLEMENTATION_INDEX.md Spatter rows"),
     ("spatter.messages", "#203 #207", "docs/STUDIO_CONTROL_IMPLEMENTATION_INDEX.md Spatter rows"),
     ("spatter.selection", "#207", "docs/STUDIO_CONTROL_IMPLEMENTATION_INDEX.md"),
+    ("spatter.artwork.transform-examples", "#204", "docs/SPATTER_STUDIO_CONTROL_REGISTRY.md"),
+    ("spatter.artwork.transform-targets", "#204", "docs/SPATTER_STUDIO_CONTROL_REGISTRY.md"),
     ("spatter", "#203", "docs/STUDIO_CONTROL_IMPLEMENTATION_INDEX.md Spatter rows"),
 ]
 # Identifier segment -> words that may appear in the index table's Control cell.

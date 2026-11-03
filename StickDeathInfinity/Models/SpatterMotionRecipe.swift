@@ -1591,6 +1591,84 @@ private enum SpatterGrammarSupport {
     static let percent = #"([^\s%,()]+)\s*%"#
 }
 
+/// Whole-object selection only. “Drawings” and “image” instructions retain their
+/// existing meanings; this explicit artwork grammar may transform their group.
+struct SpatterArtworkTransformInstruction: Equatable {
+    enum Action: Equatable {
+        case move(Double, Double)
+        case transform(scalePercent: Double, rotation: Double)
+        case reflect(StudioReflectionAxis)
+    }
+    let action: Action
+    static let moveExample = "Move selected artwork by (10%, -5%)."
+    static let transformExample = "Scale selected artwork to 150% and rotate 45 degrees."
+    static let scaleExample = "Scale selected artwork to 50%."
+    static let rotateExample = "Rotate selected artwork 90 degrees."
+    static let horizontalExample = "Flip selected artwork horizontally."
+    static let verticalExample = "Flip selected artwork vertically."
+    static let examples = [moveExample, transformExample, scaleExample, rotateExample, horizontalExample, verticalExample]
+    static let help = "Select whole artwork with Move: drawings, one image, or an explicit Drawings + image Lasso selection. Show every selected layer with Free lock and stop playback. Pixel-region/Wand selections are unavailable here. Offsets are -100–100% of the canvas, scale 10–1,000%, rotation -180–180 degrees. One complete instruction runs on its own."
+    enum Failure: LocalizedError {
+        case syntax, selection
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use \(SpatterArtworkTransformInstruction.moveExample) or \(SpatterArtworkTransformInstruction.transformExample) or \(SpatterArtworkTransformInstruction.horizontalExample) \(SpatterArtworkTransformInstruction.help) Nothing changed."
+            case .selection: return "\(SpatterArtworkTransformInstruction.help) Select the whole artwork again before opening Spatter. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return ["move", "scale", "rotate", "flip"].contains(words.first.map(String.init) ?? "") && words.contains("artwork")
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        // Reuse the proven, strict scalar grammars after replacing this exact
+        // noun. The original text must contain it once; suffixes still reject.
+        let noun = #"\bselected\s+artwork\b"#
+        let regex = try NSRegularExpression(pattern: noun, options: .caseInsensitive)
+        let range = NSRange(text.startIndex..., in: text)
+        guard regex.numberOfMatches(in: text, range: range) == 1 else { throw Failure.syntax }
+        let drawingText = regex.stringByReplacingMatches(in: text, range: range, withTemplate: "selected drawings")
+        do {
+            let words = text.lowercased().split { !$0.isLetter }
+            switch words.first.map(String.init) {
+            case "move":
+                let value = try SpatterSelectionTranslateInstruction.parse(drawingText)
+                return .init(action: .move(value.dxPercent, value.dyPercent))
+            case "scale", "rotate":
+                let value = try SpatterSelectionTransformInstruction.parse(drawingText)
+                return .init(action: .transform(scalePercent: value.scalePercent, rotation: value.rotationDegrees))
+            case "flip": return .init(action: .reflect(try SpatterSelectionReflectInstruction.parse(drawingText).axis))
+            default: throw Failure.syntax
+            }
+        } catch { throw Failure.syntax }
+    }
+    struct Values: Equatable {
+        var dx: Double = 0, dy: Double = 0, scale: Double = 1, rotation: Double = 0
+        var flipHorizontal = false, flipVertical = false
+    }
+    func values(width: Int, height: Int) throws -> Values {
+        guard (16...4096).contains(width), (16...4096).contains(height) else { throw Failure.syntax }
+        switch action {
+        case .move(let x, let y):
+            guard x.isFinite, y.isFinite, (-100...100).contains(x), (-100...100).contains(y) else { throw Failure.syntax }
+            return .init(dx: x * Double(width) / 100, dy: y * Double(height) / 100)
+        case .transform(let scale, let angle):
+            guard scale.isFinite, angle.isFinite, (10...1000).contains(scale), (-180...180).contains(angle) else { throw Failure.syntax }
+            return .init(scale: scale / 100, rotation: angle)
+        case .reflect(let axis): return .init(flipHorizontal: axis == .horizontal, flipVertical: axis == .vertical)
+        }
+    }
+    var summary: String {
+        switch action {
+        case .move(let x, let y): return "move the selected artwork by (\(String(format: "%.6g", x))%, \(String(format: "%.6g", y))%) of the canvas"
+        case .transform(let scale, let rotation): return "scale the selected artwork to \(String(format: "%.6g", scale))% and rotate \(String(format: "%.6g", rotation))° around its combined center"
+        case .reflect(let axis): return "flip the selected artwork \(axis == .horizontal ? "horizontally" : "vertically") around its combined bounds"
+        }
+    }
+}
+
 /// "Move selected drawings by (10%, -5%)." Percentages of the canvas width/height.
 struct SpatterSelectionTranslateInstruction: Equatable {
     let dxPercent: Double
@@ -3647,7 +3725,7 @@ struct SpatterPixelEffectInstruction: Equatable {
 enum SpatterInstructionRouter {
     enum Kind: String, CaseIterable {
         case batch, frameDuplicateRange, frameReverse, navigation, layerStructure, grid, onionSkin, frameAction, layerOrder, audioTrack
-        case frameCut, drawingDuplicate, artworkOrder, imageReflection, selectionTranslate, selectionTransform, selectionReflect
+        case frameCut, drawingDuplicate, artworkOrder, artworkTransform, imageReflection, selectionTranslate, selectionTransform, selectionReflect
         case imageRotation, imageCrop, imagePlacement, textCreate, textUpdate, tween, frameClipboard, projectSettings, brushStroke, freehandStroke, shape
         case selectedErasure, projectRename, frameExposure, layerUpdate, layerDuplicate, layerGlow, audioClip
         case multiClauseBrief, twoActorBrief, sceneBrief, stickFigure, circleMotion
@@ -3695,6 +3773,7 @@ enum SpatterInstructionRouter {
             if SpatterArtworkOrderInstruction.isInstruction(draft) { return .artworkOrder }
             if SpatterImageReflectionInstruction.isInstruction(draft) { return .imageReflection }
         }
+        if SpatterArtworkTransformInstruction.isInstruction(draft) { return .artworkTransform }
         if SpatterSelectionTranslateInstruction.isInstruction(draft) { return .selectionTranslate }
         if SpatterSelectionTransformInstruction.isInstruction(draft) { return .selectionTransform }
         if SpatterSelectionReflectInstruction.isInstruction(draft) { return .selectionReflect }
@@ -3880,6 +3959,10 @@ enum SpatterInstructionPreview {
         let probe = UUID()
         do {
             switch kind {
+            case .artworkTransform:
+                let instruction = try SpatterArtworkTransformInstruction.parse(text)
+                if let context { _ = try instruction.values(width: context.width, height: context.height) }
+                return "Plan for selected whole artwork: \(instruction.summary). Apply validates the captured selection, visible unlocked layers and current project. Pixel-region/Wand selections are refused. One Undo reverses the group; nothing has changed yet."
             case .textCreate:
                 let instruction = try SpatterTextCreateInstruction.parse(text)
                 guard let context else { return "Create an editable \(instruction.summary). Open the project to preview its bounds and layer." }

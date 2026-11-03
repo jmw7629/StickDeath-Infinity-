@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import Combine
+import UIKit
 
 /// Social video wall over `sdi_feed_page` (keyset pages) and `sdi_feed_action`
 /// (reactions): approved renditions only, server ranking for Trending/Recent/
@@ -21,73 +22,122 @@ struct HomeFeedView: View {
     @State private var epoch = UUID()
     @State private var playback: FeedPlaybackItem?
     @State private var exporting: UUID?
+    @State private var exportRun: UUID?
+    @State private var exportEpoch = UUID()
+    @State private var viewerGeneration = UUID()
+    @State private var exportListing: FeedExportListing?
+    @State private var exportTask: Task<Void, Never>?
+    @State private var exportProgress: FeedExportDownload.Progress?
     @State private var exportFile: FeedExportFile?
     @State private var blocking: FeedPost?
-    private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(phase == .active):\(category.rawValue)" }
+    private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(phase == .active):\(category.rawValue):\(viewerGeneration)" }
+    private var exportContext: FeedExportListing.Context? {
+        guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return nil }
+        return .init(account: account, generation: exportEpoch)
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("StickDeath ∞").font(.specialElite(24, relativeTo: .title)).foregroundStyle(StudioCraftTheme.accentText)
-                Spacer()
-                Button { Task { await load(reset: true) } } label: { Image(systemName: "arrow.clockwise").frame(width: 44, height: 44) }
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Rectangle().fill(FeedWallPalette.red).frame(width: 6, height: 28).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("StickDeath ∞").font(.specialElite(22, relativeTo: .title2))
+                        Text("VIDEO WALL").font(.specialElite(11, relativeTo: .caption)).tracking(2)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 8)
+                    Button { Task { await load(reset: true) } } label: {
+                        Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(FeedWallButtonStyle())
                     .accessibilityLabel("Refresh feed").disabled(loading)
                     .accessibilityIdentifier("feed.home.refresh")
-            }.padding(.horizontal, 16).padding(.vertical, 10)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(FeedCategory.allCases, id: \.self) { filter in
-                        Button(filter.title) { category = filter }
-                            .font(.specialElite(13, relativeTo: .footnote)).padding(.horizontal, 14).frame(minHeight: 40)
-                            .background(category == filter ? StudioCraftTheme.accent : StudioCraftTheme.card)
-                            .foregroundStyle(Color.white)
-                            .clipShape(Capsule())
-                            .accessibilityAddTraits(category == filter ? .isSelected : [])
-                            .accessibilityHint(filter.explanation)
-                            .accessibilityIdentifier("feed.home.filter." + filter.rawValue)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(FeedWallPalette.paper)
+                .overlay(alignment: .bottom) { FeedWallPalette.ink.frame(height: 2) }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(FeedCategory.allCases, id: \.self) { filter in
+                            Button(filter.title) { category = filter }
+                                .buttonStyle(FeedWallButtonStyle(selected: category == filter))
+                                .accessibilityAddTraits(category == filter ? .isSelected : [])
+                                .accessibilityHint(filter.explanation)
+                                .accessibilityIdentifier("feed.home.filter." + filter.rawValue)
+                        }
+                    }.padding(.horizontal, 16).padding(.vertical, 10).padding(.bottom, 2)
+                }
+                .background(FeedWallPalette.grey)
+                .overlay(alignment: .bottom) { FeedWallPalette.ink.frame(height: 2) }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        if !CommunityServices.isConfigured { FeedWallMessage(text: CommunityServices.notConfiguredText, kind: .info) }
+                        if !auth.isAuthenticated {
+                            CommunitySignInPrompt(text: "Sign in to view the community feed.", identifier: "feed.home.sign-in")
+                                .foregroundStyle(FeedWallPalette.paper)
+                                .padding(16).background(FeedWallPalette.ink)
+                        }
+                        Text(category.explanation).feedWallCaption()
+                            .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(FeedWallPalette.paper)
+                            .overlay(Rectangle().strokeBorder(FeedWallPalette.ink, lineWidth: 2))
+                        if let error { FeedWallMessage(text: error, kind: .error).accessibilityIdentifier("feed.home.error") }
+                        if let notice { FeedWallMessage(text: notice, kind: .success).accessibilityIdentifier("feed.home.notice") }
+                        if let offlineUpdatedAt {
+                            FeedWallMessage(text: "Offline · last updated \(offlineUpdatedAt.formatted(date: .abbreviated, time: .shortened)). Reactions need a connection.", kind: .offline)
+                                .accessibilityIdentifier("feed.home.offline")
+                        }
+                        FeedWallGrid(width: geometry.size.width) {
+                            ForEach(timeline.posts) { post in card(post) }
+                        }
+                        if loading {
+                            ProgressView("Loading approved videos…").tint(FeedWallPalette.ink)
+                                .font(.specialElite(14, relativeTo: .callout))
+                                .padding(16).frame(maxWidth: .infinity)
+                                .background(FeedWallPalette.paper)
+                        }
+                        if auth.isAuthenticated && loaded && !loading && timeline.posts.isEmpty && error == nil {
+                            FeedWallWindow {
+                                FeedWallTitleBar(title: "Video wall") { EmptyView() }
+                                Label("No approved videos in this feed yet.", systemImage: "play.rectangle")
+                                    .font(.specialElite(16, relativeTo: .body))
+                                    .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                                    .accessibilityIdentifier("feed.home.empty")
+                            }
+                        }
+                        if auth.isAuthenticated && timeline.canLoadMore && !loading && offlineUpdatedAt == nil {
+                            Button(error == nil ? "Load more" : "Retry") { Task { await load(reset: false) } }
+                                .buttonStyle(FeedWallButtonStyle())
+                                .frame(maxWidth: .infinity)
+                                .accessibilityIdentifier("feed.home.load-more")
+                        }
+                        if auth.isAuthenticated && !timeline.canLoadMore && timeline.nextPage >= FeedTimeline.maximumPages {
+                            Text("Showing the first \(FeedTimeline.maximumPages * FeedTimeline.pageSize) videos of this ranking. Refresh to restart.").feedWallCaption()
+                                .padding(12).background(FeedWallPalette.paper)
+                        }
                     }
-                }.padding(.horizontal, 16)
+                    .padding(16).padding(.bottom, 60)
+                    .frame(maxWidth: 1180).frame(maxWidth: .infinity)
+                }.refreshable { await load(reset: true) }
             }
-            ScrollView {
-                LazyVStack(spacing: 16) {
-                    if !CommunityServices.isConfigured { CommunityMessage(text: CommunityServices.notConfiguredText, kind: .info) }
-                    if !auth.isAuthenticated {
-                        CommunitySignInPrompt(text: "Sign in to view the community feed.", identifier: "feed.home.sign-in")
-                    }
-                    Text(category.explanation).communityCaption()
-                    if let error { CommunityMessage(text: error, kind: .error).accessibilityIdentifier("feed.home.error") }
-                    if let notice { CommunityMessage(text: notice, kind: .success).accessibilityIdentifier("feed.home.notice") }
-                    if let offlineUpdatedAt {
-                        CommunityMessage(text: "Offline · last updated \(offlineUpdatedAt.formatted(date: .abbreviated, time: .shortened)). Reactions need a connection.", kind: .offline)
-                            .accessibilityIdentifier("feed.home.offline")
-                    }
-                    ForEach(timeline.posts) { post in card(post) }
-                    if loading { ProgressView().tint(StudioCraftTheme.accent).padding() }
-                    if auth.isAuthenticated && loaded && !loading && timeline.posts.isEmpty && error == nil {
-                        Text("No approved videos in this feed yet.").communityCaption().padding()
-                            .accessibilityIdentifier("feed.home.empty")
-                    }
-                    if auth.isAuthenticated && timeline.canLoadMore && !loading && offlineUpdatedAt == nil {
-                        Button(error == nil ? "Load more" : "Retry") { Task { await load(reset: false) } }
-                            .buttonStyle(CommunitySecondaryButtonStyle())
-                            .accessibilityIdentifier("feed.home.load-more")
-                    }
-                    if auth.isAuthenticated && !timeline.canLoadMore && timeline.nextPage >= FeedTimeline.maximumPages {
-                        Text("Showing the first \(FeedTimeline.maximumPages * FeedTimeline.pageSize) videos of this ranking. Refresh to restart.").communityCaption()
-                    }
-                }.padding(16).padding(.bottom, 60)
-            }.refreshable { await load(reset: true) }
         }
-        .communityScreen()
+        .foregroundStyle(FeedWallPalette.ink)
+        .background(FeedWallDesktop().ignoresSafeArea())
         .task(id: identity) {
+            invalidateExportScope()
             epoch = UUID(); timeline.reset(); loading = false; loaded = false
-            playback = nil; error = nil; notice = nil; offlineUpdatedAt = nil; exporting = nil
+            playback = nil; error = nil; notice = nil; offlineUpdatedAt = nil
             if phase == .active { await load(reset: true) }
         }
         .sheet(item: $playback) { item in CommunityVideoPlayer(url: item.url, title: item.title) }
-        .sheet(item: $exportFile, onDismiss: { exportFile?.cleanUp(); exportFile = nil }) { file in
-            ShareLink(item: file.url) { Label("Save or share \(file.title)", systemImage: "square.and.arrow.down").frame(minHeight: 44) }
-                .padding().presentationDetents([.fraction(0.25)])
+        .sheet(item: $exportFile) { file in
+            FeedExportSharePresenter(file: file, isAllowed: {
+                file.generation == exportEpoch && file.account == auth.userId && auth.isAuthenticated && phase == .active
+            }, onTerminal: {
+                if exportFile?.id == file.id { exportFile = nil }
+            })
         }
         .confirmationDialog("Block this creator?", isPresented: Binding(get: { blocking != nil }, set: { if !$0 { blocking = nil } }), titleVisibility: .visible, presenting: blocking) { post in
             Button("Block \(post.creator_name)", role: .destructive) { Task { await block(post) } }
@@ -95,18 +145,19 @@ struct HomeFeedView: View {
         } message: { post in
             Text("You will no longer see \(post.creator_name)'s videos and they will not see yours. This does not report them.")
         }
-        .onDisappear { playback = nil }
+        .onChange(of: category) { _, _ in invalidateExportScope() }
+        // Published identity/state events invalidate even a rapid A → B → A
+        // account change that SwiftUI might coalesce into the same rendered ID.
+        .onReceive(auth.$currentUser) { _ in revokeViewerListing() }
+        .onReceive(auth.$state) { _ in revokeViewerListing() }
+        .onChange(of: phase) { _, value in if value != .active { invalidateExportScope() } }
+        .onDisappear { playback = nil; invalidateExportScope() }
     }
 
     private func card(_ post: FeedPost) -> some View {
-        CommunityCard {
-            HStack {
-                Image(systemName: "person.crop.circle.fill").font(.title).foregroundStyle(StudioCraftTheme.textDim).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(post.creator_name).font(.specialElite(16, relativeTo: .body))
-                    Text(post.published_at, style: .relative).communityCaption()
-                }
-                Spacer()
+        let exportTap = exportListing?.capture(for: post)
+        return FeedWallWindow {
+            FeedWallTitleBar(title: post.title) {
                 Menu {
                     if post.creator.uuidString.lowercased() != auth.userId?.lowercased() {
                         Button(post.following ? "Unfollow creator" : "Follow creator") { Task { await follow(post) } }
@@ -118,64 +169,123 @@ struct HomeFeedView: View {
                         }
                     }
                 } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+                    .tint(FeedWallPalette.ink)
                     .disabled(offlineUpdatedAt != nil)
                     .accessibilityLabel("More actions for \(post.title)")
                     .accessibilityIdentifier("feed.card.menu")
             }
-            Button {
-                guard let url = post.safeURL else { error = "Video address is unavailable."; return }
-                playback = FeedPlaybackItem(url: url, title: post.title)
-            } label: { FeedPosterView(post: post) }
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "person.crop.square").font(.title2)
+                        .foregroundStyle(FeedWallPalette.ink).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(post.creator_name).font(.specialElite(16, relativeTo: .body))
+                        Text(post.published_at, style: .relative).feedWallCaption()
+                    }
+                    Spacer(minLength: 0)
+                }
+                Button {
+                    guard let url = post.safeURL else { error = "Video address is unavailable."; return }
+                    playback = FeedPlaybackItem(url: url, title: post.title)
+                } label: {
+                    FeedPosterView(post: post)
+                        .overlay(Rectangle().strokeBorder(FeedWallPalette.ink, lineWidth: 2))
+                }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Play \(post.title)").accessibilityIdentifier("feed.card.play")
-            if !post.caption.isEmpty { Text(post.caption).font(.specialElite(14, relativeTo: .callout)) }
-            HStack(spacing: 18) {
-                Button { Task { await like(post) } } label: {
-                    Label(String(post.likes), systemImage: post.liked ? "heart.fill" : "heart")
-                        .foregroundStyle(post.liked ? StudioCraftTheme.accentText : StudioCraftTheme.textDim)
-                        .frame(minHeight: 44)
-                }
-                .disabled(timeline.inFlight.contains(post.id) || offlineUpdatedAt != nil)
-                .accessibilityLabel("\(post.liked ? "Unlike" : "Like") video, \(post.likes) likes")
-                .accessibilityIdentifier("feed.card.like")
-                if let url = post.safeURL {
-                    ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up").frame(minHeight: 44) }
-                        .accessibilityIdentifier("feed.card.share")
-                }
-                if FeedExportPolicy.canExport(post) {
-                    Button { Task { await export(post) } } label: {
-                        Label(exporting == post.id ? "Exporting…" : "Export", systemImage: "square.and.arrow.down").frame(minHeight: 44)
+                if !post.caption.isEmpty { Text(post.caption).font(.specialElite(14, relativeTo: .callout)) }
+                FeedWallActionGrid {
+                    Button { Task { await like(post) } } label: {
+                        Label(String(post.likes), systemImage: post.liked ? "heart.fill" : "heart")
+                            .frame(maxWidth: .infinity, minHeight: 44)
                     }
-                    .disabled(exporting != nil)
-                    .accessibilityHint("The creator permits saving this video file.")
-                    .accessibilityIdentifier("feed.card.export")
+                    .buttonStyle(FeedWallButtonStyle(selected: post.liked))
+                    .disabled(timeline.inFlight.contains(post.id) || offlineUpdatedAt != nil)
+                    .accessibilityLabel("\(post.liked ? "Unlike" : "Like") video, \(post.likes) likes")
+                    .accessibilityIdentifier("feed.card.like")
+                    if let url = post.safeURL {
+                        ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity, minHeight: 44) }
+                            .buttonStyle(FeedWallButtonStyle())
+                            .accessibilityIdentifier("feed.card.share")
+                    }
+                    if FeedExportPolicy.canExport(post) {
+                        Button { beginExport(post, tap: exportTap) } label: {
+                            Label(exporting == post.id ? "Exporting…" : "Export", systemImage: "square.and.arrow.down").frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(FeedWallButtonStyle())
+                        .disabled(exporting != nil || exportFile != nil || exportTap == nil)
+                        .accessibilityHint("The creator permits saving this video file.")
+                        .accessibilityIdentifier("feed.card.export")
+                    }
                 }
-                Spacer()
-            }.font(.specialElite(13, relativeTo: .footnote))
-            switch FeedExportPolicy.state(post) {
-            case .allowed: EmptyView()
-            case .needsPaidPlan: Text("The creator permits saving this video; saving files needs a paid plan. Sharing the link is allowed.").communityCaption()
-                    .accessibilityIdentifier("feed.card.export-plan")
-            case .notPermitted: Text("Export not permitted by the creator; sharing links is allowed.").communityCaption()
-            }
+                if exporting == post.id {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let progress = exportProgress, let total = progress.expectedBytes, total > 0 {
+                            ProgressView(value: Double(progress.receivedBytes), total: Double(total))
+                                .accessibilityLabel("Video export download")
+                        } else { ProgressView().accessibilityLabel("Video export download") }
+                        HStack(spacing: 12) {
+                            if let progress = exportProgress {
+                                Text(ByteCountFormatter.string(fromByteCount: progress.receivedBytes, countStyle: .file) + " downloaded")
+                                    .feedWallCaption()
+                            }
+                            Spacer(minLength: 0)
+                            Button("Cancel") { cancelExport() }.frame(minHeight: 44)
+                                .buttonStyle(FeedWallButtonStyle())
+                                .accessibilityIdentifier("feed.card.export-cancel")
+                        }
+                    }
+                    .tint(FeedWallPalette.ink)
+                    .accessibilityIdentifier("feed.card.export-progress")
+                }
+                switch FeedExportPolicy.state(post) {
+                case .allowed: EmptyView()
+                case .needsPaidPlan: Text("The creator permits saving this video; saving files needs a paid plan. Sharing the link is allowed.").feedWallCaption()
+                        .accessibilityIdentifier("feed.card.export-plan")
+                case .notPermitted: Text("Export not permitted by the creator; sharing links is allowed.").feedWallCaption()
+                }
+            }.padding(14)
         }
         .accessibilityIdentifier("feed.card")
     }
 
     @MainActor private func load(reset: Bool) async {
         guard !loading, auth.isAuthenticated, let account = auth.userId else { return }
-        if reset { epoch = UUID(); timeline.reset(); offlineUpdatedAt = nil }
-        guard timeline.canLoadMore else { return }
-        let revision = epoch, page = timeline.nextPage
+        if reset { epoch = UUID(); invalidateExportScope(); timeline.reset(); offlineUpdatedAt = nil }
+        guard timeline.canLoadMore, let listingContext = exportContext else { return }
+        let revision = epoch, page = timeline.nextPage, scope = identity
+        // An old account's retained cursor/rows cannot be extended under a new
+        // viewer while the identity-reset task is still waiting to execute.
+        guard page == 0 || exportListing?.matches(listingContext) == true else { return }
         loading = true
         defer { if revision == epoch { loading = false } }
         do {
             let result = try await CommunityServices.feed.page(category, page: page, account: account, asOf: timeline.asOf, cursor: timeline.nextCursor)
-            guard !Task.isCancelled, revision == epoch, account == auth.userId else { return }
-            try timeline.merge(page: page, posts: result.posts, hasMore: result.hasMore, asOf: result.asOf, cursor: result.cursor)
-            if case .cache(let updatedAt) = result.source { offlineUpdatedAt = updatedAt } else { offlineUpdatedAt = nil }
+            guard !Task.isCancelled, revision == epoch, account == auth.userId, scope == identity,
+                  exportContext == listingContext else { return }
+            var committed = timeline
+            try committed.merge(page: page, posts: result.posts, hasMore: result.hasMore, asOf: result.asOf, cursor: result.cursor)
+            guard let binding = FeedExportListing.commit(rows: result.posts, previous: page == 0 ? nil : exportListing,
+                                                        captured: listingContext, current: exportContext) else { return }
+            timeline = committed
+            cancelExport()
+            // A completed file may still be waiting for the share host. Revoke
+            // it before replacing the authorization revision; an already-offered
+            // consumer retains its input until UIKit completes.
+            if exportFile?.revokePendingShare() == true { exportFile = nil }
+            if case .cache(let updatedAt) = result.source {
+                offlineUpdatedAt = updatedAt
+                exportListing = nil // Cached per-viewer decisions are not fresh authorization.
+            } else {
+                offlineUpdatedAt = nil
+                exportListing = binding
+            }
             loaded = true; error = nil
-        } catch { if revision == epoch { loaded = true; self.error = CommunityGateway.normalize(error).errorDescription } }
+        } catch {
+            if revision == epoch && scope == identity && exportContext == listingContext {
+                loaded = true; self.error = CommunityGateway.normalize(error).errorDescription
+            }
+        }
     }
     @MainActor private func like(_ post: FeedPost) async {
         guard auth.isAuthenticated, let snapshot = timeline.beginLike(post.id, enabled: !post.liked) else { return }
@@ -217,28 +327,62 @@ struct HomeFeedView: View {
             } else if revision == epoch { error = "The report was not confirmed." }
         } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
     }
-    /// Creator-permitted export: explicit tap, bounded download to a temporary
-    /// file, then the system share sheet. Removed when the sheet closes.
-    @MainActor private func export(_ post: FeedPost) async {
-        guard exporting == nil else { return }
-        exporting = post.id; let revision = epoch
-        defer { if revision == epoch { exporting = nil } }
-        do {
-            let file = try await CommunityServices.feed.exportFile(for: post) { url in
-                let (temporary, response) = try await URLSession.shared.download(from: url)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                    try? FileManager.default.removeItem(at: temporary)
-                    throw CommunityError.transport("The video could not be downloaded.")
-                }
-                let destination = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-export-" + UUID().uuidString + ".mp4")
-                try FileManager.default.moveItem(at: temporary, to: destination)
-                let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64) ?? -1
-                return (destination, size)
+    /// Capture authorization and scope at the tap, before a queued Task can
+    /// run under another account. The task is owned and cancelled by this view.
+    @MainActor private func beginExport(_ post: FeedPost, tap: FeedExportListing.Tap?) {
+        guard exporting == nil, exportFile == nil, let context = exportContext else { return }
+        guard let tap, let permission = exportListing?.authorize(tap, rendered: post, current: context, visibleRows: timeline.posts) else {
+            error = "Refresh the feed before exporting this video."; return
+        }
+        let account = context.account
+        guard !FeedExportFile.hasOutstandingConsumer else {
+            error = "The previous video share is still finishing. Close it before exporting another video."; return
+        }
+        let run = UUID(), revision = exportEpoch, scope = identity
+        exporting = permission.post.id; exportRun = run; exportProgress = nil; error = nil
+        exportTask = Task { @MainActor in
+            let isCurrent = {
+                !Task.isCancelled && exportRun == run && exportEpoch == revision && identity == scope &&
+                    exportContext == context && exportListing?.contains(permission, current: exportContext, visibleRows: timeline.posts) == true
             }
-            guard revision == epoch else { try? FileManager.default.removeItem(at: file); return }
-            exportFile = FeedExportFile(url: file, title: post.title)
-        } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
+            defer {
+                if exportRun == run { exporting = nil; exportRun = nil; exportTask = nil; exportProgress = nil }
+            }
+            do {
+                let file = try await CommunityServices.feed.downloadExportFile(for: permission, isCurrent: isCurrent, progress: { progress in
+                    Task { @MainActor in
+                        if exportRun == run && exportEpoch == revision && auth.userId == account && identity == scope &&
+                            exportListing?.contains(permission, current: exportContext, visibleRows: timeline.posts) == true {
+                            exportProgress = progress
+                        }
+                    }
+                })
+                guard isCurrent() else { try? FileManager.default.removeItem(at: file); return }
+                exportFile = FeedExportFile(url: file, title: permission.post.title, account: account, generation: revision)
+            } catch is CancellationError {
+                // Explicit cancellation and stale scopes never display failure
+                // in a newer account or overwrite another export's state.
+            } catch { if isCurrent() { self.error = CommunityGateway.normalize(error).errorDescription } }
+        }
     }
+    @MainActor private func cancelExport() {
+        exportTask?.cancel(); exportTask = nil
+        exportRun = nil; exporting = nil; exportProgress = nil
+    }
+    @MainActor private func revokeViewerListing() {
+        // Every publication advances this generation, even when SwiftUI would
+        // render A → B → A as the same final account. It also schedules a fresh
+        // listing through task(id:), including same-ID session replacement.
+        viewerGeneration = UUID()
+        invalidateExportScope()
+    }
+    @MainActor private func invalidateExportScope() {
+        exportListing = nil
+        exportEpoch = UUID()
+        cancelExport()
+        exportFile?.ownerClosed(); exportFile = nil
+    }
+
 }
 
 private struct FeedPlaybackItem: Identifiable { let id = UUID(); let url: URL; let title: String }
@@ -331,7 +475,198 @@ final class CommunityVideoPlayerModel: ObservableObject {
                                           failureText: nil)
     }
 }
-private struct FeedExportFile: Identifiable {
-    let id = UUID(); let url: URL; let title: String
-    func cleanUp() { try? FileManager.default.removeItem(at: url) }
+/// A native activity owns its file independently of SwiftUI presentation.
+/// Dismantling the host only closes the owner; an offered file awaits UIKit's
+/// completion callback, even if account/foreground changes dismiss the sheet.
+@MainActor
+private struct FeedExportSharePresenter: UIViewControllerRepresentable {
+    let file: FeedExportFile
+    let isAllowed: @MainActor () -> Bool
+    let onTerminal: @MainActor () -> Void
+    func makeUIViewController(context: Context) -> Host {
+        Host(file: file, isAllowed: isAllowed, onTerminal: onTerminal)
+    }
+    func updateUIViewController(_ controller: Host, context: Context) { controller.updateAuthorization(isAllowed) }
+    static func dismantleUIViewController(_ controller: Host, coordinator: ()) { controller.detach() }
+
+    final class Host: UIViewController {
+        private let file: FeedExportFile
+        private var isAllowed: @MainActor () -> Bool
+        private var onTerminal: (@MainActor () -> Void)?
+        private var activity: UIActivityViewController?
+        private var attempted = false
+        init(file: FeedExportFile, isAllowed: @escaping @MainActor () -> Bool, onTerminal: @escaping @MainActor () -> Void) {
+            self.file = file; self.isAllowed = isAllowed; self.onTerminal = onTerminal
+            super.init(nibName: nil, bundle: nil)
+        }
+        required init?(coder: NSCoder) { fatalError("Programmatic video sharing only") }
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            guard !attempted else { return }
+            attempted = true
+            guard isAllowed(), file.offerToShare() else { file.ownerClosed(); finishUI(); return }
+            let controller = UIActivityViewController(activityItems: [file.url], applicationActivities: nil)
+            controller.completionWithItemsHandler = { [file, weak self] _, _, _, _ in
+                Task { @MainActor in file.consumerFinished(); self?.finishUI() }
+            }
+            if let popover = controller.popoverPresentationController {
+                popover.sourceView = view; popover.sourceRect = view.bounds; popover.permittedArrowDirections = []
+            }
+            activity = controller
+            present(controller, animated: true)
+        }
+        func updateAuthorization(_ allowed: @escaping @MainActor () -> Bool) {
+            isAllowed = allowed
+            if !allowed() { detach() }
+        }
+        func detach() {
+            onTerminal = nil; isAllowed = { false }
+            file.ownerClosed()
+            // Keep the consumer callback installed. A dismiss animation is not
+            // evidence that an activity extension has stopped reading the file.
+            activity?.dismiss(animated: false)
+        }
+        private func finishUI() {
+            activity = nil
+            let callback = onTerminal; onTerminal = nil
+            callback?()
+        }
+    }
+}
+
+// MARK: - Private feed wall presentation
+
+private enum FeedWallPalette {
+    static let paper = Color(hex: "EFEAE0")
+    static let ink = Color(hex: "101011")
+    static let grey = Color(hex: "BDB9B3")
+    static let red = Color(hex: "FF454C")
+}
+
+/// The owned website's dither and square windows, drawn natively without assets.
+private struct FeedWallDesktop: View {
+    var body: some View {
+        FeedWallPalette.grey.overlay {
+            Canvas { context, size in
+                for y in stride(from: CGFloat(0), through: size.height, by: 6) {
+                    let offset: CGFloat = Int(y / 6).isMultiple(of: 2) ? 0 : 3
+                    for x in stride(from: offset, through: size.width, by: 6) {
+                        context.fill(Path(CGRect(x: x, y: y, width: 1, height: 1)), with: .color(FeedWallPalette.ink.opacity(0.18)))
+                    }
+                }
+            }.accessibilityHidden(true).allowsHitTesting(false)
+        }
+    }
+}
+
+private struct FeedWallStripes: View {
+    var body: some View {
+        Canvas { context, size in
+            for y in stride(from: CGFloat(2), through: size.height, by: 3) {
+                context.fill(Path(CGRect(x: 0, y: y, width: size.width, height: 1)), with: .color(FeedWallPalette.ink))
+            }
+        }.accessibilityHidden(true).allowsHitTesting(false)
+    }
+}
+
+private struct FeedWallWindow<Content: View>: View {
+    @ViewBuilder let content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(FeedWallPalette.paper)
+            .overlay(Rectangle().strokeBorder(FeedWallPalette.ink, lineWidth: 2))
+            .shadow(color: FeedWallPalette.ink, radius: 0, x: 2, y: 2)
+    }
+}
+
+private struct FeedWallTitleBar<Trailing: View>: View {
+    let title: String
+    @ViewBuilder let trailing: Trailing
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title).font(.specialElite(15, relativeTo: .headline))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(FeedWallPalette.paper)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 4)
+            trailing.background(FeedWallPalette.paper)
+        }
+        .padding(.leading, 6).padding(.trailing, 2).padding(.vertical, 2)
+        .frame(minHeight: 44)
+        .background(FeedWallStripes())
+        .overlay(alignment: .bottom) { FeedWallPalette.ink.frame(height: 2) }
+    }
+}
+
+private struct FeedWallGrid<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicType
+    let width: CGFloat
+    @ViewBuilder let content: Content
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), spacing: 18, alignment: .top),
+                                 count: width >= 760 && !dynamicType.isAccessibilitySize ? 2 : 1),
+                  alignment: .leading, spacing: 18) { content }
+    }
+}
+
+private struct FeedWallActionGrid<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicType
+    @ViewBuilder let content: Content
+    var body: some View {
+        LazyVGrid(columns: dynamicType.isAccessibilitySize ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 112), spacing: 10)],
+                  alignment: .leading, spacing: 10) { content }
+    }
+}
+
+private struct FeedWallButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    var selected = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.specialElite(14, relativeTo: .callout))
+            .foregroundStyle(FeedWallPalette.ink.opacity(isEnabled ? 1 : 0.6))
+            .padding(.horizontal, 10)
+            .frame(minWidth: 44, minHeight: 44)
+            .background(isEnabled && selected ? FeedWallPalette.red : isEnabled ? FeedWallPalette.paper : FeedWallPalette.grey)
+            .overlay(Rectangle().strokeBorder(FeedWallPalette.ink, lineWidth: 2))
+            .shadow(color: FeedWallPalette.ink, radius: 0, x: configuration.isPressed ? 0 : 2, y: configuration.isPressed ? 0 : 2)
+            .offset(x: configuration.isPressed ? 2 : 0, y: configuration.isPressed ? 2 : 0)
+    }
+}
+
+private struct FeedWallMessage: View {
+    let text: String
+    let kind: CommunityMessage.Kind
+    var body: some View {
+        Label {
+            Text(text).font(.specialElite(13, relativeTo: .footnote))
+        } icon: {
+            Image(systemName: icon).foregroundStyle(FeedWallPalette.ink)
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(FeedWallPalette.paper)
+        .overlay(alignment: .leading) { FeedWallPalette.red.frame(width: errorStripeWidth) }
+        .overlay(Rectangle().strokeBorder(FeedWallPalette.ink, lineWidth: 2))
+        .accessibilityElement(children: .combine)
+    }
+    private var errorStripeWidth: CGFloat {
+        if case .error = kind { return 4 }
+        return 0
+    }
+    private var icon: String {
+        switch kind {
+        case .info: return "info.circle"
+        case .error: return "exclamationmark.triangle"
+        case .offline: return "wifi.slash"
+        case .success: return "checkmark.circle"
+        }
+    }
+}
+
+private extension View {
+    func feedWallCaption() -> some View {
+        font(.specialElite(12, relativeTo: .caption)).foregroundStyle(FeedWallPalette.ink.opacity(0.74))
+    }
 }

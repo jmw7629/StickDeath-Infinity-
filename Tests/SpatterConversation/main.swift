@@ -548,7 +548,7 @@ private final class NetworkTrap: URLProtocol {
                              "areaSelection", "wandSelection", "libraryPicture", "projectExport"] {
                     try require(SpatterAIViewModel.currentStudioCapabilities.contains(fact), "Capability text missing: \(fact)")
                 }
-                try require(SpatterInstructionCatalog.version == 12 && SpatterInstructionCatalog.grammars.count == 51 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                try require(SpatterInstructionCatalog.version == 13 && SpatterInstructionCatalog.grammars.count == 52 && SpatterInstructionCatalog.names.contains("artworkTransform") && SpatterInstructionCatalog.commandNames.contains("transformSelectedArtwork") && SpatterInstructionCatalog.commandNames.contains("translateElements")
                     && SpatterInstructionCatalog.commandNames.contains("fillAtPoint") && SpatterInstructionCatalog.commandNames.contains("selectElements")
                     && SpatterInstructionCatalog.commandNames.contains("setSourceReference")
                     && SpatterInstructionCatalog.commandNames.contains("updateText") && SpatterInstructionCatalog.commandNames.contains("appendFrames")

@@ -648,69 +648,114 @@ struct StudioMenuSheet: View {
     
     var body: some View {
         ZStack {
-            Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            ScrollView {
+            StudioMenuDesktopStyle.paper.ignoresSafeArea()
+
             VStack(spacing: 0) {
-                // Drag handle
-                HStack {
-                    Spacer()
-                    RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.2)).frame(width: 36, height: 4)
-                    Spacer()
-                }.frame(height: 44).overlay(alignment: .trailing) {
-                    Button(action: { dismiss() }) { Image(systemName: "xmark").frame(width: 44, height: 44) }
-                        .accessibilityLabel("Close Studio menu").accessibilityIdentifier("studio.menu.close")
+                HStack(spacing: 8) {
+                    StudioMenuTitleStripes().frame(width: 24, height: 24).accessibilityHidden(true)
+                    Text("STUDIO DESK")
+                        .font(.specialElite(15, relativeTo: .headline))
+                        .foregroundStyle(StudioMenuDesktopStyle.ink)
+                    StudioMenuTitleStripes().frame(maxWidth: .infinity).frame(height: 24).accessibilityHidden(true)
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(StudioMenuDesktopStyle.ink)
+                    .accessibilityLabel("Close Studio menu").accessibilityIdentifier("studio.menu.close")
                 }
-                
+                .padding(.horizontal, 12)
+                .overlay(alignment: .bottom) { Rectangle().fill(StudioMenuDesktopStyle.ink).frame(height: 2) }
+
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(vm.projectName).font(.specialElite(13, relativeTo: .body)).lineLimit(2)
+                    Spacer(minLength: 4)
+                    Text("\(vm.document.width) × \(vm.document.height) · \(vm.fps) FPS")
+                        .font(.specialElite(10, relativeTo: .caption)).multilineTextAlignment(.trailing)
+                }
+                .foregroundStyle(StudioMenuDesktopStyle.ink)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+
+                ScrollView {
+            VStack(spacing: 0) {
                 // PROJECT section
                 SectionLabel(text: "PROJECT")
                 
-                MenuSheetRow(icon: "⚙️", label: "Project Settings") {
+                MenuSheetRow(icon: "gearshape", label: "Project Settings") {
                     onNavigate(.projectSettings)
                 }
                 
-                Divider().background(Color.white.opacity(0.06)).padding(.horizontal, 16)
+                Rectangle().fill(StudioMenuDesktopStyle.ink.opacity(0.25)).frame(height: 1).padding(.horizontal, 16)
                 
                 // TOOLS section
                 SectionLabel(text: "TOOLS")
                 
-                MenuSheetRow(icon: "🎬", label: "Frames Viewer") {
+                MenuSheetRow(icon: "film.stack", label: "Frames Viewer") {
                     onNavigate(.framesViewer)
                 }
                 
-                MenuSheetToggleRow(icon: "🧅", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin, onEdit: { showingOnionSettings.toggle() })
-                if showingOnionSettings { StudioOnionSettingsControls(vm: vm) }
-                MenuSheetToggleRow(icon: "📐", label: "Grid", hasEdit: true, isOn: $vm.gridEnabled, onEdit: { showingGridSettings.toggle() })
-                if showingGridSettings { StudioGridSettingsControls(vm: vm) }
-                
-                MenuSheetRow(icon: "✨", label: "Magic Cut") {
+                MenuSheetToggleRow(icon: "square.stack.3d.up", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin, onEdit: { showingOnionSettings.toggle() })
+                if showingOnionSettings {
+                    StudioOnionSettingsControls(vm: vm)
+                        .padding(.vertical, 8).background(Color(hex: "0E0E10"))
+                }
+                MenuSheetToggleRow(icon: "square.grid.3x3", label: "Grid", hasEdit: true, isOn: $vm.gridEnabled, onEdit: { showingGridSettings.toggle() })
+                if showingGridSettings {
+                    StudioGridSettingsControls(vm: vm)
+                        .padding(.vertical, 8).background(Color(hex: "0E0E10"))
+                }
+
+                MenuSheetRow(icon: "wand.and.stars", label: "Magic Cut") {
                     onNavigate(.magicCut)
                 }
                 
-                MenuSheetRow(icon: "🖼️", label: "Background Library") {
+                MenuSheetRow(icon: "photo.on.rectangle", label: "Background Library") {
                     onNavigate(.backgroundLibrary)
                 }
                 
-                MenuSheetRow(icon: "🎬", label: "Rotoscope / Video") {
+                MenuSheetRow(icon: "film", label: "Rotoscope / Video") {
                     onNavigate(.rotoscope)
                 }
                 
-                MenuSheetRow(icon: "🖼️", label: "Add Picture") {
+                MenuSheetRow(icon: "photo.badge.plus", label: "Add Picture") {
                     onNavigate(.addImage)
                 }
                 
-                MenuSheetRow(icon: "🗣️", label: "Voice Maker") {
+                MenuSheetRow(icon: "waveform", label: "Voice Maker") {
                     onNavigate(.aiVoice)
                 }
                 
-                MenuSheetRow(icon: "🎨", label: "Spatter AI", accent: true) {
+                MenuSheetRow(icon: "paintbrush.pointed", label: "Spatter AI", accent: true) {
                     onNavigate(.spatterAI)
                 }
                 .accessibilityIdentifier("studio.spatter.open")
                 
-                Spacer()
+                Spacer(minLength: 16)
             }
             }.accessibilityIdentifier("studio.menu.scroll")
+            }
+        }
+    }
+}
+
+private enum StudioMenuDesktopStyle {
+    static let paper = Color(hex: "EFEAE0")
+    static let ink = Color(hex: "101011")
+    static let accent = Color(hex: "A4121A")
+}
+
+private struct StudioMenuTitleStripes: View {
+    var body: some View {
+        Canvas { context, size in
+            var lines = Path()
+            for y in stride(from: CGFloat(2), through: size.height, by: CGFloat(4)) {
+                lines.move(to: CGPoint(x: 0, y: y))
+                lines.addLine(to: CGPoint(x: size.width, y: y))
+            }
+            context.stroke(lines, with: .color(StudioMenuDesktopStyle.ink), lineWidth: 1)
         }
     }
 }
@@ -719,8 +764,8 @@ struct SectionLabel: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(.specialElite(10)).fontWeight(.bold)
-            .foregroundColor(.white.opacity(0.3))
+            .font(.specialElite(10, relativeTo: .caption)).fontWeight(.bold)
+            .foregroundColor(StudioMenuDesktopStyle.ink.opacity(0.65))
             .tracking(2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
@@ -738,18 +783,23 @@ struct MenuSheetRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Text(icon).font(.system(size: 18))
+                Image(systemName: icon).font(.system(size: 18)).frame(width: 24).accessibilityHidden(true)
                 Text(label)
-                    .font(.specialElite(14))
-                    .foregroundColor(accent ? .red : .white)
+                    .font(.specialElite(14, relativeTo: .body))
+                    .foregroundColor(accent ? StudioMenuDesktopStyle.accent : StudioMenuDesktopStyle.ink)
                 Spacer()
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.2))
+                    .foregroundColor(StudioMenuDesktopStyle.ink.opacity(0.5))
             }
+            .foregroundStyle(StudioMenuDesktopStyle.ink)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 }
 
@@ -762,18 +812,19 @@ struct MenuSheetToggleRow: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            Text(icon).font(.system(size: 18))
+            Image(systemName: icon).font(.system(size: 18)).frame(width: 24)
+                .foregroundStyle(StudioMenuDesktopStyle.ink).accessibilityHidden(true)
             Text(label)
-                .font(.specialElite(14))
-                .foregroundColor(.white)
+                .font(.specialElite(14, relativeTo: .body))
+                .foregroundColor(StudioMenuDesktopStyle.ink)
             Spacer()
             if hasEdit, let onEdit {
                 Button("Edit", action: onEdit)
                     .frame(minWidth: 44, minHeight: 44)
                     .accessibilityLabel("Edit " + label)
                     .accessibilityIdentifier("studio.menu.edit." + label.lowercased())
-                    .font(.specialElite(12)).fontWeight(.bold)
-                    .foregroundColor(.red)
+                    .font(.specialElite(12, relativeTo: .callout)).fontWeight(.bold)
+                    .foregroundColor(StudioMenuDesktopStyle.accent)
             }
             Toggle(label, isOn: $isOn)
                 .labelsHidden()

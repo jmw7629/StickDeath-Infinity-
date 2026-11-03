@@ -71,6 +71,7 @@ final class SpatterStudioEditSession: ObservableObject {
         var selectionTranslate: SpatterSelectionTranslateInstruction? = nil
         var selectionTransform: SpatterSelectionTransformInstruction? = nil
         var selectionReflectAxis: StudioReflectionAxis? = nil
+        var artworkTransform: SpatterArtworkTransformInstruction? = nil
         var imageRotation: StudioImageQuarterTurn? = nil
         var imageCrop: StudioImageCrop? = nil
         var imagePlacement: SpatterImagePlacementInstruction? = nil
@@ -187,6 +188,10 @@ final class SpatterStudioEditSession: ObservableObject {
                 }
                 if let soloed = edit.soloed { return "\(soloed ? "Soloed" : "Unsoloed") audio track \(edit.track) in one Undo step. Other tracks keep their own settings." }
                 return "\(edit.muted == true ? "Muted" : "Unmuted") audio track \(edit.track) in one Undo step. Clips and original audio are preserved."
+            }
+            if let artworkTransform {
+                return receipt.outcome == .unchanged ? "The selected artwork did not change. Nothing changed."
+                    : "Applied one local edit: \(artworkTransform.summary). One Undo restores the complete selection; original image bytes and editable drawings are preserved."
             }
             if let selectionTranslate {
                 return receipt.outcome == .unchanged ? "The selected drawings did not move. Nothing changed."
@@ -381,9 +386,12 @@ final class SpatterStudioEditSession: ObservableObject {
         /// instruction routes keep their existing context contract.
         let librarySoundPlayhead: Double?
         let gradient: StudioViewModel.GradientCapture?
+        let artworkTransform: StudioViewModel.SelectionHandleCapture?
+        let capturesArtworkTransform: Bool
         init(accountID: String?, screen: StudioViewModel.CommandScreenContext, document: StudioCommandContext,
              selectedImage: StudioViewModel.ImageMoveCapture?, selectedArtwork: StudioViewModel.SelectionHandleCapture?, mixedArtwork: Bool,
-             captureLibrarySoundPlayhead: Bool = false, gradient: StudioViewModel.GradientCapture? = nil) {
+             captureLibrarySoundPlayhead: Bool = false, gradient: StudioViewModel.GradientCapture? = nil,
+             artworkTransform: StudioViewModel.SelectionHandleCapture? = nil, capturesArtworkTransform: Bool = false) {
             self.accountID = accountID; projectID = document.projectID; revision = document.revision
             activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
             displayedFrameID = screen.displayedFrameID; selectedElementIDs = screen.selectedElementIDs
@@ -391,7 +399,8 @@ final class SpatterStudioEditSession: ObservableObject {
             self.selectedImage = selectedImage; self.selectedArtwork = selectedArtwork; self.mixedArtwork = mixedArtwork
             activePanel = screen.activePanel; isPlaying = screen.isPlaying
             librarySoundPlayhead = captureLibrarySoundPlayhead ? screen.audioPlayheadTime : nil
-            self.gradient = gradient
+            self.gradient = gradient; self.artworkTransform = artworkTransform
+            self.capturesArtworkTransform = capturesArtworkTransform
         }
     }
     private enum SessionError: LocalizedError {
@@ -437,7 +446,9 @@ final class SpatterStudioEditSession: ObservableObject {
         let captured = Capture(accountID: accountID, screen: screen, document: document,
                                selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork,
                                captureLibrarySoundPlayhead: SpatterLibrarySoundInstruction.isInstruction(draft),
-                               gradient: (SpatterGradientInstruction.isInstruction(draft) || SpatterPixelEffectInstruction.isInstruction(draft)) ? studio.capturePixelEffect() : nil)
+                               gradient: (SpatterGradientInstruction.isInstruction(draft) || SpatterPixelEffectInstruction.isInstruction(draft)) ? studio.capturePixelEffect() : nil,
+                               artworkTransform: SpatterArtworkTransformInstruction.isInstruction(draft) ? studio.beginSpatterArtworkTransform() : nil,
+                               capturesArtworkTransform: SpatterArtworkTransformInstruction.isInstruction(draft))
         let started = now()
         let deadline = started.advanced(by: budget)
         acceptedIDs.insert(submissionID)
@@ -557,6 +568,28 @@ final class SpatterStudioEditSession: ObservableObject {
                                                               revision: document.revision, accountID: captured.accountID), format: format)
                     self.status = .handedOff
                     self.notice = "Starting Studio's direct \(format.rawValue.uppercased()) export of saved revision \(document.revision) to a file on this device. The project did not change; nothing is uploaded, shared or published."
+                    return
+                } else if !isBatch && SpatterArtworkTransformInstruction.isInstruction(draft) {
+                    let instruction = try SpatterArtworkTransformInstruction.parse(draft)
+                    guard !captured.isPlaying, captured.displayedFrameID == captured.activeFrameID,
+                          let target = captured.artworkTransform else { throw SpatterArtworkTransformInstruction.Failure.selection }
+                    let values = try instruction.values(width: document.width, height: document.height)
+                    try await self.checkpoint()
+                    try check()
+                    try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                    let receipt = try studio.applySpatterArtworkTransform(target, values: values, requestID: submissionID,
+                        checkCancellation: {
+                            try check()
+                            try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                        })
+                    let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: 0, gridInstruction: nil, onionInstruction: nil,
+                        frameExposureTicks: nil, frameAction: nil, isLayerGlowEdit: false, isLayerDuplicate: false,
+                        isLayerUpdate: false, layerVisibility: nil, layerOrderUp: nil, artworkOrderForward: nil,
+                        imageReflectionAxis: nil, isAudioEdit: false, renamedProjectName: nil, addedAudioClipCount: 0,
+                        removedAudioClipCount: 0, changedExistingAudioClipCount: 0, addedFrameCount: 0,
+                        fps: studio.fps, addedDurationSeconds: 0, artworkTransform: instruction)
+                    self.appliedAccountID = captured.accountID
+                    self.appliedEdit = result; self.status = .applied; self.notice = result.summary
                     return
                 } else if !isBatch && isPixelEffect {
                     let result = try await self.applyPixelEffect(draft, captured: captured, studio: studio,
@@ -1116,7 +1149,9 @@ final class SpatterStudioEditSession: ObservableObject {
               Capture(accountID: scope.accountID, screen: screen, document: document,
                       selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork,
                       captureLibrarySoundPlayhead: captured.librarySoundPlayhead != nil,
-                      gradient: captured.gradient == nil ? nil : studio.captureGradient(requiringGradientTool: false)) == captured else { throw SessionError.contextChanged }
+                      gradient: captured.gradient == nil ? nil : studio.captureGradient(requiringGradientTool: false),
+                      artworkTransform: captured.capturesArtworkTransform ? studio.beginSpatterArtworkTransform() : nil,
+                      capturesArtworkTransform: captured.capturesArtworkTransform) == captured else { throw SessionError.contextChanged }
     }
     private func reject(_ error: Error) {
         if let sessionError = error as? SessionError {

@@ -859,6 +859,37 @@ private enum Golden {
                 try require(SpatterStudioControlRegistry.validate(catalogNames: SpatterInstructionCatalog.names.filter { $0 != "tween" })
                     .contains { $0.contains("unknown grammar tween") }, "Unknown grammar not reported")
             }
+            try test("whole artwork grammar is explicit bounded standalone and preserves drawing image grammars") {
+                let context = StudioCommandContext(document: try document())
+                for example in SpatterArtworkTransformInstruction.examples {
+                    let parsed = try SpatterArtworkTransformInstruction.parse(example)
+                    _ = try parsed.values(width: context.width, height: context.height)
+                    try require(SpatterInstructionRouter.classify(example) == .artworkTransform
+                        && !SpatterInstructionRouter.Kind.artworkTransform.isContextOnly,
+                        "Artwork transform was routed to audio or a context-only batch")
+                    let preview = SpatterInstructionPreview.plan(example, context: context)
+                    try require(preview.contains("selected whole artwork") && preview.contains("validates the captured selection")
+                        && preview.contains("Pixel-region/Wand") && preview.contains("nothing has changed"), "Artwork preview overclaims authority or completion")
+                    try rejects("selected artwork in context-only batch") {
+                        _ = try SpatterInstructionBatch.parse("Add 1 blank frame.\n" + example)
+                    }
+                }
+                let move = try SpatterArtworkTransformInstruction.parse("Move selected artwork by (10%, -5%).").values(width: 128, height: 96)
+                try require(move.dx == 12.8 && move.dy == -4.8 && move.scale == 1 && !move.flipHorizontal,
+                    "Artwork percentage projection differs from manual document coordinates")
+                for text in ["Move selected artwork by (101%, 0%).", "Move selected artwork by (nan%, 0%).",
+                             "Move selected artwork by (0%, -inf%).", "Scale selected artwork to 0%.",
+                             "Scale selected artwork to 1001%.", "Rotate selected artwork 181 degrees.",
+                             "Rotate selected artwork 90 degrees. Publish it.", "Flip selected artwork diagonally.",
+                             "Flip selected artwork horizontally.\nDelete active frame.", "Move all artwork by (10%, 0%).",
+                             "Move selected drawings by (10%, 0%).", "Flip selected image horizontally.",
+                             "Move selected artwork by (10%, 0%). selected artwork", String(repeating: "x", count: 1025)] {
+                    try rejects("malformed or broadened artwork transform") { _ = try SpatterArtworkTransformInstruction.parse(text) }
+                }
+                try require(SpatterInstructionRouter.classify(SpatterSelectionTranslateInstruction.example) == .selectionTranslate
+                    && SpatterInstructionRouter.classify(SpatterImageReflectionInstruction.horizontalExample) == .imageReflection,
+                    "Existing explicit drawing/image targets changed meaning")
+            }
             try test("context snapshot reports exact bounded screen document and selection facts and detects stale context") {
                 var editor = try StudioDocumentEditor(document: try document(frames: 3))
                 let seed = editor.document
@@ -937,7 +968,7 @@ private enum Golden {
                     "frameAction": .frameAction, "frameCut": .frameCut, "frameExposure": .frameExposure, "frameReverse": .frameReverse, "frameDuplicateRange": .frameDuplicateRange,
                     "navigation": .navigation, "layerStructure": .layerStructure, "layerDuplicate": .layerDuplicate, "layerUpdate": .layerUpdate, "layerGlow": .layerGlow,
                     "layerOrder": .layerOrder, "projectRename": .projectRename, "grid": .grid, "onionSkin": .onionSkin, "selectedErasure": .selectedErasure,
-                    "drawingDuplicate": .drawingDuplicate, "artworkOrder": .artworkOrder, "selectionTranslate": .selectionTranslate, "selectionTransform": .selectionTransform,
+                    "drawingDuplicate": .drawingDuplicate, "artworkOrder": .artworkOrder, "artworkTransform": .artworkTransform, "selectionTranslate": .selectionTranslate, "selectionTransform": .selectionTransform,
                     "selectionReflect": .selectionReflect, "imageReflection": .imageReflection, "imageRotation": .imageRotation, "imageCrop": .imageCrop,
                     "imagePlacement": .imagePlacement, "textCreate": .textCreate, "textUpdate": .textUpdate, "audioClip": .audioClip, "audioTrack": .audioTrack,
                     "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "freehandStroke": .freehandStroke, "shape": .shape, "batch": .batch,
@@ -1196,7 +1227,7 @@ private enum Golden {
                 try require(StudioSharedEdit.drawCommands(before: seed, after: moved, frameID: frameID) == nil, "Unrepresentable touch commit claimed shareable")
             }
             try test("catalog v5 selection picture and export grammars parse exactly and refuse injection and malformed input") {
-                try require(SpatterInstructionCatalog.version == 12 && SpatterInstructionCatalog.grammars.count == 51, "Catalog v12 not registered")
+                try require(SpatterInstructionCatalog.version == 13 && SpatterInstructionCatalog.grammars.count == 52, "Catalog v13 not registered")
                 // Area (Lasso) selection.
                 let rect = try SpatterAreaSelectInstruction.parse(SpatterAreaSelectInstruction.example)
                 try require(rect.isRectangle && rect.vertices == [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 90)]

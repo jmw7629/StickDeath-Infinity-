@@ -54,6 +54,7 @@ struct SpatterMotionRecipePanel: View {
     private var isExposureDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterFrameExposureInstruction.isInstruction(draft) }
     private var isGlowDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterLayerGlowInstruction.isInstruction(draft) }
     // Selection/image/text grammars take precedence over the broad audio first-word classifier.
+    private var isArtworkTransformDraft: Bool { SpatterArtworkTransformInstruction.isInstruction(draft) }
     private var isSelectionTranslateDraft: Bool { SpatterSelectionTranslateInstruction.isInstruction(draft) }
     private var isSelectionTransformDraft: Bool { SpatterSelectionTransformInstruction.isInstruction(draft) }
     private var isSelectionReflectDraft: Bool { SpatterSelectionReflectInstruction.isInstruction(draft) }
@@ -63,7 +64,7 @@ struct SpatterMotionRecipePanel: View {
     private var isImagePlacementDraft: Bool { SpatterImagePlacementInstruction.isInstruction(draft) }
     private var isImageEditDraft: Bool { isImageRotationDraft || isImageCropDraft || isImagePlacementDraft }
     private var isTextUpdateDraft: Bool { SpatterTextUpdateInstruction.isInstruction(draft) }
-    private var isAudioDraft: Bool { !isPackDraft && !isLayerDraft && !isSelectionDraft && !isImageEditDraft && !isTextUpdateDraft && !SpatterTextCreateInstruction.isInstruction(draft) && SpatterAudioInstruction.isAudioInstruction(draft) }
+    private var isAudioDraft: Bool { !isPackDraft && !isLayerDraft && !isArtworkTransformDraft && !isSelectionDraft && !isImageEditDraft && !isTextUpdateDraft && !SpatterTextCreateInstruction.isInstruction(draft) && SpatterAudioInstruction.isAudioInstruction(draft) }
     private var isOrderDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterArtworkOrderInstruction.isInstruction(draft) }
     private var isImageDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterImageReflectionInstruction.isInstruction(draft) }
     private var selectedImage: StudioViewModel.ImageMoveCapture? {
@@ -76,12 +77,13 @@ struct SpatterMotionRecipePanel: View {
         guard let kind = SpatterInstructionRouter.classify(draft) else { return nil }
         switch kind {
         case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke, .freehandStroke, .shape, .textCreate,
-             .areaSelection, .wandSelection, .libraryPicture, .librarySound, .projectExport, .gradientFill, .pixelEffect, .imagePack: return kind
+             .areaSelection, .wandSelection, .libraryPicture, .librarySound, .projectExport, .gradientFill, .pixelEffect, .imagePack, .artworkTransform: return kind
         default: return nil
         }
     }
     private var routedTitle: String? {
         switch routedKind {
+        case .artworkTransform?: return "Transform selected artwork"
         case .batch?: return "Apply a batch of instructions"
         case .multiClauseBrief?: return "Build a scene from a brief"
         case .tween?: return "Tween between two frames"
@@ -104,6 +106,7 @@ struct SpatterMotionRecipePanel: View {
     }
     private var routedDescription: String? {
         switch routedKind {
+        case .artworkTransform?: return "Move, resize while keeping proportions, rotate or flip the selected drawings and image together. Originals stay editable and one Undo reverses the group. Select whole artwork first; pixel-region/Wand selections are unavailable."
         case .batch?: return "Two to eight complete context-only instructions, one per line, become one typed request: one revision, one Undo step, and nothing is applied if any line fails. Frame numbers refer to the project as captured when Spatter opened."
         case .multiClauseBrief?: return "One to three stick figures with up to six actions each (walks, runs, jumps, waves, falls, punches, kicks, sits, ducks, throws, explodes) become editable frames on new layers with a storyboard receipt. Poses are generated per tick and held only when the element budget requires it; longer briefs are refused, not flattened. Seeds make the result reproducible."
         case .tween?: return "Adds 1–24 interpolated frames between two adjacent frames whose drawings match in count and style, with the chosen easing. One Undo removes them."
@@ -126,6 +129,7 @@ struct SpatterMotionRecipePanel: View {
     }
     private var routedGuidance: String? {
         switch routedKind {
+        case .artworkTransform?: return SpatterArtworkTransformInstruction.help
         case .batch?: return "Each line must be a complete frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename, shape or brush-stroke instruction. Selection, image, text, audio-clip, library-sound, canvas-gradient, raster-effect and brief instructions run on their own. Stop playback, then Preview plan or Apply."
         case .multiClauseBrief?: return "Use: \(SpatterMultiClauseBrief.example) Add actors with semicolons, directions with left to right / right to left, per-clause durations with for N seconds, a total with N seconds and an optional seed N. Falls and explodes must come last for an actor."
         case .tween?: return "Use Tween 4 in-betweens between frames 1 and 2 with ease-in-out easing. Easings: linear, ease-in, ease-out, ease-in-out, easy-ease. Frames are one-based and must be adjacent with matching drawings."
@@ -392,6 +396,22 @@ struct SpatterMotionRecipePanel: View {
                     .frame(minHeight: 44)
                     .disabled(session.isWorking || session.isClosed || selectedImage == nil)
                     .accessibilityIdentifier("spatter.image.edit-examples")
+                    Menu("Use a selected artwork instruction") {
+                        Button("Move selected artwork") { draft = SpatterArtworkTransformInstruction.moveExample }
+                        Button("Scale and rotate selected artwork") { draft = SpatterArtworkTransformInstruction.transformExample }
+                        Button("Scale selected artwork") { draft = SpatterArtworkTransformInstruction.scaleExample }
+                        Button("Rotate selected artwork") { draft = SpatterArtworkTransformInstruction.rotateExample }
+                        Button("Flip selected artwork horizontally") { draft = SpatterArtworkTransformInstruction.horizontalExample }
+                        Button("Flip selected artwork vertically") { draft = SpatterArtworkTransformInstruction.verticalExample }
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(session.isWorking || session.isClosed)
+                    .accessibilityIdentifier("spatter.artwork.transform-examples")
+                    if isArtworkTransformDraft {
+                        Text(vm.beginSpatterArtworkTransform().map { "Selected artwork: \($0.ids.count) drawings, \($0.image == nil ? 0 : 1) image" } ?? "Select whole artwork with Move; pixel-region/Wand selections are unavailable.")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                            .accessibilityIdentifier("spatter.artwork.transform-targets")
+                    }
                     Menu("Use a selected drawings instruction") {
                         Button("Move selected drawings") { draft = SpatterSelectionTranslateInstruction.example }
                         Button("Scale and rotate selected drawings") { draft = SpatterSelectionTransformInstruction.example }

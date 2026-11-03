@@ -1694,6 +1694,193 @@ private final class NetworkTrap: URLProtocol {
             }
             vm.activePanel = .spatterAI
         }
+        @MainActor func transformArtworkFixture(_ name: String, mixed: Bool) async throws -> (StudioViewModel, DeviceStorageManager, String, String) {
+            let (vm, store, asset, sibling) = try await imageReflectionFixture(name)
+            if mixed {
+                vm.deselectAreaImage()
+                try require(vm.commitElement(.init(id: "order-D", tool: .rectangle,
+                    points: [.init(x: 30, y: 30), .init(x: 58, y: 50)], color: "#FF00FF", width: 2,
+                    opacity: 1, layerID: vm.activeLayerID, shape: .init(fillColor: "#FF00FF"))), "Mixed transform drawing fixture")
+                // Crossing artwork remains unselected and must never be transformed.
+                try require(vm.commitElement(.init(id: "order-U", tool: .line,
+                    points: [.init(x: 1, y: 40), .init(x: 125, y: 40)], color: "#000000", width: 4,
+                    opacity: 1, layerID: vm.activeLayerID)), "Mixed transform crossing fixture")
+            }
+            await vm.flush()
+            return (vm, store, asset, sibling)
+        }
+        @MainActor func selectTransformArtwork(_ vm: StudioViewModel, mixed: Bool, directImage: Bool = false) throws {
+            vm.activePanel = .none
+            if directImage {
+                vm.clearElementSelection(); vm.selectDrawingTool(.move)
+                try require(vm.setImageCanvasMove(true), "Direct image transform selection")
+            } else {
+                vm.selectDrawingTool(.lasso); vm.areaSelectionTarget = .artwork
+                vm.areaSelectionKind = .rectangle; vm.selectionMode = .new; vm.areaSelectionSmoothing = 0
+                guard let area = vm.beginAreaSelection() else { throw Failure(message: "Artwork transform area capture") }
+                try require(vm.finishAreaSelection(area, points: [.init(x: 5, y: 5), .init(x: 85, y: 85)]), "Artwork transform Lasso failed")
+                vm.selectDrawingTool(.move)
+                try require(vm.selectedElementIDs == (mixed ? ["order-D"] : []), "Artwork selection widened its drawing targets")
+            }
+            vm.activePanel = .spatterAI
+            try require(vm.beginSpatterArtworkTransform()?.image != nil, "Selected image/mixed artwork not captured")
+        }
+        try await test("whole artwork transforms match actual manual pixels one Undo and cold managed sources") {
+            let instructions = [SpatterArtworkTransformInstruction.moveExample,
+                "Scale selected artwork to 110% and rotate 15 degrees.",
+                SpatterArtworkTransformInstruction.scaleExample, SpatterArtworkTransformInstruction.rotateExample,
+                SpatterArtworkTransformInstruction.horizontalExample, SpatterArtworkTransformInstruction.verticalExample]
+            for mixed in [false, true] { for text in instructions {
+                let (vm, store, asset, sibling) = try await transformArtworkFixture("whole-artwork", mixed: mixed)
+                try selectTransformArtwork(vm, mixed: mixed)
+                let original = vm.document, oldPixels = try imageReflectionPixels(vm)
+                let source = vm.originalImageSource(asset), siblingImage = vm.currentFrame.rasterInstance(on: sibling)
+                let selectedImage = vm.currentFrame.rasterInstance(on: vm.activeLayerID)
+                let untouched = vm.currentFrame.elements.first { $0.id == "order-U" }
+                let instruction = try SpatterArtworkTransformInstruction.parse(text)
+                // Exercise public manual controls, not a mirror transform model.
+                switch instruction.action {
+                case .move(let x, let y):
+                    try require(vm.positionSelected(dx: x * Double(vm.canvasWidth) / 100,
+                        dy: y * Double(vm.canvasHeight) / 100), "Manual artwork Move failed")
+                case .transform(let scale, let angle):
+                    vm.selectionScalePercent = scale; vm.selectionRotationDegrees = angle
+                    try require(vm.transformSelected(), "Manual artwork Scale/Rotate failed")
+                case .reflect(let axis): try require(vm.reflectSelected(axis: axis), "Manual artwork Flip failed")
+                }
+                let expected = vm.document, pixels = try imageReflectionPixels(vm)
+                try require(pixels != oldPixels, "Transform fixture has no visible manual effect")
+                vm.undo(); await vm.flush()
+                try selectTransformArtwork(vm, mixed: mixed, directImage: !mixed)
+                let submitted = vm.document, requestID = UUID(), session = SpatterStudioEditSession()
+                try require(session.submit(text, in: vm, accountID: nil, submissionID: requestID, currentScope: { guest }), "Artwork submission refused")
+                await session.waitForCompletion()
+                guard session.status == .applied, let edit = session.appliedEdit else { throw Failure(message: "Artwork transform failed: \(session.notice ?? "")") }
+                let retained = vm.beginSpatterArtworkTransform()
+                try require(edit.artworkTransform == instruction && edit.receipt.requestID == requestID
+                    && edit.receipt.revision == submitted.revision + 1 && edit.summary.contains("One Undo")
+                    && content(vm.document) == content(expected) && (try imageReflectionPixels(vm)) == pixels
+                    && retained?.image?.assetID == asset && retained?.ids == (mixed ? ["order-D"] : [])
+                    && vm.currentFrame.rasterInstance(on: sibling) == siblingImage
+                    && vm.currentFrame.elements.first(where: { $0.id == "order-U" }) == untouched
+                    && vm.originalImageSource(asset) == source
+                    && vm.currentFrame.rasterAssetID(on: vm.activeLayerID) == asset
+                    && vm.currentFrame.rasterInstance(on: vm.activeLayerID)?.crop == selectedImage?.crop
+                    && vm.currentFrame.rasterInstance(on: vm.activeLayerID)?.quarterTurns == selectedImage?.quarterTurns
+                    && vm.currentFrame.rasterInstance(on: vm.activeLayerID)?.regionMask == selectedImage?.regionMask,
+                    "Artwork transform differed from manual pixels, lost selection/source identity or touched other artwork")
+                try require(!session.submit(text, in: vm, accountID: nil, submissionID: requestID, currentScope: { guest })
+                    && content(vm.document) == content(expected), "Artwork request replayed")
+                vm.undo()
+                try require(content(vm.document) == content(submitted) && (try imageReflectionPixels(vm)) == oldPixels
+                    && vm.originalImageSource(asset) == source, "One Undo did not restore the entire group/source")
+                vm.redo(); await vm.flush()
+                let saved = await vm.save()
+                try require(saved && content(vm.document) == content(expected), "Artwork Redo/save failed")
+                let reopened = StudioViewModel(storage: store)
+                guard let record = try store.loadAnimation(id: vm.document.id) else { throw Failure(message: "Artwork save absent") }
+                try require(await reopened.openProject(record.metadata), "Artwork cold reopen failed")
+                try require((try imageReflectionPixels(reopened)) == pixels && reopened.originalImageSource(asset) == source
+                    && reopened.currentFrame.rasterInstance(on: sibling) == siblingImage
+                    && reopened.frames.count == original.frames.count, "Cold artwork pixels/source or unrelated image changed")
+            } }
+        }
+        try await test("whole artwork no-op and unavailable targets refuse without drawing fallback or history edits") {
+            for mode in ["noop", "none", "locked", "hidden", "pixelMode", "unsupported", "outside"] {
+                let (vm, _, asset, sibling) = try await transformArtworkFixture("artwork-denied-" + mode, mixed: true)
+                try selectTransformArtwork(vm, mixed: true)
+                if mode == "none" { vm.clearElementSelection(); vm.deselectAreaImage() }
+                if mode == "locked" { vm.setLayerLockMode(vm.activeLayerID, mode: .position) }
+                if mode == "hidden" { vm.toggleLayerVisibility(vm.activeLayerID) }
+                if mode == "pixelMode" { vm.areaSelectionTarget = .imagePixels }
+                await vm.flush()
+                let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                let source = vm.originalImageSource(asset), other = vm.currentFrame.rasterInstance(on: sibling)
+                let text = mode == "noop" ? "Move selected artwork by (0%, 0%)."
+                    : mode == "unsupported" ? "Scale selected artwork to 0%."
+                    : mode == "outside" ? "Move selected artwork by (100%, 100%)." : SpatterArtworkTransformInstruction.moveExample
+                let session = SpatterStudioEditSession()
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == (mode == "noop" ? .applied : .rejected)
+                    && vm.document == before && vm.canUndo == undo && vm.canRedo == redo
+                    && vm.originalImageSource(asset) == source && vm.currentFrame.rasterInstance(on: sibling) == other,
+                    "Unavailable artwork/unsupported transform edited a subset or history: \(mode)")
+                if mode == "noop" { try require(session.appliedEdit?.receipt.outcome == .unchanged
+                    && session.notice?.contains("Nothing changed") == true, "Artwork no-op fabricated a change") }
+                else { try require(session.appliedEdit == nil, "Denied artwork fabricated a receipt") }
+            }
+        }
+        try await test("whole artwork exact selection account revision and cancellation fences remain atomic") {
+            for boundary in 1...2 { for change in ["selection", "account", "revision", "cancel"] {
+                let (vm, _, asset, sibling) = try await transformArtworkFixture("artwork-fence", mixed: true)
+                try selectTransformArtwork(vm, mixed: true)
+                let source = vm.originalImageSource(asset), other = vm.currentFrame.rasterInstance(on: sibling), gate = Gate()
+                var account: String? = nil
+                let session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                _ = session.submit(SpatterArtworkTransformInstruction.moveExample, in: vm, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) })
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "selection" {
+                    // A fresh image selection token at the same revision is a
+                    // different authority even when the exact IDs match.
+                    try selectTransformArtwork(vm, mixed: true)
+                } else if change == "account" { account = "other" }
+                else if change == "revision" { vm.showOnionSkin = !vm.showOnionSkin; await vm.flush() }
+                else { session.cancel() }
+                let held = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale)
+                    && session.appliedEdit == nil && vm.document == held && vm.canUndo == undo && vm.canRedo == redo
+                    && vm.originalImageSource(asset) == source && vm.currentFrame.rasterInstance(on: sibling) == other,
+                    "Artwork capture crossed \(change) at checkpoint \(boundary)")
+            } }
+        }
+        try await test("whole artwork final staged cancellation retains both drawing and image originals") {
+            let (vm, _, asset, sibling) = try await transformArtworkFixture("artwork-final-cancel", mixed: true)
+            try selectTransformArtwork(vm, mixed: true)
+            let instruction = try SpatterArtworkTransformInstruction.parse("Scale selected artwork to 110% and rotate 15 degrees.")
+            let values = try instruction.values(width: vm.canvasWidth, height: vm.canvasHeight)
+            guard let probe = vm.beginSpatterArtworkTransform() else { throw Failure(message: "Artwork checkpoint probe capture") }
+            // Measure this actual production transaction's final cancellation
+            // barrier, restore through real Undo, then cancel at that barrier.
+            var totalProbes = 0
+            _ = try vm.applySpatterArtworkTransform(probe, values: values, requestID: UUID(), checkCancellation: { totalProbes += 1 })
+            try require(totalProbes > 5, "Actual staged artwork barriers missing")
+            vm.undo(); await vm.flush(); try selectTransformArtwork(vm, mixed: true)
+            guard let capture = vm.beginSpatterArtworkTransform() else { throw Failure(message: "Final artwork capture") }
+            let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            let source = vm.originalImageSource(asset), other = vm.currentFrame.rasterInstance(on: sibling)
+            var probes = 0
+            do {
+                _ = try vm.applySpatterArtworkTransform(capture, values: values, requestID: UUID(), checkCancellation: {
+                    probes += 1
+                    if probes == totalProbes { throw CancellationError() }
+                })
+                throw Failure(message: "Final artwork cancellation was ignored")
+            } catch is CancellationError { }
+            try require(probes == totalProbes && vm.document == before && vm.canUndo == undo && vm.canRedo == redo
+                && vm.originalImageSource(asset) == source && vm.currentFrame.rasterInstance(on: sibling) == other,
+                "Final staged artwork cancellation partially committed or pruned its source")
+        }
+        try await test("whole artwork refuses a real partial drawing Wand selection after Move handoff") {
+            let (vm, _) = try await fixture("artwork-partial-wand")
+            try require(vm.commitElement(.init(id: "wand-artwork", tool: .rectangle,
+                points: [.init(x: 20, y: 20), .init(x: 90, y: 70)], color: "#0000FF", width: 6,
+                opacity: 1, layerID: vm.activeLayerID, shape: .init(fillColor: "#FF0000"))), "Wand artwork fixture")
+            await vm.flush(); vm.selectDrawingTool(.wand)
+            let capture = try vm.captureDrawingWand()
+            try require(await vm.selectDrawingRegion(capture, at: .init(x: 40, y: 40))
+                && vm.hasDrawingWandSelection && !vm.selectedElementIDs.isEmpty, "Actual drawing Wand coverage absent")
+            vm.selectDrawingTool(.move); vm.activePanel = .spatterAI; await vm.flush()
+            let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            try require(vm.hasDrawingWandSelection && vm.beginSpatterArtworkTransform() == nil,
+                "Wand coverage became whole-object transform authority")
+            let session = SpatterStudioEditSession()
+            _ = session.submit(SpatterArtworkTransformInstruction.moveExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before
+                && vm.canUndo == undo && vm.canRedo == redo, "Wand pixels fell back to a whole-object edit")
+        }
         try await test("selected image and mixed artwork ordering match manual pixels Undo Redo and cold source") {
             for mode in ["image", "mixed"] {
                 let (vm, store, asset, sibling) = try await imageReflectionFixture("order-" + mode)

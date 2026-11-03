@@ -1997,7 +1997,7 @@ struct SpatterInstructionGrammar: Equatable {
 }
 
 enum SpatterInstructionCatalog {
-    static let version = 12
+    static let version = 13
     static let grammars: [SpatterInstructionGrammar] = [
         .init(name: "multiClauseBrief", examples: ["A red stick figure walks left to right for 1 second, then punches, then falls; 3 seconds.",
                                                    "A red stick figure runs left to right, then kicks; a blue stick figure ducks, then jumps; 2.5 seconds.",
@@ -2064,6 +2064,8 @@ enum SpatterInstructionCatalog {
               commands: ["eraseSelectedElements"], summary: "Straight-path erasure masks on selected drawings."),
         .init(name: "drawingDuplicate", examples: ["Duplicate selected drawings."], commands: ["duplicateElements"], summary: "Editable copies of the selected drawings."),
         .init(name: "artworkOrder", examples: ["Bring selected artwork forward.", "Send selected artwork backward."], commands: ["orderSelectedArtwork"], summary: "Reorder selected drawings, an image or mixed artwork within layers."),
+        .init(name: "artworkTransform", examples: SpatterArtworkTransformInstruction.examples,
+              commands: ["transformSelectedArtwork"], summary: "Move, uniformly scale, rotate or flip an explicit whole-object selection: drawings, one image, or mixed artwork. Uses the manual group transaction and one Undo; pixel-region/Wand selections are refused."),
         .init(name: "selectionTranslate", examples: ["Move selected drawings by (10%, -5%)."], commands: ["translateElements"], summary: "Move the selected drawings by canvas percentages."),
         .init(name: "selectionTransform", examples: ["Scale selected drawings to 150% and rotate 45 degrees.", "Scale selected drawings to 50%.", "Rotate selected drawings 90 degrees."],
               commands: ["transformElements"], summary: "Scale 10–1,000% and/or rotate −180…180° around the selection center."),
