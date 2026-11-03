@@ -842,6 +842,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             transformSelection(captured, ids, ArtworkTransform(dx = x, dy = y))
         } catch (e: Exception) { report(e.message ?: "Selection could not be positioned.") }
     }
+    fun finishMoveGesture(captured: Document, prior: Set<String>, ids: Set<String>, transform: ArtworkTransform) {
+        if (document != captured || closing || playbackActive || tool != Tool.Move || prior != selectedStrokeIDs) return
+        if (ids != prior && !ArtworkSelection.eligible(captured.frame, captured.layers).containsAll(ids)) return
+        selectedStrokeIDs = ids
+        if (transform != ArtworkTransform()) transformSelection(captured, ids, transform)
+    }
     fun transformSelection(captured: Document, ids: Set<String>, transform: ArtworkTransform) {
         if (document != captured || ids != selectedStrokeIDs || ids.isEmpty() || closing) return
         val bounds = ArtworkSelection.bounds(captured.frame, ids) ?: return

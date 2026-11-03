@@ -92,12 +92,47 @@ object ArtworkSelection {
         return nearest.first
     }
 
+    private fun Layer.allowsArtworkSelection() = isEditable && lockMode.allowsTransform
+    private fun Stroke.hasSelectableCoverage() = tool.isSelectable && opacity > 0f && (color ushr 24) > 0
+
     fun eligible(frame: Frame, layers: List<Layer>): Set<String> {
-        // Selection drives move/resize/delete, which iOS allows only on free layers.
-        val editable = layers.filter { it.isEditable && it.lockMode.allowsTransform }.map { it.id }.toSet()
-        return frame.strokes.filter { it.layerID in editable && it.tool.isSelectable && it.opacity > 0f && (it.color ushr 24) > 0 }
-            .map { it.id }.toSet()
+        val editable = layers.filter { it.allowsArtworkSelection() }.map { it.id }.toSet()
+        return frame.strokes.filter { it.layerID in editable && it.hasSelectableCoverage() }.map { it.id }.toSet()
     }
+
+    /** The layer at index zero paints last. Within each layer, later marks paint last. */
+    fun topmostAt(frame: Frame, layers: List<Layer>, point: Point): String? {
+        if (!point.x.isFinite() || !point.y.isFinite()) return null
+        val layerOrder = layers.withIndex().filter { it.value.allowsArtworkSelection() }
+            .associate { it.value.id to it.index }
+        var hit: String? = null
+        var hitLayer = layers.size
+        for (stroke in frame.strokes.asReversed()) {
+            val order = layerOrder[stroke.layerID] ?: continue
+            if (order >= hitLayer || !stroke.hasSelectableCoverage()) continue
+            val contains = if (stroke.tool == Tool.Fill) stroke.fillContains(point) else {
+                val box = ArtworkBounds.of(stroke)
+                point.x in (box.left - 6f)..(box.right + 6f) && point.y in (box.top - 6f)..(box.bottom + 6f)
+            }
+            if (contains) {
+                hit = stroke.id
+                hitLayer = order
+                if (order == 0) break
+            }
+        }
+        return hit
+    }
+
+    private fun Stroke.fillContains(point: Point): Boolean {
+        val map = fillGeometryOrIdentity()
+        val dx = point.x.toDouble() - map.tx
+        val dy = point.y.toDouble() - map.ty
+        val determinant = map.a.toDouble() * map.d - map.b.toDouble() * map.c
+        val x = (map.d * dx - map.c * dy) / determinant
+        val y = (map.a * dy - map.b * dx) / determinant
+        return requireNotNull(fill).any { y >= it.y && y < it.y + 1 && x >= it.start && x < it.end }
+    }
+
     fun bounds(frame: Frame, ids: Set<String>): ArtworkBounds? = frame.strokes.filter { it.id in ids }
         .map { ArtworkBounds.of(it) }.reduceOrNull { a,b -> a.union(b) }
     fun enclosed(frame: Frame, layers: List<Layer>, polygon: List<Point>,

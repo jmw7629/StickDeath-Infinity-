@@ -482,7 +482,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             Slider(vm.viewportZoom, { vm.viewport(it, 0f, 0f) }, valueRange = 0.25f..8f)
                             TextButton({ vm.fitViewport() }) { Text("Fit canvas") }
                         } else if (vm.tool == Tool.Lasso || vm.tool == Tool.Move) {
-                            Text("Lasso encloses whole unlocked drawings, text, images and fills. Fill selection encloses its entire bounding box, including gaps between disconnected regions. A selection switches to Move. Drag inside its box; corners resize and the top handle rotates. Keep transformed drawings inside the canvas.")
+                            Text("In Move, tap or drag unlocked artwork to select it. Tap empty canvas outside the selection box to clear it. Drag inside the box to move the group, use the corners to resize, or use the top handle to rotate. Lasso encloses whole objects and uses the entire bounding box for fills. Keep transformed artwork inside the canvas.")
                             Text("${vm.selectedStrokeIDs.size} selected objects")
                             if (vm.selectedText != null) TextButton({ vm.chooseTool(Tool.Text) }) { Text("Edit text") }
                             FilterChip(vm.selectionPreservesAspect,
@@ -839,6 +839,7 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
     var pending by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<List<Point>>(emptyList()) }
     var pendingSeed by remember(doc.id) { mutableStateOf(0) }
     var transformed by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<Frame?>(null) }
+    var movePreviewIDs by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<Set<String>?>(null) }
     LaunchedEffect(doc.id, doc.width, doc.height) { vm.fitViewport() }
     BoxWithConstraints(Modifier.fillMaxSize().clipToBounds().onSizeChanged { vm.fitViewport() }
         .pointerInput(doc.id, doc.width, doc.height, vm.tool, playing, vm.closing) {
@@ -878,16 +879,27 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
                 val smoother = StrokeSmoother(first, if (tool == Tool.Pencil || tool.isEraser) vm.smoothing else 0f)
                 // Ruler applies to freehand pencil/eraser gestures only; shapes already have straight geometry.
                 val ruler = RulerConstraint(first, if (tool == Tool.Pencil || tool.isEraser) vm.rulerMode else RulerMode.Off)
-                val ids = vm.selectedStrokeIDs
+                val priorIDs = vm.selectedStrokeIDs
                 val selectionMode = vm.selectionMode
                 val selectionShape = vm.selectionShape
                 val preservesAspect = vm.selectionPreservesAspect
-                val bounds = ArtworkSelection.bounds(doc.frame, ids)
-                val radius = minOf(22f * doc.width / size.width / vm.viewportZoom, minOf(doc.width,doc.height)/4f)
-                val handle = if (tool == Tool.Move && bounds != null)
-                    ArtworkSelection.transformHandleAt(bounds,doc.width,doc.height,radius,first) else null
-                if (tool == Tool.Move && (bounds == null || (handle == null && !bounds.contains(first)))) return@awaitEachGesture
+                val gestureZoom = vm.viewportZoom
+                if (tool == Tool.Move && (!gestureZoom.isFinite() || gestureZoom <= 0f)) return@awaitEachGesture
+                val priorBounds = if (tool == Tool.Move) ArtworkSelection.bounds(doc.frame, priorIDs) else null
+                val radius = minOf(22f * doc.width / size.width / gestureZoom, minOf(doc.width,doc.height)/4f)
+                val handle = priorBounds?.let { ArtworkSelection.transformHandleAt(it, doc.width, doc.height, radius, first) }
+                val keepsSelection = handle != null || priorBounds?.contains(first) == true
+                val ids = if (tool == Tool.Move && !keepsSelection) {
+                    ArtworkSelection.topmostAt(doc.frame, doc.layers, first)?.let { setOf(it) }.orEmpty()
+                } else priorIDs
+                val bounds = when {
+                    keepsSelection -> priorBounds
+                    tool == Tool.Move -> ArtworkSelection.bounds(doc.frame, ids)
+                    else -> null
+                }
+                var moveStarted = keepsSelection
                 fun movement(current: Point): ArtworkTransform {
+                    if (!moveStarted || current == first) return ArtworkTransform()
                     val b = bounds ?: return ArtworkTransform()
                     val ax = first.x-b.center.x; val ay = first.y-b.center.y
                     val bx = current.x-b.center.x; val by = current.y-b.center.y
@@ -911,16 +923,31 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
                 down.consume()
                 vm.noteGesture(true)
                 try {
+                    // Keep selection provisional until release. Changing the ViewModel's selection
+                    // here would restart pointerInput before this drag can finish.
+                    if (tool == Tool.Move) movePreviewIDs = ids
                     while (true) {
                         val event = awaitPointerEvent()
                         // A second touch cancels the single-object gesture without committing.
                         if (event.changes.any { it.id != down.id && it.pressed }) break
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (tool == Tool.Move && change.isConsumed) break
                         val current = point(change.position.x, change.position.y)
-                        if (tool == Tool.Move && bounds != null) {
-                            val preview = movement(current).preview(doc.frame, ids, bounds, transformed ?: doc.frame)
-                            transformed = preview.frame
-                            preview.refusal?.let(vm::report)
+                        if (tool == Tool.Move) {
+                            if (bounds != null) {
+                                if (!moveStarted) {
+                                    // Pointer positions are local to the scaled canvas. Touch slop uses device pixels.
+                                    val localDistance = (change.position - down.position).getDistance()
+                                    moveStarted = localDistance * gestureZoom >= viewConfiguration.touchSlop
+                                }
+                                val transform = movement(current)
+                                if (transform == ArtworkTransform()) transformed = null
+                                else {
+                                    val preview = transform.preview(doc.frame, ids, bounds, transformed ?: doc.frame)
+                                    transformed = preview.frame
+                                    preview.refusal?.let(vm::report)
+                                }
+                            }
                         }
                         else if (tool == Tool.Fill || tool == Tool.Eyedropper || tool == Tool.Text) {
                             val dx = current.x - first.x; val dy = current.y - first.y
@@ -952,14 +979,19 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
                                 Tool.Text -> vm.addText(doc, first)
                                 Tool.Eyedropper -> vm.sampleColor(doc, current)
                                 Tool.Fill -> vm.fillAt(doc, first)
-                                Tool.Lasso -> vm.selectArea(doc, if (selectionShape == SelectionShape.Rectangle) pending else points, selectionMode, ids, selectionShape)
-                                Tool.Move -> vm.transformSelection(doc, ids, movement(current))
+                                Tool.Lasso -> vm.selectArea(doc, if (selectionShape == SelectionShape.Rectangle) pending else points, selectionMode, priorIDs, selectionShape)
+                                Tool.Move -> vm.finishMoveGesture(doc, priorIDs, ids, movement(current))
                                 else -> vm.commitStroke(doc, if (tool.isShape) pending else points, tool, width, color, filled, opacity, mirror, brush, brushSeed, nibAngle)
                             }
                             break
                         }
                     }
-                } finally { pending = emptyList(); transformed = null; vm.noteGesture(false) }
+                } finally {
+                    pending = emptyList()
+                    transformed = null
+                    movePreviewIDs = null
+                    vm.noteGesture(false)
+                }
             }
         }) {
             val canvas = drawContext.canvas.nativeCanvas
@@ -997,7 +1029,7 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
                         }
                         canvas.drawPath(path,paint)
                     }
-                    val bounds = ArtworkSelection.bounds(shown,vm.selectedStrokeIDs)
+                    val bounds = ArtworkSelection.bounds(shown, movePreviewIDs ?: vm.selectedStrokeIDs)
                     if (bounds != null) {
                         canvas.drawRect(bounds.left,bounds.top,bounds.right,bounds.bottom,paint)
                         if (vm.tool == Tool.Move) {

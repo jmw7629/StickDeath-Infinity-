@@ -26,6 +26,42 @@ class ArtworkTransformPreviewTest {
         catch (_: IllegalArgumentException) { }
     }
 
+    @Test fun directSelectionFollowsPaintOrderAndFreeLayerEligibility() {
+        val stroke = mark(8f, BrushFamily.Round)
+        val layers = listOf(
+            Layer(id = "hidden", name = "Hidden", visible = false),
+            Layer(id = "position", name = "Position", lockMode = LayerLockMode.Position),
+            Layer(id = "muted", name = "Muted", opacity = 0f),
+            Layer(id = "ink", name = "Top ink"),
+            Layer(id = "bottom", name = "Bottom ink")
+        )
+        val frame = Frame(strokes = listOf(
+            stroke.copy(id = "earlier"),
+            stroke.copy(id = "later"),
+            stroke.copy(id = "bottom-mark", layerID = "bottom"),
+            stroke.copy(id = "transparent-mark", opacity = 0f),
+            stroke.copy(id = "hidden-mark", layerID = "hidden"),
+            stroke.copy(id = "locked-mark", layerID = "position"),
+            stroke.copy(id = "muted-mark", layerID = "muted")
+        ))
+        assertEquals("later", ArtworkSelection.topmostAt(frame, layers, Point(400f, 400f)))
+        assertEquals("bottom-mark", ArtworkSelection.topmostAt(frame, layers.filterNot { it.id == "ink" }, Point(400f, 400f)))
+        assertNull(ArtworkSelection.topmostAt(frame, layers, Point(700f, 700f)))
+    }
+
+    @Test fun directSelectionUsesTransformedFillSpansAndSkipsGaps() {
+        val background = mark(8f, BrushFamily.Round).copy(points = listOf(Point(60f, 120f), Point(90f, 150f)))
+        val fill = background.copy(id = "fill", tool = Tool.Fill, points = listOf(Point(75f, 131f)),
+            fill = listOf(FillSpan(12, 3, 7), FillSpan(12, 12, 15)),
+            fillGeometry = FillGeometry(32, 32, a = 0f, b = 2f, c = -2f, d = 0f, tx = 100f, ty = 120f))
+        val frame = Frame(strokes = listOf(background, fill))
+        val layers = listOf(Layer(id = "ink", name = "Ink"))
+        assertEquals("fill", ArtworkSelection.topmostAt(frame, layers, Point(75f, 131f)))
+        assertEquals("fill", ArtworkSelection.topmostAt(frame, layers, Point(75f, 145f)))
+        assertEquals(background.id, ArtworkSelection.topmostAt(frame, layers, Point(75f, 139f)))
+        assertEquals(background.id, ArtworkSelection.topmostAt(frame, layers, Point(75f, 134f)))
+    }
+
     @Test fun tinySelectionCenterCanMoveWhenAllCornerTouchTargetsOverlap() {
         val original = frame(mark(8f, BrushFamily.Round).copy(points = listOf(Point(400f, 400f), Point(404f, 404f))))
         val bounds = bounds(original)

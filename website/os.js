@@ -20,10 +20,6 @@
   const lines = ['Loading brushes… 30 tools, 13 families', 'Mounting sound library… 2,127 sounds', 'Counting layers… 18 blend modes', 'Onion skin… on', 'Ready.'];
   let booted = false;
   function finishBoot() { if (booted) return; booted = true; if (boot) boot.remove(); if (!restoreLayout()) { openWindow('about'); $('#main').focus({ preventScroll: true }); } }
-  if (!boot || reduced) finishBoot();
-  else { let i = 0; const step = () => { if (booted) return; if (i < lines.length) { log.textContent = lines.slice(Math.max(0, i - 2), i + 1).join('\n'); bar.style.width = `${Math.round(((i + 1) / lines.length) * 100)}%`; i += 1; setTimeout(step, 300); } else setTimeout(finishBoot, 250); }; step(); setTimeout(finishBoot, 3200); }
-  if ($('#boot-skip')) $('#boot-skip').addEventListener('click', finishBoot);
-  document.addEventListener('keydown', (e) => { if (!booted && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); finishBoot(); } });
   // ---- menubar ---------------------------------------------------------------------------
   const clock = $('#os-clock'); const frame = $('#os-frame'); let f = 1;
   const tick = () => { clock.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
@@ -190,6 +186,11 @@
   clips.forEach(([name, label]) => { const o = document.createElement('option'); o.value = name; o.textContent = label; select.append(o); });
   const loadClip = () => { video.pause(); video.poster = `clips/${select.value}.webp`; video.src = `clips/${select.value}.mp4`; };
   select.addEventListener('change', loadClip); loadClip();
+  // Instant boot can now open or restore windows because the desktop is initialized.
+  if (!boot || reduced) finishBoot();
+  else { let i = 0; const step = () => { if (booted) return; if (i < lines.length) { log.textContent = lines.slice(Math.max(0, i - 2), i + 1).join('\n'); bar.style.width = `${Math.round(((i + 1) / lines.length) * 100)}%`; i += 1; setTimeout(step, 300); } else setTimeout(finishBoot, 250); }; step(); setTimeout(finishBoot, 3200); }
+  if ($('#boot-skip')) $('#boot-skip').addEventListener('click', finishBoot);
+  document.addEventListener('keydown', (e) => { if (!booted && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); finishBoot(); } });
   // Deep links: index.html#open=store opens that window after boot.
   const wanted = new URLSearchParams(location.hash.replace(/^#/, '')).get('open');
   if (wanted) { const tryOpen = () => (booted ? openWindow(wanted) : setTimeout(tryOpen, 200)); tryOpen(); }
