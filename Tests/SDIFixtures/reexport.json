@@ -1,0 +1,163 @@
+{
+  "fixture": "swift-schema35-studio.sdi",
+  "projection": {
+    "activeFrameID": "frame-1",
+    "activeLayerID": "layer-ink",
+    "audioClips": 0,
+    "audioTrackPans": [
+      -0.25,
+      0,
+      0.5,
+      0
+    ],
+    "audioTrackVolumes": [
+      1,
+      0.7,
+      1,
+      1
+    ],
+    "fps": 12,
+    "frames": [
+      {
+        "elements": [
+          {
+            "brush": null,
+            "color": "#2563EB",
+            "id": "stroke-pen",
+            "layerID": "layer-ink",
+            "opacity": 1,
+            "points": [
+              [
+                8,
+                8
+              ],
+              [
+                24,
+                12
+              ],
+              [
+                40,
+                20
+              ]
+            ],
+            "tool": "pen",
+            "width": 10
+          },
+          {
+            "brush": null,
+            "color": "#DC2626",
+            "id": "stroke-pencil",
+            "layerID": "layer-ink",
+            "opacity": 1,
+            "points": [
+              [
+                8,
+                24
+              ],
+              [
+                24,
+                28
+              ],
+              [
+                40,
+                30
+              ]
+            ],
+            "tool": "pencil",
+            "width": 10
+          },
+          {
+            "brush": null,
+            "color": "#000000",
+            "id": "stroke-line",
+            "layerID": "layer-ink",
+            "opacity": 0.5,
+            "points": [
+              [
+                4,
+                60
+              ],
+              [
+                60,
+                60
+              ]
+            ],
+            "tool": "line",
+            "width": 2
+          }
+        ],
+        "holdTicks": 1,
+        "id": "frame-1"
+      },
+      {
+        "elements": [
+          {
+            "brush": {
+              "family": "round",
+              "seed": 7
+            },
+            "color": "#111111",
+            "id": "stroke-brush",
+            "layerID": "layer-shade",
+            "opacity": 0.9,
+            "points": [
+              [
+                8,
+                40,
+                0.2
+              ],
+              [
+                40,
+                44,
+                0.6
+              ],
+              [
+                48,
+                50,
+                1.0
+              ]
+            ],
+            "tool": "pen",
+            "width": 6
+          }
+        ],
+        "holdTicks": 3,
+        "id": "frame-2"
+      }
+    ],
+    "height": 64,
+    "id": "00000000-0000-0000-0000-000000000035",
+    "layers": [
+      {
+        "blendMode": "multiply",
+        "colorLabel": "#FC5D5B",
+        "glowEnabled": false,
+        "id": "layer-ink",
+        "lockMode": "position",
+        "locked": false,
+        "name": "Ink",
+        "opacity": 1,
+        "visible": true
+      },
+      {
+        "blendMode": "linear-dodge",
+        "colorLabel": null,
+        "glowEnabled": false,
+        "id": "layer-shade",
+        "lockMode": "alpha",
+        "locked": false,
+        "name": "Shade",
+        "opacity": 0.6,
+        "visible": true
+      }
+    ],
+    "mutedAudioTracks": [
+      4
+    ],
+    "name": "Swift schema 35 studio fixture",
+    "soloedAudioTracks": [
+      2
+    ],
+    "width": 64
+  }
+}

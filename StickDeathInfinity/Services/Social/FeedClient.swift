@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // FeedClient — social video wall over `sdi_feed_page` (keyset listing) and
 // `sdi_feed_action` (reactions) in video-feed.sql / feed-integrity.sql.
-// Pages are server-ranked and bounded (25 × 40);
+// Pages are server-ranked keyset pages of 25 (the client keeps at most 40 in memory);
 // likes/follows are idempotent on the server, so a retried request cannot
 // double count. The client only ever shows counts the server returned,
 // except the ±1 optimistic change on the tapped card, which is rolled back

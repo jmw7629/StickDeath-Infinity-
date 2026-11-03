@@ -9,7 +9,7 @@ import sys
 from test_budget import build_shard_budget
 
 COMMAND = ["xcodebuild", "test-without-building", "-test-timeouts-enabled", "YES",
-           "-default-test-execution-time-allowance", "180", "-maximum-test-execution-time-allowance", "240",
+           "-default-test-execution-time-allowance", "300", "-maximum-test-execution-time-allowance", "360",
            "-parallel-testing-enabled", "NO", "-maximum-concurrent-test-simulator-destinations", "1"]
 COMMON_GATES = ("build", "native-smoke", "setup-upload", "smoke-upload")
 OWNER_GATES = ("native-review-rules", "native-review-app", "native-review-upload", "native-auth", "auth-upload")

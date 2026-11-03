@@ -26,7 +26,7 @@ private tailrec fun Context.activity(): Activity? = when (this) {
     val repository = remember { BillingRuntime.repository(context) }
     LaunchedEffect(repository) { repository.start() }
     Text("Plans", style = MaterialTheme.typography.titleMedium)
-    Text("Current plan: ${PlanRuntime.tier.title}" + if (PlanRuntime.enforcing) "" else ". Plan limits are not applied yet: every account keeps the full Studio until plans can be purchased on Android.")
+    Text("Current plan: ${PlanRuntime.tier.title}" + (if (PlanRuntime.inTrial) " (free trial)" else "") + if (PlanRuntime.enforcing) "" else ". Plan limits are not applied yet: every account keeps the full Studio until plans can be purchased on Android.")
     val status = repository.status
     Text(when (status) {
         StoreStatus.NotConfigured -> "Plans are not configured for this build. Nothing is requested from Google Play and nothing is billed."
@@ -47,8 +47,9 @@ private tailrec fun Context.activity(): Activity? = when (this) {
             }
         }
     }
+    Text(PlanCopy.TRIAL_RULE, style = MaterialTheme.typography.bodySmall)
     Text("Spatter credits", style = MaterialTheme.typography.titleSmall)
-    Text("Free accounts can pay as you go: the server spends 1 credit per Spatter prompt. Creator uses credits after its billing-period allowance. The credits each pack adds are listed by Google Play and granted by the server.")
+    Text("Free accounts can pay as you go: the server spends 1 credit per Spatter prompt. Creator (250 messages) and Pro (500 messages) use credits after their billing-period allowance; Unlimited does not need them. No credits are used during a free trial. The credits each pack adds are listed by Google Play and granted by the server.")
     if (repository.creditPacks.isEmpty()) Text("No credit packs are available on Android yet.")
     repository.creditPacks.forEach { pack ->
         Text("${pack.title} · ${PlanCopy.price(pack.formattedPrice, null)}")

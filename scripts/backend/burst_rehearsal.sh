@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Measured burst / rate-limit rehearsal (#263) on the local throwaway PostgreSQL
 # cluster that scripts/backend/run_sql_tests.sh creates. It applies every SQL
-# candidate, drives feed listing, War Room votes, room commands and upload
-# registrations past their documented limits (sequentially, then feed and votes
-# from concurrent client sessions), and prints the measured accepted / limited /
+# candidate, drives feed listing, War Room votes, room commands, upload
+# registrations and publication requests (plus duplicate retries of each) past
+# their documented limits (sequentially, then feed and votes from concurrent
+# client sessions), and prints the measured accepted / limited /
 # other counts. It is a local rehearsal on stubbed Supabase pieces, not a load test
 # of the live project, and asserts nothing: read the numbers.
 #

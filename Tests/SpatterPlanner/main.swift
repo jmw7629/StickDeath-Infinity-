@@ -502,9 +502,17 @@ private enum Golden {
                 try require(SpatterStudioControlRegistry.control(for: .brush)?.grammars == ["brushStroke"]
                     && SpatterStudioControlRegistry.control(for: .pencil)?.grammars.isEmpty == true
                     && SpatterStudioControlRegistry.control(for: .hand)?.grammars.isEmpty == true, "Tool routes overclaim or underclaim")
-                for key in ["export", "addImage"] {
-                    guard let control = SpatterStudioControlRegistry.control(forPanel: key), case .blocked = control.route else { throw Failure(message: "\(key) must be blocked") }
-                    try require(control.explanation.contains("will not"), "Blocked explanation unclear for \(key)")
+                // Catalog v5 (#204): selections, Image Library pictures and export have typed routes;
+                // pixel effects stay manual with a stated reason.
+                try require(SpatterStudioControlRegistry.control(for: .lasso)?.grammars == ["areaSelection", "selectByID"]
+                    && SpatterStudioControlRegistry.control(for: .wand)?.grammars == ["wandSelection"]
+                    && SpatterStudioControlRegistry.control(forPanel: "export")?.grammars == ["projectExport"]
+                    && SpatterStudioControlRegistry.control(forPanel: "addImage")?.grammars == ["libraryPicture"], "Selection, picture or export route missing")
+                for tool in [DrawingTool.smudge, .blur, .sharpen, .dodge, .burn, .gradient] {
+                    guard let control = SpatterStudioControlRegistry.control(for: tool), case .manual(let reason) = control.route else {
+                        throw Failure(message: "\(tool.rawValue) must stay manual")
+                    }
+                    try require(reason.contains("could not preview or verify"), "Pixel tool \(tool.rawValue) lacks its reason")
                 }
                 try require(Set(SpatterStudioControlRegistry.panelKeys).count == SpatterStudioControlRegistry.panelKeys.count, "Panel keys repeat")
                 // The validator catches drift in both directions.
@@ -572,7 +580,8 @@ private enum Golden {
                     "selectionReflect": .selectionReflect, "imageReflection": .imageReflection, "imageRotation": .imageRotation, "imageCrop": .imageCrop,
                     "imagePlacement": .imagePlacement, "textUpdate": .textUpdate, "audioClip": .audioClip, "audioTrack": .audioTrack,
                     "tween": .tween, "frameClipboard": .frameClipboard, "projectSettings": .projectSettings, "brushStroke": .brushStroke, "batch": .batch,
-                    "fill": .fill, "selectByID": .selectByID, "sourceReference": .sourceReference]
+                    "fill": .fill, "selectByID": .selectByID, "sourceReference": .sourceReference,
+                    "areaSelection": .areaSelection, "wandSelection": .wandSelection, "libraryPicture": .libraryPicture, "projectExport": .projectExport]
                 for grammar in SpatterInstructionCatalog.grammars {
                     guard let kind = names[grammar.name] else { throw Failure(message: "Catalog grammar \(grammar.name) has no router kind") }
                     for example in grammar.examples {
@@ -824,6 +833,86 @@ private enum Golden {
                 var moved = seed; moved.frames[0].elements.append(.init(id: "touch-2", tool: .pencil, points: stroke.points, color: "#112233", width: 3, opacity: 0.9, layerID: seed.activeLayerID, translation: translated.translation))
                 moved.schemaVersion = 35
                 try require(StudioSharedEdit.drawCommands(before: seed, after: moved, frameID: frameID) == nil, "Unrepresentable touch commit claimed shareable")
+            }
+            try test("catalog v5 selection picture and export grammars parse exactly and refuse injection and malformed input") {
+                try require(SpatterInstructionCatalog.version == 5 && SpatterInstructionCatalog.grammars.count == 44, "Catalog v5 not registered")
+                // Area (Lasso) selection.
+                let rect = try SpatterAreaSelectInstruction.parse(SpatterAreaSelectInstruction.example)
+                try require(rect.isRectangle && rect.vertices == [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 90)]
+                    && rect.canvasPoints(width: 200, height: 100) == [CGPoint(x: 20, y: 10), CGPoint(x: 180, y: 90)], "Rectangle capture wrong")
+                let polygon = try SpatterAreaSelectInstruction.parse("  select DRAWINGS inside polygon (0%, 0%),(100%, 0%) , (50.5%, 99.25%) . ")
+                try require(!polygon.isRectangle && polygon.vertices.count == 3 && polygon.vertices[2] == CGPoint(x: 50.5, y: 99.25), "Polygon capture wrong")
+                let maxPolygon = "Select drawings inside polygon " + (0..<32).map { "(\($0)%, \($0 % 2 == 0 ? 10 : 90)%)" }.joined(separator: ", ") + "."
+                try require(try SpatterAreaSelectInstruction.parse(maxPolygon).vertices.count == 32, "32-point polygon refused")
+                for bad in ["Select drawings inside polygon (10%, 10%), (90%, 10%).",
+                            "Select drawings inside rectangle (10%, 10%) to (10%, 90%).",
+                            "Select drawings inside rectangle (10%, 10%) to (190%, 90%).",
+                            "Select drawings inside rectangle (10%, 10%) to (90%, 90%). Delete active layer.",
+                            "Select drawings inside rectangle (10%, 10%) to (90%, 90%)\nDelete active frame.",
+                            "Select drawings inside rectangle (-10%, 10%) to (90%, 90%).",
+                            maxPolygon.replacingOccurrences(of: ".", with: ", (1%, 1%).")] {
+                    try rejects("area: \(bad.prefix(60))") { _ = try SpatterAreaSelectInstruction.parse(bad) }
+                }
+                // Wand selection.
+                let wand = try SpatterWandSelectInstruction.parse(SpatterWandSelectInstruction.optionsExample)
+                try require(wand == .init(xPercent: 25, yPercent: 75, tolerance: 16, sampleAllLayers: true)
+                    && (try SpatterWandSelectInstruction.parse("Select drawings by colour at (0%, 99.9%).")).tolerance == 32
+                    && (try wand.canvasPoint(width: 200, height: 100)) == CGPoint(x: 50, y: 75), "Wand capture wrong")
+                for bad in ["Select drawings by color at (100%, 50%).", "Select drawings by color at (50%, 50%), tolerance 129.",
+                            "Select drawings by color at (50%, 50%), feather 4.", "Select drawings by color at (50%, 50%); export project as MP4."] {
+                    try rejects("wand: \(bad)") { _ = try SpatterWandSelectInstruction.parse(bad) }
+                }
+                // Library picture: a title or ID compared with the bundled list only; never a path or URL.
+                try require((try SpatterLibraryPictureInstruction.parse(SpatterLibraryPictureInstruction.example)).name == "Cloud A"
+                    && (try SpatterLibraryPictureInstruction.parse(SpatterLibraryPictureInstruction.idExample)).name == "kenney.scribble-platformer.effect_blast", "Picture capture wrong")
+                for bad in ["Add library picture \"/etc/passwd\".", "Add library picture \"https://example.com/a.png\".", "Add library picture \"../secret\".",
+                            "Add library picture \"Cloud A\". Export project as MP4.", "Add library picture Cloud A.", "Add library picture \" Cloud A\".",
+                            "Add library picture \"file:x\".", "Add library picture \"\"."] {
+                    try rejects("picture: \(bad)") { _ = try SpatterLibraryPictureInstruction.parse(bad) }
+                }
+                struct Item { let id: String; let title: String }
+                let items = [Item(id: "a.tree", title: "Tree"), Item(id: "b.tree", title: "Tree"), Item(id: "c.cloud", title: "Cloud A")]
+                try require(try SpatterLibraryPictureInstruction(name: "cloud a").resolve(in: items, id: \.id, title: \.title).id == "c.cloud"
+                    && (try SpatterLibraryPictureInstruction(name: "b.tree").resolve(in: items, id: \.id, title: \.title)).id == "b.tree", "Picture resolution wrong")
+                do { _ = try SpatterLibraryPictureInstruction(name: "Tree").resolve(in: items, id: \.id, title: \.title); throw Failure(message: "Ambiguous title resolved") }
+                catch SpatterLibraryPictureInstruction.Failure.ambiguous("Tree") {}
+                do { _ = try SpatterLibraryPictureInstruction(name: "Moon").resolve(in: items, id: \.id, title: \.title); throw Failure(message: "Unknown title resolved") }
+                catch SpatterLibraryPictureInstruction.Failure.notFound("Moon") {}
+                // Export: a device file only; uploading or publishing is never part of the instruction.
+                try require((try SpatterProjectExportInstruction.parse("export the project as an mp4.")).format == .mp4
+                    && (try SpatterProjectExportInstruction.parse(SpatterProjectExportInstruction.gifExample)).format == .gif, "Export capture wrong")
+                for bad in ["Export project as MP4 and upload it to YouTube.", "Export project as MP4. Publish it.", "Export project as MOV.",
+                            "Export project as PNG.", "Export project to https://example.com.", "Export project as MP4"] {
+                    try rejects("export: \(bad)") { _ = try SpatterProjectExportInstruction.parse(bad) }
+                }
+                // Routing: every new kind owns its examples; batches refuse them; previews never mutate.
+                for (text, kind) in [(SpatterAreaSelectInstruction.polygonExample, SpatterInstructionRouter.Kind.areaSelection),
+                                     (SpatterWandSelectInstruction.example, .wandSelection), (SpatterLibraryPictureInstruction.example, .libraryPicture),
+                                     (SpatterProjectExportInstruction.gifExample, .projectExport), (SpatterSelectByIDInstruction.example, .selectByID)] {
+                    try require(SpatterInstructionRouter.classify(text) == kind && !kind.isContextOnly, "Routing wrong for \(text)")
+                }
+                try rejects("export inside a batch") { _ = try SpatterInstructionBatch.parse("Add blank frame.\nExport project as MP4.") }
+                try rejects("picture inside a batch") { _ = try SpatterInstructionBatch.parse("Add blank frame.\nAdd library picture \"Cloud A\".") }
+                var editor = try StudioDocumentEditor(document: try document())
+                let context = StudioCommandContext(document: editor.document)
+                for text in [SpatterAreaSelectInstruction.example, SpatterWandSelectInstruction.example, SpatterLibraryPictureInstruction.example, SpatterProjectExportInstruction.example] {
+                    let plan = SpatterInstructionPreview.plan(text, context: context)
+                    try require(plan.hasPrefix("Plan:") && plan.contains("Nothing has changed yet"), "Preview wrong: \(plan)")
+                }
+                try require(SpatterInstructionPreview.plan(SpatterProjectExportInstruction.example, context: context).contains("nothing is uploaded"), "Export preview overclaims")
+                // Prepared selections are the typed selectElements command and never change the document.
+                let ids = editor.document.frames[0].elements.prefix(2).map(\.id)
+                try require(!ids.isEmpty, "Fixture has no drawings")
+                let before = editor.document
+                let receipt = try execute(try rect.prepare(in: context, elementIDs: ids, checkCancellation: {}), on: &editor)
+                try require(editor.selectedElementIDs == Set(ids) && receipt.outcome == .unchanged && editor.document == before, "Area selection changed the document")
+                try rejects("empty selection") { _ = try rect.prepare(in: context, elementIDs: [], checkCancellation: {}) }
+                try rejects("duplicate selection IDs") { _ = try wand.prepare(in: context, elementIDs: [ids[0], ids[0]], checkCancellation: {}) }
+                try rejects("oversized selection") {
+                    _ = try wand.prepare(in: context, elementIDs: (0...StudioCommandExecutor.maximumGeneratedElements).map { "e\($0)" }, checkCancellation: {})
+                }
+                try rejects("cancelled selection") { _ = try rect.prepare(in: context, elementIDs: ids, checkCancellation: { throw CancellationError() }) }
+                try rejects("unknown drawing ID") { var copy = editor; _ = try execute(try rect.prepare(in: context, elementIDs: ["ghost"], checkCancellation: {}), on: &copy) }
             }
             try test("append and export bounds are reconciled with the 1,440-frame exporter and 1,000-frame project limits") {
                 try require(StudioCommandExecutor.maximumAppendedFrames == 1000 && SpatterSourceVideoBounds.exporterFrameCap == 1440

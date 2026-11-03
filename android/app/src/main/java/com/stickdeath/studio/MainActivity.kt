@@ -165,8 +165,8 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     }
     var customSize by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(draft.preset == "Custom") }
     val customAllowed = com.stickdeath.studio.billing.PlanRuntime.limits.customCanvasSize
-    TextButton({ customSize = !customSize }, enabled = customAllowed || customSize) { Text(if (customSize) "Hide custom size" else if (customAllowed) "Custom canvas size" else "Custom canvas size (Creator and Pro)") }
-    if (!customAllowed && draft.preset == "Custom") Text("Custom canvas sizes are part of Creator and Pro. Choose a preset, or upgrade in Account, Plans. Existing projects keep their size.")
+    TextButton({ customSize = !customSize }, enabled = customAllowed || customSize) { Text(if (customSize) "Hide custom size" else if (customAllowed) "Custom canvas size" else "Custom canvas size (paid plans)") }
+    if (!customAllowed && draft.preset == "Custom") Text("Custom canvas sizes are part of the paid plans (Creator, Pro and Unlimited). Choose a preset, or upgrade in Account, Plans. Existing projects keep their size.")
     if (customSize && customAllowed) {
         ProjectNumber("Width in pixels", draft.width, 16..4096) { update(draft.copy(width = it, preset = "Custom")) }
         ProjectNumber("Height in pixels", draft.height, 16..4096) { update(draft.copy(height = it, preset = "Custom")) }
@@ -435,14 +435,14 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             Text("The iOS-layout manifest (frame IDs, timing, codec, byte count) of the MP4/GIF rendered from revision ${manifest.revision}. Save it beside that file.")
                         }
                         vm.planLimits.maxExportLongEdge?.let { edge ->
-                            Text("Free plan: MP4 and GIF exports are scaled to fit ${edge} pixels on the long edge (720p) and carry a small SDI watermark at the bottom right. Your project is unchanged. Creator and Pro export at full size without the watermark.")
+                            Text("Free plan: MP4 and GIF exports are scaled to fit ${edge} pixels on the long edge (720p) and carry a small SDI watermark at the bottom right. Your project is unchanged. Paid plans export at full size without the watermark.")
                         }
                         Button({ vm.prepareExport(ExportKind.MP4); panel = null }) { Text("MP4 video + project audio") }
                         Text("MP4 uses the exact canvas, FPS and frame holds. Requires a compatible device encoder, even dimensions, and at most 120 seconds / 4 megapixels. Saved clips are mixed to stereo AAC across the animation duration, including overlaps, trim, volume and mute. Audio outside that duration is excluded. AAC may add up to four codec frames (about 85 ms) of priming/tail padding; this is not a sample-exact audio master. Encoder failure never falls back to silent output.")
                         Button({ vm.prepareExport(ExportKind.GIF); panel = null }) { Text("Animated GIF (looping)") }
                         Text("GIF uses 256 colors and the opaque project background. Timing rounds to hundredths of a second; some viewers slow fast frames. Up to 120 seconds / 4 megapixels / 256 MiB. No audio.")
                         Button({ vm.prepareExport(ExportKind.PNG); panel = null }) { Text("Current frame PNG") }
-                        Button({ if (vm.requirePlan(vm.planLimits.pngSequenceExport)) { vm.prepareExport(ExportKind.SEQUENCE); panel = null } }) { Text(if (vm.planLimits.pngSequenceExport) "PNG sequence ZIP" else "PNG sequence ZIP (Creator and Pro)") }
+                        Button({ if (vm.requirePlan(vm.planLimits.pngSequenceExport)) { vm.prepareExport(ExportKind.SEQUENCE); panel = null } }) { Text(if (vm.planLimits.pngSequenceExport) "PNG sequence ZIP" else "PNG sequence ZIP (paid plans)") }
                         Button({ vm.prepareExport(ExportKind.SPRITESHEET); panel = null }) { Text("Spritesheet PNG + timing ZIP") }
                         Text("Spritesheets preserve every frame at original size, up to 8 megapixels and an 8192-pixel edge. Larger projects can use PNG sequence.")
                         QuickShareSection(vm) { panel = null }
@@ -630,7 +630,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                     }
                     "layers" -> {
                         Button({ vm.addLayer() }) { Text("Add layer") }
-                        vm.planLimits.maxLayers?.let { cap -> Text("Free plan: up to $cap layers. Projects that already have more still open and edit. Creator and Pro have no layer limit.") }
+                        vm.planLimits.maxLayers?.let { cap -> Text("Free plan: up to $cap layers. Projects that already have more still open and edit. Paid plans have no layer limit.") }
                         doc.layers.forEach { layer ->
                             TextButton({ vm.selectLayer(layer.id) }) { Text((if (layer.id == doc.activeLayerID) "● " else "") + layer.name) }
                             Row { TextButton({ vm.updateLayer(layer.id, visible = !layer.visible) }, enabled = !layer.locked) { Text(if (layer.visible) "Hide" else "Show") }
@@ -700,7 +700,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             FilterChip(doc.onion.next == count, { vm.updateOnion(doc.onion.copy(next = count)) }, { Text("$count") },
                                 enabled = count <= (onionLimits.maxOnionSkinForward ?: count) || count <= doc.onion.next)
                         } }
-                        if (onionLimits.maxOnionSkinBack != null) Text("Free plan: onion skin shows ${onionLimits.maxOnionSkinBack} frame back and ${onionLimits.maxOnionSkinForward ?: 0} forward. Creator and Pro show up to 4 each way.")
+                        if (onionLimits.maxOnionSkinBack != null) Text("Free plan: onion skin shows ${onionLimits.maxOnionSkinBack} frame back and ${onionLimits.maxOnionSkinForward ?: 0} forward. Paid plans show up to 4 each way.")
                         var opacity by remember(doc.id, doc.onion.opacity) { mutableFloatStateOf(doc.onion.opacity) }
                         Text("Ghost opacity: ${(opacity * 100).toInt()}%")
                         Slider(opacity, { opacity = it }, onValueChangeFinished = { vm.updateOnion(doc.onion.copy(opacity = opacity)) })
@@ -781,7 +781,8 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
     val account: com.stickdeath.studio.connect.AccountViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     Button({
         // Free plan (when enforced): Spatter stays visible, but without credits every send gets the
-        // fixed upgrade note and the project is not read or edited.
+        // fixed upgrade note and the project is not read or edited. During a paid plan's free trial
+        // Spatter is preview-only too (limits.spatterActive is false), so the trial note answers.
         // The local grammar calls no service, so it is gated only while the Studio enforces Free.
         val gate = if (vm.planLimits.spatterActive) com.stickdeath.studio.billing.SpatterGate.Send(payAsYouGo = false) else account.spatterGate
         when (gate) {
@@ -789,6 +790,7 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
                 .onFailure { vm.report(it.message ?: "Unsupported instruction. Nothing changed.") }
             com.stickdeath.studio.billing.SpatterGate.UpgradeNote -> vm.report(com.stickdeath.studio.billing.PlanCopy.SPATTER_UPGRADE_NOTE)
             com.stickdeath.studio.billing.SpatterGate.AllowanceUsed -> vm.report(com.stickdeath.studio.billing.PlanCopy.SPATTER_ALLOWANCE_USED)
+            com.stickdeath.studio.billing.SpatterGate.TrialPreview -> vm.report(com.stickdeath.studio.billing.PlanCopy.SPATTER_TRIAL_PREVIEW)
             com.stickdeath.studio.billing.SpatterGate.Checking -> { vm.report(com.stickdeath.studio.billing.PlanCopy.SPATTER_CHECKING); account.refreshSpatterUsage() }
         }
     }, enabled = enabled && parsed.isSuccess) { Text("Apply instruction") }

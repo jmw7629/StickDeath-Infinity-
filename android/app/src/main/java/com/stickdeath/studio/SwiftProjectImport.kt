@@ -29,7 +29,8 @@ internal object SwiftProjectImport {
     private fun JSONObject.emptyObject(name: String) {
         if (!isNull(name) && getJSONObject(name).length() != 0) unsupported()
     }
-    fun decode(bytes: ByteArray): Document {
+    /** [sdkInt] is the device API level that decides which blends can be drawn (JVM tests pass one). */
+    fun decode(bytes: ByteArray, sdkInt: Int = android.os.Build.VERSION.SDK_INT): Document {
         val header = magic.size + 8 + 32
         require(recognizes(bytes) && bytes.size >= header) { "Invalid Swift project header." }
         val count = ByteBuffer.wrap(bytes, magic.size, 8).order(ByteOrder.BIG_ENDIAN).long
@@ -81,7 +82,7 @@ internal object SwiftProjectImport {
             // iOS draws unknown legacy blend strings as Normal; project transfer rejects them instead of guessing.
             val blend = LayerBlend.fromSwift(layer.optString("blendMode", "normal")) ?: unsupported()
             require(!blend.isExtended || schemaVersion >= 34) { "This layer blend mode needs Swift project version 34; original preserved." }
-            require(FrameRenderer.supports(blend)) { FrameRenderer.unavailableReason(blend) ?: "Unsupported blend: ${blend.label}" }
+            require(FrameRenderer.supports(blend, sdkInt)) { FrameRenderer.unavailableReason(blend, sdkInt) ?: "Unsupported blend: ${blend.label}" }
             Layer(layer.getString("id"), layer.getString("name"), layer.optBoolean("visible", true),
                 lockMode, layer.optDouble("opacity", 1.0).toFloat(), blend, label)
         }

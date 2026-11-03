@@ -31,7 +31,7 @@ These are the exact steps for an isolated local review of the CI-built simulator
 3. **Unpack and check the app identity**:
    ```sh
    unzip -q artifact/StickDeathInfinity-simulator.zip -d app
-   /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' app/StickDeathInfinity.app/Info.plist   # com.willisnmb.stickdeathinfinity
+   /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' app/StickDeathInfinity.app/Info.plist   # com.willisbmb.StickDeathInfinity
    /usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms' app/StickDeathInfinity.app/Info.plist   # iPhoneSimulator only
    ```
 4. **Create one isolated simulator on an installed runtime** (never reuse a personal device):
@@ -46,13 +46,13 @@ These are the exact steps for an isolated local review of the CI-built simulator
 5. **Install and launch**:
    ```sh
    xcrun simctl install "$UDID" app/StickDeathInfinity.app
-   xcrun simctl launch "$UDID" com.willisnmb.stickdeathinfinity
+   xcrun simctl launch "$UDID" com.willisbmb.StickDeathInfinity
    ```
    The app has empty public backend settings by construction (`emptyPublicSettings` in the manifest), so sign-in and connected features show their honest unavailable states; the local Studio is usable. Capture what you observe with `xcrun simctl io "$UDID" screenshot <name>.png` and label each capture with `$SHA`.
 6. **Uninstall / rollback**:
    ```sh
-   xcrun simctl terminate "$UDID" com.willisnmb.stickdeathinfinity
-   xcrun simctl uninstall "$UDID" com.willisnmb.stickdeathinfinity
+   xcrun simctl terminate "$UDID" com.willisbmb.StickDeathInfinity
+   xcrun simctl uninstall "$UDID" com.willisbmb.StickDeathInfinity
    ```
    To review the previous known-good build instead, repeat steps 1–3 and 5 with that run's artifact in its own directory (its own `manifest.json` is the receipt). To remove the review device entirely: `xcrun simctl shutdown "$UDID" && xcrun simctl delete "$UDID"` — this deletes only the simulator you created in step 4; never run `simctl erase` or `delete` on another device, and keep the downloaded `artifact/` directory as evidence.
 7. **Record** in #126: run id, attempt, `sourceCommit`, archive SHA-256, runtime used, what launched, what was captured, and what was not checked. Observed behaviour on this simulator is not a claim about a physical device or a signed build.

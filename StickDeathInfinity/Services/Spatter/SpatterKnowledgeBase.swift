@@ -1997,7 +1997,7 @@ struct SpatterInstructionGrammar: Equatable {
 }
 
 enum SpatterInstructionCatalog {
-    static let version = 4
+    static let version = 5
     static let grammars: [SpatterInstructionGrammar] = [
         .init(name: "multiClauseBrief", examples: ["A red stick figure walks left to right for 1 second, then punches, then falls; 3 seconds.",
                                                    "A red stick figure runs left to right, then kicks; a blue stick figure ducks, then jumps; 2.5 seconds.",
@@ -2066,7 +2066,16 @@ enum SpatterInstructionCatalog {
         .init(name: "selectByID", examples: ["Select drawings \"stroke-1\", \"stroke-2\".", "Clear drawing selection."],
               commands: ["selectElements"], summary: "Select 1–64 drawings on the active frame by their quoted IDs, or clear the drawing selection. Selection never changes the project."),
         .init(name: "sourceReference", examples: ["Record source https://example.com/reference-clip as licensed reference.", "Record source https://example.com/reference-clip as creator-confirmed reference with note \"Permission email 2026-10-07\".", "Clear source reference."],
-              commands: ["setSourceReference"], summary: "Record an https reference source with its rights basis (licensed, owner-authorized, creator-confirmed or unknown) and time, or clear it. Nothing is downloaded; with a source recorded, only 20–60 s briefs on an allowed basis generate.")
+              commands: ["setSourceReference"], summary: "Record an https reference source with its rights basis (licensed, owner-authorized, creator-confirmed or unknown) and time, or clear it. Nothing is downloaded; with a source recorded, only 20–60 s briefs on an allowed basis generate."),
+        // Catalog v5 (#204): Lasso and Wand selection, Image Library pictures and direct export.
+        .init(name: "areaSelection", examples: ["Select drawings inside rectangle (10%, 10%) to (90%, 90%).", "Select drawings inside polygon (10%, 10%), (90%, 10%), (50%, 90%)."],
+              commands: ["selectElements"], summary: "Select the drawings on the active frame that a rectangle or 3–32 point polygon (canvas percentages) fully encloses, under the Lasso's rules: visible, unlocked Free layers only. Selection never changes the project."),
+        .init(name: "wandSelection", examples: ["Select drawings by color at (50%, 50%).", "Select drawings by color at (25%, 75%), tolerance 16, all layers."],
+              commands: ["selectElements"], summary: "Run the Wand on the active drawing layer at a canvas point (tolerance 0–128, active-layer or all-layer sampling, no feather) and select the drawings its color region touches. Effects then use those drawings' own pixels. Selection never changes the project."),
+        .init(name: "libraryPicture", examples: ["Add library picture \"Cloud A\".", "Add library picture \"kenney.scribble-platformer.effect_blast\"."],
+              commands: ["attachImportedImage"], summary: "Add one bundled Image Library picture, by its unique title or ID, to the active frame on a new layer behind the drawings, with verified bytes and its CC0 license record, in one Undo step. Files, Photos and links stay in Add Picture; no picker opens."),
+        .init(name: "projectExport", examples: ["Export project as MP4.", "Export project as GIF."],
+              commands: ["directMovieExport", "directGIFExport"], summary: "Start Studio's direct MP4 or GIF export of the saved current revision to a file on this device. The project does not change, and nothing is uploaded, shared or published.")
     ]
     static var names: [String] { grammars.map(\.name) }
     static var commandNames: [String] { Array(Set(grammars.flatMap(\.commands))).sorted() }

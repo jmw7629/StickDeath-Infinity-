@@ -3016,6 +3016,205 @@ struct SpatterSourceInstruction: Equatable {
     }
 }
 
+// MARK: - Area and Wand selection, library picture and export grammars (#204)
+
+/// Canvas percentages shared by the selection grammars: "(12.5%, 40%)".
+private let spatterPercentPoint = #"\(\s*([0-9]{1,3}(?:\.[0-9]{1,4})?)\s*%\s*,\s*([0-9]{1,3}(?:\.[0-9]{1,4})?)\s*%\s*\)"#
+
+/// "Select drawings inside polygon (10%, 10%), (90%, 10%), (50%, 90%)." or
+/// "Select drawings inside rectangle (10%, 10%) to (90%, 90%)." Studio's Lasso
+/// rules decide which drawings the outline fully encloses; the result is the
+/// typed selectElements command, so selection never changes the project.
+struct SpatterAreaSelectInstruction: Equatable {
+    /// Canvas percentages, 0–100 on each axis.
+    let vertices: [CGPoint]
+    let isRectangle: Bool
+    static let example = "Select drawings inside rectangle (10%, 10%) to (90%, 90%)."
+    static let polygonExample = "Select drawings inside polygon (10%, 10%), (90%, 10%), (50%, 90%)."
+    static let maximumVertices = 32
+    enum Failure: LocalizedError, Equatable {
+        case syntax, tooMany
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use: \(SpatterAreaSelectInstruction.example) or \(SpatterAreaSelectInstruction.polygonExample) Points are canvas percentages 0–100. Nothing changed."
+            case .tooMany: return "The outline encloses more drawings than one selection instruction can name. Use the Lasso tool. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*select\s+drawings\s+inside\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.syntax }
+        let p = spatterPercentPoint
+        let rectangle = #"\A\s*select\s+drawings\s+inside\s+rectangle\s+"# + p + #"\s+to\s+"# + p + #"\s*\.\s*\z"#
+        let polygon = #"\A\s*select\s+drawings\s+inside\s+polygon\s+("# + p + #"(?:\s*,\s*"# + p + #"){2,31})\s*\.\s*\z"#
+        func number(_ value: Substring) throws -> CGFloat {
+            guard let parsed = Double(value), parsed.isFinite, (0...100).contains(parsed) else { throw Failure.syntax }
+            return CGFloat(parsed)
+        }
+        func points(in fragment: Substring) throws -> [CGPoint] {
+            let expression = try NSRegularExpression(pattern: p)
+            let source = String(fragment)
+            return try expression.matches(in: source, range: NSRange(source.startIndex..., in: source)).map { match in
+                guard let x = Range(match.range(at: 1), in: source), let y = Range(match.range(at: 2), in: source) else { throw Failure.syntax }
+                return CGPoint(x: try number(source[x]), y: try number(source[y]))
+            }
+        }
+        if let range = text.range(of: rectangle, options: [.regularExpression, .caseInsensitive]) {
+            let corners = try points(in: text[range])
+            guard corners.count == 2, abs(corners[0].x - corners[1].x) > 0, abs(corners[0].y - corners[1].y) > 0 else { throw Failure.syntax }
+            return .init(vertices: corners, isRectangle: true)
+        }
+        guard let range = text.range(of: polygon, options: [.regularExpression, .caseInsensitive]) else { throw Failure.syntax }
+        let vertices = try points(in: text[range])
+        guard (3...Self.maximumVertices).contains(vertices.count) else { throw Failure.syntax }
+        return .init(vertices: vertices, isRectangle: false)
+    }
+    /// Outline in canvas pixels for StudioSelectionRegion.
+    func canvasPoints(width: Int, height: Int) -> [CGPoint] {
+        vertices.map { CGPoint(x: $0.x / 100 * CGFloat(width), y: $0.y / 100 * CGFloat(height)) }
+    }
+    /// The typed selection for the IDs Studio's Lasso rules found on the active frame.
+    func prepare(in context: StudioCommandContext, elementIDs: [String], requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try spatterSelectionRequest(in: context, elementIDs: elementIDs, requestID: requestID, checkCancellation: checkCancellation)
+    }
+}
+
+/// "Select drawings by color at (50%, 50%)." with optional ", tolerance 0–128"
+/// and ", all layers". Studio's Wand pipeline (Fill's renderer, the wand region
+/// and the drawing hit test) on the active drawing layer picks the drawings; no
+/// feather, replace mode. The result is the typed selectElements command.
+struct SpatterWandSelectInstruction: Equatable {
+    let xPercent: Double
+    let yPercent: Double
+    let tolerance: Int
+    let sampleAllLayers: Bool
+    static let example = "Select drawings by color at (50%, 50%)."
+    static let optionsExample = "Select drawings by color at (25%, 75%), tolerance 16, all layers."
+    enum Failure: LocalizedError, Equatable {
+        case syntax
+        var errorDescription: String? {
+            "Use: \(SpatterWandSelectInstruction.example) Optional: tolerance 0–128, all layers or active layer. The point must be inside the canvas. Nothing changed."
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*select\s+drawings\s+by\s+colou?r\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.syntax }
+        let pattern = #"\A\s*select\s+drawings\s+by\s+colou?r\s+at\s+"# + spatterPercentPoint
+            + #"(?:\s*,\s*tolerance\s+([0-9]{1,3}))?(?:\s*,\s*(all\s+layers|active\s+layer))?\s*\.\s*\z"#
+        let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { throw Failure.syntax }
+        func group(_ index: Int) -> String? { Range(match.range(at: index), in: text).map { String(text[$0]) } }
+        guard let x = group(1).flatMap(Double.init), let y = group(2).flatMap(Double.init),
+              x >= 0, x < 100, y >= 0, y < 100 else { throw Failure.syntax }
+        let tolerance = try group(3).map { value -> Int in
+            guard let number = Int(value), (0...128).contains(number) else { throw Failure.syntax }
+            return number
+        } ?? 32
+        let scope = group(4)?.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return .init(xPercent: x, yPercent: y, tolerance: tolerance, sampleAllLayers: scope == "all layers")
+    }
+    /// The sampled point in canvas pixels, inside the canvas.
+    func canvasPoint(width: Int, height: Int) throws -> CGPoint {
+        let x = Double(width) * xPercent / 100, y = Double(height) * yPercent / 100
+        guard x >= 0, y >= 0, x < Double(width), y < Double(height) else { throw Failure.syntax }
+        return CGPoint(x: x, y: y)
+    }
+    func prepare(in context: StudioCommandContext, elementIDs: [String], requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try spatterSelectionRequest(in: context, elementIDs: elementIDs, requestID: requestID, checkCancellation: checkCancellation)
+    }
+}
+
+/// One selectElements command on the captured active frame, bounded like the executor.
+private func spatterSelectionRequest(in context: StudioCommandContext, elementIDs: [String], requestID: UUID,
+                                     checkCancellation: () throws -> Void) throws -> StudioCommandRequest {
+    try checkCancellation()
+    guard !elementIDs.isEmpty, Set(elementIDs).count == elementIDs.count else { throw SpatterAreaSelectInstruction.Failure.syntax }
+    guard elementIDs.count <= StudioCommandExecutor.maximumGeneratedElements else { throw SpatterAreaSelectInstruction.Failure.tooMany }
+    return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+                 action: .apply([.selectElements(.init(frame: .id(context.activeFrameID), elementIDs: elementIDs))]))
+}
+
+/// "Add library picture "Cloud A"." Adds one bundled, verified Image Library
+/// picture, named by its catalogue ID or unique title, to the active frame on a
+/// new layer exactly as Add Picture → Image Library → Add does, in one Undo
+/// step. No file path, URL, Photos item or picker is accepted or opened.
+struct SpatterLibraryPictureInstruction: Equatable {
+    /// A catalogue ID or title; only ever compared with the bundled list.
+    let name: String
+    static let example = "Add library picture \"Cloud A\"."
+    static let idExample = "Add library picture \"kenney.scribble-platformer.effect_blast\"."
+    enum Failure: LocalizedError, Equatable {
+        case syntax, notFound(String), ambiguous(String), unavailable
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use: \(SpatterLibraryPictureInstruction.example) with the title or ID of a bundled Image Library picture. Files, Photos and links are chosen in Add Picture. Nothing changed."
+            case .notFound(let name): return "No available Image Library picture has the title or ID \u{201C}\(name)\u{201D}. Nothing was added."
+            case .ambiguous(let name): return "Several Image Library pictures are titled \u{201C}\(name)\u{201D}; use the picture's ID. Nothing was added."
+            case .unavailable: return "The Image Library is not available in this editor. Use Add Picture to choose a picture. Nothing was added."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*add\s+library\s+picture\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        // Letters, digits, spaces, '-', '.' and '_' only: never a path, URL or scheme.
+        let pattern = #"\A\s*add\s+library\s+picture\s+"([A-Za-z0-9._\- ]{1,180})"\s*\.\s*\z"#
+        let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { throw Failure.syntax }
+        let name = String(text[range])
+        guard name == name.trimmingCharacters(in: .whitespaces), !name.isEmpty, !name.contains(".."), !name.hasPrefix(".") else { throw Failure.syntax }
+        return .init(name: name)
+    }
+    /// The one listed entry this instruction names: an exact ID, else a unique
+    /// case-insensitive title. Pure, so every caller resolves identically.
+    func resolve<Item>(in items: [Item], id: (Item) -> String, title: (Item) -> String) throws -> Item {
+        if let exact = items.first(where: { id($0) == name }) { return exact }
+        let titled = items.filter { title($0).caseInsensitiveCompare(name) == .orderedSame }
+        guard !titled.isEmpty else { throw Failure.notFound(name) }
+        guard titled.count == 1 else { throw Failure.ambiguous(name) }
+        return titled[0]
+    }
+}
+
+/// "Export project as MP4." or "Export project as GIF." Starts Studio's direct
+/// export of the saved current revision to a file on this device. It never
+/// uploads, shares or publishes, and it changes nothing in the project.
+struct SpatterProjectExportInstruction: Equatable {
+    enum Format: String, Equatable { case mp4, gif }
+    let format: Format
+    static let example = "Export project as MP4."
+    static let gifExample = "Export project as GIF."
+    enum Failure: LocalizedError, Equatable {
+        case syntax
+        var errorDescription: String? {
+            "Use: \(SpatterProjectExportInstruction.example) or \(SpatterProjectExportInstruction.gifExample) Export creates a file on this device only; uploading and publishing are never part of an instruction. Nothing changed."
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*export\s+(?:the\s+)?project\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        let pattern = #"\A\s*export\s+(?:the\s+)?project\s+as\s+(?:an?\s+)?(mp4|gif)\s*\.\s*\z"#
+        let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text),
+              let format = Format(rawValue: text[range].lowercased()) else { throw Failure.syntax }
+        return .init(format: format)
+    }
+}
+
 enum SpatterInstructionRouter {
     enum Kind: String, CaseIterable {
         case batch, frameDuplicateRange, frameReverse, navigation, layerStructure, grid, onionSkin, frameAction, layerOrder, audioTrack
@@ -3024,6 +3223,7 @@ enum SpatterInstructionRouter {
         case selectedErasure, projectRename, frameExposure, layerUpdate, layerDuplicate, layerGlow, audioClip
         case multiClauseBrief, twoActorBrief, sceneBrief, stickFigure, circleMotion
         case fill, selectByID, sourceReference
+        case areaSelection, wandSelection, libraryPicture, projectExport
         /// Grammars whose preparation needs only the captured document, not a selection.
         var isContextOnly: Bool {
             switch self {
@@ -3037,6 +3237,10 @@ enum SpatterInstructionRouter {
     static func classify(_ draft: String) -> Kind? {
         if SpatterInstructionBatch.isBatch(draft) { return .batch }
         if SpatterSourceInstruction.isInstruction(draft) { return .sourceReference }
+        if SpatterAreaSelectInstruction.isInstruction(draft) { return .areaSelection }
+        if SpatterWandSelectInstruction.isInstruction(draft) { return .wandSelection }
+        if SpatterLibraryPictureInstruction.isInstruction(draft) { return .libraryPicture }
+        if SpatterProjectExportInstruction.isInstruction(draft) { return .projectExport }
         if SpatterSelectByIDInstruction.isInstruction(draft) { return .selectByID }
         if SpatterFillInstruction.isInstruction(draft) { return .fill }
         if SpatterFrameDuplicateRangeInstruction.isInstruction(draft) { return .frameDuplicateRange }
@@ -3271,6 +3475,18 @@ enum SpatterInstructionPreview {
                 }
                 let decision = SpatterSourceRightsGate.evaluate(reference)
                 return "Plan: record \(reference.url.absoluteString) as a \(reference.rightsBasis.label) reference on this project (no download). Generation would then be \(decision.allowed ? "allowed for 20–60 s briefs" : "refused"): \(decision.reason) One Undo step. Nothing has changed yet."
+            case .areaSelection:
+                let area = try SpatterAreaSelectInstruction.parse(text)
+                return "Plan: select the drawings on the active frame fully inside this \(area.isRectangle ? "rectangle" : "\(area.vertices.count)-point polygon") under the Lasso's rules (visible, unlocked Free layers) → 1× selectElements. Selection never changes the project. Nothing has changed yet."
+            case .wandSelection:
+                let wand = try SpatterWandSelectInstruction.parse(text)
+                return "Plan: run the Wand on the active drawing layer at (\(String(format: "%.6g", wand.xPercent))%, \(String(format: "%.6g", wand.yPercent))%), tolerance \(wand.tolerance), sampling \(wand.sampleAllLayers ? "all layers" : "the active layer"), and select the drawings it touches → 1× selectElements. Selection never changes the project. Nothing has changed yet."
+            case .libraryPicture:
+                let picture = try SpatterLibraryPictureInstruction.parse(text)
+                return "Plan: verify the bundled Image Library picture \u{201C}\(picture.name)\u{201D} and add it to the active frame on a new layer behind the drawings, keeping its original bytes and license record. One Undo step. Nothing has changed yet."
+            case .projectExport:
+                let export = try SpatterProjectExportInstruction.parse(text)
+                return "Plan: start Studio's direct \(export.format.rawValue.uppercased()) export of the saved current revision to a file on this device. The project does not change; nothing is uploaded, shared or published. Requires a saved project. Nothing has changed yet."
             case .circleMotion:
                 let recipe = try SpatterMotionRecipe.parse(text)
                 guard let context else { return "Outlined-circle motion (\(recipe.frameCount) frames). Open the project to preview." }

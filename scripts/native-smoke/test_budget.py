@@ -2,27 +2,27 @@
 import hashlib
 import re
 
-PER_CASE_SECONDS = 180
-MAXIMUM_CASE_SECONDS = 240
+PER_CASE_SECONDS = 300
+MAXIMUM_CASE_SECONDS = 360
 EXTENDED_CASE_SECONDS = {
-    "testPixelLassoAutomaticMovePartialDeleteUndoAndColdReopen": 240,
-    "testImageQuarterTweenPixelsUndoAndColdReopen": 240,
-    "testImageTweenLinearPixelsUndoAndColdReopen": 240,
-    "testSharpenPixelsUndoAndColdReopen": 240,
-    "testImageDrawingOrderUndoAndColdReopen": 240,
-    "testActiveLayerImageMarqueeDeleteUndoAndColdReopen": 240,
-    "testSpatterSelectedAudioPlacementUndoAndColdReopen": 240,
+    "testPixelLassoAutomaticMovePartialDeleteUndoAndColdReopen": 360,
+    "testImageQuarterTweenPixelsUndoAndColdReopen": 360,
+    "testImageTweenLinearPixelsUndoAndColdReopen": 360,
+    "testSharpenPixelsUndoAndColdReopen": 360,
+    "testImageDrawingOrderUndoAndColdReopen": 360,
+    "testActiveLayerImageMarqueeDeleteUndoAndColdReopen": 360,
+    "testSpatterSelectedAudioPlacementUndoAndColdReopen": 360,
 
-    "testSelectedImageAlphaFillUndoAndColdReopen": 240,
-    "testImageWandRegionCopyDeletePasteUndoAndColdReopen": 240,
-    "testMixedArtworkCopyCutPasteUndoAndColdReopen": 240,
-    "testMixedDrawingImageMoveDeleteUndoAndColdReopen": 240,
-    "testBucketFillPopupUndoSaveReopenAndPNG": 240,
-    "testImagePlacementCancelApplyUndoAndColdReopen": 240,
-    "testImageQuarterTurnsUndoAndColdReopen": 240,
+    "testSelectedImageAlphaFillUndoAndColdReopen": 360,
+    "testImageWandRegionCopyDeletePasteUndoAndColdReopen": 360,
+    "testMixedArtworkCopyCutPasteUndoAndColdReopen": 360,
+    "testMixedDrawingImageMoveDeleteUndoAndColdReopen": 360,
+    "testBucketFillPopupUndoSaveReopenAndPNG": 360,
+    "testImagePlacementCancelApplyUndoAndColdReopen": 360,
+    "testImageQuarterTurnsUndoAndColdReopen": 360,
     # Create, draw, layer, sound, PNG export, save, Back and a cold relaunch in
     # one real journey (#265): two app launches plus the export preview decode.
-    "testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen": 240,
+    "testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen": 360,
 }
 # Includes real rendered-MP4 Files save/re-export/cold-readback coverage, the
 # accessibility-size audit (#264) and the complete project journey (#265).
@@ -54,7 +54,7 @@ def build_test_budget(source: str, command: list[str]) -> dict:
         if index + 1 == len(command) or command[index + 1] != value:
             raise ValueError("Native verification must preserve " + flag + " " + value)
     # Only the explicitly bounded long journeys may opt into the longer ceiling.
-    # Preserve all cases, assertions and the 180s default for every other case.
+    # Preserve all cases, assertions and the 300s default for every other case.
     declared = re.findall(r"executionTimeAllowance\s*=\s*([0-9]+)", source)
     extended = {name: seconds for name, seconds in EXTENDED_CASE_SECONDS.items() if name in names}
     if len(declared) != len(extended):

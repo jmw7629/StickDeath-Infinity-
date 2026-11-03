@@ -72,7 +72,8 @@ struct SpatterMotionRecipePanel: View {
     private var routedKind: SpatterInstructionRouter.Kind? {
         guard let kind = SpatterInstructionRouter.classify(draft) else { return nil }
         switch kind {
-        case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke: return kind
+        case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke,
+             .areaSelection, .wandSelection, .libraryPicture, .projectExport: return kind
         default: return nil
         }
     }
@@ -84,6 +85,10 @@ struct SpatterMotionRecipePanel: View {
         case .frameClipboard?: return "Copy or paste a frame"
         case .projectSettings?: return "Change project settings"
         case .brushStroke?: return "Draw a brush stroke"
+        case .areaSelection?: return "Select drawings inside an outline"
+        case .wandSelection?: return "Select drawings by color"
+        case .libraryPicture?: return "Add an Image Library picture"
+        case .projectExport?: return "Export the saved project"
         default: return nil
         }
     }
@@ -95,6 +100,10 @@ struct SpatterMotionRecipePanel: View {
         case .frameClipboard?: return "Copy a frame to the frame clipboard and/or paste an editable copy with fresh identities after a frame. A bare paste needs a copied frame; copy alone changes nothing in the document."
         case .projectSettings?: return "Changes the canvas size (16–4096 px) and/or frame rate (1–60 FPS) through the same Project Settings operation. Artwork coordinates are kept; audio keeps its time in seconds. One Undo restores the previous settings."
         case .brushStroke?: return "Draws one straight stroke in the chosen brush family on the active frame and layer, with a request-stable seed. The stroke is editable like a hand-drawn one; one Undo removes it."
+        case .areaSelection?: return "Selects the drawings a rectangle or polygon fully encloses on the active frame, with the Lasso's rules. Selection never changes the project."
+        case .wandSelection?: return "Runs the Wand on the active drawing layer at a canvas point and selects the drawings its color region touches. Selection never changes the project."
+        case .libraryPicture?: return "Adds one bundled Image Library picture, verified like Add Picture, to the active frame on a new layer in one Undo step. Files, Photos and the camera stay in Add Picture."
+        case .projectExport?: return "Starts Studio's direct MP4 or GIF export of the saved revision to a file on this device. Nothing is uploaded, shared or published."
         default: return nil
         }
     }
@@ -106,6 +115,10 @@ struct SpatterMotionRecipePanel: View {
         case .frameClipboard?: return "Use Copy frame 1 and paste it after frame 2., Copy frame 1., or Paste frame after active frame. Frame numbers are one-based; the project must have room for one more frame."
         case .projectSettings?: return "Use Set project size to 640 by 480 pixels., Set project frame rate to 24 FPS., or both with at 24 FPS. Resizing keeps artwork coordinates and can be refused when stored effects depend on the current size."
         case .brushStroke?: return "Use Draw a round brush line from (10%, 20%) to (90%, 20%) in #000000, size 6 px, opacity 100%. Gradient needs in #RRGGBB to #RRGGBB. Size 1–50 px; the active layer must be visible and not fully or position-locked."
+        case .areaSelection?: return "Use \(SpatterAreaSelectInstruction.example) or a polygon of 3–32 points. Only drawings on visible layers locked to Free are selected."
+        case .wandSelection?: return "Use \(SpatterWandSelectInstruction.optionsExample) Tolerance 0–128; the active layer must be a visible drawing layer locked to Free or Position."
+        case .libraryPicture?: return "Use \(SpatterLibraryPictureInstruction.example) with a picture's title or ID from Add Picture → Image Library. Stop playback first."
+        case .projectExport?: return "Use \(SpatterProjectExportInstruction.example) or \(SpatterProjectExportInstruction.gifExample) Save the project first; the export uses the saved revision."
         default: return nil
         }
     }
@@ -117,6 +130,10 @@ struct SpatterMotionRecipePanel: View {
         case .frameClipboard?: return SpatterFrameClipboardInstruction.copyPasteExample
         case .projectSettings?: return SpatterProjectSettingsInstruction.bothExample
         case .brushStroke?: return SpatterBrushStrokeInstruction.example
+        case .areaSelection?: return SpatterAreaSelectInstruction.example
+        case .wandSelection?: return SpatterWandSelectInstruction.example
+        case .libraryPicture?: return SpatterLibraryPictureInstruction.example
+        case .projectExport?: return SpatterProjectExportInstruction.example
         default: break
         }
         if isSelectionTranslateDraft { return SpatterSelectionTranslateInstruction.example }
@@ -678,13 +695,48 @@ struct SpatterMotionRecipePanel: View {
                     .accessibilityIdentifier("spatter.motion.keyboard.done")
             }
         }
-        .onAppear { isVisible = true; isForeground = scenePhase == .active }
+        .onAppear {
+            isVisible = true; isForeground = scenePhase == .active
+            session.libraryPictureResolver = SpatterLibraryPictureSource.resolve
+        }
         .onDisappear { isVisible = false; session.close() }
+        .onChange(of: session.exportHandoff) { _ in startHandedOffExport() }
         .onChange(of: scenePhase) { phase in
             isForeground = phase == .active
             if !isForeground { session.cancel() }
         }
         .onChange(of: authVM.userId) { _ in session.close() }
+    }
+
+    /// A typed projectExport instruction (#204) reaches the same direct MP4/GIF
+    /// exporter as the buttons below, which rechecks the saved revision and
+    /// account and writes a device file only.
+    private func startHandedOffExport() {
+        guard let handoff = session.takeExportHandoff() else { return }
+        session.close()
+        switch handoff.format {
+        case .mp4: onMovieExport(handoff.request)
+        case .gif: onGIFExport(handoff.request)
+        }
+    }
+}
+
+/// Bundled Image Library pictures for Spatter's libraryPicture instruction
+/// (#204): the same verified bytes, importer and license record as Add
+/// Picture → Image Library → Add. Only the bundled list is consulted.
+enum SpatterLibraryPictureSource {
+    @MainActor
+    static func resolve(_ instruction: SpatterLibraryPictureInstruction) async throws -> StudioImageImportService.ImportedImage {
+        let catalogue = try await StudioImageCatalogue.loadBundled()
+        let image = try instruction.resolve(in: catalogue.availableImages, id: \.id, title: \.title)
+        let verification = Task.detached(priority: .userInitiated) { try catalogue.checkedPNG(image) }
+        let expected = try await withTaskCancellationHandler(operation: { try await verification.value },
+                                                             onCancel: { verification.cancel() })
+        let source = try catalogue.sourceURL(for: image)
+        var imported = try await StudioImageImportService.shared.importImage(from: source, name: image.title)
+        guard imported.originalData == expected else { throw StudioImageCatalogue.CatalogueError.invalid }
+        imported.catalogueAttribution = try catalogue.attribution(for: image)
+        return imported
     }
 }
 

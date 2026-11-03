@@ -43,7 +43,7 @@ enum SpatterClientError: Error, LocalizedError, Equatable {
         case .responseTooLarge: return "Spatter's backend response exceeded the size limit."
         case .networkUnavailable: return "Spatter's backend could not be reached. Try again later."
         case .httpStatus(401), .httpStatus(403): return "Spatter's backend did not authorize this request."
-        case .httpStatus(402): return "Spatter is part of Creator and Pro, or buy Spatter credits in Profile, Plans to pay as you go."
+        case .httpStatus(402): return "Spatter is part of Creator, Pro and Unlimited, or buy Spatter credits in Profile, Plans to pay as you go."
         case .httpStatus(429): return "Spatter's backend is rate-limited or your daily Spatter budget is used up. Try again later."
         case .httpStatus(503): return "Spatter cloud is not configured on the server. Local animation guidance remains available."
         case .httpStatus: return "Spatter's backend reported an HTTP error."
@@ -87,7 +87,7 @@ struct SpatterSuggestedPrompt: Identifiable, Equatable {
 
 /// Spatter plan as reported by the server. Never derived on the device.
 enum SpatterPlanTier: String, Equatable {
-    case free, creator, pro
+    case free, creator, pro, unlimited
     /// Bring-your-own AI key is available on the paid plans (owner decision 2026-10-14).
     var allowsOwnKey: Bool { self != .free }
 }
@@ -96,22 +96,28 @@ enum SpatterPlanTier: String, Equatable {
 /// reply's `allowance`. Display data only: the server decides every prompt.
 struct SpatterAllowance: Equatable {
     let plan: SpatterPlanTier
-    /// Nil for Pro (unlimited by plan) or when the server did not send it.
+    /// Nil for Unlimited (no cap by plan) or when the server did not send it.
     let remaining: Int?
     let limit: Int?
     let resetsAt: Date?
     /// Spatter credit balance (1 credit = 1 prompt); nil when the server did not report one.
     var credits: Int? = nil
+    /// The paid plan is in its free trial (owner decision 2026-10-20): Spatter
+    /// is preview-only until the paid period begins. Missing on the wire is false.
+    var inTrial: Bool = false
 
-    var suggestedPromptsOnly: Bool { plan == .free }
-    var hasCredits: Bool { (credits ?? 0) > 0 }
+    var suggestedPromptsOnly: Bool { plan == .free || inTrial }
+    /// Credits are never spent during a trial.
+    var hasCredits: Bool { !inTrial && (credits ?? 0) > 0 }
     /// Free has no plan allowance (owner decision 2026-10-15) and pays as it goes
-    /// with credits; Creator falls through to credits after its allowance.
+    /// with credits; Creator (250) and Pro (500) fall through to credits after
+    /// their allowance (owner decision 2026-10-20). A trial sends nothing.
     var isExhausted: Bool {
+        if inTrial { return true }
         switch plan {
         case .free: return !hasCredits
-        case .creator: return remaining == 0 && !hasCredits
-        case .pro: return false
+        case .creator, .pro: return remaining == 0 && !hasCredits
+        case .unlimited: return false
         }
     }
 
@@ -128,16 +134,28 @@ struct SpatterAllowance: Equatable {
         return planText + creditLine
     }
 
-    private var planText: String {
+    private var planName: String {
         switch plan {
-        case .pro:
-            return "Pro: unlimited Spatter prompts."
-        case .creator:
-            guard let remaining else { return "Creator: remaining prompts appear once the server reports them." }
+        case .free: return "Free"
+        case .creator: return "Creator"
+        case .pro: return "Pro"
+        case .unlimited: return "Unlimited"
+        }
+    }
+
+    private var planText: String {
+        if inTrial, plan != .free {
+            return "\(planName) free trial: Spatter starts when your paid period begins."
+        }
+        switch plan {
+        case .unlimited:
+            return "Unlimited: unlimited Spatter prompts."
+        case .creator, .pro:
+            guard let remaining else { return "\(planName): remaining prompts appear once the server reports them." }
             let of = limit.map { " of \($0)" } ?? ""
-            return "Creator: \(remaining)\(of) Spatter prompts left this billing period."
+            return "\(planName): \(remaining)\(of) Spatter prompts left this billing period."
         case .free:
-            return hasCredits ? "Free: pay as you go with Spatter credits." : "Free: Spatter answers need Creator, Pro or credits."
+            return hasCredits ? "Free: pay as you go with Spatter credits." : "Free: Spatter answers need a paid plan or credits."
         }
     }
 
@@ -145,14 +163,18 @@ struct SpatterAllowance: Equatable {
     var lockoutText: String? {
         guard isExhausted else { return nil }
         let reset = Self.day(resetsAt)
+        if inTrial, plan != .free {
+            return "Your free trial unlocks the full Studio. Spatter starts answering when your paid period begins; until then you can explore its suggested prompts, and nothing is sent or charged. To start Spatter now, subscribe or upgrade in Profile, Plans."
+        }
         switch plan {
         case .free:
-            return "Spatter is part of Creator and Pro. Upgrade in Profile, Plans to activate it, or buy Spatter credits there to pay as you go. Creator also lets you use your own AI key."
-        case .creator:
+            return "Spatter is part of Creator, Pro and Unlimited. Upgrade in Profile, Plans to activate it, or buy Spatter credits there to pay as you go. Every paid plan also lets you use your own AI key."
+        case .creator, .pro:
+            let upgrade = plan == .creator ? "Upgrade to Pro or Unlimited for more prompts" : "Upgrade to Unlimited for unlimited prompts"
             return "You've used this billing period's Spatter allowance. It resets"
                 + (reset.map { " on \($0)" } ?? " at renewal")
-                + ". Upgrade to Pro for unlimited prompts, buy Spatter credits to keep going, or add your own AI key."
-        case .pro:
+                + ". \(upgrade), buy Spatter credits to keep going, or add your own AI key."
+        case .unlimited:
             return nil
         }
     }
@@ -167,16 +189,20 @@ struct SpatterAllowance: Equatable {
             let remaining: Int?
             let resets_at: String?
             let credits: Int?
+            let in_trial: Bool?
+            let trial: Bool?
             let error: String?
         }
         guard data.count <= 16_384, let usage = try? JSONDecoder().decode(Usage.self, from: data),
               usage.error == nil, let raw = usage.plan, let plan = SpatterPlanTier(rawValue: raw) else {
             throw SpatterClientError.invalidResponse
         }
-        return make(plan: plan, remaining: usage.remaining, limit: usage.limit, resetsAt: usage.resets_at, credits: usage.credits)
+        return make(plan: plan, remaining: usage.remaining, limit: usage.limit, resetsAt: usage.resets_at, credits: usage.credits,
+                    inTrial: usage.in_trial == true || usage.trial == true)
     }
 
-    static func make(plan: SpatterPlanTier, remaining: Int?, limit: Int?, resetsAt: String?, credits: Int? = nil) -> SpatterAllowance {
+    static func make(plan: SpatterPlanTier, remaining: Int?, limit: Int?, resetsAt: String?, credits: Int? = nil,
+                     inTrial: Bool = false) -> SpatterAllowance {
         func sane(_ value: Int?) -> Int? { value.flatMap { (0...1_000_000).contains($0) ? $0 : nil } }
         let date = resetsAt.flatMap { value -> Date? in
             let plain = ISO8601DateFormatter()
@@ -185,8 +211,13 @@ struct SpatterAllowance: Equatable {
             fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             return fractional.date(from: value)
         }
-        if plan == .pro { return SpatterAllowance(plan: .pro, remaining: nil, limit: nil, resetsAt: nil) }
-        return SpatterAllowance(plan: plan, remaining: sane(remaining), limit: sane(limit), resetsAt: date, credits: sane(credits))
+        // A trial applies only to a paid plan; Free has no trial.
+        let trial = inTrial && plan != .free
+        if plan == .unlimited {
+            return SpatterAllowance(plan: .unlimited, remaining: nil, limit: nil, resetsAt: nil, inTrial: trial)
+        }
+        return SpatterAllowance(plan: plan, remaining: sane(remaining), limit: sane(limit), resetsAt: date, credits: sane(credits),
+                                inTrial: trial)
     }
 }
 
@@ -302,7 +333,10 @@ struct SpatterBackendClient {
         struct Versioned: Decodable {
             struct Usage: Decodable { let units: Int? }
             struct Budget: Decodable { let remaining: Int?; let resetsAt: String? }
-            struct Allowance: Decodable { let plan: String?; let remaining: Int?; let resetsAt: String?; let credits: Int? }
+            struct Allowance: Decodable {
+                let plan: String?; let remaining: Int?; let resetsAt: String?; let credits: Int?
+                let inTrial: Bool?; let in_trial: Bool?; let trial: Bool?
+            }
             let schemaVersion: Int
             let reply: String?
             let usage: Usage?
@@ -341,7 +375,8 @@ struct SpatterBackendClient {
             // A metered allowance with an unknown plan is dropped, not guessed.
             let allowance = versioned.allowance.flatMap { raw in
                 raw.plan.flatMap(SpatterPlanTier.init(rawValue:)).map {
-                    SpatterAllowance.make(plan: $0, remaining: raw.remaining, limit: nil, resetsAt: raw.resetsAt, credits: raw.credits)
+                    SpatterAllowance.make(plan: $0, remaining: raw.remaining, limit: nil, resetsAt: raw.resetsAt, credits: raw.credits,
+                                          inTrial: raw.inTrial == true || raw.in_trial == true || raw.trial == true)
                 }
             }
             return SpatterCloudReply(schemaVersion: versioned.schemaVersion, reply: reply, usageUnits: units, budget: budget,

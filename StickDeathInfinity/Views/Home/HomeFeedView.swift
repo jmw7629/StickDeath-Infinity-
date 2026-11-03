@@ -125,13 +125,9 @@ struct HomeFeedView: View {
             Button {
                 guard let url = post.safeURL else { error = "Video address is unavailable."; return }
                 playback = FeedPlaybackItem(url: url, title: post.title)
-            } label: {
-                VStack(spacing: 14) {
-                    Image(systemName: "play.rectangle.fill").font(.system(size: 56)).foregroundStyle(StudioCraftTheme.accentText)
-                    Text(post.title).font(.specialElite(18, relativeTo: .title3)).foregroundStyle(StudioCraftTheme.text)
-                }.frame(maxWidth: .infinity, minHeight: 190).background(StudioCraftTheme.canvas)
-                    .clipShape(RoundedRectangle(cornerRadius: StudioCraftTheme.radius))
-            }.accessibilityLabel("Play \(post.title)").accessibilityIdentifier("feed.card.play")
+            } label: { FeedPosterView(post: post) }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Play \(post.title)").accessibilityIdentifier("feed.card.play")
             if !post.caption.isEmpty { Text(post.caption).font(.specialElite(14, relativeTo: .callout)) }
             HStack(spacing: 18) {
                 Button { Task { await like(post) } } label: {

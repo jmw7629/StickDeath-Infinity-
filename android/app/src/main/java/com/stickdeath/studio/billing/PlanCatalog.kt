@@ -7,24 +7,41 @@ import kotlin.math.roundToInt
 
 // Pure-Kotlin plan model: the Android mirror of iOS `BillingPlanCatalog.swift` (StudioPlanLimits,
 // BillingPlanCatalog, BillingCopy) as revised by the owner on 2026-10-15
-// (docs/PLAN_DECISIONS_2026_10_15.md), plus the Spatter credits decision for Free accounts.
+// (docs/PLAN_DECISIONS_2026_10_15.md) and again on 2026-10-20 (three paid tiers, free trial),
+// plus the Spatter credits decision for Free accounts.
 // No Android imports, so the JVM unit tests exercise exactly the rules the app ships.
 //
-// - Plans: Free; Creator USD 4.99/month; Pro USD 9.99/month; no free trial.
-//   Amounts are never stored or shown from here: the price on screen is Google Play's
-//   formatted price, or "Price shown when configured".
+// - Plans: Free; Creator USD 4.99/month (250 server-funded Spatter messages per billing period);
+//   Pro USD 9.99/month (500); Unlimited USD 19.99/month (unlimited). Rank Unlimited > Pro >
+//   Creator > Free. Every paid plan unlocks the full Studio and includes bring-your-own AI key
+//   (own-key prompts are not counted).
+// - Every paid plan has a 3-day free trial. During the trial the Studio is fully unlocked but
+//   Spatter is preview-only: suggested prompts and the upgrade note, nothing sent, no credits.
+//   Whether an account is in its trial is a server/store fact ([PlanStatus.inTrial]), never guessed.
+// - Amounts are never stored or shown from here: the price on screen is Google Play's
+//   formatted price, or "Price shown when configured". Trial length on screen comes from Play's
+//   zero-price phase.
 // - Free Studio limits (FlipaClip-style, no ads) apply only while [StudioPlanLimits.enforcing]
 //   is true: real Play product ids, the store loaded them, and purchasing can complete.
 //   Until then every account keeps the full Studio, so nobody is locked out of a feature
 //   they cannot buy.
 
 enum class PlanTier(val wire: String, val rank: Int, val title: String) {
-    Free("free", 0, "Free"), Creator("creator", 1, "Creator"), Pro("pro", 2, "Pro");
+    Free("free", 0, "Free"), Creator("creator", 1, "Creator"), Pro("pro", 2, "Pro"), Unlimited("unlimited", 3, "Unlimited");
 
-    /** Bring-your-own AI key is part of both paid plans (owner decision 2026-10-14). */
-    val includesOwnAIKey get() = this != Free
-    /** No plan offers a free trial (owner decision 2026-10-15); Spatter's suggested prompts are the preview. */
-    val offersTrial get() = false
+    val isPaid get() = this != Free
+    /** Bring-your-own AI key is part of every paid plan; own-key prompts are not counted. */
+    val includesOwnAIKey get() = isPaid
+    /** Every paid plan starts with a 3-day free trial (owner decision 2026-10-20). */
+    val offersTrial get() = isPaid
+    /** Server-funded Spatter messages per billing period: 0 for Free (preview only), null when unlimited.
+     * The server counts and enforces; this is the plan definition the copy and tests read. */
+    val spatterMessagesPerPeriod: Int? get() = when (this) { Free -> 0; Creator -> 250; Pro -> 500; Unlimited -> null }
+    val promptAllowance get() = when (this) {
+        Free -> SpatterPromptAllowance.PreviewOnly
+        Creator, Pro -> SpatterPromptAllowance.PerPeriod
+        Unlimited -> SpatterPromptAllowance.Unlimited
+    }
 
     companion object {
         /** Unknown or missing plans are not guessed. */
@@ -38,9 +55,19 @@ enum class SpatterPromptAllowance {
     /** Free: Spatter and its suggested prompts are visible; a send gets the upgrade note unless the
      * account holds Spatter credits, which the server spends one per prompt (pay as you go). */
     PreviewOnly,
-    /** Creator: server-funded prompts per billing period up to the plan's break-even, then credits. */
-    BreakEvenPerPeriod,
+    /** Creator (250) and Pro (500): server-funded messages per billing period
+     * ([PlanTier.spatterMessagesPerPeriod]), then credits when the account holds them. */
+    PerPeriod,
     Unlimited,
+}
+
+/** The plan in force plus whether it is still in its free trial. [inTrial] only matters for a paid
+ * tier; it comes from the server or a verified store purchase and is never assumed. */
+data class PlanStatus(val tier: PlanTier, val inTrial: Boolean = false) {
+    val trialing get() = inTrial && tier.isPaid
+    /** Trial rule: Studio fully unlocked, Spatter preview-only (nothing sent, no credits used). */
+    val spatterPreviewOnly get() = tier == PlanTier.Free || trialing
+    val studioLimits get() = StudioPlanLimits.forTier(tier, trialing)
 }
 
 /** Output size of a rendered MP4/GIF. [scale] maps canvas pixels to output pixels. */
@@ -128,7 +155,12 @@ data class StudioPlanLimits(
             audioImport = true, soundLibrary = true, advancedTools = true,
             pngSequenceExport = true, sdiChannelSubmission = true, spatterActive = true)
 
-        fun forTier(tier: PlanTier) = if (tier == PlanTier.Free) Free else Unrestricted
+        /** During a paid plan's free trial the Studio is fully unlocked but Spatter is preview-only. */
+        fun forTier(tier: PlanTier, inTrial: Boolean = false) = when {
+            tier == PlanTier.Free -> Free
+            inTrial -> Unrestricted.copy(spatterActive = false)
+            else -> Unrestricted
+        }
 
         /** Limits apply only once the catalogue names real Play products, Play has loaded them and a
          * purchase can complete (server verification exists). Until then everyone keeps the full
@@ -137,9 +169,15 @@ data class StudioPlanLimits(
         fun enforcing(catalog: PlanCatalog, storeLoaded: Boolean, purchasesAvailable: Boolean) =
             !catalog.usesPlaceholderIdentifiers && storeLoaded && purchasesAvailable
 
-        fun effective(tier: PlanTier, enforcing: Boolean) = if (enforcing) forTier(tier) else Unrestricted
+        /** The trial rule follows the reported trial state even before Studio limits are enforced:
+         * a trialing account's Spatter stays preview-only while its Studio stays unlocked. */
+        fun effective(tier: PlanTier, enforcing: Boolean, inTrial: Boolean = false) = when {
+            enforcing -> forTier(tier, inTrial)
+            inTrial && tier.isPaid -> forTier(tier, inTrial = true)
+            else -> Unrestricted
+        }
 
-        const val UPGRADE_NOTE = "This is part of Creator and Pro. Upgrade in Account, Plans to unlock it."
+        const val UPGRADE_NOTE = "This is part of Creator, Pro and Unlimited. Upgrade in Account, Plans to unlock it."
     }
 }
 
@@ -169,6 +207,7 @@ data class PlanDefinition(
 ) {
     val name get() = tier.title
     val studioLimits get() = StudioPlanLimits.forTier(tier)
+    val spatterMessagesPerPeriod get() = tier.spatterMessagesPerPeriod
 }
 
 /** A consumable Spatter credit pack. The number of credits granted is the server's decision and the
@@ -191,6 +230,7 @@ data class PlanCatalog(
     companion object {
         const val PLACEHOLDER_CREATOR_MONTHLY = "com.stickdeath.studio.creator.monthly.placeholder"
         const val PLACEHOLDER_PRO_MONTHLY = "com.stickdeath.studio.pro.monthly.placeholder"
+        const val PLACEHOLDER_UNLIMITED_MONTHLY = "com.stickdeath.studio.unlimited.monthly.placeholder"
         const val PLACEHOLDER_CREDIT_PACK = "com.stickdeath.studio.spatter.credits.placeholder"
         private val PRODUCT_ID = Regex("^[a-z0-9][a-z0-9._]{0,138}[a-z0-9]$")
 
@@ -200,33 +240,43 @@ data class PlanCatalog(
             PlanEntitlement("Onion skin 1 frame back", true),
             PlanEntitlement("Preset canvas sizes", true),
             PlanEntitlement("Exports up to 720p with the SDI watermark", true),
-            PlanEntitlement("Preview Spatter and its suggested prompts; answers need Creator, Pro or Spatter credits (1 credit per prompt)", true),
+            PlanEntitlement("Preview Spatter and its suggested prompts; answers need a paid plan or Spatter credits (1 credit per prompt)", true),
         )
+        private const val TRIAL_ENTITLEMENT = "3-day free trial when Google Play offers it to your account: the full Studio, with Spatter as a preview (nothing is sent and no credits are used)"
         val creatorEntitlements = listOf(
             PlanEntitlement("Everything in Free", true),
             PlanEntitlement("Unlimited layers, full onion skin and custom canvas sizes", true),
             PlanEntitlement("No watermark, full-size exports and PNG sequences", true),
             PlanEntitlement("Import audio and use the sound library", true),
             PlanEntitlement("Extra brushes (Halftone, Hatch, Marker, Crayon)", true),
-            PlanEntitlement("Spatter prompts each billing period, up to the plan's break-even allowance, then credits", false),
-            PlanEntitlement("Use your own AI key (available in the iOS app; not yet on Android)", false),
+            PlanEntitlement("250 Spatter messages each billing period, then credits", false),
+            PlanEntitlement("Use your own AI key; own-key prompts are not counted (available in the iOS app; not yet on Android)", false),
             PlanEntitlement("Submit videos to the official SDI channels (watermarked, reviewed before posting; not yet on Android)", false),
+            PlanEntitlement(TRIAL_ENTITLEMENT, true),
         )
         val proEntitlements = listOf(
             PlanEntitlement("Everything in Creator", true),
-            PlanEntitlement("Unlimited Spatter prompts", false),
+            PlanEntitlement("500 Spatter messages each billing period, then credits", false),
+            PlanEntitlement(TRIAL_ENTITLEMENT, true),
+        )
+        val unlimitedEntitlements = listOf(
+            PlanEntitlement("Everything in Pro", true),
+            PlanEntitlement("Unlimited Spatter messages", false),
+            PlanEntitlement(TRIAL_ENTITLEMENT, true),
         )
 
         /** Build from the Gradle-supplied BuildConfig values. A blank, malformed or placeholder id is
          * not configuration; a reused id offers neither duplicate. [creditPackIds] is comma-separated. */
-        fun load(creatorMonthly: String?, proMonthly: String?, creditPackIds: String?): PlanCatalog {
+        fun load(creatorMonthly: String?, proMonthly: String?, unlimitedMonthly: String?, creditPackIds: String?): PlanCatalog {
             fun real(value: String?, placeholder: String) = value?.trim()?.takeIf { PRODUCT_ID.matches(it) && it != placeholder }
             val creator = real(creatorMonthly, PLACEHOLDER_CREATOR_MONTHLY)
             val pro = real(proMonthly, PLACEHOLDER_PRO_MONTHLY)
+            val unlimited = real(unlimitedMonthly, PLACEHOLDER_UNLIMITED_MONTHLY)
             val plans = listOf(
-                PlanDefinition(PlanTier.Free, null, freeEntitlements, SpatterPromptAllowance.PreviewOnly),
-                PlanDefinition(PlanTier.Creator, creator ?: PLACEHOLDER_CREATOR_MONTHLY, creatorEntitlements, SpatterPromptAllowance.BreakEvenPerPeriod),
-                PlanDefinition(PlanTier.Pro, pro ?: PLACEHOLDER_PRO_MONTHLY, proEntitlements, SpatterPromptAllowance.Unlimited),
+                PlanDefinition(PlanTier.Free, null, freeEntitlements, PlanTier.Free.promptAllowance),
+                PlanDefinition(PlanTier.Creator, creator ?: PLACEHOLDER_CREATOR_MONTHLY, creatorEntitlements, PlanTier.Creator.promptAllowance),
+                PlanDefinition(PlanTier.Pro, pro ?: PLACEHOLDER_PRO_MONTHLY, proEntitlements, PlanTier.Pro.promptAllowance),
+                PlanDefinition(PlanTier.Unlimited, unlimited ?: PLACEHOLDER_UNLIMITED_MONTHLY, unlimitedEntitlements, PlanTier.Unlimited.promptAllowance),
             )
             val packs = creditPackIds.orEmpty().split(',').mapNotNull { real(it, PLACEHOLDER_CREDIT_PACK) }.distinct()
             val ids = plans.mapNotNull { it.productId } + packs
@@ -234,7 +284,8 @@ data class PlanCatalog(
             return PlanCatalog(
                 plans = plans.filter { it.productId == null || it.productId !in duplicates },
                 creditPacks = packs.filter { it !in duplicates }.map(::CreditPackDefinition),
-                usesPlaceholderIdentifiers = creator == null || pro == null || creator == pro,
+                usesPlaceholderIdentifiers = creator == null || pro == null || unlimited == null ||
+                    setOf(creator, pro, unlimited).size < 3,
                 creditPacksUsePlaceholders = packs.none { it !in duplicates },
             )
         }
@@ -255,6 +306,8 @@ data class SpatterUsage(
     val available: Boolean?,
     val resetsAt: String?,
     val paused: Boolean,
+    /** True while the paid plan is in its free trial (Spatter preview-only); null when not reported. */
+    val inTrial: Boolean? = null,
 )
 
 sealed class SpatterGate {
@@ -262,8 +315,10 @@ sealed class SpatterGate {
     data class Send(val payAsYouGo: Boolean) : SpatterGate()
     /** Free without credits: the fixed upgrade note answers on the device; nothing is sent. */
     object UpgradeNote : SpatterGate()
-    /** Creator's period allowance is used up and the server reports no credits. */
+    /** Creator's or Pro's period allowance is used up and the server reports no credits. */
     object AllowanceUsed : SpatterGate()
+    /** A paid plan in its free trial: Spatter is preview-only, nothing is sent and no credits are used. */
+    object TrialPreview : SpatterGate()
     /** The plan must be known before a send (Studio limits enforcing Free, usage still loading). */
     object Checking : SpatterGate()
 
@@ -273,8 +328,12 @@ sealed class SpatterGate {
          * signed-in account (null when unknown); [usageLoading] is true while it is being fetched.
          * When nothing is enforced and the server has not reported a plan, the send goes through:
          * the server still refuses Free without credits (HTTP 402 `upgrade_required`).
+         * [inTrial] is the trial state known outside [usage] (e.g. a verified store purchase); a trial
+         * reported by either source makes Spatter preview-only before any credit check.
          */
-        fun decide(limits: StudioPlanLimits, usage: SpatterUsage?, usageLoading: Boolean): SpatterGate {
+        fun decide(limits: StudioPlanLimits, usage: SpatterUsage?, usageLoading: Boolean, inTrial: Boolean = false): SpatterGate {
+            val trialing = if (usage == null) inTrial else usage.plan.isPaid && (inTrial || usage.inTrial == true)
+            if (trialing) return TrialPreview
             if (usage == null) return when {
                 limits.spatterActive -> Send(payAsYouGo = false)
                 usageLoading -> Checking
@@ -282,8 +341,8 @@ sealed class SpatterGate {
             }
             val hasCredits = (usage.credits ?: 0) > 0
             return when (usage.plan) {
-                PlanTier.Pro -> Send(payAsYouGo = false)
-                PlanTier.Creator ->
+                PlanTier.Unlimited -> Send(payAsYouGo = false)
+                PlanTier.Creator, PlanTier.Pro ->
                     if (usage.remaining == 0) { if (hasCredits) Send(payAsYouGo = true) else AllowanceUsed }
                     else Send(payAsYouGo = false)
                 PlanTier.Free -> when {
@@ -335,8 +394,11 @@ object PurchasePolicy {
 
 object PlanCopy {
     /** The only answer Spatter gives a Free account without credits. Shown on the device; nothing is sent. */
-    const val SPATTER_UPGRADE_NOTE = "Spatter is part of Creator and Pro. Upgrade in Account, Plans to activate it, or buy Spatter credits to pay as you go (1 credit per prompt)."
-    const val SPATTER_ALLOWANCE_USED = "This billing period's Spatter allowance is used. Buy Spatter credits, upgrade to Pro for unlimited prompts, or wait for your renewal."
+    const val SPATTER_UPGRADE_NOTE = "Spatter is part of Creator, Pro and Unlimited. Upgrade in Account, Plans to activate it, or buy Spatter credits to pay as you go (1 credit per prompt)."
+    const val SPATTER_ALLOWANCE_USED = "This billing period's Spatter allowance is used. Buy Spatter credits, move to a higher plan (Pro: 500 messages, Unlimited: no limit), or wait for your renewal."
+    /** Shown instead of a Spatter answer during a paid plan's free trial; nothing is sent. */
+    const val SPATTER_TRIAL_PREVIEW = "You're in your free trial: the full Studio is unlocked and Spatter is a preview until the trial ends. Nothing was sent and no credits were used."
+    const val TRIAL_RULE = "Paid plans start with a 3-day free trial when Google Play offers one to your account. During the trial the Studio is fully unlocked and Spatter is a preview: nothing is sent and no credits are used."
     const val SPATTER_CHECKING = "Checking your Spatter plan… try again in a moment."
     const val PRICE_UNCONFIGURED = "Price shown when configured"
     const val PURCHASES_UNAVAILABLE = "Purchases on Android are not available yet: the StickDeath server cannot verify Google Play purchases, so nothing can be bought or granted here. You keep the full Studio until plans can be purchased."
@@ -363,15 +425,17 @@ object PlanCopy {
         if (usage == null) return "Your Spatter plan has not been reported by the server yet."
         val credits = usage.credits?.let { " Credits: $it." } ?: ""
         if (usage.paused) return "Spatter is paused by the service operator.$credits"
+        if (usage.inTrial == true && usage.plan.isPaid) return "${usage.plan.title} free trial: Spatter is a preview until the trial ends; nothing is sent and no credits are used.$credits"
         return when (usage.plan) {
-            PlanTier.Pro -> "Pro: unlimited Spatter prompts.$credits"
-            PlanTier.Creator -> {
+            PlanTier.Unlimited -> "Unlimited: unlimited Spatter messages.$credits"
+            PlanTier.Creator, PlanTier.Pro -> {
+                val name = usage.plan.title
                 val left = usage.remaining?.let { r -> usage.limit?.let { "$r of $it" } ?: "$r" }
-                (left?.let { "Creator: $it Spatter prompts left this billing period." }
-                    ?: "Creator: remaining prompts appear once the server reports them.") + credits
+                (left?.let { "$name: $it Spatter messages left this billing period." }
+                    ?: "$name: remaining messages appear once the server reports them.") + credits
             }
             PlanTier.Free -> if ((usage.credits ?: 0) > 0) "Free: pay as you go, 1 credit per Spatter prompt.$credits"
-                else "Free: Spatter answers need Creator, Pro or Spatter credits.$credits"
+                else "Free: Spatter answers need a paid plan or Spatter credits.$credits"
         }
     }
 }

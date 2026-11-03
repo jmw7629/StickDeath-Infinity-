@@ -38,7 +38,7 @@ nothing has been deployed.
 
 | Suite | Cases | Covers |
 | --- | --- | --- |
-| `Tests/CommunityFeed` | 7 | timestamp parsing, page merge/dedupe/40-page cap, optimistic like/follow rollback, page-0 offline cache, server-confirmed reactions, signed-out refusal, export policy, handle rules, avatar bounds, records completeness, achievement grouping, portfolio filtering |
+| `Tests/CommunityFeed` | 12 | timestamp parsing, page merge/dedupe/client memory bound, keyset cursor requests, poster thumbnails and placeholder, optimistic like/follow rollback, page-0 offline cache, server-confirmed reactions, signed-out refusal, export policy, handle rules, avatar bounds, records completeness, achievement grouping, portfolio filtering |
 | `Tests/CommunityRooms` | 9 | invitation code rules and share text, project share payload (no content), consent-gated creation and partial-share reporting, preview/admission/mint, lifecycle/roles/report/browser decoding, command fencing/idempotency/conflicts/access end, catch-up gaps, conflict replies keep `head`/`missing`, session coordinator drain/catch-up |
 | `Tests/CommunityContests` | 6 | matchup presentation without computed winners, one mutable vote machine, War Room client confirmations, challenge phases on the server clock and schedule rules, Calendar range ≤ 62 days with DST-safe placement (America/New_York spring and fall transitions) and offline cache, server clock estimator |
 | `Tests/CommunityAdmin` | 7 | recent re-authentication policy, access/step-up parsing and refusal handling, health fail-closed validation, agent caps/emergency-stop payloads, finance reads/mutations, room-report and removal-appeal decisions, decision history across pages |

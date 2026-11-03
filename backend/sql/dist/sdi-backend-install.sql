@@ -336,7 +336,7 @@ revoke all on function public.sdi_war_action(text,uuid,uuid,uuid,text) from publ
 grant execute on function public.sdi_war_action(text,uuid,uuid,uuid,text) to authenticated;
 commit;
 
--- ===== video-feed.sql (sha256 cb00907937a0bc7e) =====
+-- ===== video-feed.sql (sha256 304c783b4e229418) =====
 -- Unapplied candidate. Requires war-room.sql approved-media ownership columns.
 begin;
 create table sdi_private.feed_posts (
@@ -381,11 +381,9 @@ alter table sdi_private.feed_reports enable row level security;
 alter table sdi_private.feed_budget enable row level security;
 revoke all on sdi_private.feed_posts,sdi_private.feed_likes,sdi_private.feed_follows,sdi_private.feed_blocks,sdi_private.feed_reports,sdi_private.feed_budget from public,anon,authenticated;
 -- Publication service alone inserts approved posts. API returns only eligible video.
--- Paging is snapshot-stable (#217, #220): page 0 returns an `as_of` instant and
--- later pages sent with that instant exclude posts published after it, so new
--- publications shift nothing until the member refreshes. A snapshot older than a
--- day is refused. Trending's like-based rank is computed at request time and is
--- documented as refresh-based, not frozen.
+-- This base listing answers the first page only (no offset paging, #220); the
+-- install replaces it in feed-integrity.sql, whose sdi_feed_page pages by keyset
+-- cursor under a snapshot instant. A snapshot older than a day is refused.
 create function sdi_private.feed_action(action text, post_id uuid default null, target uuid default null,
  enabled boolean default true, category text default 'recent', page integer default 0, reason text default null,
  as_of timestamptz default null)
@@ -399,7 +397,7 @@ begin
  started_at=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then clock_timestamp() else feed_budget.started_at end returning attempts into n;
  if n>60 then return jsonb_build_object('error','Please wait before trying again.'); end if;
  if action='list' then
-  if page<0 or page>39 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
+  if page is distinct from 0 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
   snapshot:=least(coalesce(as_of,clock_timestamp()),clock_timestamp());
   if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
@@ -415,7 +413,7 @@ begin
    and (category<>'featured' or p.featured)
    and (category<>'following' or exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator))
    order by case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id and l.created_at>clock_timestamp()-interval '7 days') else 0 end desc,
-    p.published_at desc,p.id desc limit 25 offset page*25
+    p.published_at desc,p.id desc limit 25
   ) item;
   return jsonb_build_object('posts',items,'has_more',jsonb_array_length(items)=25,'as_of',snapshot);
  end if;
@@ -647,7 +645,7 @@ revoke all on function public.sdi_review_bind_source_digest(uuid,uuid,text) from
 grant execute on function public.sdi_review_bind_source_digest(uuid,uuid,text) to service_role;
 commit;
 
--- ===== admin-users.sql (sha256 a8797dfd7e8b4e15) =====
+-- ===== admin-users.sql (sha256 e11ffe1afaf436a1) =====
 -- Unapplied candidate. Requires admin-approval.sql and current feature candidates.
 begin;
 create table sdi_private.account_controls (
@@ -713,10 +711,11 @@ begin
     -- (apple, google, github, azure, email). A name only, never an identifier.
     nullif(u.raw_app_meta_data->>'provider','') as signup_source,
     -- Plan is billing data: shown only with the finance capability (billing.sql
-    -- installs later; entitlements come only from signed provider events).
+    -- installs later; entitlements come only from signed provider events; the
+    -- best tier by billing_tier_rank: unlimited > pro > creator).
     case when sdi_private.admin_can('finance') then
      coalesce((select e.tier from sdi_private.entitlements e where e.user_id=u.id
-      order by case e.tier when 'pro' then 0 else 1 end,e.paid_through desc limit 1),'free')
+      order by sdi_private.billing_tier_rank(e.tier) desc,e.paid_through desc limit 1),'free')
      else null end as plan
    from auth.users u left join sdi_private.account_controls c on c.user_id=u.id
    where query='' or position(lower(query) in lower(coalesce(u.raw_user_meta_data->>'username','')))>0 or u.id::text=query
@@ -2214,7 +2213,7 @@ revoke all on function public.sdi_admin_overview() from public,anon;
 grant execute on function public.sdi_admin_overview() to authenticated;
 commit;
 
--- ===== feed-integrity.sql (sha256 0713701e1fbfaccb) =====
+-- ===== feed-integrity.sql (sha256 06e1e699c2a6e065) =====
 -- Unapplied candidate. Install after admin-overview.sql (needs video-feed, moderation,
 -- war-room, admin-users, publishing-jobs and upload-registration).
 -- Closes feed/War Room integrity gaps: self-likes, restricted creators in listings,
@@ -2237,41 +2236,28 @@ begin
  return new;
 end $$;
 
--- Same signature as video-feed.sql (snapshot-stable paging through `as_of`, #217/#220).
+-- Same signature as video-feed.sql. 'list' is a first-page alias of feed_page below
+-- (keyset paging, #217/#220); reactions, follows, blocks and reports are unchanged.
 create or replace function sdi_private.feed_action(action text, post_id uuid default null, target uuid default null,
  enabled boolean default true, category text default 'recent', page integer default 0, reason text default null,
  as_of timestamptz default null)
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare actor_id uuid:=auth.uid(); entry sdi_private.feed_posts; n integer; items jsonb; snapshot timestamptz;
+declare actor_id uuid:=auth.uid(); entry sdi_private.feed_posts; n integer;
 begin
  if actor_id is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor_id and not is_anonymous) then
   return jsonb_build_object('error','Sign in with a full account.'); end if;
+ -- Listing is keyset-only (#220): the offset path and its 40-page cap are gone.
+ -- 'list' answers the first page through feed_page (which meters the call once);
+ -- every later page must use sdi_feed_page with the returned cursor.
+ if action='list' then
+  if page is distinct from 0 then
+   return jsonb_build_object('error','Feed pages after the first use sdi_feed_page with the returned cursor.'); end if;
+  return sdi_private.feed_page(category,null,as_of);
+ end if;
  insert into sdi_private.feed_budget values(actor_id,clock_timestamp(),1)
  on conflict(actor) do update set attempts=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then 1 else feed_budget.attempts+1 end,
  started_at=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then clock_timestamp() else feed_budget.started_at end returning attempts into n;
  if n>60 then return jsonb_build_object('error','Please wait before trying again.'); end if;
- if action='list' then
-  if page<0 or page>39 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
-  snapshot:=least(coalesce(as_of,clock_timestamp()),clock_timestamp());
-  if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
-  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
-   select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,
-    (select count(*) from sdi_private.feed_likes l where l.post=p.id) as likes,
-    exists(select 1 from sdi_private.feed_likes l where l.post=p.id and l.actor=actor_id) as liked,
-    exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator) as following
-   from sdi_private.feed_posts p join public.sdi_watch_media m on m.id=p.media_id
-   where p.visible and m.approved and m.owner_id=p.creator and m.render_digest is not null
-   and p.published_at<=snapshot
-   and (m.expires_at is null or m.expires_at>clock_timestamp())
-   and not sdi_private.creator_restricted(p.creator)
-   and not exists(select 1 from sdi_private.feed_blocks b where (b.actor=actor_id and b.creator=p.creator) or (b.actor=p.creator and b.creator=actor_id))
-   and (category<>'featured' or p.featured)
-   and (category<>'following' or exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator))
-   order by case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id and l.created_at>clock_timestamp()-interval '7 days') else 0 end desc,
-    p.published_at desc,p.id desc limit 25 offset page*25
-  ) item;
-  return jsonb_build_object('posts',items,'has_more',jsonb_array_length(items)=25,'as_of',snapshot);
- end if;
  if action in('follow','block') then
   if target is null or target=actor_id or not exists(select 1 from auth.users where id=target) then return jsonb_build_object('error','Creator unavailable.'); end if;
   if action='block' then
@@ -2450,6 +2436,8 @@ for each row execute function sdi_private.retain_artifact_after_approval();
 -- instant; likes recorded after the snapshot do not move rows. An unlike or a
 -- moderation removal can still lower or drop a row: that row is simply absent or
 -- appears once more further down, which the client de-duplicates by identity.
+-- `poster_url` is the worker-extracted thumbnail of the hosted copy (columns added
+-- by feed-publication.sql, #217) or null, in which case clients show a placeholder.
 -- `can_download` is the creator's export permission AND a current paid
 -- entitlement of the viewer (billing.sql); the Free plan cannot download (#219).
 create index if not exists feed_posts_recent on sdi_private.feed_posts(published_at desc,id desc) where visible;
@@ -2480,7 +2468,7 @@ begin
  if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
  paid:=exists(select 1 from sdi_private.entitlements e where e.user_id=actor_id);
  with eligible as (
-  select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,
+  select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,m.poster_url,
    case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id
     and l.created_at>snapshot-interval '7 days' and l.created_at<=snapshot) else 0 end::bigint as score
   from sdi_private.feed_posts p join public.sdi_watch_media m on m.id=p.media_id
@@ -2501,7 +2489,7 @@ begin
  select count(*)::integer,
   coalesce(jsonb_agg(jsonb_build_object('id',x.id,'creator',x.creator,'creator_name',x.creator_name,'caption',x.caption,
    'published_at',x.published_at,'allow_export',x.allow_export,'can_download',x.allow_export and paid,'title',x.title,'url',x.url,
-   'score',x.score,
+   'poster_url',x.poster_url,'score',x.score,
    'likes',(select count(*) from sdi_private.feed_likes l where l.post=x.id),
    'liked',exists(select 1 from sdi_private.feed_likes l where l.post=x.id and l.actor=actor_id),
    'following',exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=x.creator))
@@ -2549,7 +2537,7 @@ revoke all on function public.sdi_creator_stats(uuid) from public,anon;
 grant execute on function public.sdi_creator_stats(uuid) to authenticated;
 commit;
 
--- ===== feed-publication.sql (sha256 947055bb143f9ac2) =====
+-- ===== feed-publication.sql (sha256 7f3b4fddcf47e4ea) =====
 -- Unapplied candidate. Install after feed-integrity.sql.
 -- Publication path for the 'feed' destination. Only the publishing service claims
 -- and finishes feed jobs; every claim, renewal and finish re-evaluates
@@ -2562,6 +2550,15 @@ begin;
 alter table sdi_private.render_reviews add column allow_export boolean not null default false;
 alter table public.sdi_watch_media add column review_id uuid references sdi_private.render_reviews(id);
 create unique index watch_media_render_digest on public.sdi_watch_media(render_digest) where render_digest is not null;
+-- Poster thumbnail (#217): one JPEG frame the publishing worker extracts from the
+-- digest-verified copy, hosted beside it. All three fields or none; bounded size.
+-- A post without a poster shows the client's placeholder; nothing is invented.
+alter table public.sdi_watch_media add column poster_url text check(poster_url ~ '^https://' and length(poster_url)<=2048),
+ add column poster_digest text check(poster_digest ~ '^[0-9a-f]{64}$'),
+ add column poster_bytes integer check(poster_bytes between 1 and 262144),
+ add constraint watch_media_poster_complete check((poster_url is null)=(poster_digest is null) and (poster_url is null)=(poster_bytes is null));
+-- A hosted poster that must be removed with its video before the media row exists.
+alter table sdi_private.publish_jobs add column poster_url text check(poster_url ~ '^https://' and length(poster_url)<=2048);
 create function sdi_private.export_consent(review uuid,version bigint,allowed boolean) returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews;
@@ -2638,7 +2635,10 @@ end $$;
 -- Finish inserts the approved public rendition and the visible post atomically.
 -- If approval lapsed or cancellation raced the copy, the hosted copy is already
 -- public, so the job becomes removal_pending for the feed removal worker.
-create function sdi_private.feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null) returns boolean
+-- The optional poster (#217) is all three of URL, SHA-256 and byte count or none;
+-- a partial or out-of-bounds poster is refused like an invalid video URL.
+create function sdi_private.feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null,
+ poster_url text default null,poster_digest text default null,poster_bytes integer default null) returns boolean
 language plpgsql security definer set search_path='' as $$
 declare j sdi_private.publish_jobs; a sdi_private.render_artifacts; r sdi_private.render_reviews; media uuid; name text;
 begin
@@ -2652,25 +2652,29 @@ begin
   return true;
  end if;
  if url is null or url !~ '^https://' or length(url)>2048 or duration is null or duration<=0 or duration>3600 then return false;end if;
+ if not coalesce((poster_url is null and poster_digest is null and poster_bytes is null)
+  or (poster_url ~ '^https://' and length(poster_url)<=2048 and poster_url<>url and poster_digest ~ '^[0-9a-f]{64}$' and poster_bytes between 1 and 262144),false) then
+  return false;end if;
  if j.state='cancel_requested' or not sdi_private.release_allowed(j.review_id,j.review_version,j.render_digest,'feed') then
   -- The copy step is over, so the lease is released and removal may start at once.
-  update sdi_private.publish_jobs set state='removal_pending',provider_id='feed:'||j.render_digest,result_url=url,lease=null,lease_expires=null,
+  update sdi_private.publish_jobs set state='removal_pending',provider_id='feed:'||j.render_digest,result_url=url,poster_url=feed_publish_finish.poster_url,lease=null,lease_expires=null,
    last_error='Hosted copy must be removed: approval or consent changed before release.',updated_at=clock_timestamp() where id=j.id;
   return true;
  end if;
  select * into a from sdi_private.render_artifacts where review_id=j.review_id and version=j.review_version;
  select * into r from sdi_private.render_reviews where id=j.review_id;
  select left(coalesce(nullif(trim(raw_user_meta_data->>'username'),''),'Member'),100) into name from auth.users where id=j.creator;
- insert into public.sdi_watch_media(title,url,duration,approved,owner_id,render_digest,review_id)
- values(left(a.title,200),url,duration,true,j.creator,j.render_digest,j.review_id)
+ insert into public.sdi_watch_media(title,url,duration,approved,owner_id,render_digest,review_id,poster_url,poster_digest,poster_bytes)
+ values(left(a.title,200),url,duration,true,j.creator,j.render_digest,j.review_id,poster_url,poster_digest,poster_bytes)
  on conflict(render_digest) where render_digest is not null do update set title=excluded.title,url=excluded.url,duration=excluded.duration,
-  approved=true,owner_id=excluded.owner_id,review_id=excluded.review_id,expires_at=null
+  approved=true,owner_id=excluded.owner_id,review_id=excluded.review_id,expires_at=null,
+  poster_url=excluded.poster_url,poster_digest=excluded.poster_digest,poster_bytes=excluded.poster_bytes
  returning id into media;
  insert into sdi_private.feed_posts(media_id,creator,creator_name,caption,visible,allow_export)
  values(media,j.creator,name,left(a.description,2000),true,r.allow_export)
  on conflict(media_id) do update set creator=excluded.creator,creator_name=excluded.creator_name,caption=excluded.caption,
   visible=true,allow_export=excluded.allow_export,published_at=clock_timestamp();
- update sdi_private.publish_jobs set state='published',provider_id='feed:'||media::text,result_url=url,phase='release',updated_at=clock_timestamp() where id=j.id;
+ update sdi_private.publish_jobs set state='published',provider_id='feed:'||media::text,result_url=url,poster_url=feed_publish_finish.poster_url,phase='release',updated_at=clock_timestamp() where id=j.id;
  return true;
 end $$;
 -- Removal worker for hosted feed copies: moderation removals (removal_jobs) and
@@ -2679,7 +2683,7 @@ alter table sdi_private.removal_jobs add column attempts integer not null defaul
 alter table sdi_private.removal_jobs add column lease uuid;
 alter table sdi_private.removal_jobs add column lease_expires timestamptz;
 create function sdi_private.feed_removal_claim() returns jsonb language plpgsql security definer set search_path='' as $$
-declare j sdi_private.publish_jobs; d sdi_private.removal_jobs; target text;
+declare j sdi_private.publish_jobs; d sdi_private.removal_jobs; target text; poster text;
 begin
  select * into j from sdi_private.publish_jobs where state='removal_pending' and destination='feed' and result_url is not null
   and removal_attempts<5 and (lease_expires is null or lease_expires<clock_timestamp()-interval '60 seconds')
@@ -2687,17 +2691,17 @@ begin
  if found then
   update sdi_private.publish_jobs set lease=gen_random_uuid(),lease_expires=clock_timestamp()+interval '2 minutes',
    removal_attempts=removal_attempts+1,updated_at=clock_timestamp() where id=j.id returning * into j;
-  return jsonb_build_object('source','publish_job','job',j.id,'lease',j.lease,'url',j.result_url,'digest',j.render_digest);
+  return jsonb_build_object('source','publish_job','job',j.id,'lease',j.lease,'url',j.result_url,'poster_url',j.poster_url,'digest',j.render_digest);
  end if;
  select rj.* into d from sdi_private.removal_jobs rj join public.sdi_watch_media m on m.id=rj.media_id
   where rj.state in('pending','failed') and rj.attempts<5 and m.review_id is not null
   and (rj.lease_expires is null or rj.lease_expires<clock_timestamp()-interval '60 seconds')
   order by rj.created_at for update of rj skip locked limit 1;
  if not found then return jsonb_build_object('empty',true);end if;
- select url into target from public.sdi_watch_media where id=d.media_id;
+ select url,poster_url into target,poster from public.sdi_watch_media where id=d.media_id;
  update sdi_private.removal_jobs set state='running',lease=gen_random_uuid(),lease_expires=clock_timestamp()+interval '2 minutes',attempts=attempts+1
   where id=d.id returning * into d;
- return jsonb_build_object('source','removal_job','job',d.id,'lease',d.lease,'url',target,'digest',d.render_digest);
+ return jsonb_build_object('source','removal_job','job',d.id,'lease',d.lease,'url',target,'poster_url',poster,'digest',d.render_digest);
 end $$;
 create function sdi_private.feed_removal_finish(source text,job uuid,token uuid,confirmed boolean) returns boolean
 language plpgsql security definer set search_path='' as $$
@@ -2705,7 +2709,7 @@ begin
  if confirmed is null then return false;end if;
  if source='publish_job' then
   update sdi_private.publish_jobs set state=case when confirmed then 'cancelled' else 'removal_pending' end,
-   result_url=case when confirmed then null else result_url end,
+   result_url=case when confirmed then null else result_url end,poster_url=case when confirmed then null else poster_url end,
    last_error=case when confirmed then 'Hosted feed copy removed; originals preserved.' else 'Feed copy removal not confirmed; bounded retry pending.' end,
    lease=null,lease_expires=null,updated_at=clock_timestamp()
   where id=job and lease=token and state='removal_pending' and destination='feed';
@@ -2717,19 +2721,20 @@ begin
  end if;
  return false;
 end $$;
-revoke all on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text),
+revoke all on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  sdi_private.feed_removal_claim(),sdi_private.feed_removal_finish(text,uuid,uuid,boolean) from public,anon,authenticated;
-grant execute on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text),
+grant execute on function sdi_private.feed_publish_claim(),sdi_private.feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  sdi_private.feed_removal_claim(),sdi_private.feed_removal_finish(text,uuid,uuid,boolean) to service_role;
 create function public.sdi_feed_publish_claim() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.feed_publish_claim()$$;
-create function public.sdi_feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null) returns boolean
-language sql security invoker set search_path='' as $$select sdi_private.feed_publish_finish(job,token,url,duration,failure)$$;
+create function public.sdi_feed_publish_finish(job uuid,token uuid,url text,duration double precision,failure text default null,
+ poster_url text default null,poster_digest text default null,poster_bytes integer default null) returns boolean
+language sql security invoker set search_path='' as $$select sdi_private.feed_publish_finish(job,token,url,duration,failure,poster_url,poster_digest,poster_bytes)$$;
 create function public.sdi_feed_removal_claim() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.feed_removal_claim()$$;
 create function public.sdi_feed_removal_finish(source text,job uuid,token uuid,confirmed boolean) returns boolean
 language sql security invoker set search_path='' as $$select sdi_private.feed_removal_finish(source,job,token,confirmed)$$;
-revoke all on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text),
+revoke all on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  public.sdi_feed_removal_claim(),public.sdi_feed_removal_finish(text,uuid,uuid,boolean) from public,anon,authenticated;
-grant execute on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text),
+grant execute on function public.sdi_feed_publish_claim(),public.sdi_feed_publish_finish(uuid,uuid,text,double precision,text,text,text,integer),
  public.sdi_feed_removal_claim(),public.sdi_feed_removal_finish(text,uuid,uuid,boolean) to service_role;
 commit;
 
@@ -3916,18 +3921,21 @@ revoke all on function public.sdi_achievement_catalog() from public,anon;
 grant execute on function public.sdi_achievement_catalog() to authenticated;
 commit;
 
--- ===== billing.sql (sha256 f144dd3ff58a3263) =====
+-- ===== billing.sql (sha256 c2a56d61171d0cc3) =====
 -- Unapplied candidate. Install after achievements.sql (needs admin-approval.sql and
 -- admin-users.sql). Canonical entitlements come only from signed provider events
 -- (Stripe webhooks, App Store Server Notifications) verified by server-side edge
 -- functions (see backend/billing/README.md). No price is stored here: the owner's
--- approved offers are two monthly tiers at USD 4.99 and USD 9.99; annual periods
--- require explicit owner configuration (owner_configured_at) before any product row
--- can be approved. Clients never write subscription status or tier.
+-- approved offers (decision 2026-10-20) are three monthly tiers, creator USD 4.99,
+-- pro USD 9.99 and unlimited USD 19.99, each with a 3-day free trial (App Store
+-- introductory offer); annual periods require explicit owner configuration
+-- (owner_configured_at) before any product row can be approved. Clients never write
+-- subscription status or tier. Live projects installed before 2026-10-20 apply
+-- backend/sql/upgrades/2026-10-20-three-tiers.sql instead of rerunning this file.
 begin;
 create table sdi_private.billing_products (
  product_id text primary key check(length(product_id) between 1 and 200), provider text not null check(provider in('apple','stripe')),
- tier text not null check(tier in('creator','pro')), period text not null check(period in('monthly','annual')),
+ tier text not null check(tier in('creator','pro','unlimited')), period text not null check(period in('monthly','annual')),
  approved boolean not null default false, owner_configured_at timestamptz, note text not null default '' check(length(note)<=500),
  check(period='monthly' or owner_configured_at is not null or not approved)
 );
@@ -3944,6 +3952,9 @@ create table sdi_private.subscriptions (
  product_id text not null references sdi_private.billing_products(product_id),
  status text not null check(status in('active','trialing','grace','past_due','cancelled','expired','revoked','refunded')),
  paid_through timestamptz not null, cancel_at_period_end boolean not null default false,
+ -- The provider reports that the current period is a free trial (Apple
+ -- offerDiscountType FREE_TRIAL / introductory offerType 1; Stripe trialing).
+ in_trial boolean not null default false,
  last_event_at timestamptz not null, updated_at timestamptz not null default clock_timestamp(),
  unique(provider,provider_subscription_id)
 );
@@ -3969,10 +3980,19 @@ alter table sdi_private.finance_ledger enable row level security;
 alter table sdi_private.finance_audit enable row level security;
 revoke all on sdi_private.billing_products,sdi_private.provider_events,sdi_private.subscriptions,sdi_private.finance_ledger,sdi_private.finance_audit from public,anon,authenticated;
 create index subscriptions_user on sdi_private.subscriptions(user_id,paid_through desc);
--- Entitlement: the best current paid tier. 'pro' outranks 'creator'. Grace and
+-- Tier order: unlimited > pro > creator > anything else (free). Every reader that
+-- picks "the best current tier" orders by this rank.
+create or replace function sdi_private.billing_tier_rank(tier text) returns integer language sql immutable set search_path='' as $$
+ select case tier when 'unlimited' then 3 when 'pro' then 2 when 'creator' then 1 else 0 end
+$$;
+revoke all on function sdi_private.billing_tier_rank(text) from public,anon,authenticated;
+-- Entitlement: the best current paid tier by billing_tier_rank. Grace and
 -- past_due keep access until paid_through; nothing else grants anything.
+-- in_trial is true while the provider reports a free-trial period (or the
+-- canonical status is 'trialing'): the Studio is unlocked, but Spatter does not
+-- fund prompts for it (spatter-draft-jobs.sql).
 create view sdi_private.entitlements as
- select s.user_id,p.tier,s.paid_through,s.status,s.provider,s.cancel_at_period_end
+ select s.user_id,p.tier,s.paid_through,s.status,s.provider,s.cancel_at_period_end,(s.in_trial or s.status='trialing') as in_trial
  from sdi_private.subscriptions s join sdi_private.billing_products p on p.product_id=s.product_id
  where s.user_id is not null and s.status in('active','trialing','grace','past_due') and s.paid_through>clock_timestamp();
 revoke all on sdi_private.entitlements from public,anon,authenticated;
@@ -3981,9 +4001,10 @@ declare e record;
 begin
  if not sdi_private.account_active() then return jsonb_build_object('error','Sign in to view your plan.'); end if;
  select * into e from sdi_private.entitlements where user_id=auth.uid()
-  order by case tier when 'pro' then 0 else 1 end,paid_through desc limit 1;
- if not found then return jsonb_build_object('tier','free','status','none','paid_through',null,'provider',null); end if;
- return jsonb_build_object('tier',e.tier,'status',e.status,'paid_through',e.paid_through,'provider',e.provider,'cancel_at_period_end',e.cancel_at_period_end);
+  order by sdi_private.billing_tier_rank(tier) desc,in_trial,paid_through desc limit 1;
+ if not found then return jsonb_build_object('tier','free','status','none','paid_through',null,'provider',null,'in_trial',false); end if;
+ return jsonb_build_object('tier',e.tier,'status',e.status,'paid_through',e.paid_through,'provider',e.provider,'cancel_at_period_end',e.cancel_at_period_end,
+  'in_trial',e.in_trial);
 end $$;
 revoke all on function sdi_private.my_entitlement() from public,anon;
 grant execute on function sdi_private.my_entitlement() to authenticated;
@@ -3997,7 +4018,7 @@ grant execute on function public.sdi_my_entitlement() to authenticated;
 -- subscription backwards; unknown or unapproved products are ignored, not granted.
 create function sdi_private.billing_apply_event(provider text,event_id text,event_type text,occurred_at timestamptz,payload jsonb,
  user_id uuid default null,provider_subscription_id text default null,product_id text default null,status text default null,
- paid_through timestamptz default null,cancel_at_period_end boolean default false,ledger jsonb default '[]') returns jsonb
+ paid_through timestamptz default null,cancel_at_period_end boolean default false,ledger jsonb default '[]',in_trial boolean default null) returns jsonb
 language plpgsql security definer set search_path='' as $$
 #variable_conflict use_column
 declare ev uuid; existing sdi_private.subscriptions; sub uuid; entry jsonb; result text:='applied'; reason text:='';
@@ -4017,10 +4038,12 @@ begin
    if found and existing.last_event_at>occurred_at then
     result:='ignored'; reason:='Older than the last applied event.';
    else
-    insert into sdi_private.subscriptions(user_id,provider,provider_subscription_id,product_id,status,paid_through,cancel_at_period_end,last_event_at)
-    values(user_id,provider,provider_subscription_id,product_id,status,paid_through,coalesce(cancel_at_period_end,false),occurred_at)
+    -- in_trial: the event's own report (null = not reported = not a trial).
+    insert into sdi_private.subscriptions(user_id,provider,provider_subscription_id,product_id,status,paid_through,cancel_at_period_end,in_trial,last_event_at)
+    values(user_id,provider,provider_subscription_id,product_id,status,paid_through,coalesce(cancel_at_period_end,false),coalesce(in_trial,false),occurred_at)
     on conflict(provider,provider_subscription_id) do update set user_id=coalesce(excluded.user_id,subscriptions.user_id),product_id=excluded.product_id,
-     status=excluded.status,paid_through=excluded.paid_through,cancel_at_period_end=excluded.cancel_at_period_end,last_event_at=excluded.last_event_at,updated_at=clock_timestamp()
+     status=excluded.status,paid_through=excluded.paid_through,cancel_at_period_end=excluded.cancel_at_period_end,in_trial=excluded.in_trial,
+     last_event_at=excluded.last_event_at,updated_at=clock_timestamp()
     returning id into sub;
    end if;
   end if;
@@ -4052,15 +4075,15 @@ begin
   'event_errors',(select count(*) from sdi_private.provider_events where outcome='error'),
   'measured_at',clock_timestamp());
 end $$;
-revoke all on function sdi_private.billing_apply_event(text,text,text,timestamptz,jsonb,uuid,text,text,text,timestamptz,boolean,jsonb),sdi_private.billing_reconcile() from public,anon,authenticated;
-grant execute on function sdi_private.billing_apply_event(text,text,text,timestamptz,jsonb,uuid,text,text,text,timestamptz,boolean,jsonb),sdi_private.billing_reconcile() to service_role;
+revoke all on function sdi_private.billing_apply_event(text,text,text,timestamptz,jsonb,uuid,text,text,text,timestamptz,boolean,jsonb,boolean),sdi_private.billing_reconcile() from public,anon,authenticated;
+grant execute on function sdi_private.billing_apply_event(text,text,text,timestamptz,jsonb,uuid,text,text,text,timestamptz,boolean,jsonb,boolean),sdi_private.billing_reconcile() to service_role;
 create function public.sdi_billing_apply_event(provider text,event_id text,event_type text,occurred_at timestamptz,payload jsonb,
  user_id uuid default null,provider_subscription_id text default null,product_id text default null,status text default null,
- paid_through timestamptz default null,cancel_at_period_end boolean default false,ledger jsonb default '[]') returns jsonb
-language sql security invoker set search_path='' as $$select sdi_private.billing_apply_event(provider,event_id,event_type,occurred_at,payload,user_id,provider_subscription_id,product_id,status,paid_through,cancel_at_period_end,ledger)$$;
+ paid_through timestamptz default null,cancel_at_period_end boolean default false,ledger jsonb default '[]',in_trial boolean default null) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.billing_apply_event(provider,event_id,event_type,occurred_at,payload,user_id,provider_subscription_id,product_id,status,paid_through,cancel_at_period_end,ledger,in_trial)$$;
 create function public.sdi_billing_reconcile() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.billing_reconcile()$$;
-revoke all on function public.sdi_billing_apply_event(text,text,text,timestamptz,jsonb,uuid,text,text,text,timestamptz,boolean,jsonb),public.sdi_billing_reconcile() from public,anon,authenticated;
-grant execute on function public.sdi_billing_apply_event(text,text,text,timestamptz,jsonb,uuid,text,text,text,timestamptz,boolean,jsonb),public.sdi_billing_reconcile() to service_role;
+revoke all on function public.sdi_billing_apply_event(text,text,text,timestamptz,jsonb,uuid,text,text,text,timestamptz,boolean,jsonb,boolean),public.sdi_billing_reconcile() from public,anon,authenticated;
+grant execute on function public.sdi_billing_apply_event(text,text,text,timestamptz,jsonb,uuid,text,text,text,timestamptz,boolean,jsonb,boolean),public.sdi_billing_reconcile() to service_role;
 
 -- Finance-capability administrators read provider-backed records; product
 -- approval is the only mutation and is audited. No balances are computed.
@@ -4074,10 +4097,10 @@ begin
  if page is null or page not between 0 and 199 then return jsonb_build_object('error','Invalid page.'); end if;
  if action='products' then
   select coalesce(jsonb_agg(row_to_json(p) order by p.provider,p.tier,p.period),'[]'::jsonb) into items from sdi_private.billing_products p;
-  return jsonb_build_object('products',items,'approved_offers','Two monthly tiers (USD 4.99, USD 9.99). Annual periods require owner configuration.');
+  return jsonb_build_object('products',items,'approved_offers','Three monthly tiers (creator USD 4.99, pro USD 9.99, unlimited USD 19.99), each with a 3-day free trial. Annual periods require owner configuration.');
  elsif action='subscriptions' then
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
-   select s.id,s.user_id,s.provider,s.product_id,s.status,s.paid_through,s.cancel_at_period_end,s.last_event_at from sdi_private.subscriptions s
+   select s.id,s.user_id,s.provider,s.product_id,s.status,s.paid_through,s.cancel_at_period_end,s.in_trial,s.last_event_at from sdi_private.subscriptions s
    order by s.updated_at desc,s.id limit 50 offset page*50) item;
   return jsonb_build_object('subscriptions',items);
  elsif action='ledger' then
@@ -4106,7 +4129,7 @@ begin
   return jsonb_build_object('status','confirmed');
  elsif action='set_product' then
   if not exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) then return jsonb_build_object('error','Owner permission required.'); end if;
-  if product is null or length(trim(product)) not between 1 and 200 or provider not in('apple','stripe') or tier not in('creator','pro') or period not in('monthly','annual')
+  if product is null or length(trim(product)) not between 1 and 200 or provider not in('apple','stripe') or tier not in('creator','pro','unlimited') or period not in('monthly','annual')
    or approved is null or reason is null or length(trim(reason)) not between 1 and 2000 then return jsonb_build_object('error','Product id, provider, tier, period, approval and reason required.'); end if;
   if period='annual' and approved and not exists(select 1 from sdi_private.billing_products p where p.product_id=trim(product) and p.owner_configured_at is not null) then
    return jsonb_build_object('error','Annual offers need explicit owner configuration before approval.'); end if;
@@ -6046,7 +6069,7 @@ revoke all on function public.sdi_marketing_claim(),public.sdi_marketing_finish(
 grant execute on function public.sdi_marketing_claim(),public.sdi_marketing_finish(uuid,uuid,text,text,text),public.sdi_marketing_cadence_due() to service_role;
 commit;
 
--- ===== spatter-draft-jobs.sql (sha256 ff1c5be31b460690) =====
+-- ===== spatter-draft-jobs.sql (sha256 da33f8140fe78ce0) =====
 -- Unapplied deployment candidate (#212, #214). Install after agent-controls.sql
 -- and admin-approval.sql. Spatter's daily original-draft queue: one durable job
 -- per calendar day, bounded retries and leases, private drafts only, and the
@@ -6247,45 +6270,50 @@ grant execute on function public.sdi_spatter_draft_status(date,date) to authenti
 --   former Free allowance (5 suggested prompts per calendar month, column
 --   free_prompts and 'month:'/'free' buckets) is retired; this file was never
 --   applied, so the column and buckets are removed rather than left unused.
--- * Creator (USD 4.99/month): prompts a member sends with their own AI key go
---   device-to-provider and never reach this meter. The server-funded allowance
---   per billing period is a cost model that keeps the plan within break-even:
---   limit = floor(creator_period_budget_microusd / prompt_cost_estimate_microusd).
---   The budget defaults to 3490000 (USD 4.99 net of a 30% store commission,
---   rounded down) and may never exceed the gross price 4990000; the per-prompt
---   estimate defaults to 20000 (USD 0.02), a conservative owner-editable figure.
---   Defaults give 174 prompts per period, keyed to the subscription's
---   paid_through so a renewal starts a new period.
--- * Pro (USD 9.99/month): no plan allowance, but still obeys the per-user daily
---   safety cap, the per-minute rate, the global daily ceiling and the agent
---   emergency stop.
+-- * Paid tiers (owner decision 2026-10-20; rank unlimited > pro > creator):
+--   creator (USD 4.99/month) 250, pro (USD 9.99/month) 500 server-funded
+--   prompts per billing period (owner-editable creator_period_prompts /
+--   pro_period_prompts), keyed to the subscription's paid_through so a renewal
+--   starts a new period; unlimited (USD 19.99/month) has no plan allowance.
+--   Prompts a member sends with their own AI key go device-to-provider and
+--   never reach this meter. Every tier, unlimited included, still obeys the
+--   per-user daily safety cap, the per-minute rate, the global daily ceiling
+--   (spatter_usage_controls.global_daily_cap) and the agent emergency stop.
+-- * Free trial (owner decision 2026-10-20): each paid tier starts with a 3-day
+--   free trial (App Store introductory offer). The Studio is unlocked, but
+--   Spatter is preview-only: an account whose only current entitlements are in
+--   a free-trial period (entitlements.in_trial) is refused with
+--   'upgrade_required' (plan = the trial tier, trial true, upgrade
+--   'after_trial', buy_credits false) before any counter, reservation, credit
+--   or provider call. The first paid period clears in_trial and opens the
+--   tier's normal allowance (a new paid_through, so a new period bucket).
 -- * Spatter credits (owner decision 2026-10-15, later): consumable store packs
 --   (sdi_private.spatter_credit_packs, no prices: the store owns them) credit
 --   an append-only ledger. 1 credit = 1 prompt. A reservation spends the plan
---   allowance first (Creator's period allowance; Pro is unlimited and never
---   spends credits), then one credit. Safety, rate and global caps and the
---   emergency stop apply before either. A released reservation refunds its
---   credit. Purchases and refunds are granted only by verified provider
---   events through the service-only spatter_credits_grant/_refund functions.
--- A 'trialing' subscription maps to its own tier through
--- sdi_private.entitlements. The global ceiling defaults to 0 (closed) so
+--   allowance first (creator/pro period allowance; unlimited never spends
+--   credits), then one credit. Safety, rate and global caps and the emergency
+--   stop apply before either. A released reservation refunds its credit.
+--   Purchases and refunds are granted only by verified provider events through
+--   the service-only spatter_credits_grant/_refund functions. Credits are never
+--   spent during a free trial.
+-- The global ceiling defaults to 0 (closed) so
 -- nothing can be spent until the owner sets it. One unit is one prompt;
 -- provider-reported usage units (tokens, not money) are recorded on the
 -- reservation when the handler commits it. Actual provider cost is not
--- recorded: the provider contract returns usage units only, so the
--- per-prompt estimate stays the owner's control on spend.
+-- recorded: the provider contract returns usage units only, so the per-tier
+-- period counts and the global ceiling stay the owner's control on spend.
 create table sdi_private.spatter_usage_controls (
  singleton boolean primary key default true check(singleton),
  global_daily_cap integer not null default 0 check(global_daily_cap between 0 and 10000000),
  user_daily_safety_cap integer not null default 100 check(user_daily_safety_cap between 0 and 10000),
  user_per_minute_cap integer not null default 6 check(user_per_minute_cap between 1 and 600),
- creator_period_budget_microusd integer not null default 3490000 check(creator_period_budget_microusd between 0 and 4990000),
- prompt_cost_estimate_microusd integer not null default 20000 check(prompt_cost_estimate_microusd between 1 and 4990000),
+ creator_period_prompts integer not null default 250 check(creator_period_prompts between 0 and 1000000),
+ pro_period_prompts integer not null default 500 check(pro_period_prompts between 0 and 1000000),
  revision bigint not null default 1, updated_by uuid references auth.users(id) on delete set null,
  updated_at timestamptz not null default clock_timestamp()
 );
 insert into sdi_private.spatter_usage_controls(singleton) values(true);
--- One row per (account, bucket). Buckets: 'period:<paid_through>' (creator
+-- One row per (account, bucket). Buckets: 'period:<paid_through>' (creator/pro
 -- billing period), 'day:<utc date>' (safety cap) and 'minute:<utc minute>'
 -- (rate). Free accounts never get a row. No prompt text is ever stored.
 create table sdi_private.spatter_usage_counters (
@@ -6301,8 +6329,8 @@ create table sdi_private.spatter_usage_global (
 create table sdi_private.spatter_usage_reservations (
  id uuid primary key default gen_random_uuid(),
  user_id uuid not null references auth.users(id) on delete cascade,
- plan text not null check(plan in('free','creator','pro')),
- -- What paid for the prompt: the plan allowance, Pro's unlimited plan, or one credit.
+ plan text not null check(plan in('free','creator','pro','unlimited')),
+ -- What paid for the prompt: the plan allowance, the unlimited plan, or one credit.
  funding text not null check(funding in('allowance','unlimited','credit')),
  check(plan<>'free' or funding='credit'),
  buckets text[] not null, day date not null,
@@ -6386,32 +6414,39 @@ create function sdi_private.spatter_suggested_prompt_ids() returns text[] langua
  select array['animation_tips','scene_ideas','fight_choreography','style_advice']::text[]
 $$;
 
--- Creator's server-funded prompts per billing period: the break-even budget
--- divided by the owner's per-prompt cost estimate, rounded down.
-create function sdi_private.spatter_creator_period_limit(c sdi_private.spatter_usage_controls) returns integer
- language sql immutable set search_path='' as $$select (c.creator_period_budget_microusd/c.prompt_cost_estimate_microusd)::integer$$;
+-- Server-funded prompts per billing period for a paid tier; null = no plan
+-- allowance (unlimited) or no plan (anything else).
+create function sdi_private.spatter_plan_period_limit(c sdi_private.spatter_usage_controls,p_tier text) returns integer
+ language sql immutable set search_path='' as $$
+ select case p_tier when 'creator' then c.creator_period_prompts when 'pro' then c.pro_period_prompts else null end
+$$;
 
--- The account's current plan and allowance, without consuming anything.
+-- The account's current plan and allowance, without consuming anything. A paid
+-- (non-trial) entitlement wins over a trial one; then the highest tier.
 create function sdi_private.spatter_usage_plan(p_user uuid) returns jsonb language plpgsql stable security definer set search_path='' as $$
-declare c sdi_private.spatter_usage_controls; v_tier text; v_paid timestamptz; v_bucket text; v_limit integer; v_used integer;
+declare c sdi_private.spatter_usage_controls; v_tier text; v_paid timestamptz; v_trial boolean; v_bucket text; v_limit integer; v_used integer;
  v_credits integer:=sdi_private.spatter_credit_balance(p_user);
 begin
  select * into c from sdi_private.spatter_usage_controls;
- select tier,paid_through into v_tier,v_paid from sdi_private.entitlements where user_id=p_user
-  order by case tier when 'pro' then 0 else 1 end,paid_through desc limit 1;
- if v_tier='pro' then
-  return jsonb_build_object('plan','pro','unlimited',true,'limit',null,'used',null,'remaining',null,'period','none','resets_at',null,
+ select e.tier,e.paid_through,e.in_trial into v_tier,v_paid,v_trial from sdi_private.entitlements e where e.user_id=p_user
+  order by e.in_trial,sdi_private.billing_tier_rank(e.tier) desc,e.paid_through desc limit 1;
+ if v_trial then
+  -- Free trial only: Spatter is preview-only; nothing is funded and credits are not spent.
+  return jsonb_build_object('plan',v_tier,'trial',true,'unlimited',false,'limit',0,'used',0,'remaining',0,'period','trial','resets_at',to_jsonb(v_paid),
+   'credits',v_credits,'available',false,'upgrade','after_trial');
+ elsif v_tier='unlimited' then
+  return jsonb_build_object('plan','unlimited','trial',false,'unlimited',true,'limit',null,'used',null,'remaining',null,'period','none','resets_at',null,
    'credits',v_credits,'available',true);
- elsif v_tier='creator' then
+ elsif v_tier in('creator','pro') then
   v_bucket:='period:'||to_char(v_paid at time zone 'utc','YYYY-MM-DD"T"HH24:MI:SS"Z"');
-  v_limit:=sdi_private.spatter_creator_period_limit(c);
+  v_limit:=sdi_private.spatter_plan_period_limit(c,v_tier);
   select u.used into v_used from sdi_private.spatter_usage_counters u where u.user_id=p_user and u.bucket=v_bucket;
   v_used:=coalesce(v_used,0);
-  return jsonb_build_object('plan','creator','unlimited',false,'limit',v_limit,'used',v_used,'remaining',greatest(v_limit-v_used,0),
+  return jsonb_build_object('plan',v_tier,'trial',false,'unlimited',false,'limit',v_limit,'used',v_used,'remaining',greatest(v_limit-v_used,0),
    'period','billing_period','resets_at',to_jsonb(v_paid),'credits',v_credits,'available',v_limit>v_used or v_credits>0,'bucket',v_bucket);
  end if;
  -- Free: no server-funded allowance; Spatter works only on purchased credits.
- return jsonb_build_object('plan','free','unlimited',false,'limit',0,'used',0,'remaining',0,'period','none','resets_at',null,
+ return jsonb_build_object('plan','free','trial',false,'unlimited',false,'limit',0,'used',0,'remaining',0,'period','none','resets_at',null,
   'credits',v_credits,'available',v_credits>0,'upgrade','creator_or_pro');
 end $$;
 
@@ -6428,9 +6463,16 @@ begin
   return jsonb_build_object('allowed',false,'code','account_restricted'); end if;
  -- Free without credits (owner decisions 2026-10-15): nothing is funded, so
  -- the request is refused before any counter or reservation.
- if not exists(select 1 from sdi_private.entitlements where user_id=p_user and tier in('creator','pro'))
+ if not exists(select 1 from sdi_private.entitlements where user_id=p_user and tier in('creator','pro','unlimited'))
   and sdi_private.spatter_credit_balance(p_user)<=0 then
   return jsonb_build_object('allowed',false,'code','upgrade_required','plan','free','upgrade','creator_or_pro','buy_credits',true,'credits',0); end if;
+ -- Free trial only (owner decision 2026-10-20): the same refusal shape, before
+ -- any counter, reservation or credit spend. Purchased credits wait for the trial to end.
+ if exists(select 1 from sdi_private.entitlements where user_id=p_user and in_trial)
+  and not exists(select 1 from sdi_private.entitlements where user_id=p_user and not in_trial) then
+  p:=sdi_private.spatter_usage_plan(p_user);
+  return jsonb_build_object('allowed',false,'code','upgrade_required','plan',p->>'plan','trial',true,'upgrade','after_trial',
+   'resets_at',p->'resets_at','buy_credits',false,'credits',(p->>'credits')::integer); end if;
  if (select emergency_stop from sdi_private.agent_global) then
   return jsonb_build_object('allowed',false,'code','emergency_stop'); end if;
  if p_suggested_prompt is not null and not (p_suggested_prompt=any(sdi_private.spatter_suggested_prompt_ids())) then
@@ -6448,17 +6490,20 @@ begin
  select coalesce((select used from sdi_private.spatter_usage_counters where user_id=p_user and bucket='day:'||v_day::text),0) into d;
  if d>=c.user_daily_safety_cap then
   return jsonb_build_object('allowed',false,'code','daily_safety_limit','resets_at',(v_day+1)::timestamp at time zone 'utc'); end if;
- -- Funding order: plan allowance (Pro unlimited, Creator period), then one credit.
+ -- Funding order: plan allowance (unlimited, or the creator/pro period), then one credit.
  p:=sdi_private.spatter_usage_plan(p_user);
  v_credits:=(p->>'credits')::integer;
- if (p->>'unlimited')::boolean then v_funding:='unlimited';
+ if (p->>'trial')::boolean then
+  return jsonb_build_object('allowed',false,'code','upgrade_required','plan',p->>'plan','trial',true,'upgrade','after_trial',
+   'resets_at',p->'resets_at','buy_credits',false,'credits',v_credits);
+ elsif (p->>'unlimited')::boolean then v_funding:='unlimited';
  elsif (p->>'remaining')::integer>0 then v_funding:='allowance';
  elsif v_credits>0 then v_funding:='credit';
  elsif p->>'plan'='free' then
   return jsonb_build_object('allowed',false,'code','upgrade_required','plan','free','upgrade','creator_or_pro','buy_credits',true,'credits',0);
  else
   return jsonb_build_object('allowed',false,'code','plan_allowance_exhausted','plan',p->>'plan','period',p->>'period','resets_at',p->'resets_at',
-   'upgrade','pro','buy_credits',true,'credits',0); end if;
+   'upgrade',case p->>'plan' when 'creator' then 'pro' else 'unlimited' end,'buy_credits',true,'credits',0); end if;
  v_buckets:=array['minute:'||v_minute,'day:'||v_day::text];
  if v_funding='allowance' then v_buckets:=v_buckets||(p->>'bucket'); end if;
  foreach b in array v_buckets loop
@@ -6548,7 +6593,8 @@ begin
  select * into c from sdi_private.spatter_usage_controls;
  if action='get' then
   return jsonb_build_object('controls',to_jsonb(c)-'singleton'-'updated_by',
-   'creator_period_limit',sdi_private.spatter_creator_period_limit(c),
+   'period_limits',jsonb_build_object('creator',sdi_private.spatter_plan_period_limit(c,'creator'),
+    'pro',sdi_private.spatter_plan_period_limit(c,'pro'),'unlimited',null),
    'global_used_today',coalesce((select g.used from sdi_private.spatter_usage_global g where g.day=v_day),0),
    'committed_units_today',coalesce((select sum(r.units) from sdi_private.spatter_usage_reservations r where r.day=v_day and r.state='committed'),0),
    'emergency_stop',(select a.emergency_stop from sdi_private.agent_global a));
@@ -6557,15 +6603,15 @@ begin
   if spatter_usage_admin.revision is distinct from c.revision then return jsonb_build_object('error','Limits changed elsewhere; reload.','revision',c.revision); end if;
   if length(trim(coalesce(spatter_usage_admin.reason,''))) not between 1 and 2000 then return jsonb_build_object('error','A reason is required.'); end if;
   if payload is null or jsonb_typeof(payload)<>'object' or exists(select 1 from jsonb_object_keys(payload) k
-   where k not in('global_daily_cap','user_daily_safety_cap','user_per_minute_cap','creator_period_budget_microusd','prompt_cost_estimate_microusd')) then
+   where k not in('global_daily_cap','user_daily_safety_cap','user_per_minute_cap','creator_period_prompts','pro_period_prompts')) then
    return jsonb_build_object('error','Unknown limit.'); end if;
   begin
    update sdi_private.spatter_usage_controls u set
     global_daily_cap=coalesce((payload->>'global_daily_cap')::integer,u.global_daily_cap),
     user_daily_safety_cap=coalesce((payload->>'user_daily_safety_cap')::integer,u.user_daily_safety_cap),
     user_per_minute_cap=coalesce((payload->>'user_per_minute_cap')::integer,u.user_per_minute_cap),
-    creator_period_budget_microusd=coalesce((payload->>'creator_period_budget_microusd')::integer,u.creator_period_budget_microusd),
-    prompt_cost_estimate_microusd=coalesce((payload->>'prompt_cost_estimate_microusd')::integer,u.prompt_cost_estimate_microusd),
+    creator_period_prompts=coalesce((payload->>'creator_period_prompts')::integer,u.creator_period_prompts),
+    pro_period_prompts=coalesce((payload->>'pro_period_prompts')::integer,u.pro_period_prompts),
     revision=c.revision+1,updated_by=auth.uid(),updated_at=clock_timestamp()
    returning u.revision into next_rev;
   exception when check_violation or invalid_text_representation or numeric_value_out_of_range then
@@ -6578,7 +6624,7 @@ begin
  return jsonb_build_object('error','Unknown action.');
 end $$;
 
-revoke all on function sdi_private.spatter_suggested_prompt_ids(),sdi_private.spatter_creator_period_limit(sdi_private.spatter_usage_controls),sdi_private.spatter_usage_plan(uuid),sdi_private.spatter_usage_reserve(uuid,text),sdi_private.spatter_usage_settle(uuid,text,integer),
+revoke all on function sdi_private.spatter_suggested_prompt_ids(),sdi_private.spatter_plan_period_limit(sdi_private.spatter_usage_controls,text),sdi_private.spatter_usage_plan(uuid),sdi_private.spatter_usage_reserve(uuid,text),sdi_private.spatter_usage_settle(uuid,text,integer),
  sdi_private.spatter_usage_sweep(),sdi_private.spatter_usage_meter(text,uuid,uuid,text,integer,text),sdi_private.spatter_my_usage(),
  sdi_private.spatter_usage_admin(text,bigint,jsonb,text) from public,anon,authenticated;
 grant execute on function sdi_private.spatter_usage_meter(text,uuid,uuid,text,integer,text) to service_role;
@@ -6846,12 +6892,17 @@ revoke all on function public.sdi_agent_proposal_admin(text,uuid,bigint,text,tex
 grant execute on function public.sdi_agent_proposal_admin(text,uuid,bigint,text,text) to authenticated;
 commit;
 
--- ===== worker-configuration.sql (sha256 59e9dacf36e410ce) =====
--- Unapplied candidate. Install after agent-proposals.sql (needs admin-hardening.sql).
+-- ===== worker-configuration.sql (sha256 80828a406c042f10) =====
+-- Unapplied candidate. Install after agent-proposals.sql (needs admin-hardening.sql;
+-- the provider health view also reads billing.sql, publishing-jobs.sql,
+-- notifications.sql and spatter-draft-jobs.sql tables).
 -- Masked provider-configuration health (#248): each service worker reports which of
 -- its named settings are present as booleans only; the function refuses any other
 -- value type, so no key, URL or identifier can ever be stored, and administrators
--- read presence, staleness and nothing else.
+-- read presence, staleness and nothing else. The provider health view below groups
+-- that presence per integration (Spatter, APNs, FCM, email, Stripe, YouTube) and adds
+-- the last success/failure time with a closed error class, from durable records and
+-- service-reported outcomes. No value, message or identifier is ever returned.
 begin;
 create table sdi_private.worker_configuration (
  worker text primary key check(worker ~ '^[a-z0-9_-]{1,40}$'),
@@ -6898,9 +6949,149 @@ grant execute on function public.sdi_worker_configuration(text,jsonb) to service
 create function public.sdi_admin_configuration() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.admin_configuration()$$;
 revoke all on function public.sdi_admin_configuration() from public,anon;
 grant execute on function public.sdi_admin_configuration() to authenticated;
+
+-- Provider health (#248). Error classes are a closed vocabulary so no provider
+-- message, token or address can be stored in or returned from this table.
+create function sdi_private.provider_error_classes() returns text[] language sql immutable set search_path='' as $$
+ select array['configuration','authentication','rate_limited','network','timeout','rejected','provider_error',
+  'invalid_response','event_error','job_failed','render_failed','other']
+$$;
+revoke all on function sdi_private.provider_error_classes() from public,anon;
+grant execute on function sdi_private.provider_error_classes() to authenticated,service_role;
+-- The lower-cased setting names each integration needs (the names workers report).
+create function sdi_private.provider_settings() returns jsonb language sql immutable set search_path='' as $$
+ select jsonb_build_array(
+  jsonb_build_object('provider','spatter','title','Spatter draft renderer','settings',jsonb_build_array('sdi_draft_renderer_cli')),
+  jsonb_build_object('provider','apns','title','Apple push (APNs)','settings',jsonb_build_array('sdi_apns_key_id','sdi_apns_team_id','sdi_apns_key_file','sdi_apns_topic')),
+  jsonb_build_object('provider','fcm','title','Android push (FCM)','settings',jsonb_build_array('sdi_fcm_project_id','sdi_fcm_service_account_file')),
+  jsonb_build_object('provider','email','title','Email sender','settings',jsonb_build_array('sdi_mail_sender_domain','sdi_mail_credentials_file')),
+  jsonb_build_object('provider','stripe','title','Stripe billing','settings',jsonb_build_array('sdi_stripe_webhook_secret_file')),
+  jsonb_build_object('provider','youtube','title','YouTube channel','settings',jsonb_build_array('sdi_youtube_client_file','sdi_youtube_token_file')))
+$$;
+revoke all on function sdi_private.provider_settings() from public,anon,authenticated;
+
+create table sdi_private.provider_outcomes (
+ provider text primary key check(provider in('spatter','apns','fcm','email','stripe','youtube')),
+ last_success_at timestamptz, last_failure_at timestamptz,
+ last_error_class text check(last_error_class is null or last_error_class=any(sdi_private.provider_error_classes())),
+ consecutive_failures integer not null default 0 check(consecutive_failures between 0 and 1000000),
+ updated_at timestamptz not null default clock_timestamp()
+);
+alter table sdi_private.provider_outcomes enable row level security;
+revoke all on sdi_private.provider_outcomes from public,anon,authenticated;
+
+-- Service: a worker records one provider outcome (success, or failure with a class).
+create function sdi_private.provider_outcome_report(provider text,succeeded boolean,error_class text default null) returns boolean
+language plpgsql security definer set search_path='' as $$
+#variable_conflict use_variable
+begin
+ if provider is null or provider not in('spatter','apns','fcm','email','stripe','youtube') or succeeded is null then return false; end if;
+ if succeeded then
+  if coalesce(error_class,'')<>'' then return false; end if;
+  insert into sdi_private.provider_outcomes as o(provider,last_success_at) values(provider,clock_timestamp())
+  on conflict on constraint provider_outcomes_pkey do update set last_success_at=clock_timestamp(),consecutive_failures=0,updated_at=clock_timestamp();
+ else
+  if error_class is null or not error_class=any(sdi_private.provider_error_classes()) then return false; end if;
+  insert into sdi_private.provider_outcomes as o(provider,last_failure_at,last_error_class,consecutive_failures) values(provider,clock_timestamp(),error_class,1)
+  on conflict on constraint provider_outcomes_pkey do update set last_failure_at=clock_timestamp(),last_error_class=excluded.last_error_class,
+   consecutive_failures=least(o.consecutive_failures+1,1000000),updated_at=clock_timestamp();
+ end if;
+ return true;
+end $$;
+revoke all on function sdi_private.provider_outcome_report(text,boolean,text) from public,anon,authenticated;
+grant execute on function sdi_private.provider_outcome_report(text,boolean,text) to service_role;
+
+-- Push delivery reasons (backend/notifications/push.py) mapped to the closed classes.
+-- A device that unregistered is the member's device, not a provider failure (null).
+create function sdi_private.push_error_class(reason text) returns text language sql immutable set search_path='' as $$
+ select case
+  when reason in('Unregistered','BadDeviceToken','unregistered','invalid_token') then null
+  when reason='transport not configured' then 'configuration'
+  when reason='transport error' then 'network'
+  when reason ~ ' status (401|403)' then 'authentication'
+  when reason ~ ' status 429' then 'rate_limited'
+  when reason ~ ' status 5[0-9][0-9]' then 'provider_error'
+  when reason ~ ' status [0-9]+' then 'rejected'
+  else 'other' end
+$$;
+revoke all on function sdi_private.push_error_class(text) from public,anon,authenticated;
+
+-- Administrators (overview capability, MFA) read per-integration presence and outcomes.
+create function sdi_private.admin_provider_health() returns jsonb language plpgsql security definer set search_path='' as $$
+declare denial jsonb; entry jsonb; items jsonb:='[]'::jsonb; p text; keys text[]; k text; present boolean;
+ missing text[]; reported integer; reported_at timestamptz; configured text; ok_at timestamptz; fail_at timestamptz; fail_class text;
+ d_ok timestamptz; d_fail timestamptz; d_class text; o sdi_private.provider_outcomes; health text; push_platform text;
+begin
+ denial:=sdi_private.admin_gate('admin_provider_health','overview',false,120);
+ if denial is not null then return denial; end if;
+ for entry in select value from jsonb_array_elements(sdi_private.provider_settings()) loop
+  p:=entry->>'provider'; keys:=array(select jsonb_array_elements_text(entry->'settings'));
+  missing:='{}'; reported:=0;
+  foreach k in array keys loop
+   select bool_or((c.settings->>k)::boolean) into present from sdi_private.worker_configuration c where c.settings ? k;
+   if present is not null then reported:=reported+1; end if;
+   if present is not true then missing:=missing||k; end if;
+  end loop;
+  select max(c.reported_at) into reported_at from sdi_private.worker_configuration c where c.settings ?| keys;
+  configured:=case when reported=0 then 'unreported' when cardinality(missing)=0 then 'yes' else 'no' end;
+  -- Outcomes from durable records the integration already writes.
+  d_ok:=null; d_fail:=null; d_class:=null;
+  if p='stripe' then
+   select max(e.processed_at) filter(where e.outcome in('applied','ignored')),max(coalesce(e.processed_at,e.received_at)) filter(where e.outcome='error')
+    into d_ok,d_fail from sdi_private.provider_events e where e.provider='stripe';
+   if d_fail is not null then d_class:='event_error'; end if;
+  elsif p='youtube' then
+   select max(j.updated_at) filter(where j.state='published'),max(j.updated_at) filter(where j.state='failed')
+    into d_ok,d_fail from sdi_private.publish_jobs j where j.destination='youtube';
+   if d_fail is not null then d_class:='job_failed'; end if;
+  elsif p='spatter' then
+   select max(j.updated_at) filter(where j.state in('review_pending','approved','rejected')),max(j.updated_at) filter(where j.state='failed')
+    into d_ok,d_fail from sdi_private.spatter_draft_jobs j;
+   if d_fail is not null then d_class:='render_failed'; end if;
+  elsif p in('apns','fcm') then
+   push_platform:=case p when 'apns' then 'ios' else 'android' end;
+   select max(d.updated_at) filter(where d.state in('sent','read')),
+    max(d.updated_at) filter(where d.state='failed' and sdi_private.push_error_class(d.reason) is not null)
+    into d_ok,d_fail from sdi_private.announcement_deliveries d join sdi_private.device_tokens t on t.id=d.device_id
+    where d.channel='push' and t.platform=push_platform;
+   if d_fail is not null then
+    select sdi_private.push_error_class(d.reason) into d_class from sdi_private.announcement_deliveries d join sdi_private.device_tokens t on t.id=d.device_id
+     where d.channel='push' and t.platform=push_platform and d.state='failed' and sdi_private.push_error_class(d.reason) is not null
+     order by d.updated_at desc,d.id limit 1;
+   end if;
+  end if;
+  -- Outcomes reported by service workers (email has no durable record in the database).
+  o:=null;
+  select * into o from sdi_private.provider_outcomes po where po.provider=p;
+  ok_at:=greatest(d_ok,o.last_success_at);
+  fail_at:=greatest(d_fail,o.last_failure_at);
+  fail_class:=case when fail_at is null then null
+   when o.last_failure_at is not null and o.last_failure_at>=coalesce(d_fail,'-infinity'::timestamptz) then o.last_error_class else d_class end;
+  health:=case when configured='no' then 'unconfigured'
+   when fail_at is not null and fail_at>coalesce(ok_at,'-infinity'::timestamptz) then 'failing'
+   when ok_at is not null then 'healthy'
+   when configured='unreported' then 'unreported'
+   else 'no_activity' end;
+  items:=items||jsonb_build_array(jsonb_build_object('provider',p,'title',entry->>'title','configured',configured,
+   'missing',to_jsonb(missing),'configuration_reported_at',reported_at,
+   'configuration_stale',coalesce(reported_at<clock_timestamp()-interval '1 day',false),
+   'last_success_at',ok_at,'last_failure_at',fail_at,'last_error_class',fail_class,
+   'consecutive_failures',coalesce(o.consecutive_failures,0),'health',health));
+ end loop;
+ return jsonb_build_object('providers',items,'measured_at',clock_timestamp(),
+  'note','Presence and outcome times only. Keys, tokens, URLs and provider messages are never stored or shown; the secret store keeps no fingerprint, so no masked suffix is shown.');
+end $$;
+revoke all on function sdi_private.admin_provider_health() from public,anon;
+grant execute on function sdi_private.admin_provider_health() to authenticated;
+create function public.sdi_provider_outcome(provider text,succeeded boolean,error_class text default null) returns boolean language sql security invoker set search_path='' as $$select sdi_private.provider_outcome_report(provider,succeeded,error_class)$$;
+revoke all on function public.sdi_provider_outcome(text,boolean,text) from public,anon,authenticated;
+grant execute on function public.sdi_provider_outcome(text,boolean,text) to service_role;
+create function public.sdi_admin_provider_health() returns jsonb language sql security invoker set search_path='' as $$select sdi_private.admin_provider_health()$$;
+revoke all on function public.sdi_admin_provider_health() from public,anon;
+grant execute on function public.sdi_admin_provider_health() to authenticated;
 commit;
 
--- ===== users-profiles.sql (sha256 e878cd13064f1f3f) =====
+-- ===== users-profiles.sql (sha256 ece91881ad9f7fa7) =====
 -- Unapplied candidate. Install last. The member profile row the native app reads and
 -- writes as `users` (Models.swift `UserProfile`, AuthService): the member inserts their
 -- own row after sign-up and may edit only the editable columns; `role` and
@@ -6915,7 +7106,7 @@ create table public.users (
  bio text not null default '' check(length(bio)<=2000),
  avatar_url text check(avatar_url is null or avatar_url ~ '^https://[^ ]{1,2000}$'),
  role text not null default 'user' check(role in('user','creator','moderator','superadmin')),
- subscription_tier text check(subscription_tier is null or subscription_tier in('free','monthly_4_99','monthly_9_99')),
+ subscription_tier text check(subscription_tier is null or subscription_tier in('free','monthly_4_99','monthly_9_99','monthly_19_99')),
  onboarded boolean not null default false,
  skill_level text check(skill_level is null or length(skill_level)<=40),
  interests text[] not null default '{}' check(cardinality(interests)<=20),

@@ -12,7 +12,7 @@ create table public.users (
  bio text not null default '' check(length(bio)<=2000),
  avatar_url text check(avatar_url is null or avatar_url ~ '^https://[^ ]{1,2000}$'),
  role text not null default 'user' check(role in('user','creator','moderator','superadmin')),
- subscription_tier text check(subscription_tier is null or subscription_tier in('free','monthly_4_99','monthly_9_99')),
+ subscription_tier text check(subscription_tier is null or subscription_tier in('free','monthly_4_99','monthly_9_99','monthly_19_99')),
  onboarded boolean not null default false,
  skill_level text check(skill_level is null or length(skill_level)<=40),
  interests text[] not null default '{}' check(cardinality(interests)<=20),

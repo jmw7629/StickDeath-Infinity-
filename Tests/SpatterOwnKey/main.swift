@@ -65,8 +65,8 @@ struct SpatterOwnKeyTests {
             }
 
             try await test("own key is a paid-plan feature only") {
-                try require(!SpatterPlanTier.free.allowsOwnKey && SpatterPlanTier.creator.allowsOwnKey && SpatterPlanTier.pro.allowsOwnKey,
-                            "own key plan gate")
+                try require(!SpatterPlanTier.free.allowsOwnKey && SpatterPlanTier.creator.allowsOwnKey && SpatterPlanTier.pro.allowsOwnKey
+                            && SpatterPlanTier.unlimited.allowsOwnKey, "own key plan gate")
             }
 
             try await test("server usage decodes strictly and never invents a count") {
@@ -75,12 +75,20 @@ struct SpatterOwnKeyTests {
                 """.utf8))
                 try require(free.plan == .free && free.remaining == 3 && free.limit == 5 && free.suggestedPromptsOnly, "free usage")
                 try require(free.resetsAt == ISO8601DateFormatter().date(from: "2026-11-01T00:00:00Z"), "reset date")
-                try require(free.displayText == "Free: Spatter answers need Creator, Pro or credits." && free.isExhausted
-                            && free.lockoutText?.contains("Creator and Pro") == true, "free copy")
-                let pro = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"pro\",\"unlimited\":true,\"limit\":null,\"remaining\":null}".utf8))
-                try require(pro.plan == .pro && pro.remaining == nil && !pro.isExhausted && pro.displayText.contains("unlimited"), "pro usage")
-                let creator = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"creator\",\"limit\":15,\"remaining\":0,\"resets_at\":\"2026-11-20T10:00:00.123+00:00\"}".utf8))
-                try require(creator.isExhausted && creator.resetsAt != nil && creator.lockoutText?.contains("Upgrade to Pro") == true
+                try require(free.displayText == "Free: Spatter answers need a paid plan or credits." && free.isExhausted && !free.inTrial
+                            && free.lockoutText?.contains("Creator, Pro and Unlimited") == true, "free copy")
+                // Owner decision 2026-10-20: Unlimited has no cap; Pro is metered at 500 per period.
+                let unlimited = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"unlimited\",\"unlimited\":true,\"limit\":null,\"remaining\":null}".utf8))
+                try require(unlimited.plan == .unlimited && unlimited.remaining == nil && !unlimited.isExhausted
+                            && unlimited.displayText == "Unlimited: unlimited Spatter prompts." && unlimited.lockoutText == nil, "unlimited usage")
+                let pro = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"pro\",\"limit\":500,\"remaining\":120}".utf8))
+                try require(pro.plan == .pro && pro.remaining == 120 && pro.limit == 500 && !pro.isExhausted
+                            && pro.displayText == "Pro: 120 of 500 Spatter prompts left this billing period.", "pro usage")
+                let proUsed = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"pro\",\"limit\":500,\"remaining\":0}".utf8))
+                try require(proUsed.isExhausted && proUsed.lockoutText?.contains("Upgrade to Unlimited") == true
+                            && proUsed.lockoutText?.contains("Pro or Unlimited") == false, "pro lockout points to Unlimited")
+                let creator = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"creator\",\"limit\":250,\"remaining\":0,\"resets_at\":\"2026-11-20T10:00:00.123+00:00\"}".utf8))
+                try require(creator.isExhausted && creator.resetsAt != nil && creator.lockoutText?.contains("Upgrade to Pro or Unlimited") == true
                             && creator.lockoutText?.contains("own AI key") == true, "creator lockout")
                 let noCount = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"creator\",\"remaining\":-2}".utf8))
                 try require(noCount.remaining == nil && !noCount.isExhausted && noCount.displayText.contains("once the server reports"), "negative count accepted")
@@ -90,11 +98,26 @@ struct SpatterOwnKeyTests {
                 }
             }
 
+            try await test("a server-reported free trial is preview-only and spends no credits") {
+                for key in ["in_trial", "trial"] {
+                    let trial = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"creator\",\"limit\":250,\"remaining\":250,\"credits\":9,\"\(key)\":true}".utf8))
+                    try require(trial.inTrial && trial.suggestedPromptsOnly && trial.isExhausted && !trial.hasCredits, "\(key): trial not preview-only")
+                    try require(trial.displayText.hasPrefix("Creator free trial: Spatter starts when your paid period begins.")
+                                && trial.lockoutText?.contains("paid period begins") == true, "\(key): trial copy")
+                }
+                let unlimitedTrial = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"unlimited\",\"in_trial\":true}".utf8))
+                try require(unlimitedTrial.inTrial && unlimitedTrial.isExhausted, "unlimited trial")
+                let missing = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"pro\",\"limit\":500,\"remaining\":3}".utf8))
+                try require(!missing.inTrial && !missing.isExhausted, "missing trial flag must be false")
+                let freeFlag = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"free\",\"credits\":4,\"in_trial\":true}".utf8))
+                try require(!freeFlag.inTrial && freeFlag.hasCredits, "Free has no trial")
+            }
+
             try await test("credits let Free pay as you go and keep Creator going") {
                 let paying = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"free\",\"limit\":0,\"remaining\":0,\"credits\":12}".utf8))
                 try require(paying.credits == 12 && paying.hasCredits && !paying.isExhausted && paying.lockoutText == nil
                             && paying.displayText == "Free: pay as you go with Spatter credits. Credits: 12.", "free with credits")
-                let creatorCredits = SpatterAllowance(plan: .creator, remaining: 0, limit: 174, resetsAt: nil, credits: 3)
+                let creatorCredits = SpatterAllowance(plan: .creator, remaining: 0, limit: 250, resetsAt: nil, credits: 3)
                 try require(!creatorCredits.isExhausted, "creator with credits is not exhausted")
                 let bogus = try SpatterAllowance.decodeUsage(Data("{\"plan\":\"free\",\"credits\":-1}".utf8))
                 try require(bogus.credits == nil && bogus.isExhausted, "negative credits are not a balance")
@@ -105,10 +128,10 @@ struct SpatterOwnKeyTests {
                 let free = SpatterAllowance(plan: .free, remaining: nil, limit: nil, resetsAt: nil)
                 try require(free.isExhausted && free.lockoutText?.contains("Upgrade in Profile") == true, "free upgrade note")
                 let reset = ISO8601DateFormatter().date(from: "2026-11-01T00:00:00Z")
-                let used = SpatterAllowance(plan: .creator, remaining: 0, limit: 174, resetsAt: reset)
+                let used = SpatterAllowance(plan: .creator, remaining: 0, limit: 250, resetsAt: reset)
                 guard let text = used.lockoutText else { throw TestFailure(message: "no lockout") }
                 try require(text.contains("resets on") && text.contains("Upgrade to Pro"), "lockout copy: \(text)")
-                let unknownReset = SpatterAllowance(plan: .creator, remaining: 0, limit: 174, resetsAt: nil)
+                let unknownReset = SpatterAllowance(plan: .creator, remaining: 0, limit: 250, resetsAt: nil)
                 try require(unknownReset.lockoutText?.contains("at renewal") == true, "reset fallback")
             }
 

@@ -209,6 +209,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		02366631F3092F2FFBAB75EE /* StudioViewModel+Rooms.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */; };
 		0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */; };
 		38E99945C7E5CE4F588CEC7F /* OnboardingPolicyConsentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B14ED7A1B3901E426FC6AA67 /* OnboardingPolicyConsentView.swift */; };
+		86C15CBA2C1094034295E61A /* AdminProviderHealthSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CB674439D891170F920A0AF /* AdminProviderHealthSection.swift */; };
+		F2DCD53E449052CB0DBAE469 /* StudioVideoFraming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */; };
+		94531CF7ECA8D1C404FEAEBA /* FeedPosterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D94A7E702172A69FAED3A451 /* FeedPosterView.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -427,6 +430,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		4D950EBB6BB35C80759FE68E /* StudioViewModel+Rooms.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/ViewModels/StudioViewModel+Rooms.swift"; sourceTree = SOURCE_ROOT; };
 		E731EE8E6C39C17360E76306 /* RoomProjectHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Rooms/RoomProjectHandoff.swift"; sourceTree = SOURCE_ROOT; };
 		B14ED7A1B3901E426FC6AA67 /* OnboardingPolicyConsentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Onboarding/OnboardingPolicyConsentView.swift"; sourceTree = SOURCE_ROOT; };
+		0CB674439D891170F920A0AF /* AdminProviderHealthSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Admin/AdminProviderHealthSection.swift"; sourceTree = SOURCE_ROOT; };
+		648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioVideoFraming.swift"; sourceTree = SOURCE_ROOT; };
+		D94A7E702172A69FAED3A451 /* FeedPosterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Home/FeedPosterView.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -532,6 +538,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		31B4F99131B295EC586BBC18 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */,
 				735BEA1269807500EC232221 /* CommunityModels.swift */,
 				4D55B9BB2295236FE2D381EE /* SpatterMotionRecipe.swift */,
 				8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */,
@@ -796,6 +803,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		CC02A86D43D4A1535D0F82CE /* Home */ = {
 			isa = PBXGroup;
 			children = (
+				D94A7E702172A69FAED3A451 /* FeedPosterView.swift */,
 				B32B62FCB6CB5F06F86A8E1C /* CreatePostView.swift */,
 				8342660DAF7FA877D246B033 /* HomeFeedView.swift */,
 			);
@@ -942,6 +950,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		FA295816535F2ED95CA5599F /* Admin */ = {
 			isa = PBXGroup;
 			children = (
+				0CB674439D891170F920A0AF /* AdminProviderHealthSection.swift */,
 				4A09D9A926AFC6A1736450B9 /* AdminOperationsPanels.swift */,
 			);
 			path = Admin;
@@ -1110,6 +1119,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				94531CF7ECA8D1C404FEAEBA /* FeedPosterView.swift in Sources */,
+				F2DCD53E449052CB0DBAE469 /* StudioVideoFraming.swift in Sources */,
+				86C15CBA2C1094034295E61A /* AdminProviderHealthSection.swift in Sources */,
 				38E99945C7E5CE4F588CEC7F /* OnboardingPolicyConsentView.swift in Sources */,
 				0834EDF8F8101759B14C6123 /* RoomProjectHandoff.swift in Sources */,
 				02366631F3092F2FFBAB75EE /* StudioViewModel+Rooms.swift in Sources */,
@@ -1442,7 +1454,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity;
+				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -1471,8 +1483,14 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity;
+				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDI_OAUTH_PROVIDERS = "google,github";
+				SDI_STOREKIT_PLAN_19_99_PRODUCT_ID = com.willisbmb.StickDeathInfinity.unlimited.monthly;
+				SDI_STOREKIT_PLAN_4_99_PRODUCT_ID = com.willisbmb.StickDeathInfinity.creator.monthly;
+				SDI_STOREKIT_PLAN_9_99_PRODUCT_ID = com.willisbmb.StickDeathInfinity.pro.monthly;
+				SUPABASE_PUBLISHABLE_KEY = sb_publishable_ESTaBouCYQb8AzPKGfS_5w_GNWI-otv;
+				SUPABASE_URL = "https://gwcqlbjdvxebkxizfxsx.supabase.co";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1487,7 +1505,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
-				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1503,7 +1521,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
-				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1519,7 +1537,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
                 GENERATE_INFOPLIST_FILE = YES;
                 IPHONEOS_DEPLOYMENT_TARGET = 17.0;
                 LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
-                PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.authtests;
+                PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity.authtests;
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 SWIFT_VERSION = 5.0;
                 TARGETED_DEVICE_FAMILY = "1,2";
@@ -1535,7 +1553,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
                 GENERATE_INFOPLIST_FILE = YES;
                 IPHONEOS_DEPLOYMENT_TARGET = 17.0;
                 LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
-                PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.authtests;
+                PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity.authtests;
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 SWIFT_VERSION = 5.0;
                 TARGETED_DEVICE_FAMILY = "1,2";

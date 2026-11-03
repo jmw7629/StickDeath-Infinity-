@@ -261,9 +261,12 @@ class SenderTests(unittest.TestCase):
         self.queue.enqueue("gone@example.test", "export_ready", {"produced_on": "2026-10-12"}, "export-2")
         self.sink.reject.add("gone@example.test")
         bounced = []
-        worker = EmailWorker(self.queue, sender, on_bounce=bounced.append, unsubscribe_url_for=lambda h, c: UNSUB)
+        outcomes = []
+        worker = EmailWorker(self.queue, sender, on_bounce=bounced.append, unsubscribe_url_for=lambda h, c: UNSUB,
+                             on_outcome=lambda ok, cls: outcomes.append((ok, cls)))
         summary = worker.run_once()
         self.assertEqual(summary, {"sent": 2, "queued": 0, "failed": 0, "bounced": 1})
+        self.assertEqual(outcomes, [(True, None)])  # a recipient refusal is not a sender failure
         self.assertEqual(bounced, [templates.email_hash("gone@example.test")])
         self.assertEqual(len(self.sink.messages), 2)
         by_recipient = {rcpts[0]: email.message_from_bytes(raw, policy=email.policy.default) for rcpts, raw in self.sink.messages}
@@ -284,8 +287,10 @@ class SenderTests(unittest.TestCase):
         self.sink.server_close()
         sender = SMTPSender("127.0.0.1", self.port, "noreply@example.test", timeout=2)
         self.queue.enqueue("member@example.test", "export_ready", {"produced_on": "2026-10-12"}, "export-3")
-        summary = EmailWorker(self.queue, sender).run_once()
+        outcomes = []
+        summary = EmailWorker(self.queue, sender, on_outcome=lambda ok, cls: outcomes.append((ok, cls))).run_once()
         self.assertEqual(summary["queued"], 1)
+        self.assertEqual(outcomes, [(False, "network")])
         self.assertEqual(self.queue.counts(), {"queued": 1})
         self.sink = SinkServer()      # tearDown expects a live server
         self.thread = threading.Thread(target=self.sink.serve_forever, daemon=True)

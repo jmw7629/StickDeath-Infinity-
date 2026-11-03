@@ -7,10 +7,5 @@
     <array>
         <string>Default</string>
     </array>
-    <!-- In-App Purchase -->
-    <key>com.apple.developer.in-app-payments</key>
-    <array>
-        <string>merchant.com.willisnmb.stickdeathinfinity</string>
-    </array>
 </dict>
 </plist>

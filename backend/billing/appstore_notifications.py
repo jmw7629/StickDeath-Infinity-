@@ -20,6 +20,16 @@ row per ``(provider, event_id)`` and answers ``duplicate`` for replays, which th
 handler returns as 200 so Apple stops retrying. Sandbox notifications are recorded
 with ``payload.environment`` and never produce ledger (revenue) rows.
 
+Free trials (owner decision 2026-10-20): every paid tier starts with a 3-day
+free trial configured as the App Store introductory offer. The signed
+transaction describes the current period, so ``is_free_trial`` reads it there:
+``offerDiscountType == "FREE_TRIAL"`` (any offer type), or, on payloads that
+predate ``offerDiscountType``, ``offerType == 1`` (introductory) with no
+positive ``price``. Renewal info describes the *next* period and is not used.
+A trial maps to ``in_trial=True`` and, for active notification types, the
+canonical ``trialing`` status; billing retry after an unpaid trial keeps
+``in_trial``. The first paid renewal carries no offer and clears it.
+
 Spatter credit packs (consumables, owner decision 2026-10-15): when a
 ``credit_packs`` catalogue is injected, a ``REFUND`` for an approved pack also
 claws the credits back through ``public.sdi_spatter_credits_refund`` and a
@@ -210,6 +220,23 @@ def decode_notification(raw_body: bytes, config: AppStoreConfig, verifier: Optio
                         environment=environment, bundle_id=bundle_id or "", transaction=transaction, renewal=renewal)
 
 
+INTRODUCTORY_OFFER = 1
+FREE_TRIAL = "FREE_TRIAL"
+
+
+def is_free_trial(tx: Mapping[str, Any]) -> bool:
+    """True when the signed transaction's current period is a free trial."""
+    discount = tx.get("offerDiscountType")
+    if isinstance(discount, str) and discount:
+        return discount == FREE_TRIAL
+    offer = tx.get("offerType")
+    if not isinstance(offer, int) or isinstance(offer, bool) or offer != INTRODUCTORY_OFFER:
+        return False
+    price = tx.get("price")
+    # An introductory offer without a discount type is a free trial unless it reports a charge.
+    return not (isinstance(price, int) and not isinstance(price, bool) and price > 0)
+
+
 def map_notification(note: Notification, catalog: ProductCatalog) -> ApplyEventCall:
     """Map a verified notification to the one database call. Unknown products,
     non-subscription transactions and informational types record the event only."""
@@ -237,9 +264,10 @@ def map_notification(note: Notification, catalog: ProductCatalog) -> ApplyEventC
     if note.notification_type == "DID_CHANGE_RENEWAL_STATUS" and note.subtype in ("AUTO_RENEW_DISABLED", "AUTO_RENEW_ENABLED"):
         cancel_at_period_end = note.subtype == "AUTO_RENEW_DISABLED"
     kind = note.notification_type
+    in_trial = is_free_trial(tx)
     ledger: List[LedgerEntry] = []
     if kind in _ACTIVE_TYPES:
-        status, paid_through = ("active", expires)
+        status, paid_through = ("trialing" if in_trial else "active", expires)
         if expires is not None and expires <= note.signed_at and kind in ("DID_CHANGE_RENEWAL_STATUS", "DID_CHANGE_RENEWAL_PREF"):
             status = "expired"
     elif kind == "DID_FAIL_TO_RENEW":
@@ -264,7 +292,7 @@ def map_notification(note: Notification, catalog: ProductCatalog) -> ApplyEventC
         return ApplyEventCall(**base, ledger=ledger)
     return ApplyEventCall(**base, user_id=as_uuid(tx.get("appAccountToken")), provider_subscription_id=original_id,
                           product_id=product.product_id, status=status, paid_through=paid_through,
-                          cancel_at_period_end=cancel_at_period_end, ledger=ledger)
+                          cancel_at_period_end=cancel_at_period_end, ledger=ledger, in_trial=in_trial)
 
 
 def credit_action(note: Notification, credit_packs: Optional[CreditPackCatalog], executor: SQLExecutor) -> Optional[dict]:

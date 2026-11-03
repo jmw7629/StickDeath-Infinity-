@@ -84,10 +84,22 @@ final class SpatterAIViewModel: ObservableObject {
     /// gets the upgrade note on the device. Applies when the Studio enforces the
     /// Free limits, or when cloud advice is on and the server reports Free.
     /// Free with server-reported Spatter credits pays as it goes through cloud advice.
+    /// During a paid plan's free trial (owner decision 2026-10-20) Spatter is
+    /// preview-only too: nothing is sent and no credits are used.
     var previewOnly: Bool {
+        if inTrial { return true }
         if useCloud, cloudAllowance?.hasCredits == true { return false }
         return !StudioPlanLimits.current.spatterActive || (useCloud && cloudAllowance?.plan == .free)
     }
+
+    /// A paid plan's free trial, from Apple's introductory offer or the server's trial flag.
+    var inTrial: Bool {
+        StudioPlanLimits.current.spatterTrialPreview || (useCloud && cloudAllowance?.inTrial == true)
+    }
+
+    /// What Spatter answers while preview-only: the trial note during a free
+    /// trial, otherwise the Free upgrade note.
+    var previewNote: String { BillingCopy.spatterPreviewNote(trial: inTrial) }
 
     /// True while cloud advice is on and the server has not reported a plan yet:
     /// the text field is disabled until the plan is known. Local guidance (cloud
@@ -110,9 +122,9 @@ final class SpatterAIViewModel: ObservableObject {
 
     /// Suggested prompts are never disabled: on Free they answer with the upgrade note.
     var suggestionsLockout: String? { nil }
-    /// A used-up allowance (Creator) or the Free upgrade note, for display with the upgrade link.
+    /// A used-up allowance (Creator, Pro), the trial note or the Free upgrade note, for display with the upgrade link.
     var allowanceLockout: String? {
-        if previewOnly { return BillingCopy.spatterUpgradeNote }
+        if previewOnly { return previewNote }
         return useCloud ? cloudAllowance?.lockoutText : nil
     }
 
@@ -200,9 +212,10 @@ final class SpatterAIViewModel: ObservableObject {
                             stillCurrent: @escaping () -> Bool) -> Bool {
         let prompt = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !isThinking else { return false }
-        // Free plan (owner decision 2026-10-15): Spatter and its suggested prompts
-        // stay visible, but every send gets the upgrade note. Nothing is sent to a
-        // provider or the server, and no project is read or edited.
+        // Free plan (owner decision 2026-10-15) and a paid plan's free trial (owner
+        // decision 2026-10-20): Spatter and its suggested prompts stay visible, but
+        // every send gets the upgrade or trial note. Nothing is sent to a provider
+        // or the server, no credits are used, and no project is read or edited.
         if previewOnly {
             guard !prompt.isEmpty, prompt.utf8.count <= 6000 else {
                 status = .invalidInput
@@ -210,9 +223,10 @@ final class SpatterAIViewModel: ObservableObject {
                 return false
             }
             messages.append(.init(id: UUID().uuidString, role: .user, content: prompt, timestamp: Date()))
-            appendAdvice("💀 " + BillingCopy.spatterUpgradeNote, origin: .local)
+            let note = previewNote
+            appendAdvice("💀 " + note, origin: .local)
             messages = Array(messages.suffix(40))
-            notice = BillingCopy.spatterUpgradeNote
+            notice = note
             upgradeRequested = true
             return true
         }
@@ -356,7 +370,7 @@ final class SpatterAIViewModel: ObservableObject {
     /// These are instructions for the user, never execution receipts.
     static let currentGuideVersion = "2026-10-13.1"
     /// Price points the owner approved; nothing here reads a live store or entitlement.
-    static let pricingGuide = "The planned subscription plans are USD 4.99 per month and USD 9.99 per month: Creator and Pro. Annual pricing is not configured and cannot be offered until the owner records it explicitly. Free lets you see Spatter and its suggested prompts, but Spatter answers only with an upgrade note; the free Studio allows 3 layers per frame, onion skin 1 frame back, preset canvas sizes and exports up to 720p with the SDI watermark, and locks audio import, the sound library, Blur, Smudge, Sharpen, Dodge/Burn, extra brushes, background cut and PNG sequences. Creator removes those limits, lets you use your own AI key (those prompts go from your device to your provider and are not counted) and includes Spatter prompts each billing period up to the plan's break-even allowance, and lets you submit videos to the official SDI YouTube, TikTok and social channels with the SDI watermark after consent, rights review, moderation and owner approval. Pro adds unlimited Spatter prompts. Neither plan starts with a trial period; Free can instead buy Spatter credits to pay as you go, and Creator can buy credits to keep going after its allowance. I cannot see live store prices, taxes or your current entitlement; the store sheet that processes the purchase shows what actually applies, and nothing is charged from this conversation."
+    static let pricingGuide = "The subscription plans are USD 4.99 per month (Creator), USD 9.99 per month (Pro) and USD 19.99 per month (Unlimited). Annual pricing is not configured and cannot be offered until the owner records it explicitly. Free lets you see Spatter and its suggested prompts, but Spatter answers only with an upgrade note; the free Studio allows 3 layers per frame, onion skin 1 frame back, preset canvas sizes and exports up to 720p with the SDI watermark, and locks audio import, the sound library, Blur, Smudge, Sharpen, Dodge/Burn, extra brushes, background cut and PNG sequences. Every paid plan removes those limits, lets you use your own AI key (those prompts go from your device to your provider and are not counted) and lets you submit videos to the official SDI YouTube, TikTok and social channels with the SDI watermark after consent, rights review, moderation and owner approval. Creator includes 250 Spatter prompts each billing period, Pro 500 and Unlimited has no cap. Each paid plan can start with a 3-day free trial when the App Store offers it to your account: the full Studio is unlocked during the trial, but Spatter only shows its suggested prompts until the paid period begins, and nothing is sent or charged by Spatter meanwhile. Free can buy Spatter credits to pay as you go, and Creator and Pro can buy credits to keep going after their allowance. I cannot see live store prices, taxes, trial eligibility or your current entitlement; the store sheet that processes the purchase shows what actually applies, and nothing is charged from this conversation."
     /// Verified sign-in and account facts. Nothing here grants account access.
     static let accountGuide = "Sign in with Apple, Google, GitHub or Microsoft through the sign-in screen; the app restores a saved session on launch and shows Loading until that check finishes. Guest use keeps projects and local Spatter preferences on this device under a separate guest scope, and signing in later does not merge or upload them. Admin roles come from server-authorized metadata, never from the app. In-app account deletion is not available yet: the screen does not offer a delete button and I cannot delete, merge, rename or inspect accounts, change email or reset passwords from this conversation. Editable projects stay on your device; the server keeps only identity, access, vote, consent, billing and job metadata. Do not paste passwords, verification codes or card numbers here."
     /// Rooms as implemented today: invitation codes, mutual agreement, no chat or calls.
@@ -470,7 +484,8 @@ final class SpatterAIViewModel: ObservableObject {
             return "I can explain the app, but I cannot inspect your billing account, issue refunds, change subscriptions or confirm a payment. Live billing and configured entitlements are not verified here. Do not share passwords, card details or verification codes in this conversation. Use the support or subscription-management route shown by the store or service that actually processed your purchase; I cannot claim a support ticket was sent.\n\n" + pricingGuide
         }
         // "plan" and "tier" alone describe animation planning; pair them with a money word.
-        if mentions("price", "prices", "pricing", "subscribe", "subscriptions") ||
+        // A trial question gets the plan facts, including the paid plans' free trial (owner decision 2026-10-20).
+        if mentions("price", "prices", "pricing", "subscribe", "subscriptions", "trial", "trials") ||
             (mentions("plan", "plans", "tier", "tiers", "premium", "annual", "yearly") &&
              mentions("cost", "costs", "pay", "paid", "month", "monthly", "year", "yearly", "annual", "usd", "dollar", "dollars", "much", "fee", "fees")) {
             return pricingGuide

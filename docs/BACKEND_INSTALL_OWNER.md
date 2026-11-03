@@ -90,6 +90,21 @@ Expected: `{"status":"provisioned","handle":"JWS"}`. The procedure refuses until
 email is confirmed and a verified factor exists, allows exactly one owner, writes an
 audit row and ends every existing session of that account (sign in again).
 
+### Live state recorded 2026-10-20
+
+- The bundle is installed on the live project (129 `public.sdi_*` functions) and the owner
+  row exists for `joewillisny@gmail.com` (one owner, enabled).
+- Owner decision: on the live project only, the "verified second factor" refusal was
+  removed from `sdi_private.provision_owner` so provisioning could run before an
+  authenticator was enrolled. The repository source keeps the refusal, so a reinstall
+  restores it; provisioning is a one-time step, so this has no further effect.
+- Administrator sessions still require MFA: `sdi_private.admin_authorized` checks
+  `aal2` on every command-center call. The owner enrols the authenticator on the next
+  `admin.html` sign-in.
+- `admin.js` previously read factors from `GET /auth/v1/factors`, which GoTrue does not
+  serve, so a verified authenticator was never found. It now reads `user.factors` from
+  `GET /auth/v1/user` and deletes abandoned unverified TOTP factors before enrolling.
+
 ## 5. Use the super-user login
 
 - **Command center (web):** `website/admin.html` → sign in → authenticator code →

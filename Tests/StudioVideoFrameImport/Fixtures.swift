@@ -51,4 +51,41 @@ enum VideoFrameFixture {
         try check(writer.status == .completed, "fixture movie failed: \(String(describing: writer.error))")
     }
 
+    /// One 96×64 picture with distinct quadrants (top-left red, top-right
+    /// green, bottom-left blue, bottom-right white) so rotation direction and
+    /// crop placement are observable in decoded pixels (#201).
+    static func makeQuadrantMovie(_ url: URL) async throws {
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 96, AVVideoHeightKey: 64])
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
+            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+                kCVPixelBufferWidthKey as String: 96, kCVPixelBufferHeightKey as String: 64])
+        writer.add(input)
+        try check(writer.startWriting(), "quadrant writer did not start")
+        writer.startSession(atSourceTime: .zero)
+        var attempts = 0
+        while !input.isReadyForMoreMediaData {
+            attempts += 1; try check(attempts < 500, "quadrant writer readiness deadline")
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        var buffer: CVPixelBuffer?
+        try check(CVPixelBufferCreate(kCFAllocatorDefault, 96, 64, kCVPixelFormatType_32ARGB, nil, &buffer) == kCVReturnSuccess, "quadrant buffer")
+        guard let buffer else { throw FixtureFailure(message: "nil quadrant buffer") }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        let bytes = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+        let row = CVPixelBufferGetBytesPerRow(buffer)
+        for y in 0..<64 { for x in 0..<96 {
+            let offset = y * row + x * 4
+            let rgb: (UInt8, UInt8, UInt8) = y < 32 ? (x < 48 ? (255, 0, 0) : (0, 255, 0)) : (x < 48 ? (0, 0, 255) : (255, 255, 255))
+            bytes[offset] = 255; bytes[offset + 1] = rgb.0; bytes[offset + 2] = rgb.1; bytes[offset + 3] = rgb.2
+        } }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        try check(adaptor.append(buffer, withPresentationTime: .zero), "quadrant append")
+        writer.endSession(atSourceTime: CMTime(seconds: 1, preferredTimescale: 30000))
+        input.markAsFinished()
+        await writer.finishWriting()
+        try check(writer.status == .completed, "quadrant movie failed: \(String(describing: writer.error))")
+    }
 }

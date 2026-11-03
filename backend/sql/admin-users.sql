@@ -63,10 +63,11 @@ begin
     -- (apple, google, github, azure, email). A name only, never an identifier.
     nullif(u.raw_app_meta_data->>'provider','') as signup_source,
     -- Plan is billing data: shown only with the finance capability (billing.sql
-    -- installs later; entitlements come only from signed provider events).
+    -- installs later; entitlements come only from signed provider events; the
+    -- best tier by billing_tier_rank: unlimited > pro > creator).
     case when sdi_private.admin_can('finance') then
      coalesce((select e.tier from sdi_private.entitlements e where e.user_id=u.id
-      order by case e.tier when 'pro' then 0 else 1 end,e.paid_through desc limit 1),'free')
+      order by sdi_private.billing_tier_rank(e.tier) desc,e.paid_through desc limit 1),'free')
      else null end as plan
    from auth.users u left join sdi_private.account_controls c on c.user_id=u.id
    where query='' or position(lower(query) in lower(coalesce(u.raw_user_meta_data->>'username','')))>0 or u.id::text=query

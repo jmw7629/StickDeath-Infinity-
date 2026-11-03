@@ -12,20 +12,24 @@ the same rules for tests and single-process previews:
 * emergency stop (``sdi_private.agent_global``) refuses everything;
 * a global daily ceiling, closed (0) until the owner sets it;
 * a per-account per-minute rate and a per-account daily safety cap;
-* plan rules from the owner's decisions (2026-10-07, revised 2026-10-14 and
-  2026-10-15): ``free`` has no server-funded allowance -- a Free request
-  without Spatter credits is refused with ``upgrade_required`` (upgrade
-  ``creator_or_pro``, ``buy_credits``) before anything is counted. ``creator`` (USD 4.99) gets a
-  server-funded allowance per billing period, keyed to the subscription's
-  paid-through date, of ``floor(creator_period_budget_microusd /
-  prompt_cost_estimate_microusd)`` prompts (defaults 3_490_000 / 20_000 = 174:
-  USD 4.99 net of a 30% store commission, at a conservative USD 0.02 per
-  prompt). ``pro`` (USD 9.99) has no plan allowance. A trialing subscription
-  meters as its own tier. Prompts a member sends with their own AI key go
-  device-to-provider and never reach this meter.
+* plan rules from the owner's decisions (2026-10-07, revised 2026-10-14,
+  2026-10-15 and 2026-10-20): ``free`` has no server-funded allowance -- a
+  Free request without Spatter credits is refused with ``upgrade_required``
+  (upgrade ``creator_or_pro``, ``buy_credits``) before anything is counted.
+  Paid tiers rank ``unlimited`` > ``pro`` > ``creator``: ``creator`` (USD 4.99)
+  gets 250 and ``pro`` (USD 9.99) 500 server-funded prompts per billing
+  period, keyed to the subscription's paid-through date (owner-editable
+  ``creator_period_prompts`` / ``pro_period_prompts``); ``unlimited``
+  (USD 19.99) has no plan allowance. Every tier still obeys the caps above.
+  Prompts a member sends with their own AI key go device-to-provider and
+  never reach this meter.
+* free trial (2026-10-20): an account whose only entitlements are in a
+  free-trial period is refused with ``upgrade_required`` (plan = the trial
+  tier, ``trial`` true, upgrade ``after_trial``, no ``buy_credits``) before
+  anything is counted or any credit is spent. The first paid period ends it.
 * Spatter credits (2026-10-15, later): purchased consumable packs, 1 credit =
-  1 prompt. Funding order is the plan allowance first (Pro unlimited never
-  spends credits; Creator's period allowance), then one credit; Free with
+  1 prompt. Funding order is the plan allowance first (unlimited never
+  spends credits; creator/pro period allowance), then one credit; Free with
   credits pays as it goes (free text allowed). All caps apply before either.
   A released reservation refunds its credit.
 
@@ -41,22 +45,24 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Tuple
 
 from .suggested_prompts import SUGGESTED_PROMPT_IDS
 
-PLANS = ("free", "creator", "pro")
+PLANS = ("free", "creator", "pro", "unlimited")
+UPGRADES = ("creator_or_pro", "pro", "unlimited", "after_trial")
 REFUSAL_CODES = (
     "unauthorized", "account_restricted", "emergency_stop", "global_limit",
     "rate_limited", "daily_safety_limit", "plan_allowance_exhausted",
     "upgrade_required", "unknown_suggested_prompt",
 )
 FUNDING = ("allowance", "unlimited", "credit")
-_VALID_FUNDING = {"free": ("credit",), "creator": ("allowance", "credit"), "pro": ("unlimited",)}
+_VALID_FUNDING = {"free": ("credit",), "creator": ("allowance", "credit"), "pro": ("allowance", "credit"), "unlimited": ("unlimited",)}
 
 
 @dataclass(frozen=True)
 class Decision:
     """Outcome of one reservation attempt. ``remaining`` is None for an
-    unlimited plan. Creator resets at the subscription's paid-through date.
-    ``funding`` says what paid for an allowed prompt; ``credits`` is the
-    Spatter credit balance after this decision. Free is allowed only on credit."""
+    unlimited plan. Creator and Pro reset at the subscription's paid-through
+    date. ``funding`` says what paid for an allowed prompt; ``credits`` is the
+    Spatter credit balance after this decision. Free is allowed only on credit.
+    ``trial`` marks the free-trial refusal (``resets_at`` = trial end)."""
 
     allowed: bool
     code: str = ""
@@ -70,6 +76,7 @@ class Decision:
     funding: Optional[str] = None
     credits: Optional[int] = None
     buy_credits: bool = False
+    trial: bool = False
 
 
 class Meter(Protocol):
@@ -105,9 +112,10 @@ def decision_from_rpc(payload: Mapping[str, Any]) -> Decision:
             period=payload.get("period") if isinstance(payload, Mapping) and isinstance(payload.get("period"), str) else None,
             resets_at=_parse_time(payload.get("resets_at")) if isinstance(payload, Mapping) else None,
             retry_after_seconds=retry if isinstance(retry, int) and 0 < retry <= 3600 else None,
-            upgrade=payload.get("upgrade") if isinstance(payload, Mapping) and payload.get("upgrade") in ("pro", "creator_or_pro") else None,
+            upgrade=payload.get("upgrade") if isinstance(payload, Mapping) and payload.get("upgrade") in UPGRADES else None,
             credits=_count(payload.get("credits")) if isinstance(payload, Mapping) else None,
             buy_credits=isinstance(payload, Mapping) and payload.get("buy_credits") is True,
+            trial=isinstance(payload, Mapping) and payload.get("trial") is True,
         )
     reservation = payload.get("reservation")
     plan = payload.get("plan")
@@ -116,12 +124,13 @@ def decision_from_rpc(payload: Mapping[str, Any]) -> Decision:
     credits = _count(payload.get("credits"))
     if not isinstance(reservation, str) or plan not in PLANS or funding not in FUNDING or credits is None:
         return Decision(allowed=False, code="unavailable")
-    # Free is served only on a credit, Pro only as unlimited, Creator from its allowance or a credit.
-    if funding not in _VALID_FUNDING[plan]:
+    # Free is served only on a credit, Unlimited only as unlimited, Creator and
+    # Pro from their allowance or a credit; a trial is never served.
+    if funding not in _VALID_FUNDING[plan] or payload.get("trial") is True:
         return Decision(allowed=False, code="unavailable")
     if remaining is not None and _count(remaining) is None:
         return Decision(allowed=False, code="unavailable")
-    if plan == "pro":
+    if plan == "unlimited":
         remaining = None
     elif remaining is None:
         return Decision(allowed=False, code="unavailable")
@@ -158,14 +167,13 @@ class Controls:
     global_daily_cap: int = 0
     user_daily_safety_cap: int = 100
     user_per_minute_cap: int = 6
-    creator_period_budget_microusd: int = 3_490_000
-    prompt_cost_estimate_microusd: int = 20_000
+    creator_period_prompts: int = 250
+    pro_period_prompts: int = 500
     emergency_stop: bool = False
 
-    @property
-    def creator_period_limit(self) -> int:
-        """Server-funded Creator prompts per billing period (break-even)."""
-        return self.creator_period_budget_microusd // max(1, self.prompt_cost_estimate_microusd)
+    def period_limit(self, tier: str) -> Optional[int]:
+        """Server-funded prompts per billing period; None = no plan allowance."""
+        return {"creator": self.creator_period_prompts, "pro": self.pro_period_prompts}.get(tier)
 
 
 @dataclass
@@ -181,11 +189,13 @@ class _Reservation:
 @dataclass
 class InMemoryMeter:
     """Reference implementation of the SQL rules. ``entitlement(user_id)``
-    returns ``(tier, paid_through)`` or None for free; ``account_state(user_id)``
-    returns 'active', 'suspended', 'banned' or None for an unknown account."""
+    returns ``(tier, paid_through)``, ``(tier, paid_through, in_trial)`` or None
+    for free (the best entitlement, a paid one before a trial one);
+    ``account_state(user_id)`` returns 'active', 'suspended', 'banned' or None
+    for an unknown account."""
 
     now: Callable[[], _dt.datetime]
-    entitlement: Callable[[str], Optional[Tuple[str, _dt.datetime]]] = lambda _user: None
+    entitlement: Callable[[str], Optional[Tuple[Any, ...]]] = lambda _user: None
     account_state: Callable[[str], Optional[str]] = lambda _user: "active"
     controls: Controls = field(default_factory=Controls)
     counters: Dict[Tuple[str, str], int] = field(default_factory=dict)
@@ -198,20 +208,25 @@ class InMemoryMeter:
 
     def plan(self, user_id: str) -> Dict[str, Any]:
         ent = self.entitlement(user_id)
-        if ent and ent[0] == "pro":
-            return {"plan": "pro", "unlimited": True, "remaining": None, "period": "none", "resets_at": None, "bucket": None,
-                    "credits": self.credits.get(user_id, 0), "available": True}
-        if ent and ent[0] == "creator":
+        in_trial = bool(ent[2]) if ent and len(ent) > 2 else False
+        if ent and ent[0] in ("creator", "pro", "unlimited") and in_trial:
+            return {"plan": ent[0], "trial": True, "unlimited": False, "limit": 0, "used": 0, "remaining": 0, "period": "trial",
+                    "resets_at": ent[1].astimezone(_dt.timezone.utc), "bucket": None, "credits": self.credits.get(user_id, 0),
+                    "available": False, "upgrade": "after_trial"}
+        if ent and ent[0] == "unlimited":
+            return {"plan": "unlimited", "trial": False, "unlimited": True, "remaining": None, "period": "none", "resets_at": None,
+                    "bucket": None, "credits": self.credits.get(user_id, 0), "available": True}
+        if ent and ent[0] in ("creator", "pro"):
             paid = ent[1].astimezone(_dt.timezone.utc)
-            bucket, limit = "period:" + paid.strftime("%Y-%m-%dT%H:%M:%SZ"), self.controls.creator_period_limit
+            bucket, limit = "period:" + paid.strftime("%Y-%m-%dT%H:%M:%SZ"), self.controls.period_limit(ent[0]) or 0
             used = self.counters.get((user_id, bucket), 0)
             credits = self.credits.get(user_id, 0)
-            return {"plan": "creator", "unlimited": False, "limit": limit, "used": used, "remaining": max(limit - used, 0),
+            return {"plan": ent[0], "trial": False, "unlimited": False, "limit": limit, "used": used, "remaining": max(limit - used, 0),
                     "period": "billing_period", "resets_at": paid, "bucket": bucket, "credits": credits,
                     "available": limit > used or credits > 0}
         # Free: no server-funded allowance; Spatter works only on purchased credits.
         credits = self.credits.get(user_id, 0)
-        return {"plan": "free", "unlimited": False, "limit": 0, "used": 0, "remaining": 0, "period": "none",
+        return {"plan": "free", "trial": False, "unlimited": False, "limit": 0, "used": 0, "remaining": 0, "period": "none",
                 "resets_at": None, "bucket": None, "credits": credits, "available": credits > 0, "upgrade": "creator_or_pro"}
 
     def reserve(self, user_id: str, suggested_prompt: Optional[str] = None) -> Decision:
@@ -220,8 +235,13 @@ class InMemoryMeter:
             return Decision(False, "unauthorized")
         if state != "active":
             return Decision(False, "account_restricted")
-        if self.plan(user_id)["plan"] == "free" and self.credits.get(user_id, 0) <= 0:
+        current = self.plan(user_id)
+        if current["plan"] == "free" and self.credits.get(user_id, 0) <= 0:
             return Decision(False, "upgrade_required", plan="free", upgrade="creator_or_pro", credits=0, buy_credits=True)
+        if current["trial"]:
+            # Free trial only: nothing is counted and no credit is spent.
+            return Decision(False, "upgrade_required", plan=current["plan"], period="trial", resets_at=current["resets_at"],
+                            upgrade="after_trial", credits=current["credits"], trial=True)
         if self.controls.emergency_stop:
             return Decision(False, "emergency_stop")
         if suggested_prompt is not None and suggested_prompt not in SUGGESTED_PROMPT_IDS:
@@ -248,7 +268,8 @@ class InMemoryMeter:
             return Decision(False, "upgrade_required", plan="free", upgrade="creator_or_pro", credits=0, buy_credits=True)
         else:
             return Decision(False, "plan_allowance_exhausted", plan=plan["plan"], period=plan["period"],
-                            resets_at=plan["resets_at"], upgrade="pro", credits=0, buy_credits=True)
+                            resets_at=plan["resets_at"], upgrade="pro" if plan["plan"] == "creator" else "unlimited",
+                            credits=0, buy_credits=True)
         buckets = [minute, day_bucket] + ([plan["bucket"]] if funding == "allowance" else [])
         for bucket in buckets:
             self.counters[(user_id, bucket)] = self.counters.get((user_id, bucket), 0) + 1

@@ -16,15 +16,20 @@ actor StudioVideoFrameImportService {
     private var busy = false
 
     /// Immutable mapping captured before the system picker opens. The trim end
-    /// is exclusive, just like AVFoundation time ranges.
+    /// is exclusive, just like AVFoundation time ranges. Rotation (clockwise,
+    /// after the track's own orientation) and aspect (centered crop) frame the
+    /// decoded pixels (#201); timing never depends on them.
     struct Mapping: Equatable, Sendable {
         var sourceStartSeconds: Double = 0
         var sourceEndSeconds: Double? = nil
         var projectStartSeconds: Double = 0
         var speed: Double = 1
+        var rotationDegrees: Int = 0
+        var aspect: StudioVideoFrameAspect = .original
 
         func sourceTime(projectSeconds: Double) throws -> Double {
-            guard sourceStartSeconds.isFinite, (0..<3600).contains(sourceStartSeconds),
+            guard StudioVideoFraming.rotations.contains(rotationDegrees),
+                  sourceStartSeconds.isFinite, (0..<3600).contains(sourceStartSeconds),
                   projectStartSeconds.isFinite, (0...3600).contains(projectStartSeconds),
                   speed.isFinite, (0.25...4).contains(speed), projectSeconds.isFinite,
                   projectSeconds >= projectStartSeconds else { throw Failure.invalidMapping }
@@ -328,13 +333,15 @@ actor StudioVideoFrameImportService {
                 let framePixels = image.width * image.height
                 guard framePixels <= maximumSequencePixels - pixels else { throw Failure.sequenceLimit }
                 pixels += framePixels
-                let png = try encode(image)
+                let png = try encode(image, rotationDegrees: mapping.rotationDegrees, aspect: mapping.aspect)
                 guard png.count <= maximumSequencePNGBytes - pngBytes else { throw Failure.sequenceLimit }
                 pngBytes += png.count
                 let title = String(name.prefix(85)) + String(format: " @ %.3fs", time.seconds)
+                let framed = StudioVideoFraming.outputSize(width: image.width, height: image.height,
+                    rotationDegrees: mapping.rotationDegrees, aspect: mapping.aspect)
                 let imported = StudioImageImportService.ImportedImage(id: UUID(), name: title, container: .png,
-                    originalData: png, originalWidth: image.width, originalHeight: image.height, originalOrientation: 1,
-                    width: image.width, height: image.height, normalizedPNG: png)
+                    originalData: png, originalWidth: framed.width, originalHeight: framed.height, originalOrientation: 1,
+                    width: framed.width, height: framed.height, normalizedPNG: png)
                 frames.append(Frame(image: imported, requestedSeconds: request.projectSeconds,
                     sourceRequestedSeconds: time.seconds, mapping: mapping, actualSeconds: result.actualTime.seconds,
                     durationSeconds: duration.seconds, metadata: metadata))
@@ -347,12 +354,36 @@ actor StudioVideoFrameImportService {
         }
     }
 
-    private static func encode(_ image: CGImage) throws -> Data {
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
-                bytesPerRow: image.width * 4, space: colorSpace,
+    /// Places the upright frame, turned clockwise by `rotationDegrees`, so the
+    /// centered `aspect` crop of the turned frame fills a context of crop size.
+    /// Coordinates are Core Graphics (origin bottom-left).
+    static func framingTransform(width: Int, height: Int, rotationDegrees: Int,
+                                 aspect: StudioVideoFrameAspect) -> (transform: CGAffineTransform, width: Int, height: Int) {
+        let turned = StudioVideoFraming.turnedSize(width: width, height: height, rotationDegrees: rotationDegrees)
+        let turnedWidth = turned.width, turnedHeight = turned.height
+        let crop = aspect.cropRect(width: turnedWidth, height: turnedHeight)
+        // Origin of the turned frame inside the crop context (bottom-left).
+        let originX = CGFloat(-crop.x), originY = CGFloat(-(turnedHeight - crop.y - crop.height))
+        let transform: CGAffineTransform
+        switch rotationDegrees {
+        case 90: transform = CGAffineTransform(translationX: originX, y: originY + CGFloat(turnedHeight)).rotated(by: -.pi / 2)
+        case 180: transform = CGAffineTransform(translationX: originX + CGFloat(turnedWidth), y: originY + CGFloat(turnedHeight)).rotated(by: .pi)
+        case 270: transform = CGAffineTransform(translationX: originX + CGFloat(turnedWidth), y: originY).rotated(by: .pi / 2)
+        default: transform = CGAffineTransform(translationX: originX, y: originY)
+        }
+        return (transform, crop.width, crop.height)
+    }
+
+    private static func encode(_ image: CGImage, rotationDegrees: Int = 0, aspect: StudioVideoFrameAspect = .original) throws -> Data {
+        let framing = framingTransform(width: image.width, height: image.height, rotationDegrees: rotationDegrees, aspect: aspect)
+        guard framing.width > 0, framing.height > 0,
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: framing.width, height: framing.height, bitsPerComponent: 8,
+                bytesPerRow: framing.width * 4, space: colorSpace,
                 bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else { throw Failure.encoding }
         context.setBlendMode(.copy)
+        context.interpolationQuality = .none
+        context.concatenate(framing.transform)
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         guard let normalized = context.makeImage() else { throw Failure.encoding }
         let buffer = PNGBuffer()

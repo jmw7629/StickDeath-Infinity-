@@ -1017,7 +1017,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun updateProject(captured: Document, name: String, width: Int, height: Int, fps: Int, fitArtwork: Boolean, backgroundColor: Int = captured.backgroundColor): Boolean = change { d ->
         require(d == captured) { "Project changed. Reopen settings before applying." }
         require(width in 16..4096 && height in 16..4096 && fps in 1..60)
-        require(planLimits.allowsCanvasChange(d.width, d.height, width, height)) { "Custom canvas sizes are part of Creator and Pro. Choose a preset, or upgrade in Account, Plans." }
+        require(planLimits.allowsCanvasChange(d.width, d.height, width, height)) { "Custom canvas sizes are part of the paid plans (Creator, Pro and Unlimited). Choose a preset, or upgrade in Account, Plans." }
         val resizing = width != d.width || height != d.height
         val frames = if (resizing && fitArtwork) {
             require(d.frames.all { f -> f.strokes.none { s -> d.layers.any { it.id == s.layerID && it.locked } } }) {
@@ -1047,7 +1047,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun create(name: String, width: Int, height: Int, fps: Int, backgroundColor: Int = -1) {
         if (busy || document != null) return
-        if (!planLimits.allowsCanvasSize(width, height)) { report("Custom canvas sizes are part of Creator and Pro. Choose a preset, or upgrade in Account, Plans."); return }
+        if (!planLimits.allowsCanvasSize(width, height)) { report("Custom canvas sizes are part of the paid plans (Creator, Pro and Unlimited). Choose a preset, or upgrade in Account, Plans."); return }
         val created = try { Document.create(name, width, height, fps, backgroundColor) }
         catch (e: Exception) { report(e.message ?: "Invalid project settings."); return }
         busy = true

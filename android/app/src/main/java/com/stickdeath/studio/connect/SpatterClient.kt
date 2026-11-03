@@ -19,7 +19,7 @@ sealed class SpatterException(message: String) : Exception(message) {
     /** HTTP 402 `upgrade_required`: Free without credits. Nothing was counted or sent to a provider. */
     class UpgradeRequired : SpatterException(PlanCopy.SPATTER_UPGRADE_NOTE)
     /** Any other HTTP 402 (for example credits used up); the server's own text is not shown. */
-    class PaymentRequired(val code: String?) : SpatterException("Spatter needs Creator, Pro or Spatter credits for this request. Buy credits or upgrade in Account, Plans.")
+    class PaymentRequired(val code: String?) : SpatterException("Spatter needs a paid plan (Creator, Pro or Unlimited) or Spatter credits for this request. Buy credits or upgrade in Account, Plans.")
     class HttpStatus(val status: Int) : SpatterException(when (status) {
         401, 403 -> "Spatter's backend did not authorize this request."
         429 -> "Spatter's backend is rate-limited or your daily Spatter budget is used up. Try again later."
@@ -106,12 +106,16 @@ object SpatterUsageDecoder {
             else (o.opt(key) as? Number)?.takeIf { it.toDouble() == Math.floor(it.toDouble()) }?.toLong()?.takeIf { it in 0..1_000_000 }?.toInt()
         fun flag(key: String): Boolean? = if (!o.has(key) || o.isNull(key)) null else o.opt(key) as? Boolean
         val resets = if (o.isNull("resets_at")) null else o.optString("resets_at").takeIf { it.isNotEmpty() && it.length <= 64 }
-        val unlimited = plan == PlanTier.Pro || flag("unlimited") == true
+        val unlimited = plan == PlanTier.Unlimited || flag("unlimited") == true
+        // Free-trial state: `in_trial`, or a subscription `status` of `trialing`. Absent means unknown.
+        val status = if (o.isNull("status")) null else o.optString("status").takeIf { it.isNotEmpty() }
+        val inTrial = flag("in_trial") ?: status?.let { it == "trialing" }
         return SpatterUsage(plan, unlimited,
-            limit = if (plan == PlanTier.Pro) null else count("limit"),
-            remaining = if (plan == PlanTier.Pro) null else count("remaining"),
+            limit = if (plan == PlanTier.Unlimited) null else count("limit"),
+            remaining = if (plan == PlanTier.Unlimited) null else count("remaining"),
             credits = count("credits"), available = flag("available"), resetsAt = resets,
-            paused = !o.isNull("service") && o.optString("service") == "paused")
+            paused = !o.isNull("service") && o.optString("service") == "paused",
+            inTrial = if (plan.isPaid) inTrial else false)
     }
     fun decode(text: String): SpatterUsage = decode(runCatching { JSONObject(text) }.getOrElse { throw SpatterException.InvalidResponse() })
 }

@@ -14,7 +14,7 @@
 import Foundation
 
 struct ServerEntitlement: Equatable {
-    /// `free`, `creator` or `pro`; any other server value is refused.
+    /// `free`, `creator`, `pro` or `unlimited`; any other server value is refused.
     let tier: BillingPlanTier
     /// `none` for Free; otherwise the subscription status that grants access
     /// (`active`, `trialing`, `grace`, `past_due`).
@@ -23,6 +23,9 @@ struct ServerEntitlement: Equatable {
     /// `apple` or `stripe`; nil for Free.
     let provider: String?
     let cancelAtPeriodEnd: Bool
+    /// The paid plan is in its free trial (owner decision 2026-10-20): the
+    /// server's `in_trial`/`trial` flag or a `trialing` status. Missing is false.
+    var inTrial: Bool = false
 }
 
 struct ServerEntitlementResponse: CommunityResponse {
@@ -32,6 +35,9 @@ struct ServerEntitlementResponse: CommunityResponse {
     let paid_through: Date?
     let provider: String?
     let cancel_at_period_end: Bool?
+    /// Optional trial flag; older servers omit it.
+    let in_trial: Bool?
+    let trial: Bool?
 }
 
 /// Pure comparison of Apple's on-device entitlement with the server's record.
@@ -91,7 +97,8 @@ final class ServerEntitlementClient {
                 throw CommunityError.invalidResponse("The server's plan record was incomplete.")
             }
         }
+        let inTrial = tier != .free && (response.in_trial == true || response.trial == true || status == "trialing")
         return ServerEntitlement(tier: tier, status: status, paidThrough: response.paid_through, provider: response.provider,
-                                 cancelAtPeriodEnd: response.cancel_at_period_end ?? false)
+                                 cancelAtPeriodEnd: response.cancel_at_period_end ?? false, inTrial: inTrial)
     }
 }

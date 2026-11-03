@@ -1,11 +1,9 @@
 name: SDI iOS TestFlight Upload
-# CANDIDATE — not active. Lives under docs/ci-candidates so it cannot run.
-# To enable: add the seven repository secrets listed in
-# docs/TESTFLIGHT_DISTRIBUTION.md, then move this file to
-# .github/workflows/ios-testflight.yml in a reviewed commit and trigger it
-# from the Actions tab. Every credential is a repository secret (never a file
-# in the repo); the job refuses to start when any secret is missing and never
-# prints them. It uploads to TestFlight only; App Store release stays manual.
+# Manual only (Actions tab -> Run workflow); it never runs on push or PR.
+# Needs the seven repository secrets listed in docs/TESTFLIGHT_DISTRIBUTION.md.
+# Every credential is a repository secret (never a file in the repo); the job
+# refuses to start when any secret is missing and never prints them. It
+# uploads to TestFlight only; App Store release stays manual.
 on:
   workflow_dispatch:
     inputs:
@@ -45,6 +43,18 @@ jobs:
             echo "::error::TestFlight upload is not configured. Missing secrets:$missing. See docs/TESTFLIGHT_DISTRIBUTION.md."
             exit 2
           fi
+      - name: Select an Xcode 26 toolchain
+        # App Store Connect accepts uploads built with the iOS 26 SDK or later.
+        run: |
+          set -euo pipefail
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$XCODE" ]; then
+            echo "::error::No Xcode 26 on this runner image; App Store Connect rejects older SDKs."
+            ls -d /Applications/Xcode*.app
+            exit 2
+          fi
+          echo "DEVELOPER_DIR=$XCODE/Contents/Developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$XCODE/Contents/Developer" xcodebuild -version
       - name: Install the distribution certificate and provisioning profile into a temporary keychain
         env:
           CERT_P12_BASE64: ${{ secrets.APPLE_DISTRIBUTION_CERT_P12_BASE64 }}
@@ -104,7 +114,7 @@ jobs:
             <key>teamID</key><string>$TEAM_ID</string>
             <key>uploadSymbols</key><true/>
             <key>provisioningProfiles</key><dict>
-              <key>com.willisnmb.stickdeathinfinity</key><string>$PROFILE_NAME</string>
+              <key>com.willisbmb.StickDeathInfinity</key><string>$PROFILE_NAME</string>
             </dict>
           </dict></plist>
           PLIST

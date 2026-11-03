@@ -47,7 +47,7 @@ def prepare(source: pathlib.Path, destination: pathlib.Path, commit: str) -> dic
     host = resolve_product(target.get("TestHostPath"), ".app")
     resolve_product(target.get("TestBundlePath"), ".xctest", host)
     info = plistlib.loads((app / "Info.plist").read_bytes())
-    if info.get("CFBundleIdentifier") != "com.willisnmb.stickdeathinfinity":
+    if info.get("CFBundleIdentifier") != "com.willisbmb.StickDeathInfinity":
         raise ValueError("Unexpected app identity")
     configured = [key for key in PUBLIC_SETTINGS if str(info.get(key, "")).strip()]
     if configured:

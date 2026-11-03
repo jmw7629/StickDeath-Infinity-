@@ -117,7 +117,9 @@ struct SpatterClientTests {
             }
             try await test("subscription family order is independent of prices") {
                 let tiers = AppConfig.SubscriptionTier.allCases
-                try require(tiers.map(\.rawValue) == ["free", "creator", "pro", "studio"], "existing product families changed")
+                // Owner decision 2026-10-20: Unlimited replaces the retired, never-sold `studio` family.
+                try require(tiers.map(\.rawValue) == ["free", "creator", "pro", "unlimited"], "existing product families changed")
+                try require(AppConfig.SubscriptionTier(rawValue: "studio") == nil, "retired studio family returned")
                 try require(tiers.map(\.rank) == [0, 1, 2, 3], "StoreKit selection order invalid")
                 try require(AppConfig.SubscriptionTier(rawValue: "unknown") == nil, "invented product family")
             }

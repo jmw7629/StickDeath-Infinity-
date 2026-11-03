@@ -450,7 +450,7 @@ private final class NetworkTrap: URLProtocol {
                 for _ in 0..<100 where vm.planCheck != .known { try await Task.sleep(nanoseconds: 5_000_000) }
                 try require(vm.planCheck == .known && vm.cloudAllowance?.plan == .free, "server usage not loaded")
                 try require(vm.previewOnly && !vm.freeTextLocked && vm.suggestionsLockout == nil, "Free is not a preview")
-                try require(vm.budgetText == "Free: Spatter answers need Creator, Pro or credits.", "free plan line")
+                try require(vm.budgetText == "Free: Spatter answers need a paid plan or credits.", "free plan line")
                 let tip = SpatterSuggestedPrompt.all[0]
                 try require(vm.submitSuggested(tip, context: .general), "suggested prompt rejected")
                 try require(vm.submit("Write my essay", context: .general), "typed prompt rejected")
@@ -476,6 +476,39 @@ private final class NetworkTrap: URLProtocol {
                 try require(ownKey.submit("q", context: .general), "own-key request rejected"); try await idle(ownKey)
                 try require(ownKey.notice?.contains("did not count against your plan") == true, "own-key reply not disclosed")
             }
+            try await test("paid free trial previews Spatter with the trial note, sends nothing and spends no credits") {
+                var requests: [SpatterCloudRequest] = []
+                let previous = StudioPlanLimits.current
+                defer { StudioPlanLimits.current = previous }
+                // Apple's introductory offer: the Studio is unlocked, Spatter is preview-only.
+                StudioPlanLimits.current = .trial
+                let vm = SpatterAIViewModel(promptResponder: { request in
+                    requests.append(request)
+                    return SpatterCloudReply(schemaVersion: 1, reply: "Tips.", usageUnits: 1, budget: nil, allowance: nil)
+                }, usageLoader: { SpatterAllowance(plan: .pro, remaining: 500, limit: 500, resetsAt: nil, credits: 20) })
+                try require(vm.inTrial && vm.previewOnly && vm.previewNote == BillingCopy.spatterTrialNote, "store trial is not a preview")
+                vm.useCloud = true
+                for _ in 0..<100 where vm.planCheck != .known { try await Task.sleep(nanoseconds: 5_000_000) }
+                try require(vm.previewOnly, "credits bypassed the trial preview")
+                try require(vm.submitSuggested(SpatterSuggestedPrompt.all[0], context: .general), "suggested prompt rejected")
+                try require(vm.submit("Animate a jump", context: .general), "typed prompt rejected")
+                try require(requests.isEmpty, "a trial prompt reached the server")
+                let answers = vm.messages.filter { $0.role == .assistant }.map(\.content)
+                try require(answers.count == 2 && answers.allSatisfy { $0.contains(BillingCopy.spatterTrialNote) }, "trial note not shown")
+                try require(vm.allowanceLockout == BillingCopy.spatterTrialNote, "trial lockout copy")
+                vm.endSession()
+                // The server's trial flag alone also keeps Spatter in preview.
+                StudioPlanLimits.current = .unrestricted
+                let server = SpatterAIViewModel(promptResponder: { request in
+                    requests.append(request)
+                    return SpatterCloudReply(schemaVersion: 1, reply: "Tips.", usageUnits: 1, budget: nil, allowance: nil)
+                }, usageLoader: { SpatterAllowance(plan: .unlimited, remaining: nil, limit: nil, resetsAt: nil, inTrial: true) })
+                server.useCloud = true
+                for _ in 0..<100 where server.planCheck != .known { try await Task.sleep(nanoseconds: 5_000_000) }
+                try require(server.inTrial && server.previewOnly, "server trial flag ignored")
+                try require(server.submit("Animate a jump", context: .general) && requests.isEmpty, "server trial prompt was sent")
+                try require(server.messages.last?.content.contains(BillingCopy.spatterTrialNote) == true, "server trial note not shown")
+            }
             try await test("account and rooms guidance states current limits without inventing access") {
                 var calls = 0
                 let vm = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
@@ -495,21 +528,31 @@ private final class NetworkTrap: URLProtocol {
                 for fact in ["catalog v\(SpatterInstructionCatalog.version)", "selectionTranslate", "imagePlacement", "textUpdate", "pan L100–R100 and solo",
                              "SHA-256", "In-app account deletion is not available yet", "revocable, expiring code",
                              "multiClauseBrief", "tween", "frameClipboard", "projectSettings", "brushStroke", "batch",
-                             "USD 4.99 per month and USD 9.99 per month", "Preview plan", "Revert Spatter edit"] {
+                             "USD 4.99 per month (Creator), USD 9.99 per month (Pro) and USD 19.99 per month (Unlimited)", "Preview plan", "Revert Spatter edit",
+                             "areaSelection", "wandSelection", "libraryPicture", "projectExport"] {
                     try require(SpatterAIViewModel.currentStudioCapabilities.contains(fact), "Capability text missing: \(fact)")
                 }
-                try require(SpatterInstructionCatalog.version == 4 && SpatterInstructionCatalog.grammars.count == 40 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                try require(SpatterInstructionCatalog.version == 5 && SpatterInstructionCatalog.grammars.count == 44 && SpatterInstructionCatalog.commandNames.contains("translateElements")
                     && SpatterInstructionCatalog.commandNames.contains("fillAtPoint") && SpatterInstructionCatalog.commandNames.contains("selectElements")
                     && SpatterInstructionCatalog.commandNames.contains("setSourceReference")
                     && SpatterInstructionCatalog.commandNames.contains("updateText") && SpatterInstructionCatalog.commandNames.contains("appendFrames")
                     && SpatterInstructionCatalog.commandNames.contains("tweenFrames"), "Catalog does not list the reachable commands")
                 // Pricing (#207): planned price points only, no live prices, annual not configured, nothing charged.
-                for question in ["How much does the pro plan cost?", "Is there an annual price?", "What are the subscription tiers?"] {
+                // Owner decision 2026-10-20: three paid plans, each with a 3-day free trial offered by the
+                // App Store; during it the Studio is unlocked and Spatter only previews its suggested prompts.
+                for question in ["How much does the pro plan cost?", "Is there an annual price?", "What are the subscription tiers?",
+                                 "Is there a free trial?"] {
                     try require(vm.submit(question, context: .general), "Pricing request rejected")
                     try await idle(vm)
                     let answer = vm.messages.last!.content
-                    try require(answer.contains("USD 4.99 per month and USD 9.99 per month") && answer.contains("Annual pricing is not configured")
+                    try require(answer.contains("USD 4.99 per month (Creator), USD 9.99 per month (Pro) and USD 19.99 per month (Unlimited)")
+                        && answer.contains("Annual pricing is not configured")
                         && answer.contains("cannot see live store prices") && !answer.contains("$3") && answer.contains("Guidance only"), "Pricing answer invented or incomplete: \(question)")
+                    try require(answer.contains("Creator includes 250 Spatter prompts each billing period, Pro 500 and Unlimited has no cap"),
+                                "Pricing answer misstates the allowances: \(question)")
+                    try require(answer.contains("3-day free trial when the App Store offers it")
+                        && answer.contains("Spatter only shows its suggested prompts until the paid period begins")
+                        && !answer.contains("Neither plan starts with a trial period"), "Pricing answer misstates the trial: \(question)")
                 }
                 try require(calls == 0, "Pricing guidance used the cloud")
                 // Library context (#203): no document is shared and the guide says so.

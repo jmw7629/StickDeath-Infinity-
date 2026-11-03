@@ -20,41 +20,28 @@ begin
  return new;
 end $$;
 
--- Same signature as video-feed.sql (snapshot-stable paging through `as_of`, #217/#220).
+-- Same signature as video-feed.sql. 'list' is a first-page alias of feed_page below
+-- (keyset paging, #217/#220); reactions, follows, blocks and reports are unchanged.
 create or replace function sdi_private.feed_action(action text, post_id uuid default null, target uuid default null,
  enabled boolean default true, category text default 'recent', page integer default 0, reason text default null,
  as_of timestamptz default null)
 returns jsonb language plpgsql security definer set search_path='' as $$
-declare actor_id uuid:=auth.uid(); entry sdi_private.feed_posts; n integer; items jsonb; snapshot timestamptz;
+declare actor_id uuid:=auth.uid(); entry sdi_private.feed_posts; n integer;
 begin
  if actor_id is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor_id and not is_anonymous) then
   return jsonb_build_object('error','Sign in with a full account.'); end if;
+ -- Listing is keyset-only (#220): the offset path and its 40-page cap are gone.
+ -- 'list' answers the first page through feed_page (which meters the call once);
+ -- every later page must use sdi_feed_page with the returned cursor.
+ if action='list' then
+  if page is distinct from 0 then
+   return jsonb_build_object('error','Feed pages after the first use sdi_feed_page with the returned cursor.'); end if;
+  return sdi_private.feed_page(category,null,as_of);
+ end if;
  insert into sdi_private.feed_budget values(actor_id,clock_timestamp(),1)
  on conflict(actor) do update set attempts=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then 1 else feed_budget.attempts+1 end,
  started_at=case when feed_budget.started_at<clock_timestamp()-interval '1 minute' then clock_timestamp() else feed_budget.started_at end returning attempts into n;
  if n>60 then return jsonb_build_object('error','Please wait before trying again.'); end if;
- if action='list' then
-  if page<0 or page>39 or category not in('recent','following','featured','trending') then return jsonb_build_object('error','Invalid feed page.'); end if;
-  snapshot:=least(coalesce(as_of,clock_timestamp()),clock_timestamp());
-  if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
-  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
-   select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,
-    (select count(*) from sdi_private.feed_likes l where l.post=p.id) as likes,
-    exists(select 1 from sdi_private.feed_likes l where l.post=p.id and l.actor=actor_id) as liked,
-    exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator) as following
-   from sdi_private.feed_posts p join public.sdi_watch_media m on m.id=p.media_id
-   where p.visible and m.approved and m.owner_id=p.creator and m.render_digest is not null
-   and p.published_at<=snapshot
-   and (m.expires_at is null or m.expires_at>clock_timestamp())
-   and not sdi_private.creator_restricted(p.creator)
-   and not exists(select 1 from sdi_private.feed_blocks b where (b.actor=actor_id and b.creator=p.creator) or (b.actor=p.creator and b.creator=actor_id))
-   and (category<>'featured' or p.featured)
-   and (category<>'following' or exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=p.creator))
-   order by case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id and l.created_at>clock_timestamp()-interval '7 days') else 0 end desc,
-    p.published_at desc,p.id desc limit 25 offset page*25
-  ) item;
-  return jsonb_build_object('posts',items,'has_more',jsonb_array_length(items)=25,'as_of',snapshot);
- end if;
  if action in('follow','block') then
   if target is null or target=actor_id or not exists(select 1 from auth.users where id=target) then return jsonb_build_object('error','Creator unavailable.'); end if;
   if action='block' then
@@ -233,6 +220,8 @@ for each row execute function sdi_private.retain_artifact_after_approval();
 -- instant; likes recorded after the snapshot do not move rows. An unlike or a
 -- moderation removal can still lower or drop a row: that row is simply absent or
 -- appears once more further down, which the client de-duplicates by identity.
+-- `poster_url` is the worker-extracted thumbnail of the hosted copy (columns added
+-- by feed-publication.sql, #217) or null, in which case clients show a placeholder.
 -- `can_download` is the creator's export permission AND a current paid
 -- entitlement of the viewer (billing.sql); the Free plan cannot download (#219).
 create index if not exists feed_posts_recent on sdi_private.feed_posts(published_at desc,id desc) where visible;
@@ -263,7 +252,7 @@ begin
  if snapshot<clock_timestamp()-interval '1 day' then return jsonb_build_object('error','This feed snapshot has expired. Refresh the feed.'); end if;
  paid:=exists(select 1 from sdi_private.entitlements e where e.user_id=actor_id);
  with eligible as (
-  select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,
+  select p.id,p.creator,p.creator_name,p.caption,p.published_at,p.allow_export,m.title,m.url,m.poster_url,
    case when category='trending' then (select count(*) from sdi_private.feed_likes l where l.post=p.id
     and l.created_at>snapshot-interval '7 days' and l.created_at<=snapshot) else 0 end::bigint as score
   from sdi_private.feed_posts p join public.sdi_watch_media m on m.id=p.media_id
@@ -284,7 +273,7 @@ begin
  select count(*)::integer,
   coalesce(jsonb_agg(jsonb_build_object('id',x.id,'creator',x.creator,'creator_name',x.creator_name,'caption',x.caption,
    'published_at',x.published_at,'allow_export',x.allow_export,'can_download',x.allow_export and paid,'title',x.title,'url',x.url,
-   'score',x.score,
+   'poster_url',x.poster_url,'score',x.score,
    'likes',(select count(*) from sdi_private.feed_likes l where l.post=x.id),
    'liked',exists(select 1 from sdi_private.feed_likes l where l.post=x.id and l.actor=actor_id),
    'following',exists(select 1 from sdi_private.feed_follows f where f.actor=actor_id and f.creator=x.creator))

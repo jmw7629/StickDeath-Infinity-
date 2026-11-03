@@ -43,7 +43,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         is AccountState.RetryableFailure -> Button({ account.retryRestore() }, enabled = !account.working) { Text("Retry") }
         is AccountState.SignedIn -> {
             TextButton({ account.signOut() }, enabled = !account.working) { Text("Sign out") }
-            CommunitySection(account)
+            if (account.needsNewPassword) NewPasswordForm(account) else CommunitySection(account)
         }
         is AccountState.Restoring -> Unit
         else -> SignInForm(account) { provider -> account.beginOAuth(provider)?.let { url ->
@@ -51,6 +51,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
                 .onFailure { account.browserUnavailable() }
         } }
     }
+}
+
+@Composable private fun NewPasswordForm(account: AccountViewModel) {
+    var password by remember { mutableStateOf("") }
+    OutlinedTextField(password, { password = it.take(128) }, label = { Text("New password") }, singleLine = true,
+        visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+    Button({ account.updatePassword(password); password = "" }, enabled = !account.working && password.length >= 8) { Text("Set new password") }
 }
 
 @Composable private fun SignInForm(account: AccountViewModel, startProvider: (OAuthProvider) -> Unit) {
@@ -68,6 +75,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         else Button({ account.signIn(email, password); password = "" }, enabled = !account.working) { Text("Sign in") }
         TextButton({ creating = !creating }) { Text(if (creating) "I have an account" else "Create an account") }
     }
+    if (!creating) TextButton({ account.requestPasswordReset(email) }, enabled = !account.working) { Text("Forgot password? Email a reset link") }
     TextButton({ account.signInAsGuest() }, enabled = !account.working) { Text("Continue as guest") }
     val providers = account.providers
     if (providers.isEmpty()) Text("Apple, Google, GitHub and Microsoft sign-in are not configured for this build.")
@@ -94,6 +102,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         is Load.Loaded -> {
             if (feed.value.posts.isEmpty()) Text("No approved videos here yet.")
             feed.value.posts.forEach { post ->
+                FeedPosterImage(post)
                 Text("${post.title.ifBlank { "Untitled" }} — ${post.creatorName}")
                 if (post.caption.isNotBlank()) Text(post.caption, style = MaterialTheme.typography.bodySmall)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -150,6 +159,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
     Text(com.stickdeath.studio.billing.PlanCopy.usage(usage), style = MaterialTheme.typography.bodySmall)
     if (account.spatterUsage is Load.Failed) TextButton({ account.refreshSpatterUsage() }) { Text("Check my Spatter plan again") }
     val gate = account.spatterGate
+    if (gate is com.stickdeath.studio.billing.SpatterGate.TrialPreview) Text(com.stickdeath.studio.billing.PlanCopy.SPATTER_TRIAL_PREVIEW, style = MaterialTheme.typography.bodySmall)
     if (gate is com.stickdeath.studio.billing.SpatterGate.Send && gate.payAsYouGo) Text("Pay as you go: the server spends 1 Spatter credit per prompt.", style = MaterialTheme.typography.bodySmall)
     OutlinedTextField(question, { question = it.take(4000) }, label = { Text("Ask Spatter for guidance") }, maxLines = 4, modifier = Modifier.fillMaxWidth())
     Button({ account.askSpatter(question) }, enabled = question.isNotBlank() && account.spatterReply !is Load.Loading) { Text("Ask") }

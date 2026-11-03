@@ -12,6 +12,119 @@ struct StudioTimeline: View {
     @State private var timingCapture: StudioFrameTimingCapture?
     @State private var tweenCapture: StudioViewModel.TweenCapture?
 
+    /// Projects up to this many frames lay the strip out eagerly, so every frame
+    /// button exists for VoiceOver and UI automation even when scrolled out of
+    /// view; longer projects keep the lazy strip so thumbnails render on demand.
+    private static let eagerFrameLimit = 60
+
+    @ViewBuilder
+    private var frameStrip: some View {
+        if vm.frames.count <= Self.eagerFrameLimit {
+            HStack(spacing: 4) { frameCells }
+        } else {
+            LazyHStack(spacing: 4) { frameCells }
+        }
+    }
+
+    private var frameCells: some View {
+        ForEach(Array(vm.frames.enumerated()), id: \.element.id) { i, frame in
+            frameCell(index: i, frame: frame)
+        }
+    }
+
+    private func frameCell(index i: Int, frame: AnimationFrame) -> some View {
+        Button(action: { vm.selectFrame(frame.id) }) {
+            ZStack(alignment: .bottomTrailing) {
+                // Mini canvas render
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.white)
+                    .frame(width: 36, height: 36)
+
+                StudioFrameThumbnail(vm: vm, frame: frame)
+                .frame(width: 36, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                // Exposure hold badge (frames held longer than one tick)
+                if frame.durationTicks > 1 {
+                    Text("×\(frame.durationTicks)")
+                        .font(.specialElite(7))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 3).padding(.vertical, 1)
+                        .background(Color.black.opacity(0.65), in: Capsule())
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(2)
+                        .accessibilityHidden(true)
+                }
+                // Frame number
+                Text("\(i + 1)")
+                    .font(.specialElite(7))
+                    .foregroundColor(vm.currentFrameIndex == i ? .red : .white.opacity(0.4))
+                    .padding(2)
+            }
+            .frame(width: 36, height: 36)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(vm.currentFrameIndex == i ? Color.red : Color.white.opacity(0.1),
+                            lineWidth: vm.currentFrameIndex == i ? 2 : 1)
+            )
+        }
+        .id(frame.id)
+        .accessibilityLabel("Frame \(i + 1)")
+        .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
+        .accessibilityHint("Exposure: \(frame.durationTicks) ticks at \(vm.fps) FPS")
+        .accessibilityIdentifier("studio.frame." + frame.id)
+        .contextMenu {
+            Button("Copy frame") { vm.copyFrame(frame.id) }
+                .accessibilityIdentifier("studio.frame-menu.copy")
+            Button("Cut frame") { vm.cutFrame(frame.id) }
+                .disabled(!vm.canCutTimelineFrame)
+                .accessibilityIdentifier("studio.frame-menu.cut")
+            Button("Paste frame after this") { vm.pasteFrame(after: frame.id) }
+                .disabled(!vm.canPasteTimelineFrame)
+                .accessibilityIdentifier("studio.frame-menu.paste-after")
+            Button("Duplicate frame") { vm.duplicateFrame(frame.id) }
+                .accessibilityIdentifier("studio.frame-menu.duplicate")
+            Button("Tween to next frame…") {
+                tweenCapture = vm.prepareTween(frame.id)
+                if tweenCapture == nil { vm.message = "Select a frame with a following endpoint, stop playback and finish any draft before tweening." }
+            }
+            .disabled(i + 1 >= vm.frames.count)
+            .accessibilityIdentifier("studio.frame-menu.tween")
+            Menu("Frame exposure") {
+                ForEach([1, 2, 3, 6, 12, 24, 60], id: \.self) { ticks in
+                    Button("\(ticks) ticks (\(String(format: "%.2f", Double(ticks) / Double(vm.fps)))s)") {
+                        vm.setFrameHold(frame.id, ticks: ticks)
+                    }.accessibilityIdentifier("studio.frame-menu.hold.\(ticks)")
+                }
+            }
+            Button("Frame range / timing…") {
+                guard !vm.isPlaying else { vm.message = "Stop playback before editing frame timing."; return }
+                guard let index = vm.frames.firstIndex(where: { $0.id == frame.id }) else { vm.message = "This frame is no longer available."; return }
+                timingCapture = StudioFrameTimingCapture(document: vm.document, index: index)
+            }
+            .accessibilityIdentifier("studio.frame-menu.range-exposure")
+            Menu("Repeat frame") {
+                ForEach([2, 4, 8, 12, 24], id: \.self) { copies in
+                    Button("Add \(copies) copies (\(String(format: "%.2f", Double(copies * frame.durationTicks) / Double(vm.fps)))s)") {
+                        _ = vm.repeatFrame(frame.id, additionalCopies: copies)
+                    }
+                    .disabled(vm.frames.count + copies > 1000)
+                    .accessibilityIdentifier("studio.frame-menu.repeat.\(copies)")
+                }
+            }
+            .accessibilityIdentifier("studio.frame-menu.repeat")
+            Button("Move earlier") { vm.moveFrame(frame.id, offset: -1) }
+                .disabled(i == 0)
+                .accessibilityIdentifier("studio.frame-menu.earlier")
+            Button("Move later") { vm.moveFrame(frame.id, offset: 1) }
+                .disabled(i == vm.frames.count - 1)
+                .accessibilityIdentifier("studio.frame-menu.later")
+            Button("Delete this frame", role: .destructive) { vm.deleteFrame(frame.id) }
+                .disabled(vm.frames.count <= 1)
+                .accessibilityIdentifier("studio.frame-menu.delete")
+        }
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             // Prev
@@ -51,100 +164,7 @@ struct StudioTimeline: View {
             // Frame thumbnails
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 4) {
-                        ForEach(Array(vm.frames.enumerated()), id: \.element.id) { i, frame in
-                            Button(action: { vm.selectFrame(frame.id) }) {
-                                ZStack(alignment: .bottomTrailing) {
-                                    // Mini canvas render
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(Color.white)
-                                        .frame(width: 36, height: 36)
-
-                                    StudioFrameThumbnail(vm: vm, frame: frame)
-                                    .frame(width: 36, height: 36)
-                                    .clipShape(RoundedRectangle(cornerRadius: 4))
-
-                                    // Exposure hold badge (frames held longer than one tick)
-                                    if frame.durationTicks > 1 {
-                                        Text("×\(frame.durationTicks)")
-                                            .font(.specialElite(7))
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 3).padding(.vertical, 1)
-                                            .background(Color.black.opacity(0.65), in: Capsule())
-                                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                                            .padding(2)
-                                            .accessibilityHidden(true)
-                                    }
-                                    // Frame number
-                                    Text("\(i + 1)")
-                                        .font(.specialElite(7))
-                                        .foregroundColor(vm.currentFrameIndex == i ? .red : .white.opacity(0.4))
-                                        .padding(2)
-                                }
-                                .frame(width: 36, height: 36)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .stroke(vm.currentFrameIndex == i ? Color.red : Color.white.opacity(0.1),
-                                                lineWidth: vm.currentFrameIndex == i ? 2 : 1)
-                                )
-                            }
-                            .id(frame.id)
-                            .accessibilityLabel("Frame \(i + 1)")
-                            .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
-                            .accessibilityHint("Exposure: \(frame.durationTicks) ticks at \(vm.fps) FPS")
-                            .accessibilityIdentifier("studio.frame." + frame.id)
-                            .contextMenu {
-                                Button("Copy frame") { vm.copyFrame(frame.id) }
-                                    .accessibilityIdentifier("studio.frame-menu.copy")
-                                Button("Cut frame") { vm.cutFrame(frame.id) }
-                                    .disabled(!vm.canCutTimelineFrame)
-                                    .accessibilityIdentifier("studio.frame-menu.cut")
-                                Button("Paste frame after this") { vm.pasteFrame(after: frame.id) }
-                                    .disabled(!vm.canPasteTimelineFrame)
-                                    .accessibilityIdentifier("studio.frame-menu.paste-after")
-                                Button("Duplicate frame") { vm.duplicateFrame(frame.id) }
-                                    .accessibilityIdentifier("studio.frame-menu.duplicate")
-                                Button("Tween to next frame…") {
-                                    tweenCapture = vm.prepareTween(frame.id)
-                                    if tweenCapture == nil { vm.message = "Select a frame with a following endpoint, stop playback and finish any draft before tweening." }
-                                }
-                                .disabled(i + 1 >= vm.frames.count)
-                                .accessibilityIdentifier("studio.frame-menu.tween")
-                                Menu("Frame exposure") {
-                                    ForEach([1, 2, 3, 6, 12, 24, 60], id: \.self) { ticks in
-                                        Button("\(ticks) ticks (\(String(format: "%.2f", Double(ticks) / Double(vm.fps)))s)") {
-                                            vm.setFrameHold(frame.id, ticks: ticks)
-                                        }.accessibilityIdentifier("studio.frame-menu.hold.\(ticks)")
-                                    }
-                                }
-                                Button("Frame range / timing…") {
-                                    guard !vm.isPlaying else { vm.message = "Stop playback before editing frame timing."; return }
-                                    guard let index = vm.frames.firstIndex(where: { $0.id == frame.id }) else { vm.message = "This frame is no longer available."; return }
-                                    timingCapture = StudioFrameTimingCapture(document: vm.document, index: index)
-                                }
-                                .accessibilityIdentifier("studio.frame-menu.range-exposure")
-                                Menu("Repeat frame") {
-                                    ForEach([2, 4, 8, 12, 24], id: \.self) { copies in
-                                        Button("Add \(copies) copies (\(String(format: "%.2f", Double(copies * frame.durationTicks) / Double(vm.fps)))s)") {
-                                            _ = vm.repeatFrame(frame.id, additionalCopies: copies)
-                                        }
-                                        .disabled(vm.frames.count + copies > 1000)
-                                        .accessibilityIdentifier("studio.frame-menu.repeat.\(copies)")
-                                    }
-                                }
-                                .accessibilityIdentifier("studio.frame-menu.repeat")
-                                Button("Move earlier") { vm.moveFrame(frame.id, offset: -1) }
-                                    .disabled(i == 0)
-                                    .accessibilityIdentifier("studio.frame-menu.earlier")
-                                Button("Move later") { vm.moveFrame(frame.id, offset: 1) }
-                                    .disabled(i == vm.frames.count - 1)
-                                    .accessibilityIdentifier("studio.frame-menu.later")
-                                Button("Delete this frame", role: .destructive) { vm.deleteFrame(frame.id) }
-                                    .disabled(vm.frames.count <= 1)
-                                    .accessibilityIdentifier("studio.frame-menu.delete")
-                            }
-                        }
-                    }
+                    frameStrip
                 }
                 .accessibilityIdentifier("studio.frame-timeline")
                 .onChange(of: [vm.currentFrame.id, String(vm.currentFrameIndex)], initial: true) { _, _ in

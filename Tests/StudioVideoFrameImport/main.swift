@@ -25,6 +25,31 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         return pixel
     }
 
+    /// RGBA at (`x`, `y`), top-left origin, of a decoded PNG.
+    static func pixel(_ data: Data, x: Int, y: Int) throws -> [UInt8] {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let space = CGColorSpace(name: CGColorSpace.sRGB), (0..<image.width).contains(x), (0..<image.height).contains(y)
+        else { throw TestFailure(message: "undecodable output PNG or pixel outside it") }
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let rendered = bytes.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8,
+                bytesPerRow: image.width * 4, space: space,
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height)); return true
+        }
+        try require(rendered, "output pixel decode failed")
+        let start = (y * image.width + x) * 4
+        return Array(bytes[start..<start + 4])
+    }
+    static func colorName(_ rgba: [UInt8]) -> String {
+        let r = Int(rgba[0]), g = Int(rgba[1]), b = Int(rgba[2])
+        if r > 180 && g > 180 && b > 180 { return "white" }
+        if r > 180 && g < 90 && b < 90 { return "red" }
+        if g > 180 && r < 90 && b < 90 { return "green" }
+        if b > 180 && r < 90 && g < 90 { return "blue" }
+        return "unclassified(\(r),\(g),\(b))"
+    }
     static func main() async {
         do { try await run() }
         catch { print("FAIL production video frame import: \(error)"); exit(1) }
@@ -130,6 +155,48 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             catch is StudioVideoFrameImportService.Failure { }
             try clean()
         }
+        // #201: the panel's rotation and aspect frame the decoded pixels.
+        let quadrants = root.appendingPathComponent("quadrants.mov")
+        try await VideoFrameFixture.makeQuadrantMovie(quadrants)
+        typealias Aspect = StudioVideoFrameAspect
+        let framingCases: [(rotation: Int, aspect: Aspect, width: Int, height: Int, corners: [String])] = [
+            (0, .original, 96, 64, ["red", "green", "blue", "white"]),
+            (90, .original, 64, 96, ["blue", "red", "white", "green"]),
+            (180, .original, 96, 64, ["white", "blue", "green", "red"]),
+            (270, .original, 64, 96, ["green", "white", "red", "blue"]),
+            (0, .square, 64, 64, ["red", "green", "blue", "white"]),
+            (0, .portrait9x16, 36, 64, ["red", "green", "blue", "white"]),
+            (90, .landscape16x9, 64, 36, ["blue", "red", "white", "green"])]
+        for framing in framingCases {
+            let frame = try await service.extract(from: quadrants, projectFrameIndex: 0, fps: 30,
+                mapping: .init(rotationDegrees: framing.rotation, aspect: framing.aspect), scratchParent: scratch)
+            let label = "\(framing.rotation)° \(framing.aspect.rawValue)"
+            try require(frame.image.width == framing.width && frame.image.height == framing.height
+                && frame.image.originalWidth == framing.width && frame.image.originalHeight == framing.height,
+                "framed size \(frame.image.width)×\(frame.image.height) for \(label)")
+            try require(frame.mapping.rotationDegrees == framing.rotation && frame.mapping.aspect == framing.aspect,
+                "framing missing from the frame's mapping for \(label)")
+            try require(frame.metadata.orientedWidth == 96 && frame.metadata.orientedHeight == 64,
+                "framing altered measured metadata for \(label)")
+            let w = framing.width, h = framing.height
+            let seen = try [(4, 4), (w - 5, 4), (4, h - 5), (w - 5, h - 5)].map { try colorName(pixel(frame.image.normalizedPNG, x: $0.0, y: $0.1)) }
+            try require(seen == framing.corners, "\(label) corners \(seen), expected \(framing.corners)")
+            try clean()
+        }
+        try require(StudioVideoFraming.outputSize(width: 1920, height: 1080, rotationDegrees: 90, aspect: .landscape16x9) == (1080, 607)
+            && StudioVideoFraming.outputSize(width: 1080, height: 1920, rotationDegrees: 0, aspect: .square) == (1080, 1080)
+            && StudioVideoFraming.outputSize(width: 1, height: 4096, rotationDegrees: 0, aspect: .landscape16x9) == (1, 1)
+            && Aspect.landscape4x3.cropRect(width: 1000, height: 600) == (100, 0, 800, 600)
+            && Aspect.portrait3x4.cropRect(width: 600, height: 1000) == (0, 100, 600, 800), "framing geometry")
+        for degrees in [45, -90, 360] {
+            do {
+                _ = try await service.extract(from: quadrants, projectFrameIndex: 0, fps: 30,
+                    mapping: .init(rotationDegrees: degrees), scratchParent: scratch)
+                throw TestFailure(message: "rotation \(degrees) accepted")
+            } catch StudioVideoFrameImportService.Failure.invalidMapping { }
+            try clean()
+        }
+        print("PASS panel rotation and aspect frame real decoded pixels; invalid rotations refused (#201)")
         let link = root.appendingPathComponent("link.mov")
         try fm.createSymbolicLink(at: link, withDestinationURL: movie)
         do {

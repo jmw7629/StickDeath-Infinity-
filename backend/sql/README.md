@@ -41,12 +41,15 @@ permanent votes. Native UI includes real video playback, selection and errors.
 Still required: moderation/appeals UI, finalized records/badges, publication service
 integration, account directory picker, abuse analysis and final service verification.
 
-`video-feed.sql` implements an approved-video wall, bounded25-item pages (40-page
-cap), Recent/Following/Featured/Trending ranking, idempotent likes/follows, creator
+`video-feed.sql` implements an approved-video wall, bounded 25-item pages,
+Recent/Following/Featured/Trending ranking, idempotent likes/follows, creator
 blocks and categorized reports. Only the publishing service inserts feed posts;
 metadata and media ownership/approval/digest are checked on reads and reactions.
-Trending uses7-day likes; pages use offset ranking and native identity deduplication,
-so concurrent ranking changes require refresh rather than a snapshot guarantee.
+Trending uses 7-day likes. Paging is keyset-only (#220): `sdi_feed_page` in
+`feed-integrity.sql` orders every ranking by (score, published_at, id) and continues
+strictly after an opaque cursor under the page-0 snapshot instant, so equal
+timestamps tie-break on id and nothing repeats or skips; there is no offset path and
+no server page cap. `sdi_feed_action('list')` answers only the first page.
 Native UI uses actual AVPlayer playback and public URL sharing; no text post/comment
 composer is exposed. Creator-permitted file export, moderation processing and
 publication ingestion remain implementation work. Nothing has been deployed.
@@ -194,6 +197,11 @@ transaction; if approval lapsed or cancellation raced the copy, the job becomes
 export permission is the new `render_reviews.allow_export` field with the
 `sdi_export_consent` setter (default off, not part of approval evidence). Creators
 queue the feed destination through `sdi_creator_review('publish_feed', ...)`.
+Poster thumbnails (#217): finish optionally records `poster_url`, `poster_digest`
+(SHA-256) and `poster_bytes` (1..262144) on `sdi_watch_media`, all three or none;
+the worker extracts one JPEG frame from the digest-verified copy. `sdi_feed_page`
+returns `poster_url` (null when absent; clients show a placeholder) and both removal
+claims return the poster so it is deleted with its video.
 
 `rooms-v2.sql` adds the shared project reference, title and `view`/`edit` permissions
 to `sdi_rooms` (owner-set, revisioned), `editor`/`viewer` member roles with an
@@ -228,8 +236,12 @@ preferences (default off).
 `billing.sql` stores product identifiers, provider events (unique provider+event id),
 subscriptions with a provider-reported paid-through date, an entitlements view, a
 finance ledger of provider-reported amounts and an audit table. No price is stored;
-the approved offers are the two monthly tiers at USD 4.99 and USD 9.99 and annual
-periods cannot be approved until the owner records explicit configuration. Events are
+the approved offers (owner decision 2026-10-20) are three monthly tiers, `creator`
+USD 4.99, `pro` USD 9.99 and `unlimited` USD 19.99, ranked unlimited > pro > creator
+by `sdi_private.billing_tier_rank`, each with a 3-day free trial recorded as
+`subscriptions.in_trial` (exposed as `entitlements.in_trial`, also true for status
+`trialing`); annual periods cannot be approved until the owner records explicit
+configuration. Events are
 applied only by the service role from verified provider payloads; out-of-order events
 never move a subscription backwards; unapproved products grant nothing. Clients read
 `sdi_my_entitlement` and write nothing. Edge-function contracts are in
@@ -375,6 +387,22 @@ outbound connection: `python3 -m unittest discover -s backend/tests -t .` from t
 repository root. Service sweeps are run by an operator or host timer through
 `python3 -m backend.ops.sweeps --all` (see `docs/OPERATING_RUNBOOK.md`).
 
+## Live upgrades (`upgrades/`)
+
+The bundle installs a fresh project and fails on an installed one (its candidates use
+plain `create table`). A change to a candidate that is already live ships with an
+idempotent upgrade in `backend/sql/upgrades/` that brings an installed project to the
+same schema; the owner runs it once in the SQL editor (rerunning changes nothing).
+Upgrades are not part of the apply order or the bundle.
+
+* `upgrades/2026-10-20-three-tiers.sql`: the three-tier/free-trial change above
+  (billing.sql, admin-users.sql, users-profiles.sql, spatter-draft-jobs.sql). It
+  replaces `sdi_billing_apply_event` with the version that takes `in_trial`, so
+  deploy the matching `backend/billing` handlers after it. Checked locally by
+  installing the previous bundle, applying the upgrade twice, running every
+  `tests/*.sql` file, and comparing functions, columns, constraints and views with
+  a fresh install of the new candidates (identical).
+
 ## Apply order (single source of truth; the local harness reads this block)
 
 <!-- apply-order -->
@@ -439,6 +467,6 @@ repository root. Service sweeps are run by an operator or host timer through
 
 `users-profiles.sql`: the `public.users` profile row the native app reads and writes (own row only; the member inserts it after sign-up and may edit username, bio, avatar, onboarding, skill level and interests; `role` and `subscription_tier` are server-owned and not client-writable; administrator authority stays in `sdi_private.admin_roles`).
 
-`worker-configuration.sql` (#248): masked provider-configuration health. A service worker reports which of its named settings are present as booleans only (`sdi_worker_configuration`; any other value type is refused so no secret can be stored), and administrators read presence, the missing names and staleness through `sdi_admin_configuration`. `backend.ops.sweeps` reports its own settings after every run. Tested by `tests/120_worker_configuration.sql`.
+`worker-configuration.sql` (#248): masked provider-configuration health. A service worker reports which of its named settings are present as booleans only (`sdi_worker_configuration`; any other value type is refused so no secret can be stored), and administrators read presence, the missing names and staleness through `sdi_admin_configuration`. `backend.ops.sweeps` reports its own settings after every run. Tested by `tests/120_worker_configuration.sql`. The provider health view (`sdi_admin_provider_health`, overview capability, MFA) groups that presence per integration (Spatter draft renderer, APNs, FCM, email, Stripe, YouTube) as configured yes/no/unreported with the missing setting names, and adds the last success and failure with a closed error class: Stripe from `provider_events`, push from `announcement_deliveries` (device unregistrations are not provider failures), YouTube from `publish_jobs`, Spatter from `spatter_draft_jobs`, and email from the service-only `sdi_provider_outcome` report (`backend.ops.provider_health`, wired into `EmailWorker(on_outcome=...)`). No value, fingerprint, message or identifier is stored or returned. Tested by `tests/125_provider_health.sql`.
 
-`spatter-draft-jobs.sql` (#212/#214): a draft's `review_pending` call may record its retained private copy (`object_key`, `byte_count`, `artifact_expires_at` ≤ 14 days) as a `render_artifacts` row; for such a retained draft `admin-approval.sql`'s `review_spatter_draft_retained` lets the owner alone renew the preview through `preview-renewal.sql` and approve the exact digest with no destinations (approved, not scheduled; `release_allowed` still needs a destination, and adding one returns the review to pending). One job per UTC day behind the `spatter_daily_video` agent gate, at most three attempts, 15-minute leases, missed days recorded; adds `render_reviews.storyboard` and `source_project_digest` and extends `invalidate_render_approval`. Unapplied; no capacity or schedule is created. Its #209 metering block applies the owner's plan rules as revised 2026-10-15: Free is never served (every Free request is refused with `upgrade_required`, upgrade `creator_or_pro`, before any counter or reservation; the former `free_prompts` column and `month:`/`free` buckets were removed because the file was never applied), Creator = `floor(creator_period_budget_microusd / prompt_cost_estimate_microusd)` server-funded prompts per billing period (defaults 3490000 / 20000 = 174; budget capped at the 4990000 gross price; both owner-editable via `sdi_spatter_usage_admin`, which also reports `creator_period_limit`), Creator's own-AI-key prompts never reach the server, Pro unlimited, trialing subscriptions metered as their own tier. Actual provider cost is not recorded: the commit path carries provider usage units only. Spatter credits (owner decision 2026-10-15, later): owner-approved consumable packs in `spatter_credit_packs` (no prices; `sdi_spatter_credit_admin` lists packs for finance, and only the owner with a recent step-up approves packs or makes a signed adjustment, audited in `finance_audit`), an append-only `spatter_credit_ledger` (balance = sum, never negative; purchases/refunds unique per provider transaction) fed only by the service-only `sdi_spatter_credits_grant` (approved packs, idempotent, sandbox flagged `livemode=false`, never a finance row) and `sdi_spatter_credits_refund` (claws back up to the balance, records the shortfall). Reservations spend caps first, then the plan allowance, then one credit (Pro never spends credits; Free with credits pays as it goes); a release refunds the credit; usage reports add `credits` and `available`.
+`spatter-draft-jobs.sql` (#212/#214): a draft's `review_pending` call may record its retained private copy (`object_key`, `byte_count`, `artifact_expires_at` ≤ 14 days) as a `render_artifacts` row; for such a retained draft `admin-approval.sql`'s `review_spatter_draft_retained` lets the owner alone renew the preview through `preview-renewal.sql` and approve the exact digest with no destinations (approved, not scheduled; `release_allowed` still needs a destination, and adding one returns the review to pending). One job per UTC day behind the `spatter_daily_video` agent gate, at most three attempts, 15-minute leases, missed days recorded; adds `render_reviews.storyboard` and `source_project_digest` and extends `invalidate_render_approval`. Unapplied; no capacity or schedule is created. Its #209 metering block applies the owner's plan rules as revised 2026-10-15: Free is never served (every Free request is refused with `upgrade_required`, upgrade `creator_or_pro`, before any counter or reservation; the former `free_prompts` column and `month:`/`free` buckets were removed because the file was never applied), paid tiers (owner decision 2026-10-20) = creator 250 and pro 500 server-funded prompts per billing period (`spatter_usage_controls.creator_period_prompts` / `pro_period_prompts`, owner-editable via `sdi_spatter_usage_admin`, which reports `period_limits`), unlimited has no plan allowance, and every tier still obeys the per-user daily safety cap, per-minute rate, `global_daily_cap` and the emergency stop; own-AI-key prompts never reach the server; an account whose only entitlements are in a free trial (`entitlements.in_trial`) is refused with `upgrade_required` (plan = trial tier, `trial` true, `upgrade` `after_trial`) before anything is counted or any credit is spent, and the first paid period converts it to the normal allowance. Actual provider cost is not recorded: the commit path carries provider usage units only. Spatter credits (owner decision 2026-10-15, later): owner-approved consumable packs in `spatter_credit_packs` (no prices; `sdi_spatter_credit_admin` lists packs for finance, and only the owner with a recent step-up approves packs or makes a signed adjustment, audited in `finance_audit`), an append-only `spatter_credit_ledger` (balance = sum, never negative; purchases/refunds unique per provider transaction) fed only by the service-only `sdi_spatter_credits_grant` (approved packs, idempotent, sandbox flagged `livemode=false`, never a finance row) and `sdi_spatter_credits_refund` (claws back up to the balance, records the shortfall). Reservations spend caps first, then the plan allowance, then one credit (Unlimited never spends credits; Free with credits pays as it goes); a release refunds the credit; usage reports add `credits` and `available`.

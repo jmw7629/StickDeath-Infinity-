@@ -64,6 +64,21 @@ def verify():
                 problems.append(f"{name}: structure differs from expectations")
         elif not info.get("reason"):
             problems.append(f"{name}: a rejected fixture needs a reason")
+    reexport = ROOT / "reexport.json"
+    if not reexport.is_file() or json.loads(reexport.read_text(encoding="utf-8")) != make_fixtures.reexport_expectations():
+        problems.append("reexport.json differs from make_fixtures.py; regenerate or review")
+    else:
+        golden = ROOT / "assets" / make_fixtures.reexport_expectations()["fixture"]
+        if golden.is_file() and make_fixtures.interchange_projection(decode(golden.read_bytes())) != \
+                make_fixtures.reexport_expectations()["projection"]:
+            problems.append("reexport.json does not describe the committed golden fixture")
+        android = ROOT / "android-reexport" / golden.name.replace(".sdi", ".android.sdi")
+        try:
+            if make_fixtures.canonical(make_fixtures.interchange_projection(decode(android.read_bytes()))) != \
+                    make_fixtures.canonical(make_fixtures.reexport_expectations()["projection"]):
+                problems.append(f"{android.name}: Android re-export differs from reexport.json")
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+            problems.append(f"{android.name}: {error}")
     return problems
 
 

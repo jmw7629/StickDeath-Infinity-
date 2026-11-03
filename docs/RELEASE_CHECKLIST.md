@@ -54,7 +54,7 @@ Record the run id, attempt and outcome for each required job on the release comm
 
 | Field | Current source value | Owner decision needed |
 | --- | --- | --- |
-| Bundle identifier | `com.willisnmb.stickdeathinfinity` (`StickDeathInfinity/Info.plist`) | confirm matches App Store Connect record |
+| Bundle identifier | `com.willisbmb.StickDeathInfinity` (`StickDeathInfinity/Info.plist`) | confirm matches App Store Connect record |
 | Display name | `StickDeath ∞`; bundle name `StickDeath Infinity` | confirm |
 | Version / build | `1.0.0` / `1` (`CFBundleShortVersionString`, `CFBundleVersion`) | set release values |
 | Category, age rating, description, keywords, support URL, marketing URL | not in source | **placeholder** |

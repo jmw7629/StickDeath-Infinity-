@@ -309,6 +309,27 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
                 && !AdminPublishStage.releasing.isOffPath && AdminPublishStage.failed.isOffPath, "release path progress")
         }
 
+        await test("provider health decodes closed vocabularies and fails closed on secrets or free text") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let good = #"{"providers":[{"provider":"email","title":"Email sender","configured":"no","missing":["sdi_mail_credentials_file"],"configuration_reported_at":"2026-10-19T20:00:00Z","configuration_stale":false,"last_success_at":null,"last_failure_at":"2026-10-19T21:00:00Z","last_error_class":"authentication","consecutive_failures":2,"health":"unconfigured"},{"provider":"stripe","title":"Stripe billing","configured":"yes","missing":[],"configuration_reported_at":"2026-10-19T20:00:00Z","configuration_stale":false,"last_success_at":"2026-10-19T22:00:00Z","last_failure_at":null,"last_error_class":null,"consecutive_failures":0,"health":"healthy"},{"provider":"youtube","title":"YouTube channel","configured":"unreported","missing":["sdi_youtube_client_file","sdi_youtube_token_file"],"configuration_reported_at":null,"configuration_stale":false,"last_success_at":null,"last_failure_at":null,"last_error_class":null,"consecutive_failures":0,"health":"unreported"}],"measured_at":"2026-10-20T00:00:00Z","note":"Presence and outcome times only."}"#
+            transport.replies = [.success(good)]
+            let reply = try await client.providerHealth()
+            try require(transport.calls.last?.name == "sdi_admin_provider_health", "request")
+            let items = reply.providers ?? []
+            try require(items.count == 3 && items[0].isAlert && items[0].last_error_class == "authentication" && items[0].consecutive_failures == 2
+                && !items[1].isAlert && items[1].last_success_at != nil && items[2].configured == "unreported", "health decoded")
+            for bad in [good.replacingOccurrences(of: #""last_error_class":"authentication""#, with: #""last_error_class":"535 bad password owner@example.test""#),
+                        good.replacingOccurrences(of: #""missing":["sdi_mail_credentials_file"]"#, with: #""missing":["sk_live_1a2b"]"#),
+                        good.replacingOccurrences(of: #""provider":"stripe""#, with: #""provider":"https://api.stripe.com""#),
+                        good.replacingOccurrences(of: #""health":"healthy""#, with: #""health":"fine""#)] {
+                transport.replies = [.success(bad)]
+                do { _ = try await client.providerHealth(); throw Failure(description: "unexpected reply accepted") } catch CommunityError.invalidResponse {}
+            }
+            transport.replies = [.success(#"{"error":"Current administrator permission and MFA session required.","code":"forbidden"}"#)]
+            do { _ = try await client.providerHealth(); throw Failure(description: "refusal accepted") } catch CommunityError.server {}
+        }
+
         await test("diagnostics summary decodes the stored contract and fails closed on identifiers or free text") {
             let transport = FakeTransport()
             let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))

@@ -23,6 +23,14 @@ happened. The Vercel account connected to the workspace holds no project or doma
    folder (File Manager or SFTP). The site is static and buildless, so the upload is a byte copy of
    the commit; record the commit in `docs/WEBSITE_INVENTORY.md`. Check it on the temporary or
    hosting-IP URL GoDaddy provides before touching DNS.
+   - Done 2026-10-19: commit `57d88a5` is live on the temporary URL `16t.23b.mytemp.website`
+     (hosting IP `107.180.113.95`). Static files match the commit byte-for-byte.
+   - GoDaddy appends a performance-monitoring script (`img1.wsimg.com/traffic-assets/js/tccl.min.js`
+     plus an inline loader) to every HTML response. That contradicts the privacy policy ("every
+     request stays on this origin"). `website/.htaccess` sends `Content-Security-Policy:
+     script-src 'self'`, so browsers refuse both scripts. It also serves `404.html` for missing
+     pages. The owner should still ask GoDaddy hosting support to opt the account out of the
+     injection.
 2. **Record the current zone.** Export or screenshot every record in the Netlify DNS zone first; it
    is the rollback reference.
 3. **Nameservers.** Switch the domain's nameservers from Netlify NS1 back to GoDaddy's, and in the

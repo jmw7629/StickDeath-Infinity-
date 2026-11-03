@@ -37,6 +37,7 @@
     { title: 'Health and queues', rpc: 'sdi_admin_health', params: {} },
     { title: 'Backups, releases and retention', rpc: 'sdi_admin_operations', params: {} },
     { title: 'Provider configuration (presence only)', rpc: 'sdi_admin_configuration', params: {} },
+    { title: 'Provider health (configured yes/no, last success/failure, error class)', rpc: 'sdi_admin_provider_health', params: {} },
     { title: 'My permissions', rpc: 'sdi_admin_permissions', params: { action: 'mine' } },
     { title: 'Render approvals (pending)', rpc: 'sdi_review_action', params: { action: 'list' } },
     { title: 'Users (first page)', rpc: 'sdi_users_action', params: { action: 'list', page: 0 } },
@@ -182,10 +183,17 @@
   }
 
   async function stepUp() {
-    // Administrators need aal2: list verified TOTP factors and challenge the first one.
-    const factors = await call('/auth/v1/factors', { method: 'GET', token: session.access_token });
-    const totp = factors.ok && factors.data && Array.isArray(factors.data.totp) ? factors.data.totp.find((f) => f.status === 'verified') : null;
-    if (!totp) { await beginEnrolment(); return; }
+    // Administrators need aal2: GoTrue lists factors on the user record (there is no
+    // GET /factors); challenge the first verified TOTP factor.
+    const user = await call('/auth/v1/user', { method: 'GET', token: session.access_token });
+    if (!user.ok || !user.data) { setStatus('Account lookup failed.', `The backend answered ${user.status}. Signed out.`); signOut(); return; }
+    const factors = Array.isArray(user.data.factors) ? user.data.factors.filter((f) => f && f.factor_type === 'totp') : [];
+    const totp = factors.find((f) => f.status === 'verified');
+    if (!totp) {
+      // An abandoned enrolment leaves an unverified factor whose friendly name blocks a new one.
+      for (const stale of factors) await call(`/auth/v1/factors/${encodeURIComponent(stale.id)}`, { method: 'DELETE', token: session.access_token });
+      await beginEnrolment(); return;
+    }
     const challenge = await call(`/auth/v1/factors/${encodeURIComponent(totp.id)}/challenge`, { token: session.access_token });
     if (!challenge.ok || !challenge.data || typeof challenge.data.id !== 'string') { setStatus('MFA challenge failed.', 'The backend did not start a challenge. Signed out.'); signOut(); return; }
     pendingFactor = { factorId: totp.id, challengeId: challenge.data.id };
@@ -450,8 +458,25 @@
     try {
       const result = await rpc('sdi_diagnostics_admin', { action: 'summary', days });
       if (!result || result.error || result.code) { const p = document.createElement('p'); p.className = 'note'; p.textContent = refusal(result).replace(' Nothing was changed.', ''); out.replaceChildren(p); return; }
-      out.replaceChildren(renderValue(result));
+      out.replaceChildren(spikeAlert(result), renderValue(result));
     } catch (_) { say(out, 'The request did not complete.'); }
+  }
+  // Crash-spike alert from the server's rule (at least 5 and over five times the prior
+  // 7-day mean, per platform and build). Real counts only; with no reports there is
+  // nothing to alert on, and the text says so rather than implying stability.
+  function spikeAlert(result) {
+    const p = document.createElement('p'); p.className = 'note';
+    const spikes = Array.isArray(result.crash_spikes) ? result.crash_spikes : [];
+    if (spikes.length) {
+      p.setAttribute('role', 'alert');
+      p.textContent = 'Crash spike alert for ' + String(result.latest_complete_day) + ': ' + spikes.map((s) =>
+        `${String(s.platform)} build ${String(s.build)}: ${Number(s.latest_total)} crashes vs ${Number(s.prior_daily_mean)}/day over the prior week`).join('; ') + '.';
+    } else if (!Number(result.reports)) {
+      p.textContent = 'No opt-in diagnostics reports in this window, so no crash-spike alert can be computed.';
+    } else {
+      p.textContent = 'No crash spike on the latest complete day.';
+    }
+    return p;
   }
 
   // --- announcements (#290) ------------------------------------------------------------

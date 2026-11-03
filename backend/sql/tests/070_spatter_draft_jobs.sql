@@ -93,18 +93,23 @@ begin
  perform sdi_test.check(sdi_test.denied('authenticated','select public.sdi_spatter_draft_progress(gen_random_uuid(),''x'',''failed'')'),'clients cannot progress draft jobs');
 end $$;
 
--- #209 cloud-advice metering: Free refused (upgrade_required), Creator's
--- break-even cost model, safety/rate/global limits, emergency stop,
--- exactly-once settlement and owner-only limit changes.
+-- #209 cloud-advice metering: Free refused (upgrade_required), per-tier
+-- period allowances (owner decision 2026-10-20: creator 250, pro 500,
+-- unlimited), free-trial refusal, safety/rate/global limits for every tier,
+-- emergency stop, exactly-once settlement and owner-only limit changes.
 do $$
-declare owner uuid; viewer uuid; free_user uuid; creator uuid; pro uuid; banned uuid; trial_c uuid; trial_p uuid; r jsonb; rid uuid; i integer; rev bigint;
+declare owner uuid; viewer uuid; free_user uuid; creator uuid; pro uuid; unl uuid; banned uuid; trial_c uuid; trial_p uuid; trial_u uuid; mixed uuid;
+ r jsonb; rid uuid; i integer; rev bigint; g integer;
  paid timestamptz:=date_trunc('second',clock_timestamp())+interval '20 days';
 begin
  owner:=sdi_test.admin('meter-owner',true,array[]::text[]); viewer:=sdi_test.admin('meter-viewer',false,array['overview']);
  free_user:=sdi_test.user('meter-free'); creator:=sdi_test.user('meter-creator'); pro:=sdi_test.user('meter-pro'); banned:=sdi_test.user('meter-banned');
- insert into sdi_private.billing_products(product_id,provider,tier,period,approved) values('meter.creator','stripe','creator','monthly',true),('meter.pro','stripe','pro','monthly',true);
+ unl:=sdi_test.user('meter-unlimited');
+ insert into sdi_private.billing_products(product_id,provider,tier,period,approved) values('meter.creator','stripe','creator','monthly',true),('meter.pro','stripe','pro','monthly',true),
+  ('meter.unlimited','stripe','unlimited','monthly',true);
  insert into sdi_private.subscriptions(user_id,provider,provider_subscription_id,product_id,status,paid_through,last_event_at)
-  values(creator,'stripe','sub_meter_c','meter.creator','active',paid,clock_timestamp()),(pro,'stripe','sub_meter_p','meter.pro','active',paid,clock_timestamp());
+  values(creator,'stripe','sub_meter_c','meter.creator','active',paid,clock_timestamp()),(pro,'stripe','sub_meter_p','meter.pro','active',paid,clock_timestamp()),
+   (unl,'stripe','sub_meter_u','meter.unlimited','active',paid,clock_timestamp());
  insert into sdi_private.account_controls(user_id,state,reason) values(banned,'suspended','Test.');
 
  -- Closed by default: the global ceiling is 0 until the owner sets it.
@@ -115,9 +120,10 @@ begin
  -- Only the owner changes limits, with revision, reason and audit.
  perform sdi_test.login(viewer,'aal2');
  r:=sdi_private.spatter_usage_admin('get');
- perform sdi_test.check((r->'controls'->>'creator_period_budget_microusd')::integer=3490000 and (r->'controls'->>'prompt_cost_estimate_microusd')::integer=20000
-  and (r->>'creator_period_limit')::integer=174 and not (r->'controls') ? 'free_prompts' and not (r->'controls') ? 'creator_period_prompts',
-  'defaults match the owner decision (USD 4.99 net of 30% / USD 0.02 = 174): '||r::text);
+ perform sdi_test.check((r->'controls'->>'creator_period_prompts')::integer=250 and (r->'controls'->>'pro_period_prompts')::integer=500
+  and (r->'period_limits'->>'creator')::integer=250 and (r->'period_limits'->>'pro')::integer=500 and r->'period_limits'->'unlimited'='null'::jsonb
+  and not (r->'controls') ? 'free_prompts' and not (r->'controls') ? 'creator_period_budget_microusd' and not (r->'controls') ? 'prompt_cost_estimate_microusd',
+  'defaults match the owner decision (creator 250, pro 500, unlimited): '||r::text);
  rev:=(r->'controls'->>'revision')::bigint;
  r:=sdi_private.spatter_usage_admin('set',rev,'{"global_daily_cap":100}','Open.');
  perform sdi_test.check(r->>'error'='Only the owner can change Spatter limits.','non-owner admin cannot change limits');
@@ -128,14 +134,18 @@ begin
  perform sdi_test.check(r->>'error'='Unknown limit.','unknown keys refused');
  r:=sdi_private.spatter_usage_admin('set',rev,'{"free_prompts":5}','x');
  perform sdi_test.check(r->>'error'='Unknown limit.','retired free allowance is not settable');
- r:=sdi_private.spatter_usage_admin('set',rev,'{"creator_period_prompts":15}','x');
- perform sdi_test.check(r->>'error'='Unknown limit.','retired fixed creator count is not settable');
+ r:=sdi_private.spatter_usage_admin('set',rev,'{"creator_period_budget_microusd":3490000}','x');
+ perform sdi_test.check(r->>'error'='Unknown limit.','retired break-even budget is not settable');
+ r:=sdi_private.spatter_usage_admin('set',rev,'{"prompt_cost_estimate_microusd":20000}','x');
+ perform sdi_test.check(r->>'error'='Unknown limit.','retired cost estimate is not settable');
+ r:=sdi_private.spatter_usage_admin('set',rev,'{"unlimited_period_prompts":5}','x');
+ perform sdi_test.check(r->>'error'='Unknown limit.','unlimited has no period count');
  r:=sdi_private.spatter_usage_admin('set',rev,'{"global_daily_cap":-1}','x');
  perform sdi_test.check(r->>'error'='A limit is outside its allowed range.','range enforced');
- r:=sdi_private.spatter_usage_admin('set',rev,'{"prompt_cost_estimate_microusd":0}','x');
- perform sdi_test.check(r->>'error'='A limit is outside its allowed range.','zero cost estimate refused');
- r:=sdi_private.spatter_usage_admin('set',rev,'{"creator_period_budget_microusd":4990001}','x');
- perform sdi_test.check(r->>'error'='A limit is outside its allowed range.','creator budget cannot exceed the USD 4.99 price');
+ r:=sdi_private.spatter_usage_admin('set',rev,'{"pro_period_prompts":-1}','x');
+ perform sdi_test.check(r->>'error'='A limit is outside its allowed range.','negative period count refused');
+ r:=sdi_private.spatter_usage_admin('set',rev,'{"creator_period_prompts":1000001}','x');
+ perform sdi_test.check(r->>'error'='A limit is outside its allowed range.','period count range enforced');
  perform sdi_test.check((select revision from sdi_private.spatter_usage_controls)=rev,'refused changes leave the revision unchanged');
  r:=sdi_private.spatter_usage_admin('set',rev,'{"global_daily_cap":100,"user_per_minute_cap":3}','Open for local test.');
  perform sdi_test.check(r->>'status'='confirmed' and (r->>'revision')::bigint=rev+1,'owner set limits: '||r::text);
@@ -162,7 +172,7 @@ begin
  perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='unknown_suggested_prompt','unknown suggested prompt refused: '||r::text);
  -- Per-minute rate applies (cap 3).
  for i in 1..3 loop r:=sdi_private.spatter_usage_meter('reserve',creator,p_suggested_prompt=>'scene_ideas');
-  perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='creator' and (r->>'remaining')::integer=174-i and r->>'period'='billing_period'
+  perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='creator' and (r->>'remaining')::integer=250-i and r->>'period'='billing_period'
    and (r->>'resets_at')::timestamptz=paid,'creator reserve '||i||': '||r::text);
   perform sdi_private.spatter_usage_meter('settle',null,(r->>'reservation')::uuid,'commit',3);
  end loop;
@@ -172,8 +182,8 @@ begin
 
  -- Release refunds every counter exactly once; a second settlement is refused.
  r:=sdi_private.spatter_usage_meter('reserve',creator);
- perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='creator' and (r->>'remaining')::integer=170 and r->>'period'='billing_period'
-  and (r->>'resets_at')::timestamptz=paid,'creator has 174 per billing period by default: '||r::text);
+ perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='creator' and (r->>'remaining')::integer=246 and r->>'period'='billing_period'
+  and (r->>'resets_at')::timestamptz=paid,'creator has 250 per billing period by default: '||r::text);
  rid:=(r->>'reservation')::uuid;
  r:=sdi_private.spatter_usage_meter('settle',null,rid,'release');
  perform sdi_test.check(r->>'state'='released','release confirmed');
@@ -181,20 +191,20 @@ begin
  perform sdi_test.check(r->>'status'='refused','double settlement refused');
  perform sdi_test.check((select used from sdi_private.spatter_usage_counters where user_id=creator and bucket like 'period:%')=3,'release refunded the period bucket');
  perform sdi_test.check((select used from sdi_private.spatter_usage_global where day=(clock_timestamp() at time zone 'utc')::date)=3,'global counter equals committed prompts');
- -- The owner's cost model drives the Creator limit: floor(budget / estimate).
+ -- The owner may change a tier's period count; the plan follows it.
  perform sdi_test.login(owner,'aal2');
  rev:=(sdi_private.spatter_usage_admin('get')->'controls'->>'revision')::bigint;
- r:=sdi_private.spatter_usage_admin('set',rev,'{"prompt_cost_estimate_microusd":100000}','Provider got pricier.');
- perform sdi_test.check(r->>'status'='confirmed','owner set cost estimate: '||r::text);
+ r:=sdi_private.spatter_usage_admin('set',rev,'{"creator_period_prompts":34}','Tighter creator period.');
+ perform sdi_test.check(r->>'status'='confirmed','owner set creator count: '||r::text);
  r:=sdi_private.spatter_usage_admin('get');
- perform sdi_test.check((r->>'creator_period_limit')::integer=34,'3490000/100000 rounds down to 34: '||r::text);
+ perform sdi_test.check((r->'period_limits'->>'creator')::integer=34 and (r->'period_limits'->>'pro')::integer=500,'creator count changed alone: '||r::text);
  perform sdi_test.check((sdi_private.spatter_usage_plan(creator)->>'limit')::integer=34 and (sdi_private.spatter_usage_plan(creator)->>'remaining')::integer=31,
-  'creator limit follows the estimate: '||sdi_private.spatter_usage_plan(creator)::text);
- r:=sdi_private.spatter_usage_admin('set',(r->'controls'->>'revision')::bigint,'{"creator_period_budget_microusd":1000000}','Lower budget.');
- perform sdi_test.check(r->>'status'='confirmed','owner set budget: '||r::text);
- perform sdi_test.check((sdi_private.spatter_usage_admin('get')->>'creator_period_limit')::integer=10,'1000000/100000 = 10');
- perform sdi_test.check(exists(select 1 from sdi_private.agent_audit where agent_key='spatter_advice' and actor=owner and action like '%prompt_cost_estimate_microusd%')
-  and exists(select 1 from sdi_private.agent_audit where agent_key='spatter_advice' and actor=owner and action like '%creator_period_budget_microusd%'),'cost model changes audited');
+  'creator limit follows the setting: '||sdi_private.spatter_usage_plan(creator)::text);
+ r:=sdi_private.spatter_usage_admin('set',(r->'controls'->>'revision')::bigint,'{"creator_period_prompts":10}','Lower.');
+ perform sdi_test.check(r->>'status'='confirmed','owner set creator count again: '||r::text);
+ perform sdi_test.check((sdi_private.spatter_usage_admin('get')->'period_limits'->>'creator')::integer=10,'creator count is 10');
+ perform sdi_test.check(exists(select 1 from sdi_private.agent_audit where agent_key='spatter_advice' and actor=owner and action like '%creator_period_prompts%'),
+  'period count changes audited');
  perform sdi_test.logout();
  -- Creator period exhaustion; a renewal (new paid_through) opens a new period.
  update sdi_private.spatter_usage_counters set used=10 where user_id=creator and bucket like 'period:%';
@@ -204,23 +214,88 @@ begin
  r:=sdi_private.spatter_usage_meter('reserve',creator);
  perform sdi_test.check((r->>'allowed')::boolean and (r->>'remaining')::integer=9,'renewal starts a fresh period: '||r::text);
 
- -- Pro: no plan allowance, but the daily safety cap still applies.
+ -- Pro: 500 server-funded prompts per billing period, then upgrade to unlimited.
  r:=sdi_private.spatter_usage_meter('reserve',pro);
- perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='pro' and r->'remaining'='null'::jsonb,'pro is unlimited by plan: '||r::text);
+ perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='pro' and r->>'funding'='allowance' and (r->>'remaining')::integer=499
+  and r->>'period'='billing_period' and (r->>'resets_at')::timestamptz=paid,'pro has 500 per billing period: '||r::text);
+ perform sdi_test.check((sdi_private.spatter_usage_plan(pro)->>'limit')::integer=500 and (sdi_private.spatter_usage_plan(pro)->>'used')::integer=1,
+  'pro plan reports its limit: '||sdi_private.spatter_usage_plan(pro)::text);
+ update sdi_private.spatter_usage_counters set used=500 where user_id=pro and bucket like 'period:%';
+ r:=sdi_private.spatter_usage_meter('reserve',pro);
+ perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='plan_allowance_exhausted' and r->>'plan'='pro' and r->>'upgrade'='unlimited',
+  'pro period exhausted, upgrade to unlimited: '||r::text);
+ update sdi_private.spatter_usage_counters set used=0 where user_id=pro and bucket like 'period:%';
+ -- The daily safety cap still applies to a paid plan.
  insert into sdi_private.spatter_usage_counters(user_id,bucket,used) values(pro,'day:'||((clock_timestamp() at time zone 'utc')::date)::text,100)
   on conflict(user_id,bucket) do update set used=100;
  update sdi_private.spatter_usage_counters set used=0 where user_id=pro and bucket like 'minute:%';
  r:=sdi_private.spatter_usage_meter('reserve',pro);
  perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='daily_safety_limit','pro still hits the daily safety cap: '||r::text);
 
- -- The free trial applies to both paid plans: a trialing subscription meters as its own tier.
- trial_c:=sdi_test.user('meter-trial-creator'); trial_p:=sdi_test.user('meter-trial-pro');
+ -- Unlimited: no plan allowance, but the daily safety cap and the owner's
+ -- global daily ceiling still apply.
+ r:=sdi_private.spatter_usage_plan(unl);
+ perform sdi_test.check(r->>'plan'='unlimited' and (r->>'unlimited')::boolean and r->'limit'='null'::jsonb and r->'remaining'='null'::jsonb,
+  'unlimited reports unlimited: '||r::text);
+ r:=sdi_private.spatter_usage_meter('reserve',unl);
+ perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='unlimited' and r->>'funding'='unlimited' and r->'remaining'='null'::jsonb,
+  'unlimited is unlimited by plan: '||r::text);
+ perform sdi_test.check(not exists(select 1 from sdi_private.spatter_usage_counters where user_id=unl and bucket like 'period:%'),'unlimited keeps no period bucket');
+ insert into sdi_private.spatter_usage_counters(user_id,bucket,used) values(unl,'day:'||((clock_timestamp() at time zone 'utc')::date)::text,100)
+  on conflict(user_id,bucket) do update set used=100;
+ r:=sdi_private.spatter_usage_meter('reserve',unl);
+ perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='daily_safety_limit','unlimited still hits the daily safety cap: '||r::text);
+ update sdi_private.spatter_usage_counters set used=0 where user_id=unl and bucket like 'day:%';
+ g:=(select used from sdi_private.spatter_usage_global where day=(clock_timestamp() at time zone 'utc')::date);
+ update sdi_private.spatter_usage_controls set global_daily_cap=g;
+ r:=sdi_private.spatter_usage_meter('reserve',unl);
+ perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='global_limit','unlimited still obeys the global daily ceiling: '||r::text);
+ update sdi_private.spatter_usage_controls set global_daily_cap=100;
+
+ -- Free trial (owner decision 2026-10-20): the Studio is unlocked but Spatter is
+ -- preview-only. A trial-only account gets Free's refusal shape with its trial
+ -- tier, before any counter, reservation or credit; credits are not spent.
+ trial_c:=sdi_test.user('meter-trial-creator'); trial_p:=sdi_test.user('meter-trial-pro'); trial_u:=sdi_test.user('meter-trial-unlimited');
+ mixed:=sdi_test.user('meter-trial-mixed');
+ insert into sdi_private.billing_products(product_id,provider,tier,period,approved) values('meter.pro.apple','apple','pro','monthly',true);
  insert into sdi_private.subscriptions(user_id,provider,provider_subscription_id,product_id,status,paid_through,last_event_at)
-  values(trial_c,'stripe','sub_meter_tc','meter.creator','trialing',paid,clock_timestamp()),(trial_p,'stripe','sub_meter_tp','meter.pro','trialing',paid,clock_timestamp());
+  values(trial_c,'stripe','sub_meter_tc','meter.creator','trialing',paid,clock_timestamp()),
+   (trial_u,'stripe','sub_meter_tu','meter.unlimited','trialing',paid,clock_timestamp()),
+   (mixed,'stripe','sub_meter_mc','meter.creator','active',paid,clock_timestamp());
+ insert into sdi_private.subscriptions(user_id,provider,provider_subscription_id,product_id,status,paid_through,in_trial,last_event_at)
+  values(mixed,'stripe','sub_meter_mu','meter.unlimited','active',paid,true,clock_timestamp());
+ -- The Apple path: an introductory free-trial transaction recorded by a verified event.
+ r:=sdi_private.billing_apply_event('apple','meter-trial-1','SUBSCRIBED',clock_timestamp()-interval '1 minute','{}',trial_p,'orig-meter-tp','meter.pro.apple',
+  'trialing',clock_timestamp()+interval '3 days',in_trial=>true);
+ perform sdi_test.check(r->>'outcome'='applied' and (select in_trial from sdi_private.subscriptions where provider_subscription_id='orig-meter-tp'),
+  'trial recorded from the provider event: '||r::text);
+ insert into sdi_private.spatter_credit_ledger(user_id,delta,kind,actor) values(trial_p,5,'admin_grant',owner);
  r:=sdi_private.spatter_usage_meter('reserve',trial_c);
- perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='creator' and (r->>'remaining')::integer=9,'creator trial meters as Creator with free text: '||r::text);
+ perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='upgrade_required' and r->>'plan'='creator' and (r->>'trial')::boolean
+  and r->>'upgrade'='after_trial' and (r->>'buy_credits')::boolean=false and (r->>'resets_at')::timestamptz=paid,'creator trial is preview-only: '||r::text);
+ r:=sdi_private.spatter_usage_meter('reserve',trial_u,p_suggested_prompt=>'animation_tips');
+ perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='upgrade_required' and r->>'plan'='unlimited' and (r->>'trial')::boolean,
+  'unlimited trial is preview-only: '||r::text);
  r:=sdi_private.spatter_usage_meter('reserve',trial_p);
- perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='pro' and r->'remaining'='null'::jsonb,'pro trial meters as Pro: '||r::text);
+ perform sdi_test.check((r->>'allowed')::boolean=false and r->>'code'='upgrade_required' and r->>'plan'='pro' and (r->>'trial')::boolean
+  and (r->>'credits')::integer=5,'pro trial is refused even with credits: '||r::text);
+ perform sdi_test.check(sdi_private.spatter_credit_balance(trial_p)=5
+  and not exists(select 1 from sdi_private.spatter_credit_ledger where user_id=trial_p and kind='spend'),'a trial spends no credit');
+ perform sdi_test.check(not exists(select 1 from sdi_private.spatter_usage_counters where user_id in(trial_c,trial_p,trial_u))
+  and not exists(select 1 from sdi_private.spatter_usage_reservations where user_id in(trial_c,trial_p,trial_u)),'a trial counts and reserves nothing');
+ r:=sdi_private.spatter_usage_plan(trial_p);
+ perform sdi_test.check(r->>'plan'='pro' and (r->>'trial')::boolean and (r->>'remaining')::integer=0 and (r->>'available')::boolean=false and r->>'period'='trial',
+  'trial plan view: '||r::text);
+ -- A paid (non-trial) entitlement is funded even while another one is in trial.
+ r:=sdi_private.spatter_usage_meter('reserve',mixed);
+ perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='creator' and r->>'funding'='allowance','paid entitlement funds beside a trial: '||r::text);
+ -- Conversion: the first paid period clears the trial and opens the allowance.
+ r:=sdi_private.billing_apply_event('apple','meter-trial-2','DID_RENEW',clock_timestamp(),'{}',trial_p,'orig-meter-tp','meter.pro.apple',
+  'active',paid+interval '1 month',in_trial=>false);
+ perform sdi_test.check(r->>'outcome'='applied' and not (select in_trial from sdi_private.subscriptions where provider_subscription_id='orig-meter-tp'),'conversion recorded');
+ r:=sdi_private.spatter_usage_meter('reserve',trial_p);
+ perform sdi_test.check((r->>'allowed')::boolean and r->>'plan'='pro' and r->>'funding'='allowance' and (r->>'remaining')::integer=499
+  and (r->>'credits')::integer=5,'converted trial gets the pro allowance: '||r::text);
 
  -- Restricted accounts and the emergency stop refuse before counting.
  r:=sdi_private.spatter_usage_meter('reserve',banned);
@@ -256,7 +331,7 @@ begin
 end $$;
 -- Spatter credits (owner decision 2026-10-15, later): approved consumable packs,
 -- idempotent verified grants, pay-as-you-go on Free, Creator falls through to
--- credits, Pro never spends credits, release refunds a credit, refund clawback,
+-- credits, Pro spends its allowance before credits, release refunds a credit, refund clawback,
 -- caps still first, append-only ledger and owner-only administration.
 do $$
 declare owner uuid; finance uuid; free_c uuid; free_none uuid; creator_c uuid; creator_none uuid; pro_c uuid; sandbox_u uuid;
@@ -264,7 +339,7 @@ declare owner uuid; finance uuid; free_c uuid; free_none uuid; creator_c uuid; c
  paid timestamptz:=date_trunc('second',clock_timestamp())+interval '20 days';
 begin
  update sdi_private.spatter_usage_controls set global_daily_cap=1000,user_per_minute_cap=100,user_daily_safety_cap=100,
-  creator_period_budget_microusd=40000,prompt_cost_estimate_microusd=20000;  -- Creator limit 2 for this block
+  creator_period_prompts=2;  -- Creator limit 2 for this block
  owner:=sdi_test.admin('credit-owner',true,array[]::text[]); finance:=sdi_test.admin('credit-finance',false,array['finance']);
  free_c:=sdi_test.user('credit-free'); free_none:=sdi_test.user('credit-free-none'); sandbox_u:=sdi_test.user('credit-sandbox');
  creator_c:=sdi_test.user('credit-creator'); creator_none:=sdi_test.user('credit-creator-none'); pro_c:=sdi_test.user('credit-pro');
@@ -364,10 +439,10 @@ begin
  perform sdi_test.check(r->>'plan'='creator' and (r->>'remaining')::integer=0 and (r->>'credits')::integer=50 and (r->>'available')::boolean,'creator usage view: '||r::text);
  perform sdi_test.logout();
 
- -- Pro never spends credits.
+ -- Pro spends its period allowance before any credit.
  perform sdi_private.spatter_credits_grant(pro_c,'apple','sdi.credits.50','tx-pro',true);
  r:=sdi_private.spatter_usage_meter('reserve',pro_c);
- perform sdi_test.check(r->>'funding'='unlimited' and (r->>'credits')::integer=50 and sdi_private.spatter_credit_balance(pro_c)=50,'pro keeps its credits: '||r::text);
+ perform sdi_test.check(r->>'funding'='allowance' and (r->>'remaining')::integer=499 and (r->>'credits')::integer=50 and sdi_private.spatter_credit_balance(pro_c)=50,'pro uses its allowance and keeps its credits: '||r::text);
 
  -- Refunds claw back up to the balance; the spent credit is the shortfall.
  r:=sdi_private.spatter_credits_refund('apple','tx-1');

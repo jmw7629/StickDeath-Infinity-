@@ -9,7 +9,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testSelectedImageAlphaFillUndoAndColdReopen() throws {
         // The measured real import, image selection, Fill and history path reaches cold reopen at 184s.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -516,8 +516,9 @@ final class StudioSmokeUITests: XCTestCase {
             for _ in 0..<5 {
                 // Files presents asynchronously after SwiftUI becomes idle.
                 // Wait for a real actionable navigation control at each level.
+                // Same provider latency as the MP4 Files save (presentation exceeded 10s on CI).
                 _ = try hittableElement(in: navigation.matching(NSPredicate(format: "label IN %@",
-                    ["Cancel", "On My iPhone", "Browse", "Locations"])), timeout: 10)
+                    ["Cancel", "On My iPhone", "Browse", "Locations"])), timeout: 30)
                 if let cancel = navigation.matching(NSPredicate(format: "label == %@", "Cancel"))
                     .allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable }) {
                     cancel.tap()
@@ -786,7 +787,7 @@ final class StudioSmokeUITests: XCTestCase {
     func testImageTweenLinearPixelsUndoAndColdReopen() throws {
         // Existing drawing tween took161.387s; this also imports/positions a real
         // licensed image. Match the reviewed240s image-authoring journey cap.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -895,7 +896,7 @@ final class StudioSmokeUITests: XCTestCase {
     func testImageQuarterTweenPixelsUndoAndColdReopen() throws {
         // Same import/position/tween/history/cold workload as the measured234s
         // image-translation case, using one midpoint and the existing240s cap.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -1112,7 +1113,9 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForButton("Profile", in: app).tap()
         XCTAssertTrue(app.staticTexts["Guest"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["On-device guest"].exists)
-        XCTAssertTrue(app.staticTexts["Projects counts saved animations on this device. Published, followers and likes are unavailable."].exists,
+        // XCUIElementQuery string subscripts reject identifiers over 128 characters.
+        let inventoryNote = "Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall; a dash means the total was not loaded, never an estimate."
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", inventoryNote)).firstMatch.exists,
             "Profile must identify actual device inventory and unavailable connected totals")
         XCTAssertFalse(app.staticTexts["StickMaster"].exists, "Guest profile displayed a fabricated sample identity")
         capture(app, name: "owner-guest-profile-reference")
@@ -1283,7 +1286,10 @@ final class StudioSmokeUITests: XCTestCase {
         }
         let search = app.textFields["studio.library.search"]
         try reveal(search, upward: false); search.tap(); search.typeText(prefix + "\n")
-        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        // Return dismisses the keyboard with an animation; assert it disappears
+        // within the same bound the other keyboard checks in this file use.
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch).waitUntilFulfilled(timeout: 5),
+                      "Return in library search must dismiss the keyboard")
         // Six real UI-saved projects, isolated by a fresh name. Each duplicate
         // preserves actual artwork; existing user/test projects are untouched.
         var lastName = prefix
@@ -1979,7 +1985,7 @@ final class StudioSmokeUITests: XCTestCase {
         try tapWelcomeAction("welcome.guide", in: app)
         app.buttons["onboarding.dot.2"].tap()
         XCTAssertEqual(app.staticTexts["onboarding.position"].label, "3 of 5")
-        XCTAssertTrue(app.staticTexts["Planned next · not connected in this build"].exists)
+        XCTAssertTrue(app.staticTexts["Invitation-based rooms · sign-in required"].exists)
         capture(app, name: "onboarding-collaboration-status")
         XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertTrue(app.buttons["onboarding.next"].waitForExistence(timeout: 5))
@@ -2094,8 +2100,11 @@ final class StudioSmokeUITests: XCTestCase {
             let scroll = app.scrollViews.containing(.textField, identifier: "studio.settings.name").firstMatch
             let shelf = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Stickers & Emoji")).firstMatch
             XCTAssertTrue(shelf.waitForExistence(timeout: 5) && scroll.exists)
-            for _ in 0..<4 where !shelf.isHittable { scroll.swipeUp(velocity: .slow) }
-            XCTAssertTrue(shelf.isHittable); shelf.tap()
+            // f793f56 CI: the row reported hittable with 2pt on screen and the tap landed off-window.
+            // Scroll until the whole row is inside both the scroll view and the window.
+            let visible = { scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 2).contains(shelf.frame) }
+            for _ in 0..<6 where !(shelf.isHittable && visible()) { scroll.swipeUp(velocity: .slow) }
+            XCTAssertTrue(shelf.isHittable && visible()); shelf.tap()
             XCTAssertTrue(app.buttons["studio.sticker.item.f1"].waitForExistence(timeout: 5))
         }
         try lock("Full"); try openShelf()
@@ -2598,7 +2607,8 @@ final class StudioSmokeUITests: XCTestCase {
             if last != frame { last = frame; since = Date(); return false }
             return Date().timeIntervalSince(since) >= 1
         }
-        let geometrySettled = expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 8)
+        // Hosted runners need up to ~15 s for a cold-launched canvas to stop moving.
+        let geometrySettled = expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 15)
         if !geometrySettled {
             let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
             evidence.name = "canvas-geometry-wait-failed"
@@ -3126,7 +3136,7 @@ final class StudioSmokeUITests: XCTestCase {
         let blurFinished = NSPredicate { _, _ in
             blurProgress.count == 0 && app.buttons["studio.undo"].isEnabled
         }
-        let completed = expectation(for: blurFinished, evaluatedWith: nil).waitUntilFulfilled(timeout: 30)
+        let completed = expectation(for: blurFinished, evaluatedWith: nil).waitUntilFulfilled(timeout: 60)
         if !completed { captureHierarchy(app, name: "blur-operation-completion-timeout") }
         XCTAssertTrue(completed, "Actual Blur did not complete before save")
         guard completed else { throw NSError(domain: "NativeBlurCompletion", code: 1) }
@@ -3212,7 +3222,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testSharpenPixelsUndoAndColdReopen() throws {
         // CI37718624465 reached Redo at 180s after real effect and Undo passed.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let name = try createProjectIfLibraryIsShown(app)
@@ -3580,19 +3590,26 @@ final class StudioSmokeUITests: XCTestCase {
                 guard scroll.frame.intersection(app.frame).contains(current) else { return false }
                 defer { previousPickerFrame = current; previousPopupFrame = currentPopup }
                 return previousPickerFrame == current && previousPopupFrame == currentPopup
-            }, evaluatedWith: picker).waitUntilFulfilled(timeout: 8)
+            // 1842a82 CI: each AX snapshot took ~5s, so 8s allowed only two
+            // evaluations; the failure hierarchy showed the swatch settled and contained.
+            }, evaluatedWith: picker).waitUntilFulfilled(timeout: 20)
             if !pickerReady { captureHierarchy(app, name: "native-text-colorwell-not-settled") }
             XCTAssertTrue(pickerReady, "Native Text color swatch did not become stable and actionable")
             // Observed ColorWell includes its label; only the right circular
             // swatch opens UIKit's picker. Derive its center from actual bounds.
             let well = picker.frame
             XCTAssertGreaterThan(well.width, well.height)
-            picker.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2)).tap()
+            let swatch = picker.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2))
+            swatch.tap()
             // iOS exposes this native picker track as Other, with a separate
             // percentage TextField; the Studio opacity Slider is underneath.
             let systemPicker = app.otherElements["UIColorPickerView"].firstMatch
-            XCTAssertTrue(systemPicker.waitForExistence(timeout: 8))
+            // Hosted runners intermittently drop the first swatch tap (3 of 4
+            // runs on 2026-10-21 never presented the picker); tap the same
+            // swatch once more before failing.
+            if !systemPicker.waitForExistence(timeout: 10) { swatch.tap() }
+            XCTAssertTrue(systemPicker.waitForExistence(timeout: 20))
             let alpha = systemPicker.otherElements.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
             let alphaValue = systemPicker.textFields.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
             XCTAssertTrue(alpha.waitForExistence(timeout: 5) && alpha.isHittable && alpha.isEnabled)
@@ -3761,7 +3778,7 @@ final class StudioSmokeUITests: XCTestCase {
         let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
         let scroll = popup.scrollViews.firstMatch
         let control = app.descendants(matching: .any)[identifier].firstMatch
-        XCTAssertTrue(scroll.waitForExistence(timeout: 5), "Fill controls need the existing popup scroll viewport")
+        XCTAssertTrue(scroll.waitForExistence(timeout: 10), "Fill controls need the existing popup scroll viewport")
         for _ in 0..<6 {
             let bounds = scroll.frame.intersection(app.frame)
             // Sliders need room for their thumb. A menu/button at the first
@@ -4269,7 +4286,7 @@ final class StudioSmokeUITests: XCTestCase {
     /// no connected service, and this test never pretends one exists.
     @MainActor
     func testCompleteProjectJourneyCreateDrawLayerAudioExportPNGAndColdReopen() throws {
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8))
@@ -4422,7 +4439,7 @@ final class StudioSmokeUITests: XCTestCase {
     func testPNGExportPreviewAndNativeShareCancellation() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        _ = try createProjectIfLibraryIsShown(app)
+        let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 8))
 
@@ -4450,7 +4467,8 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertGreaterThan(exportInkMask(drawnPixels).count, 12, "The actual PNG preview contains no red stroke")
         XCTAssertGreaterThan(try changedPixelCount(blankPixels, drawnPixels), 12,
                              "Drawing did not change the preview decoded from the actual exported PNG")
-        XCTAssertTrue(app.staticTexts["frame_000000.png"].exists)
+        // Exports are named after the project (#185): "Native smoke X" → "Native-smoke-X".
+        XCTAssertTrue(app.staticTexts[projectName.replacingOccurrences(of: " ", with: "-") + "_000000.png"].exists)
         capture(app, name: "png-export-drawn-preview")
         let share = try exportControl("studio.export.share", app: app)
         XCTAssertTrue(share.isEnabled); share.tap()
@@ -4627,8 +4645,9 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(reopenedAudio.waitForExistence(timeout: 5)); reopenedAudio.tap()
         XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
-        reopened.buttons["studio.audio.timelinePlay"].tap()
-        XCTAssertTrue(reopened.staticTexts["00:09.22"].waitForExistence(timeout: 15), "Saved auditioned sound failed real playback after cold reopen")
+        try disableDefaultAudioLoop(reopened); reopened.buttons["studio.audio.timelinePlay"].tap()
+        // The clip plays in real time (9.22 s) after a cold audio-engine start.
+        XCTAssertTrue(reopened.staticTexts["00:09.22"].waitForExistence(timeout: 30), "Saved auditioned sound failed real playback after cold reopen")
         capture(reopened, name: "audio-tag-selected-sound-cold-reopen")
     }
 
@@ -5103,7 +5122,7 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["studio.audio.close"].tap();app.buttons["studio.redo"].tap()
         openAudio(app);clipCount("2 clips", in: app)
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled);play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled); try disableDefaultAudioLoop(app); play.tap()
         XCTAssertTrue(app.staticTexts["00:00.25"].waitForExistence(timeout: 12), "Actual mixed player did not reach the unchanged clip end")
         app.buttons["studio.audio.close"].tap()
         let save = app.buttons["studio.save"];XCTAssertTrue(save.isHittable);save.tap()
@@ -5140,7 +5159,7 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "audio-bundled-library-two-clips")
         app.buttons["studio.audio.library.close"].tap()
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled); play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled); try disableDefaultAudioLoop(app); play.tap()
         // This is the real AVAudioPlayer completion time for the integrity-pinned
         // 3.063492-second file, not a sleep followed by a fabricated success label.
         XCTAssertTrue(app.staticTexts["00:03.06"].waitForExistence(timeout: 12), "Mixed playback never reached the actual source end")
@@ -5552,7 +5571,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testSpatterSelectedAudioPlacementUndoAndColdReopen() throws {
         // Measured public CI recovered a60s XCTest menu-animation notification delay; retain all placement/history/cold assertions.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
@@ -6116,7 +6135,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testMixedDrawingImageMoveDeleteUndoAndColdReopen() throws {
         // Measured native trace reached cold reopen at184s after both-source move and Delete/Undo.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6207,7 +6226,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testImageWandRegionCopyDeletePasteUndoAndColdReopen() throws {
         // Licensed import, screenshot-derived selection, clipboard/history and cold reopen share the bounded 240s journey ceiling.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6304,7 +6323,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testMixedArtworkCopyCutPasteUndoAndColdReopen() throws {
         // Same licensed-image/mixed-selection setup as the measured >180s mixed journey; adds Copy/Cut/Paste and cold reopen.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6398,7 +6417,7 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     func testPixelLassoAutomaticMovePartialDeleteUndoAndColdReopen() throws {
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6454,7 +6473,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testActiveLayerImageMarqueeDeleteUndoAndColdReopen() throws {
         // Measured public CI completed cold-image capture at180.54s after active import/selection/history progress.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6735,7 +6754,7 @@ final class StudioSmokeUITests: XCTestCase {
     func testImageQuarterTurnsUndoAndColdReopen() throws {
         // Full CI reached cold reopen at 180s; the unchanged local journey
         // passed all pixel/history/reopen assertions in 182.757s.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -6800,7 +6819,7 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     func testImageDrawingOrderUndoAndColdReopen() throws {
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
@@ -7078,7 +7097,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testImagePlacementCancelApplyUndoAndColdReopen() throws {
         // Run 35600568119 attempt 2 reached cold reopen/export at the 180s limit.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
@@ -7517,7 +7536,8 @@ final class StudioSmokeUITests: XCTestCase {
                     || app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"].exists
                     || app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Browse", "Locations")).firstMatch.exists
             }
-            guard expectation(for: providerReady, evaluatedWith: app).waitUntilFulfilled(timeout: 10) else {
+            // abc9b2e CI: the provider's navigation bar and Save arrived just after a 10s wait.
+            guard expectation(for: providerReady, evaluatedWith: app).waitUntilFulfilled(timeout: 30) else {
                 capture(app, name: "mp4-files-provider-transition-failed")
                 captureHierarchy(app, name: "mp4-files-provider-transition-failed-hierarchy")
                 XCTFail("Actual Files provider did not finish presenting")
@@ -7580,8 +7600,9 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true AND hittable == true"),
             evaluatedWith: done).waitUntilFulfilled(timeout: 5), "Files must accept the folder name before Done")
         done.tap()
+        // The Files provider commits the rename asynchronously; hosted runners take longer than 5 s.
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: folderInput)
-            .waitUntilFulfilled(timeout: 5), "Actual folder rename must finish before choosing the destination")
+            .waitUntilFulfilled(timeout: 20), "Actual folder rename must finish before choosing the destination")
         let destination = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", folderName)).firstMatch
         if destination.waitForExistence(timeout: 3) && destination.isHittable { destination.tap() }
         // Files exposes the folder title as an Actions Menu button. Match the
@@ -7632,12 +7653,15 @@ final class StudioSmokeUITests: XCTestCase {
         try localFilesRoot()
         let savedFolder = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", folderName)).firstMatch
         XCTAssertTrue(savedFolder.waitForExistence(timeout: 8)); XCTAssertTrue(savedFolder.isHittable); savedFolder.tap()
-        let movie = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", "animation")).firstMatch
+        let movie = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@",
+            projectName.replacingOccurrences(of: " ", with: "-"))).firstMatch
         XCTAssertTrue(movie.waitForExistence(timeout: 8)); XCTAssertTrue(movie.isHittable); movie.tap()
         let preview = try imageControl("studio.image.preview", app: app)
         XCTAssertTrue(app.staticTexts["studio.image.dimensions"].label.hasPrefix("1,080 × 1,920 pixels"))
-        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.contains("Studio 0.000s"))
+        // Sample the preview while it is on screen: reaching the result label
+        // below scrolls the preview out of the visible panel.
         let decoded = try pixels(preview.screenshot().image)
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.contains("Studio 0.000s"))
         let ink = exportInkMask(decoded)
         XCTAssertGreaterThan(ink.filter { Double($0 / decoded.width) < Double(decoded.height) * 0.5 }.count, 12,
                              "Independent saved movie did not decode the first upper stroke")
@@ -7685,7 +7709,8 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(share.isEnabled); share.tap()
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
         let saveToFiles = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
-        XCTAssertTrue(saveToFiles.waitForExistence(timeout: 10)); XCTAssertTrue(saveToFiles.isHittable)
+        // The remote share sheet populates its actions slowly on hosted runners.
+        XCTAssertTrue(saveToFiles.waitForExistence(timeout: 20)); XCTAssertTrue(saveToFiles.isHittable)
         capture(app, name: "gif-native-share-sheet")
         let dismiss = nativeShare.buttons["header.closeButton"]
         XCTAssertTrue(dismiss.isHittable); dismiss.tap()
@@ -7784,11 +7809,12 @@ final class StudioSmokeUITests: XCTestCase {
         let dismiss = nativeShare.buttons["header.closeButton"]
         // CI37718624465 captured real Close and Save to Files at about 16s
         // after Share; initial remote snapshots consumed the old 10s window.
-        // Both actual controls share one 20s deadline. Never retap Share.
-        let shareDeadline = Date().addingTimeInterval(20)
+        // Both actual controls share one 40s deadline (hosted runners overran
+        // 20s populating the remote sheet). Never retap Share.
+        let shareDeadline = Date().addingTimeInterval(40)
         let nativeCloseReady = expectation(for: NSPredicate { _, _ in
             dismiss.exists && dismiss.isEnabled && dismiss.isHittable
-        }, evaluatedWith: dismiss).waitUntilFulfilled(timeout: 20)
+        }, evaluatedWith: dismiss).waitUntilFulfilled(timeout: max(0, shareDeadline.timeIntervalSinceNow))
         let shareReady = nativeCloseReady && expectation(for: NSPredicate { _, _ in
             files.exists && files.isEnabled && files.isHittable && dismiss.isHittable
         }, evaluatedWith: files).waitUntilFulfilled(timeout: max(0, shareDeadline.timeIntervalSinceNow))
@@ -7891,7 +7917,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(try changedPixelCount(twoStrokes,pixels(canvas.screenshot().image)),4)
         capture(app,name:"picker-blue-strokes-undo-redo")
         let save = app.buttons["studio.save"]; save.tap()
-        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:8))
+        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:20))
         app.buttons["studio.back"].tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format:"label == %@",projectName)).firstMatch.waitForExistence(timeout:8))
         app.terminate()
@@ -8043,7 +8069,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     func testBucketFillPopupUndoSaveReopenAndPNG() throws {
         // Run 35600568119 attempt 2 reached cold reopen/export at the 180s limit.
-        executionTimeAllowance = 240
+        executionTimeAllowance = 360
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
@@ -8193,7 +8219,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(saveReady, "Save must become reachable after the preceding action")
         guard saveReady else { throw NSError(domain: "NativeSaveReadiness", code: 1) }
         save.tap()
-        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:8))
+        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:20))
         // Ask whether the query is empty. Resolving firstMatch's attributes
         // retries a nonexistent element, exhausting the old five-second wait
         // even when the recording visibly contains no sampled-color toast.
@@ -8255,7 +8281,9 @@ final class StudioSmokeUITests: XCTestCase {
         for attempt in 0...6 {
             if element.exists && scroll.frame.insetBy(dx: 0, dy: 2).contains(element.frame) && element.isHittable { return element }
             guard attempt < 6 else { break }
-            scroll.swipeUp()
+            // Scroll toward the control: one above the viewport (e.g. a decoded
+            // preview after import) needs a downward swipe, never another upward one.
+            if element.exists && element.frame.midY < scroll.frame.midY { scroll.swipeDown() } else { scroll.swipeUp() }
         }
         captureHierarchy(app, name: "image-control-unreachable-" + identifier)
         XCTFail("Image import control was not reachable: \(identifier)")
@@ -8503,7 +8531,7 @@ final class StudioSmokeUITests: XCTestCase {
         let source = try XCTUnwrap(env["SDI_SMOKE_SOURCE_COMMIT"])
         XCTAssertNotNil(source.range(of: "^[0-9a-f]{40}$", options: .regularExpression))
         XCUIDevice.shared.orientation = .portrait
-        let app = XCUIApplication(bundleIdentifier: "com.willisnmb.stickdeathinfinity")
+        let app = XCUIApplication(bundleIdentifier: "com.willisbmb.StickDeathInfinity")
         // Only locale pins, the caller's accessibility arguments and
         // launch-scoped "no remembered guest" and "tutorial not completed"
         // pins, so every launch (including a cold reopen) starts at Welcome

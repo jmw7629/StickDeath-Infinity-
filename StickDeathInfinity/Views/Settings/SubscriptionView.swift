@@ -6,9 +6,12 @@
 //   BillingPlanCatalog.swift) through `BillingCopy`: plan, renewal or
 //   cancellation date, grace/billing retry, pending, revoked, server
 //   verification state and Spatter prompt allowance.
-// - Prices are Apple's `Product.displayPrice`. No free trial is offered
-//   (owner decision 2026-10-15), so no trial copy is shown. Annual plans
-//   appear only when the build configuration enables them.
+// - Prices are Apple's `Product.displayPrice`. Every paid plan has a 3-day
+//   free trial (owner decision 2026-10-20); trial copy is shown only when the
+//   App Store reports an eligible introductory free-trial offer. During the
+//   trial the Studio is unlocked and Spatter is preview-only, which the
+//   status card says. Annual plans appear only when the build configuration
+//   enables them.
 // - Manage/cancel opens Apple's subscription sheet; restore runs AppStore.sync.
 // - The server's own record (`sdi_my_entitlement`) is read when the screen
 //   opens and shown beside Apple's; a plan billed elsewhere (the website)
@@ -231,6 +234,12 @@ struct SubscriptionView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
             if let entitlement = store.billing.activeEntitlement {
+                if store.billing.inTrial {
+                    Text(BillingCopy.spatterTrialNote)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
                 if let product = store.availableProducts.first(where: { $0.id == entitlement.productID }) {
                     Text(BillingCopy.price(product.displayPrice, period: entitlement.period))
                         .font(.system(size: 12))
@@ -275,6 +284,9 @@ struct SubscriptionView: View {
         }
         if server.status == "grace" || server.status == "past_due" {
             line += " The provider is retrying a payment."
+        }
+        if server.inTrial {
+            line += " " + BillingCopy.spatterTrialNote
         }
         return line
     }
@@ -417,6 +429,11 @@ struct SubscriptionView: View {
                     Text(BillingCopy.price(product.displayPrice, period: period))
                         .font(.system(size: 15, weight: .heavy))
                         .foregroundColor(.white)
+                }
+                if let trial = store.trialCopy(for: product) {
+                    Text(trial)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.green)
                 }
                 if let plan {
                     ForEach(plan.entitlements, id: \.text) { entitlementRow($0) }

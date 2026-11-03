@@ -263,6 +263,39 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 PublishingWorker(api, self.artifacts, self.checkpoints, lambda: "token", CHANNEL, max_concurrent=bad)
 
+    def test_burst_of_executors_never_exceeds_the_slot_cap(self):
+        # #263 burst fixture: eight executors start together against two slots. While
+        # the first claims are in flight the rest must report busy without any RPC.
+        import threading
+        import time
+        inflight = {"now": 0, "peak": 0}
+        guard = threading.Lock()
+        def slow_removal_claim(payload):
+            with guard:
+                inflight["now"] += 1
+                inflight["peak"] = max(inflight["peak"], inflight["now"])
+            time.sleep(0.4)
+            with guard:
+                inflight["now"] -= 1
+            return {"empty": True}
+        api = ScriptedJobAPI({"removal_claim": slow_removal_claim, "claim": {"empty": True}})
+        start = threading.Barrier(8)
+        results = []
+        def executor():
+            worker = PublishingWorker(api, self.artifacts, self.checkpoints, lambda: "token", CHANNEL, max_concurrent=2)
+            start.wait()
+            results.append(worker.run_once()["state"])
+        self.checkpoints.mkdir(mode=0o700, parents=True)
+        threads = [threading.Thread(target=executor) for _ in range(8)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(10)
+        self.assertEqual(len(results), 8)
+        self.assertLessEqual(inflight["peak"], 2)
+        self.assertEqual(results.count("idle") + results.count("busy"), 8)
+        self.assertGreaterEqual(results.count("busy"), 6 - 2)   # tolerate a late starter taking a freed slot
+        claims = sum(1 for op, _ in api.calls if op == "removal_claim")
+        self.assertEqual(claims, results.count("idle"))   # a busy executor made no call at all
+
     def test_unsupported_destination_fails_the_job_without_provider_calls(self):
         job = str(uuid.uuid4()); lease = str(uuid.uuid4())
         api = ScriptedJobAPI({"removal_claim": {"empty": True}, "renew": True, "finish": True,

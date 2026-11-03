@@ -10,6 +10,7 @@ import org.junit.Test
 
 class CommunityClientsTest {
     private val code = "a".repeat(64)
+    private val cursor = "0|2026-10-01T00:00:00.000000Z|${Fixtures.OTHER}"
     private inline fun <reified T : Throwable> expect(block: () -> Unit): T {
         try { block() } catch (e: Throwable) { if (e is T) return e; throw e }
         fail("Expected ${T::class.simpleName}"); error("unreachable")
@@ -19,29 +20,54 @@ class CommunityClientsTest {
         """{"id":"$id","creator":"${Fixtures.USER}","creator_name":"Ink","caption":"c","published_at":"2026-10-01T00:00:00Z","allow_export":false,"title":"Fight","url":"https://media.example.test/v.mp4","likes":$likes,"liked":false,"following":false}"""
 
     @Test fun rpcUsesTheMemberJwtAndOmitsNulls() {
-        val transport = ScriptedTransport { ScriptedTransport.json(200, """{"posts":[${post()}],"has_more":true,"as_of":"2026-10-14T00:00:00Z"}""") }
-        val page = FeedClient(CommunityGateway(FixedSession(), transport)).page(FeedCategory.Trending, 0)
+        val transport = ScriptedTransport { ScriptedTransport.json(200, """{"posts":[${post()}],"has_more":true,"next_cursor":"$cursor","as_of":"2026-10-14T00:00:00Z"}""") }
+        val page = FeedClient(CommunityGateway(FixedSession(), transport)).page(FeedCategory.Trending)
         val request = transport.requests.single()
-        assertEquals("${Fixtures.URL}/rest/v1/rpc/sdi_feed_action", request.url)
+        assertEquals("${Fixtures.URL}/rest/v1/rpc/sdi_feed_page", request.url)
         assertEquals("Bearer member-token", request.headers["Authorization"])
         assertEquals(Fixtures.KEY, request.headers["apikey"])
         val sent = body(request)
-        assertEquals("list", sent.getString("action")); assertEquals("trending", sent.getString("category")); assertEquals(0, sent.getInt("page"))
-        assertFalse(sent.has("as_of")); assertFalse(sent.has("post_id"))
-        assertEquals(1, page.posts.size); assertTrue(page.hasMore); assertEquals("2026-10-14T00:00:00Z", page.asOf)
+        assertEquals("trending", sent.getString("category"))
+        assertFalse(sent.has("as_of")); assertFalse(sent.has("page_cursor")); assertFalse(sent.has("page")); assertFalse(sent.has("offset"))
+        assertEquals(1, page.posts.size); assertTrue(page.hasMore); assertEquals("2026-10-14T00:00:00Z", page.asOf); assertEquals(cursor, page.cursor)
         assertEquals(3, page.posts[0].likes)
     }
 
-    @Test fun laterPagesSendTheSnapshotAndBoundsAreEnforced() {
-        val transport = ScriptedTransport { ScriptedTransport.json(200, """{"posts":[],"has_more":true}""") }
+    @Test fun laterPagesSendTheCursorAndSnapshotAndBoundsAreEnforced() {
+        val transport = ScriptedTransport { ScriptedTransport.json(200, """{"posts":[],"has_more":false,"next_cursor":null}""") }
         val feed = FeedClient(CommunityGateway(FixedSession(), transport))
-        assertFalse(feed.page(FeedCategory.Recent, 39, "snap").hasMore) // page 39 is the last allowed
-        assertEquals("snap", body(transport.requests.single()).getString("as_of"))
-        expect<CommunityException.InvalidResponse> { feed.page(FeedCategory.Recent, 40) }
+        val last = feed.page(FeedCategory.Recent, cursor, "snap")
+        assertFalse(last.hasMore); assertNull(last.cursor)
+        val sent = body(transport.requests.single())
+        assertEquals(cursor, sent.getString("page_cursor")); assertEquals("snap", sent.getString("as_of")); assertFalse(sent.has("page"))
+        expect<CommunityException.Stale> { feed.page(FeedCategory.Recent, cursor, null) }
+        expect<CommunityException.Stale> { feed.page(FeedCategory.Recent, "x".repeat(121), "snap") }
+        assertEquals(1, transport.requests.size)
+        val noCursor = ScriptedTransport { ScriptedTransport.json(200, """{"posts":[],"has_more":true}""") }
+        expect<CommunityException.InvalidResponse> { FeedClient(CommunityGateway(FixedSession(), noCursor)).page(FeedCategory.Recent) }
         val oversized = ScriptedTransport { ScriptedTransport.json(200, """{"posts":[${(1..26).joinToString(",") { post() }}],"has_more":false}""") }
-        expect<CommunityException.InvalidResponse> { FeedClient(CommunityGateway(FixedSession(), oversized)).page(FeedCategory.Recent, 0) }
+        expect<CommunityException.InvalidResponse> { FeedClient(CommunityGateway(FixedSession(), oversized)).page(FeedCategory.Recent) }
         val incomplete = ScriptedTransport { ScriptedTransport.json(200, """{"posts":[{"id":"${Fixtures.OTHER}"}],"has_more":false}""") }
-        expect<CommunityException.InvalidResponse> { FeedClient(CommunityGateway(FixedSession(), incomplete)).page(FeedCategory.Recent, 0) }
+        expect<CommunityException.InvalidResponse> { FeedClient(CommunityGateway(FixedSession(), incomplete)).page(FeedCategory.Recent) }
+    }
+
+    @Test fun postersAreRecordedUrlsOrPlaceholdersAndLoadOnlyCompleteBoundedJpegs() {
+        val withPoster = post().dropLast(1) + ""","poster_url":"https://media.example.test/v.poster.jpg"}"""
+        val reply = """{"posts":[$withPoster,${post(Fixtures.USER)}],"has_more":false}"""
+        val page = FeedClient(CommunityGateway(FixedSession(), ScriptedTransport { ScriptedTransport.json(200, reply) })).page(FeedCategory.Recent)
+        assertEquals("https://media.example.test/v.poster.jpg", page.posts[0].safePosterUrl)
+        assertNull(page.posts[1].safePosterUrl)
+        assertNull(page.posts[0].copy(posterUrl = "http://media.example.test/p.jpg").safePosterUrl)
+        val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 1, 2, 0xFF.toByte(), 0xD9.toByte())
+        val images = ScriptedTransport { request -> HttpResponse(200, if (request.url.endsWith("v.poster.jpg")) jpeg else byteArrayOf(1, 2, 3, 4, 5, 6)) }
+        val loader = FeedPosterLoader(images)
+        assertTrue(loader.load(page.posts[0])!!.contentEquals(jpeg))
+        assertTrue(loader.load(page.posts[0])!!.contentEquals(jpeg))
+        assertEquals(1, images.requests.size) // cached
+        assertTrue(images.requests.single().headers.isEmpty()) // no account credentials on media
+        assertNull(loader.load(page.posts[1])) // nothing recorded: placeholder, no request
+        assertNull(loader.load(page.posts[0].copy(posterUrl = "https://media.example.test/broken.jpg")))
+        assertFalse(FeedPosterLoader.isCompleteJpeg(ByteArray(FeedPosterLoader.MAXIMUM_POSTER_BYTES + 1) { if (it < 3) jpeg[it] else 0 }))
     }
 
     @Test fun serverErrorsAndHttpFailuresAreMapped() {
@@ -59,8 +85,8 @@ class CommunityClientsTest {
 
     @Test fun nothingIsSentWithoutConfigurationOrSession() {
         val transport = ScriptedTransport { fail("must not send"); error("unreachable") }
-        expect<CommunityException.NotConfigured> { FeedClient(CommunityGateway(FixedSession(configured = null), transport)).page(FeedCategory.Recent, 0) }
-        expect<CommunityException.SignedOut> { FeedClient(CommunityGateway(FixedSession(token = null), transport)).page(FeedCategory.Recent, 0) }
+        expect<CommunityException.NotConfigured> { FeedClient(CommunityGateway(FixedSession(configured = null), transport)).page(FeedCategory.Recent) }
+        expect<CommunityException.SignedOut> { FeedClient(CommunityGateway(FixedSession(token = null), transport)).page(FeedCategory.Recent) }
         assertTrue(transport.requests.isEmpty())
     }
 
@@ -141,14 +167,14 @@ class CommunityClientsTest {
         val names = mutableSetOf<String>()
         val transport = ScriptedTransport { request -> names += request.url.substringAfterLast("/").substringBefore("?"); ScriptedTransport.json(200, "{}") }
         val gateway = CommunityGateway(FixedSession(), transport)
-        runCatching { FeedClient(gateway).page(FeedCategory.Recent, 0) }
+        runCatching { FeedClient(gateway).page(FeedCategory.Recent) }
         runCatching { ProfileClient(gateway).readRecords() }
         runCatching { ProfileClient(gateway).achievements() }
         runCatching { ProfileClient(gateway).setExportPermission(Fixtures.OTHER, 1, true) }
         runCatching { RoomsClient(gateway).pendingRequests() }
         runCatching { RoomsClient(gateway).leave(Fixtures.OTHER) }
         val contract = com.stickdeath.studio.BackendContract.rpcs.map { it.name }.toSet()
-        assertEquals(setOf("sdi_feed_action", "sdi_profile_records", "sdi_achievement_catalog", "sdi_export_consent", "sdi_room_manage", "sdi_room_action"), names)
+        assertEquals(setOf("sdi_feed_page", "sdi_profile_records", "sdi_achievement_catalog", "sdi_export_consent", "sdi_room_manage", "sdi_room_action"), names)
         assertTrue(contract.containsAll(names))
         names.forEach { name -> listOf("chat", "message", "call", "voice").forEach { assertFalse(name, name.contains(it)) } }
     }

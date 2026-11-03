@@ -37,8 +37,10 @@ TIP = "animation_tips"
 SUGGESTED_BODY = body("Animation tips", suggested=TIP)
 CREATOR = lambda _u: ("creator", PAID)  # noqa: E731
 FREE = lambda _u: None  # noqa: E731
-# Owner decision 2026-10-15: USD 4.99 net of 30% (3_490_000 micro-USD) / USD 0.02.
-DEFAULT_CREATOR_LIMIT = 174
+# Owner decision 2026-10-20: creator 250, pro 500 per billing period; unlimited has no plan allowance.
+DEFAULT_CREATOR_LIMIT = 250
+DEFAULT_PRO_LIMIT = 500
+TRIAL_END = NOW + dt.timedelta(days=3)
 
 
 class FakeAdapter:
@@ -95,28 +97,50 @@ class MeteringRuleTests(unittest.TestCase):
         self.assertEqual((plan["plan"], plan["limit"], plan["remaining"], plan["available"], plan["upgrade"]),
                          ("free", 0, 0, False, "creator_or_pro"))
 
-    def test_creator_limit_is_budget_over_cost_estimate(self):
+    def test_tier_limits_are_fixed_counts_per_billing_period(self):
         controls = metering.Controls()
-        self.assertEqual((controls.creator_period_budget_microusd, controls.prompt_cost_estimate_microusd,
-                          controls.creator_period_limit), (3_490_000, 20_000, DEFAULT_CREATOR_LIMIT))
-        m = meter()
-        self.assertEqual(m.plan(USER)["limit"], DEFAULT_CREATOR_LIMIT)
-        m.controls.prompt_cost_estimate_microusd = 100_000  # owner raises the estimate
+        self.assertEqual((controls.creator_period_prompts, controls.pro_period_prompts), (DEFAULT_CREATOR_LIMIT, DEFAULT_PRO_LIMIT))
+        self.assertEqual([controls.period_limit(t) for t in ("creator", "pro", "unlimited", "free")], [250, 500, None, None])
+        for tier, limit in (("creator", DEFAULT_CREATOR_LIMIT), ("pro", DEFAULT_PRO_LIMIT)):
+            plan = meter(entitlement=lambda _u, t=tier: (t, PAID)).plan(USER)
+            self.assertEqual((plan["plan"], plan["limit"], plan["remaining"], plan["unlimited"], plan["period"]),
+                             (tier, limit, limit, False, "billing_period"))
+        plan = meter(entitlement=lambda _u: ("unlimited", PAID)).plan(USER)
+        self.assertEqual((plan["plan"], plan["unlimited"], plan["remaining"], plan["period"]), ("unlimited", True, None, "none"))
+        m = meter(controls={"creator_period_prompts": 34})  # owner-editable count
         self.assertEqual((m.plan(USER)["limit"], m.reserve(USER).remaining), (34, 33))
-        m.controls.creator_period_budget_microusd = 1_000_000
-        self.assertEqual(m.plan(USER)["remaining"], 9)
         self.assertEqual(m.reserve(USER, "write my essay").code, "unknown_suggested_prompt")
 
-    def test_paid_plans_accept_free_text_and_trials_meter_as_their_tier(self):
-        for tier, remaining in (("creator", DEFAULT_CREATOR_LIMIT - 1), ("pro", None)):
+    def test_paid_plans_accept_free_text(self):
+        for tier, remaining, funding in (("creator", DEFAULT_CREATOR_LIMIT - 1, "allowance"), ("pro", DEFAULT_PRO_LIMIT - 1, "allowance"),
+                                         ("unlimited", None, "unlimited")):
             m = meter(entitlement=lambda _u, t=tier: (t, PAID))
             decision = m.reserve(USER)
-            self.assertEqual((decision.allowed, decision.plan, decision.remaining), (True, tier, remaining))
+            self.assertEqual((decision.allowed, decision.plan, decision.remaining, decision.funding), (True, tier, remaining, funding))
+
+    def test_trial_is_preview_only_and_consumes_nothing(self):
+        for tier in ("creator", "pro", "unlimited"):
+            m = meter(entitlement=lambda _u, t=tier: (t, TRIAL_END, True))
+            m.credits[USER] = 5
+            for args in ((USER,), (USER, TIP)):
+                refused = m.reserve(*args)
+                self.assertEqual((refused.allowed, refused.code, refused.plan, refused.trial, refused.upgrade, refused.buy_credits,
+                                  refused.resets_at, refused.credits), (False, "upgrade_required", tier, True, "after_trial", False, TRIAL_END, 5))
+            self.assertEqual((m.counters, m.reservations, m.global_used, m.credits[USER]), ({}, {}, {}, 5))
+            plan = m.plan(USER)
+            self.assertEqual((plan["trial"], plan["available"], plan["remaining"], plan["period"]), (True, False, 0, "trial"))
+
+    def test_trial_converts_to_the_paid_allowance(self):
+        state = {"ent": ("pro", TRIAL_END, True)}
+        m = meter(entitlement=lambda _u: state["ent"])
+        self.assertEqual(m.reserve(USER).code, "upgrade_required")
+        state["ent"] = ("pro", TRIAL_END + dt.timedelta(days=30), False)  # first paid period
+        decision = m.reserve(USER)
+        self.assertEqual((decision.allowed, decision.plan, decision.funding, decision.remaining), (True, "pro", "allowance", DEFAULT_PRO_LIMIT - 1))
 
     def test_creator_period_resets_on_renewal(self):
         state = {"paid": PAID}
-        # 300_000 / 20_000 = 15 prompts per period.
-        m = meter(entitlement=lambda _u: ("creator", state["paid"]), controls={"creator_period_budget_microusd": 300_000})
+        m = meter(entitlement=lambda _u: ("creator", state["paid"]), controls={"creator_period_prompts": 15})
         for _ in range(15):
             self.assertTrue(m.settle(m.reserve(USER).reservation, "commit", 1))
         refused = m.reserve(USER)
@@ -125,14 +149,23 @@ class MeteringRuleTests(unittest.TestCase):
         renewed = m.reserve(USER)
         self.assertEqual((renewed.allowed, renewed.remaining, renewed.period), (True, 14, "billing_period"))
 
-    def test_pro_is_unlimited_by_plan_but_obeys_safety_cap(self):
-        m = meter(entitlement=lambda _u: ("pro", PAID), controls={"user_daily_safety_cap": 2})
+    def test_pro_period_exhaustion_offers_unlimited(self):
+        m = meter(entitlement=lambda _u: ("pro", PAID), controls={"pro_period_prompts": 2})
+        self.assertEqual([m.reserve(USER).remaining for _ in range(2)], [1, 0])
+        refused = m.reserve(USER)
+        self.assertEqual((refused.code, refused.plan, refused.upgrade, refused.buy_credits), ("plan_allowance_exhausted", "pro", "unlimited", True))
+
+    def test_unlimited_is_unlimited_by_plan_but_obeys_safety_and_global_caps(self):
+        m = meter(entitlement=lambda _u: ("unlimited", PAID), controls={"user_daily_safety_cap": 2})
         first = m.reserve(USER)
-        self.assertEqual((first.allowed, first.plan, first.remaining), (True, "pro", None))
+        self.assertEqual((first.allowed, first.plan, first.remaining, first.funding), (True, "unlimited", None, "unlimited"))
         m.reserve(USER)
         refused = m.reserve(USER)
         self.assertEqual(refused.code, "daily_safety_limit")
         self.assertEqual(refused.resets_at, dt.datetime(2026, 10, 15, tzinfo=dt.timezone.utc))
+        capped = meter(entitlement=lambda _u: ("unlimited", PAID), controls={"global_daily_cap": 1})
+        self.assertTrue(capped.reserve(USER).allowed)
+        self.assertEqual(capped.reserve(USER).code, "global_limit")
 
     def test_rate_limit_restricted_accounts_and_emergency_stop(self):
         m = meter(controls={"user_per_minute_cap": 1})
@@ -170,15 +203,15 @@ class CreditRuleTests(unittest.TestCase):
         self.assertFalse(any(key[1].startswith("period:") for key in m.counters))
 
     def test_creator_spends_allowance_then_credits(self):
-        m = meter(controls={"creator_period_budget_microusd": 40_000})  # limit 2
+        m = meter(controls={"creator_period_prompts": 2})
         m.credits[USER] = 1
         fundings = [m.reserve(USER).funding for _ in range(3)]
         self.assertEqual(fundings, ["allowance", "allowance", "credit"])
         refused = m.reserve(USER)
         self.assertEqual((refused.code, refused.upgrade, refused.buy_credits), ("plan_allowance_exhausted", "pro", True))
 
-    def test_pro_never_spends_credits_and_caps_come_first(self):
-        m = meter(entitlement=lambda _u: ("pro", PAID), controls={"user_daily_safety_cap": 1})
+    def test_unlimited_never_spends_credits_and_caps_come_first(self):
+        m = meter(entitlement=lambda _u: ("unlimited", PAID), controls={"user_daily_safety_cap": 1})
         m.credits[USER] = 5
         self.assertEqual((m.reserve(USER).funding, m.credits[USER]), ("unlimited", 5))
         self.assertEqual(m.reserve(USER).code, "daily_safety_limit")
@@ -216,14 +249,30 @@ class SqlMeterDecodeTests(unittest.TestCase):
         self.assertEqual((paygo.allowed, paygo.plan, paygo.funding, paygo.credits, paygo.remaining), (True, "free", "credit", 4, 0))
         retired = metering.decision_from_rpc({"allowed": False, "code": "suggested_prompt_required", "plan": "free"})
         self.assertEqual(retired.code, "unavailable")
+        trial = metering.decision_from_rpc({"allowed": False, "code": "upgrade_required", "plan": "unlimited", "trial": True,
+                                            "upgrade": "after_trial", "resets_at": "2026-11-01T00:00:00Z", "buy_credits": False, "credits": 2})
+        self.assertEqual((trial.code, trial.plan, trial.trial, trial.upgrade, trial.resets_at, trial.buy_credits, trial.credits),
+                         ("upgrade_required", "unlimited", True, "after_trial", PAID, False, 2))
+        exhausted = metering.decision_from_rpc({"allowed": False, "code": "plan_allowance_exhausted", "plan": "pro", "upgrade": "unlimited"})
+        self.assertEqual((exhausted.plan, exhausted.upgrade), ("pro", "unlimited"))
+        pro = metering.decision_from_rpc({"allowed": True, "reservation": "r-3", "plan": "pro", "period": "billing_period", "funding": "allowance",
+                                          "remaining": 499, "credits": 0})
+        self.assertEqual((pro.allowed, pro.remaining), (True, 499))
+        unl = metering.decision_from_rpc({"allowed": True, "reservation": "r-4", "plan": "unlimited", "period": "none", "funding": "unlimited",
+                                          "remaining": None, "credits": 0})
+        self.assertEqual((unl.allowed, unl.remaining), (True, None))
 
     def test_malformed_rpc_results_are_refusals(self):
         for payload in [None, {}, {"allowed": "true"}, {"allowed": True}, {"allowed": True, "reservation": "r", "plan": "gold", "remaining": 1},
                         {"allowed": True, "reservation": "r", "plan": "free", "remaining": -1},
                         {"allowed": True, "reservation": "r", "plan": "free"}, {"allowed": False, "code": "made_up"},
-                        # Free is served only on a credit; Pro never spends credits; funding and credits are required.
+                        # Free is served only on a credit; Unlimited never spends credits; Pro has a
+                        # counted allowance; a trial is never served; funding and credits are required.
                         {"allowed": True, "reservation": "r", "plan": "free", "remaining": 0, "funding": "allowance", "credits": 1},
-                        {"allowed": True, "reservation": "r", "plan": "pro", "remaining": None, "funding": "credit", "credits": 1},
+                        {"allowed": True, "reservation": "r", "plan": "unlimited", "remaining": None, "funding": "credit", "credits": 1},
+                        {"allowed": True, "reservation": "r", "plan": "pro", "remaining": None, "funding": "unlimited", "credits": 1},
+                        {"allowed": True, "reservation": "r", "plan": "pro", "remaining": None, "funding": "allowance", "credits": 1},
+                        {"allowed": True, "reservation": "r", "plan": "creator", "remaining": 3, "funding": "allowance", "credits": 1, "trial": True},
                         {"allowed": True, "reservation": "r", "plan": "creator", "remaining": 1, "credits": 1},
                         {"allowed": True, "reservation": "r", "plan": "creator", "remaining": 1, "funding": "allowance", "credits": -1}]:
             decision = metering.decision_from_rpc(payload or {})
@@ -255,8 +304,20 @@ class MeteredHandlerTests(unittest.TestCase):
             self.assertEqual(response.status, 402)
             self.assertEqual(response.body, {"schemaVersion": 1, "error": handler.UPGRADE_MESSAGE, "code": "upgrade_required",
                                              "plan": "free", "upgrade": "creator_or_pro", "buyCredits": True, "credits": 0})
-        self.assertEqual(handler.UPGRADE_MESSAGE, "Spatter is part of Creator and Pro, or buy Spatter credits to pay as you go.")
+        self.assertEqual(handler.UPGRADE_MESSAGE, "Spatter is part of Creator, Pro and Unlimited, or buy Spatter credits to pay as you go.")
         self.assertEqual((adapter.calls, m.reservations, m.counters, m.global_used), ([], {}, {}, {}))
+
+    def test_trial_is_402_upgrade_required_without_provider_call(self):
+        m = meter(entitlement=lambda _u: ("unlimited", TRIAL_END, True))
+        m.credits[USER] = 4
+        adapter = FakeAdapter([])
+        for raw in (body(), SUGGESTED_BODY):
+            response = run(m, router(adapter), raw=raw)
+            self.assertEqual(response.status, 402)
+            self.assertEqual(response.body, {"schemaVersion": 1, "error": handler.TRIAL_MESSAGE, "code": "upgrade_required",
+                                             "plan": "unlimited", "trial": True, "upgrade": "after_trial",
+                                             "resetsAt": "2026-10-17T09:30:15Z"})
+        self.assertEqual((adapter.calls, m.reservations, m.counters, m.global_used, m.credits[USER]), ([], {}, {}, {}, 4))
 
     def test_free_with_credits_is_served_and_reports_the_balance(self):
         m = meter(entitlement=FREE)
@@ -272,7 +333,7 @@ class MeteredHandlerTests(unittest.TestCase):
         self.assertEqual(m.credits[USER], 2)  # the failed prompt's credit was released
 
     def test_creator_exhausted_offers_pro_or_credits(self):
-        response = run(meter(controls={"creator_period_budget_microusd": 0}), router(FakeAdapter([])))
+        response = run(meter(controls={"creator_period_prompts": 0}), router(FakeAdapter([])))
         self.assertEqual((response.status, response.body["code"], response.body["upgrade"], response.body["buyCredits"], response.body["credits"]),
                          (429, "plan_allowance_exhausted", "pro", True, 0))
 
@@ -316,7 +377,7 @@ class MeteredHandlerTests(unittest.TestCase):
             response = run(m, router(adapter), raw=SUGGESTED_BODY)
             self.assertEqual((response.status, response.body["code"]), (status, code))
             self.assertEqual(adapter.calls, [])
-        m = meter(controls={"creator_period_budget_microusd": 0})
+        m = meter(controls={"creator_period_prompts": 0})
         response = run(m, router(FakeAdapter([])), raw=SUGGESTED_BODY)
         self.assertEqual(response.status, 429)
         self.assertEqual(response.body["code"], "plan_allowance_exhausted")

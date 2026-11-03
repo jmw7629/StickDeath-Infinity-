@@ -24,9 +24,19 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: StickDeathInfinity/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity
+        PRODUCT_BUNDLE_IDENTIFIER: com.willisbmb.StickDeathInfinity
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: false
+      configs:
+        # Public values only (origin, publishable key, product ids). Debug/CI
+        # builds stay unconfigured so offline verification is unchanged.
+        Release:
+          SUPABASE_URL: https://gwcqlbjdvxebkxizfxsx.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_ESTaBouCYQb8AzPKGfS_5w_GNWI-otv
+          SDI_OAUTH_PROVIDERS: google,github
+          SDI_STOREKIT_PLAN_4_99_PRODUCT_ID: com.willisbmb.StickDeathInfinity.creator.monthly
+          SDI_STOREKIT_PLAN_9_99_PRODUCT_ID: com.willisbmb.StickDeathInfinity.pro.monthly
+          SDI_STOREKIT_PLAN_19_99_PRODUCT_ID: com.willisbmb.StickDeathInfinity.unlimited.monthly
     dependencies:
       - package: supabase-swift
         product: Supabase
@@ -50,7 +60,7 @@ targets:
       base:
         INFOPLIST_FILE: ""
         GENERATE_INFOPLIST_FILE: true
-        PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: com.willisbmb.StickDeathInfinity.uitests
         TEST_TARGET_NAME: StickDeathInfinity
 
   StickDeathInfinityAuthTests:
@@ -66,7 +76,7 @@ targets:
       base:
         INFOPLIST_FILE: ""
         GENERATE_INFOPLIST_FILE: true
-        PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity.authtests
+        PRODUCT_BUNDLE_IDENTIFIER: com.willisbmb.StickDeathInfinity.authtests
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/StickDeathInfinity.app/StickDeathInfinity"
         BUNDLE_LOADER: "$(TEST_HOST)"
         SWIFT_VERSION: "5.0"

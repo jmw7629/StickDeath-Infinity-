@@ -3,17 +3,21 @@
 //
 // Contract: docs/BILLING_CONTRACT.md
 //
-// - Exactly two monthly auto-renewable plans are approved: USD 4.99 and
-//   USD 9.99. Apple shows the real localized price from the loaded
-//   `Product`; nothing in this file states a price.
+// - Exactly three monthly auto-renewable plans are approved (owner decision
+//   2026-10-20): Creator USD 4.99, Pro USD 9.99 and Unlimited USD 19.99.
+//   Apple shows the real localized price from the loaded `Product`; nothing
+//   in this file states a price.
 // - Annual plans are NOT configured. No annual product id or price exists
 //   until the owner explicitly configures amounts and entitlements.
 // - Entitlements are reconciled server-side from Apple's signed
 //   transactions. This client never writes subscription tier/status to the
 //   `users` table. `reconcileEntitlementsWithServer()` reads the server's
 //   record (`sdi_my_entitlement`) and compares it with Apple's.
-// - No free trial is offered (owner decision 2026-10-15): no trial copy is
-//   produced even if App Store Connect reports an introductory offer.
+// - Every paid plan has a 3-day free trial (Apple introductory offer, owner
+//   decision 2026-10-20). Trial copy appears only when the loaded product has
+//   an introductory free-trial offer the account is eligible for. During the
+//   trial (`Transaction.offerType == .introductory`) the Studio is fully
+//   unlocked and Spatter stays preview-only (`StudioPlanLimits.trial`).
 // - Call billing and tips were removed: calls are retired scope and tips
 //   are not in the current contract. The historical name "StripeService"
 //   is kept only because this file is referenced by the Xcode project;
@@ -27,10 +31,10 @@ import StoreKit
 // MARK: - Product IDs
 //
 // The identifiers come from `BillingPlanCatalog` (one configuration for
-// plans, periods and copy). PLACEHOLDERS remain until the owner creates the
-// two monthly auto-renewable subscriptions in App Store Connect and sets the
-// Info.plist keys `SDI_STOREKIT_PLAN_4_99_PRODUCT_ID` and
-// `SDI_STOREKIT_PLAN_9_99_PRODUCT_ID` (existing `$(VAR)` xcconfig pattern).
+// plans, periods and copy). PLACEHOLDERS remain in builds that do not set the
+// Info.plist keys `SDI_STOREKIT_PLAN_4_99_PRODUCT_ID`,
+// `SDI_STOREKIT_PLAN_9_99_PRODUCT_ID` and `SDI_STOREKIT_PLAN_19_99_PRODUCT_ID`
+// (existing `$(VAR)` xcconfig pattern; Release builds fill them).
 // Annual ids are offered only when `SDI_BILLING_ANNUAL_OWNER_CONFIGURED` is
 // `YES` and the annual keys are set; neither exists today. Until App Store
 // Connect has matching products, `Product.products(for:)` returns nothing and
@@ -53,7 +57,15 @@ enum StoreProductID {
         monthlyID(for: .pro) ?? BillingPlanCatalog.placeholderProMonthly
     }
 
-    /// The approved catalogue: two monthly plans, plus annual plans only when
+    /// Info.plist key for the USD 19.99/month plan identifier.
+    static let plan1999InfoKey = BillingPlanCatalog.unlimitedMonthlyKey
+
+    /// USD 19.99/month plan — maps to `AppConfig.SubscriptionTier.unlimited`.
+    static var unlimitedMonthly: String {
+        monthlyID(for: .unlimited) ?? BillingPlanCatalog.placeholderUnlimitedMonthly
+    }
+
+    /// The approved catalogue: three monthly plans, plus annual plans only when
     /// the owner configured them explicitly.
     static var allSubscriptions: [String] { catalog.productIDs }
 
@@ -64,16 +76,28 @@ enum StoreProductID {
         switch catalog.tier(forProductID: productId) {
         case .creator: return .creator
         case .pro: return .pro
-        // `.studio` has no approved product; unknown ids grant nothing.
+        case .unlimited: return .unlimited
+        // Unknown ids grant nothing.
         case .free: return .free
         }
     }
 
     static func productId(for tier: AppConfig.SubscriptionTier) -> String? {
         switch tier {
-        case .creator: return creatorMonthly
-        case .pro:     return proMonthly
-        case .free, .studio: return nil
+        case .creator:   return creatorMonthly
+        case .pro:       return proMonthly
+        case .unlimited: return unlimitedMonthly
+        case .free:      return nil
+        }
+    }
+
+    /// The catalogue tier for an app-level tier.
+    static func billingTier(for tier: AppConfig.SubscriptionTier) -> BillingPlanTier {
+        switch tier {
+        case .free: return .free
+        case .creator: return .creator
+        case .pro: return .pro
+        case .unlimited: return .unlimited
         }
     }
 
@@ -104,7 +128,11 @@ final class StripeService: ObservableObject {
     @Published var reconciliationNotice: String?
     /// The purchase/subscription state machine the plan screens render
     /// (`BillingPlanCatalog.swift`). Fed only from StoreKit results.
-    @Published private(set) var billing = BillingState()
+    /// Its active entitlement carries Apple's trial flag, so Studio limits follow it.
+    @Published private(set) var billing = BillingState() { didSet { applyStudioLimits() } }
+    /// Whether the account is eligible for each loaded product's introductory
+    /// free trial, as the App Store reported it. Missing means unknown: no trial copy.
+    @Published private(set) var introOfferEligibility: [String: Bool] = [:]
     /// The server's entitlement for the signed-in account (`sdi_my_entitlement`),
     /// read after purchase, restore and when Plans opens. Nil until read.
     @Published private(set) var serverEntitlement: ServerEntitlement?
@@ -127,22 +155,22 @@ final class StripeService: ObservableObject {
 
     /// Free-plan Studio limits (owner decision 2026-10-15) apply only once the
     /// App Store has loaded real plans, so nobody is locked out of a feature
-    /// they cannot buy. Paid tiers are unrestricted.
+    /// they cannot buy. Paid tiers are unrestricted; during a paid plan's free
+    /// trial (owner decision 2026-10-20) Spatter stays preview-only.
     private func applyStudioLimits() {
-        let storeTier: BillingPlanTier
-        switch currentTier {
-        case .free: storeTier = .free
-        case .creator: storeTier = .creator
-        case .pro, .studio: storeTier = .pro
-        }
+        let storeTier = StoreProductID.billingTier(for: currentTier)
+        // Apple's trial flag counts only for the entitlement that gives the tier.
+        let storeInTrial = billing.inTrial && billing.activeEntitlement?.tier == storeTier
         // A plan the server applied from a verified provider event (for example a
         // website subscription) counts as well; the higher tier wins.
-        let serverTier = ServerEntitlementReconciliation.grantedTier(currentServerEntitlement)
-        let tier = serverTier.rank > storeTier.rank ? serverTier : storeTier
+        let server = currentServerEntitlement
+        let serverTier = ServerEntitlementReconciliation.grantedTier(server)
         let loaded: Bool
         if case .loaded = productLoadState { loaded = true } else { loaded = false }
         let enforcing = StudioPlanLimits.enforcing(catalog: catalog, storeLoaded: loaded)
-        StudioPlanLimits.current = StudioPlanLimits.effective(tier: tier, enforcing: enforcing)
+        StudioPlanLimits.current = StudioPlanLimits.effective(
+            storeTier: storeTier, storeInTrial: storeInTrial,
+            serverTier: serverTier, serverInTrial: server?.inTrial ?? false, enforcing: enforcing)
     }
 
     private var transactionListener: Task<Void, Error>?
@@ -186,13 +214,26 @@ final class StripeService: ObservableObject {
     // MARK: - StoreKit 2: Load Products
     // ═══════════════════════════════════════════════════════════════
 
-    /// Fetch the two approved monthly products from the App Store. An empty
+    /// Ask the App Store whether the account may still use each loaded plan's
+    /// introductory free trial (Apple allows one per subscription group).
+    private func refreshIntroOfferEligibility() async {
+        var eligibility: [String: Bool] = [:]
+        for product in availableProducts {
+            if let subscription = product.subscription {
+                eligibility[product.id] = await subscription.isEligibleForIntroOffer
+            }
+        }
+        introOfferEligibility = eligibility
+    }
+
+    /// Fetch the approved monthly products from the App Store. An empty
     /// result means the products do not exist (yet) in App Store Connect.
     func loadProducts() async {
         productLoadState = .loading
         do {
             let products = try await Product.products(for: StoreProductID.allSubscriptions)
             availableProducts = products.sorted { $0.price < $1.price }
+            await refreshIntroOfferEligibility()
             productLoadState = products.isEmpty ? .notConfigured : .loaded
             send(.catalogLoaded(productCount: products.count))
         } catch {
@@ -264,10 +305,21 @@ final class StripeService: ObservableObject {
         billing = BillingState.reduce(billing, event)
     }
 
-    /// No plan offers a free trial (owner decision 2026-10-15), so no trial copy
-    /// is shown even if App Store Connect reports an introductory offer. Kept as
-    /// a function so existing plan screens compile; it always answers nil.
-    func trialCopy(for product: Product) -> String? { nil }
+    /// Trial copy for a loaded product (owner decision 2026-10-20: every paid
+    /// plan has a 3-day free trial). Shown only when the App Store reports an
+    /// introductory free-trial offer for this product AND that the account is
+    /// eligible for it; the length is Apple's, never assumed.
+    func trialCopy(for product: Product) -> String? {
+        guard let offer = product.subscription?.introductoryOffer, offer.paymentMode == .freeTrial else { return nil }
+        let days: Int?
+        switch offer.period.unit {
+        case .day: days = offer.period.value
+        case .week: days = offer.period.value * 7
+        default: days = nil
+        }
+        return BillingCopy.trial(for: plan(for: product), days: days,
+                                 eligible: introOfferEligibility[product.id] ?? false)
+    }
 
     /// The catalogue plan a loaded product belongs to.
     func plan(for product: Product) -> BillingPlanDefinition? {
@@ -405,6 +457,8 @@ final class StripeService: ObservableObject {
             snapshots.append(await snapshot(for: transaction))
         }
         send(.entitlementsRefreshed(snapshots, now: Date()))
+        // A trial used on this account ends trial copy for the group.
+        await refreshIntroOfferEligibility()
     }
 
     /// Build the state-machine view of one verified transaction from Apple's

@@ -42,7 +42,7 @@ target compiles):
       base:
         INFOPLIST_FILE: ""
         GENERATE_INFOPLIST_FILE: true
-        PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity.perftests
+        PRODUCT_BUNDLE_IDENTIFIER: com.willisbmb.StickDeathInfinity.perftests
         TEST_TARGET_NAME: StickDeathInfinity
 ```
 

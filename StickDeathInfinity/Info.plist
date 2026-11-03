@@ -9,7 +9,7 @@
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
-    <string>com.willisnmb.stickdeathinfinity</string>
+    <string>com.willisbmb.StickDeathInfinity</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -51,7 +51,7 @@
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>com.willisnmb.stickdeathinfinity</string>
+            <string>com.willisbmb.StickDeathInfinity</string>
             <key>CFBundleURLSchemes</key>
             <array>
                 <string>stickdeath</string>
@@ -64,6 +64,13 @@
     </array>
 	<key>SPATTER_BACKEND_URL</key>
 	<string>$(SPATTER_BACKEND_URL)</string>
+    <!-- App Store product ids; set for Release builds only (project build settings). -->
+    <key>SDI_STOREKIT_PLAN_4_99_PRODUCT_ID</key>
+    <string>$(SDI_STOREKIT_PLAN_4_99_PRODUCT_ID)</string>
+    <key>SDI_STOREKIT_PLAN_9_99_PRODUCT_ID</key>
+    <string>$(SDI_STOREKIT_PLAN_9_99_PRODUCT_ID)</string>
+    <key>SDI_STOREKIT_PLAN_19_99_PRODUCT_ID</key>
+    <string>$(SDI_STOREKIT_PLAN_19_99_PRODUCT_ID)</string>
     <key>SDI_OAUTH_PROVIDERS</key>
     <string>$(SDI_OAUTH_PROVIDERS)</string>
     <key>SDI_MICROSOFT_TENANT</key>
