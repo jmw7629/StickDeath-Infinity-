@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import plistlib
+import platform
 import re
 import signal
 import subprocess
@@ -57,8 +58,13 @@ before = inputs()
 if not before:
     raise RuntimeError("Native input inventory is empty")
 (OUT / "input-sha256.json").write_text(json.dumps(before, indent=2) + "\n")
+build_architecture = platform.machine()
+if build_architecture not in {"arm64", "x86_64"}:
+    raise RuntimeError("Unsupported simulator runner architecture")
+
 args = ["xcodebuild", "-project", "StickDeathInfinity.xcodeproj", "-scheme", "StickDeathInfinity",
         "-configuration", "Debug", "-destination", "generic/platform=iOS Simulator",
+        "-arch", build_architecture,
         "-derivedDataPath", str(BUILD / "DerivedData"), "-clonedSourcePackagesDirPath", str(BUILD / "Packages"),
         "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
         "-jobs", "2", "CODE_SIGNING_ALLOWED=NO", "build"]
@@ -151,7 +157,7 @@ try:
     capture["simulatorUDID"] = owned
     subprocess.run(["xcrun", "simctl", "boot", owned], env=env, capture_output=True, timeout=30, check=True)
     subprocess.run(["xcrun", "simctl", "bootstatus", owned, "-b"], env=env, capture_output=True, timeout=180, check=True)
-    subprocess.run(["xcrun", "simctl", "install", owned, str(app)], env=env, capture_output=True, timeout=60, check=True)
+    subprocess.run(["xcrun", "simctl", "install", owned, str(app)], env=env, capture_output=True, timeout=180, check=True)
     built_info = plistlib.loads((app / "Info.plist").read_bytes())
     bundle = built_info["CFBundleIdentifier"]
     subprocess.run(["xcrun", "simctl", "launch", owned, bundle], env=env, capture_output=True, timeout=30, check=True)
