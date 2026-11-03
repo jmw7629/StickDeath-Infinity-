@@ -662,12 +662,50 @@ enum RoomInvitationPolicy {
     static let codeLength = 64
     static let lifetime: TimeInterval = 24 * 3600
     static let maximumRedemptions = 20
+    static let maximumSharedTextBytes = 4096
+    enum ImportFailure: LocalizedError {
+        case oversized, unrecognized, ambiguous
+        var errorDescription: String? {
+            switch self {
+            case .oversized: return "This invitation is too long. Paste only its 64-character code."
+            case .unrecognized: return "Paste a 64-character invitation code or the invitation shared from Rooms. Nothing was sent."
+            case .ambiguous: return "This text contains more than one invitation code. Paste only the code you want to review."
+            }
+        }
+    }
     static func normalize(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
     static func isWellFormed(_ raw: String) -> Bool {
         let code = normalize(raw)
         return code.count == codeLength && code.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+    /// Import only a raw code or this app's exact forwardable envelope. Never
+    /// interpret an arbitrary URL, account token or unrelated pasted message.
+    /// This is local parsing only: the server still reviews the code and the
+    /// recipient explicitly consents before making an admission request.
+    static func importedCode(from raw: String) throws -> String {
+        guard raw.utf8.prefix(maximumSharedTextBytes + 1).count <= maximumSharedTextBytes else {
+            throw ImportFailure.oversized
+        }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isWellFormed(text) { return normalize(text) }
+        let prefix = "StickDeath Infinity room invitation for \""
+        let delimiter = "\". Open Rooms, choose Review invitation and paste: "
+        guard text.hasPrefix(prefix), let boundary = text.range(of: delimiter, options: .backwards),
+              boundary.lowerBound >= text.index(text.startIndex, offsetBy: prefix.count) else {
+            throw ImportFailure.unrecognized
+        }
+        let title = String(text[text.index(text.startIndex, offsetBy: prefix.count)..<boundary.lowerBound])
+        let tail = text[boundary.upperBound...]
+        let candidate = String(tail.prefix(codeLength))
+        guard isWellFormed(candidate), shareText(code: candidate, roomTitle: title) == text else {
+            throw ImportFailure.unrecognized
+        }
+        let codes = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .filter { isWellFormed(String($0)) }
+        guard codes.count == 1 else { throw ImportFailure.ambiguous }
+        return normalize(candidate)
     }
     /// Forwardable text: the code is a room admission request credential, not
     /// an account credential, and it never grants access on its own.

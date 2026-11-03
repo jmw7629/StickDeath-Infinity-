@@ -3235,22 +3235,36 @@ struct SpatterFillInstruction: Equatable {
 /// "Select drawings "id-1", "id-2"." or "Clear drawing selection." Explicit
 /// stable IDs on the active frame; the executor applies the canvas selection rules.
 struct SpatterSelectByIDInstruction: Equatable {
+    enum Mode: Equatable { case explicitIDs, all, invert }
     let elementIDs: [String]
+    var mode: Mode = .explicitIDs
     static let example = "Select drawings \"stroke-1\", \"stroke-2\"."
     static let clearExample = "Clear drawing selection."
+    static let allExample = "Select all drawings."
+    static let invertExample = "Invert drawing selection."
     static let maximumIDs = 64
     enum Failure: LocalizedError, Equatable {
-        case syntax
+        case syntax, selectionContext, limit
         var errorDescription: String? {
-            "Use: \(SpatterSelectByIDInstruction.example) with 1–64 quoted drawing IDs from the active frame, or \(SpatterSelectByIDInstruction.clearExample) Nothing changed."
+            switch self {
+            case .syntax: return "Use: \(SpatterSelectByIDInstruction.example) with 1–64 quoted drawing IDs, \(SpatterSelectByIDInstruction.clearExample) \(SpatterSelectByIDInstruction.allExample) or \(SpatterSelectByIDInstruction.invertExample) Nothing changed."
+            case .selectionContext: return "All and Invert need the current Studio frame's visible editable drawings. Use one instruction outside a batch. Nothing was selected."
+            case .limit: return "This selection would include more than 64 drawings. Use Lasso's Select all or Invert, or select a smaller group. Nothing was selected."
+            }
         }
     }
     static func isInstruction(_ text: String) -> Bool {
-        text.range(of: #"\A\s*(?:select\s+drawings?\s+"|clear\s+drawing\s+selection\b)"#, options: [.regularExpression, .caseInsensitive]) != nil
+        text.range(of: #"\A\s*(?:select\s+drawings?\s+"|select\s+all\s+drawings?\b|(?:clear|invert)\s+drawing\s+selection\b)"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
     static func parse(_ text: String) throws -> Self {
         guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
         guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.syntax }
+        if text.range(of: #"\A\s*select\s+all\s+drawings\s*\.\s*\z"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .init(elementIDs: [], mode: .all)
+        }
+        if text.range(of: #"\A\s*invert\s+drawing\s+selection\s*\.\s*\z"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .init(elementIDs: [], mode: .invert)
+        }
         if text.range(of: #"\A\s*clear\s+drawing\s+selection\s*\.\s*\z"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return .init(elementIDs: [])
         }
@@ -3262,9 +3276,23 @@ struct SpatterSelectByIDInstruction: Equatable {
         guard (1...Self.maximumIDs).contains(ids.count), Set(ids).count == ids.count else { throw Failure.syntax }
         return .init(elementIDs: ids)
     }
+    /// Resolve only from the live native eligibility pass. The resulting
+    /// request still contains explicit stable IDs and the original revision.
+    func resolving(eligibleIDs: [String], selectedIDs: Set<String>,
+                   checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Self {
+        try checkCancellation()
+        guard mode != .explicitIDs else { return self }
+        let eligible = Set(eligibleIDs)
+        guard eligible.count == eligibleIDs.count else { throw Failure.selectionContext }
+        let result = mode == .all ? eligible : eligible.subtracting(selectedIDs)
+        guard result.count <= Self.maximumIDs else { throw Failure.limit }
+        try checkCancellation()
+        return .init(elementIDs: result.sorted())
+    }
     func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
         try checkCancellation()
+        guard mode == .explicitIDs else { throw Failure.selectionContext }
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
                      action: .apply([.selectElements(.init(frame: .id(context.activeFrameID), elementIDs: elementIDs))]))
     }
@@ -4004,6 +4032,13 @@ enum SpatterInstructionPreview {
                 }
                 let decision = SpatterSourceRightsGate.evaluate(reference)
                 return "Plan: record \(reference.url.absoluteString) as a \(reference.rightsBasis.label) reference on this project (no download). Generation would then be \(decision.allowed ? "allowed for 20–60 s briefs" : "refused"): \(decision.reason) One Undo step. Nothing has changed yet."
+            case .selectByID:
+                let instruction = try SpatterSelectByIDInstruction.parse(text)
+                if instruction.mode == .explicitIDs {
+                    return "Plan: \(instruction.elementIDs.isEmpty ? "clear drawing selection" : "select the named drawings on the active frame"). Apply validates the current frame and drawing IDs. Selection changes no project, save or Undo history. Nothing has changed yet."
+                }
+                let action = instruction.mode == .all ? "Select all" : "Invert"
+                return "Plan: \(action) drawing selection on the active frame using Lasso's visible Free-layer, on-canvas drawing rules. Clear image and Wand selections first. Apply resolves at most 64 resulting drawings in the current Studio; larger results are refused without partial selection. Selection changes no project, save or Undo history. Nothing has changed yet."
             case .areaSelection:
                 let area = try SpatterAreaSelectInstruction.parse(text)
                 return "Plan: select the drawings on the active frame fully inside this \(area.isRectangle ? "rectangle" : "\(area.vertices.count)-point polygon") under the Lasso's rules (visible, unlocked Free layers) → 1× selectElements. Selection never changes the project. Nothing has changed yet."

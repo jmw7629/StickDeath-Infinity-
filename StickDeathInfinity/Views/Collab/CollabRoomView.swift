@@ -153,55 +153,158 @@ struct CollabRoomView: View {
 /// Redeem a forwarded code: review the room, consent explicitly, then request admission.
 private struct RoomJoinSection: View {
     let onRequested: (String) -> Void
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
     @State private var code = ""
     @State private var preview: RoomsClient.InvitationPreview?
+    @State private var reviewedCode: String?
     @State private var consent = false
     @State private var busy = false
+    @State private var requestingAdmission = false
     @State private var problem: String?
+    @State private var operation: Task<Void, Never>?
+    @State private var requestID = UUID()
+    @State private var visible = false
+    private var parsedCode: String? { try? RoomInvitationPolicy.importedCode(from: code) }
+    private var canInteract: Bool { visible && phase == .active && auth.isAuthenticated }
+    private var invitationInput: Binding<String> {
+        Binding(get: { code }, set: { value in
+            invalidate()
+            guard value.utf8.prefix(RoomInvitationPolicy.maximumSharedTextBytes + 1).count <= RoomInvitationPolicy.maximumSharedTextBytes else {
+                code = ""; problem = RoomInvitationPolicy.ImportFailure.oversized.errorDescription; return
+            }
+            code = value
+        })
+    }
     var body: some View {
         CommunityCard {
             Text("Join with an invitation").communitySubheading()
-            TextField("Invitation code", text: $code)
+            TextField("Invitation code or shared invitation", text: invitationInput)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .communityField()
-                .onChange(of: code) { _, _ in preview = nil; consent = false; problem = nil }
+                .communityField().privacySensitive().disabled(busy || !canInteract)
+                .submitLabel(.go).onSubmit { review() }
                 .accessibilityIdentifier("rooms.join.code")
-            Button("Review invitation") { Task { await review() } }
+            HStack(alignment: .center, spacing: 12) {
+                // Explicit system paste action; no automatic clipboard read.
+                PasteButton(payloadType: String.self) { [id = requestID, account = auth.userId] values in
+                    guard id == requestID, account == auth.userId else { return }
+                    importInvitation(values)
+                }
+                    .tint(StudioCraftTheme.accentText).frame(minHeight: 44)
+                    .disabled(busy || !canInteract)
+                    .accessibilityLabel("Paste room invitation")
+                    .accessibilityHint("Paste one code or the invitation shared from Rooms. Review it before requesting admission.")
+                    .accessibilityIdentifier("rooms.join.paste")
+                Text("Paste a 64-character code or a forwarded Rooms invitation. Nothing is sent until you choose Review invitation.")
+                    .communityCaption().fixedSize(horizontal: false, vertical: true)
+            }
+            Button(busy ? "Waiting for the room service…" : "Review invitation") { review() }
                 .buttonStyle(CommunitySecondaryButtonStyle())
-                .disabled(busy || !RoomInvitationPolicy.isWellFormed(code))
+                .disabled(busy || !canInteract || parsedCode == nil)
                 .accessibilityIdentifier("rooms.join.review")
-            if let problem { CommunityMessage(text: problem, kind: .error) }
+            if busy {
+                ProgressView(requestingAdmission ? "Requesting admission…" : "Reviewing invitation…")
+                    .font(.specialElite(14, relativeTo: .body))
+                Button("Cancel waiting") { cancelWaiting() }
+                    .buttonStyle(CommunitySecondaryButtonStyle())
+                    .accessibilityIdentifier("rooms.join.cancel")
+            }
+            if let problem { CommunityMessage(text: problem, kind: .error).accessibilityIdentifier("rooms.join.error") }
             if let preview {
                 Text(preview.title).font(.specialElite(18, relativeTo: .title3))
                 Text("Permission summary: the owner decides what is shared and whether members may edit. Until the owner approves you, nothing from the room is visible.")
                     .communityCaption()
                 Toggle("I agree to join this room and let its owner see my account identifier.", isOn: $consent)
-                    .font(.specialElite(14, relativeTo: .body))
+                    .font(.specialElite(14, relativeTo: .body)).disabled(busy || !canInteract)
                     .accessibilityIdentifier("rooms.join.consent")
-                Button("Request admission") { Task { await request() } }
+                Button("Request admission") { request() }
                     .buttonStyle(CommunityPrimaryButtonStyle())
-                    .disabled(!consent || busy)
+                    .disabled(!consent || busy || !canInteract || reviewedCode != parsedCode)
                     .accessibilityIdentifier("rooms.join.request")
             }
         }
+        .onAppear { visible = true }
+        .onDisappear { visible = false; invalidate(clearCode: true) }
+        .onChange(of: phase) { _, value in if value != .active { invalidate() } }
+        // Observe each identity event, including sign-out/sign-in to the same
+        // account. An old completion must never become another session's UI.
+        .onReceive(auth.$state) { _ in invalidate(clearCode: true) }
+        .onReceive(auth.$currentUser) { _ in invalidate(clearCode: true) }
     }
-    @MainActor private func review() async {
-        guard !busy else { return }
-        busy = true; defer { busy = false }
-        do { preview = try await CommunityServices.rooms.previewInvitation(code: code); problem = nil }
-        catch { preview = nil; problem = CommunityGateway.normalize(error).errorDescription }
+
+    @MainActor private func invalidate(clearCode: Bool = false) {
+        operation?.cancel(); operation = nil; requestID = UUID()
+        busy = false; requestingAdmission = false; preview = nil; reviewedCode = nil; consent = false; problem = nil
+        if clearCode { code = "" }
     }
-    @MainActor private func request() async {
-        guard !busy, consent else { return }
-        busy = true; defer { busy = false }
+    @MainActor private func isCurrent(_ id: UUID, account: String, code expected: String) -> Bool {
+        !Task.isCancelled && requestID == id && canInteract && auth.userId == account && parsedCode == expected
+    }
+    @MainActor private func finish(_ id: UUID) {
+        guard requestID == id else { return }
+        busy = false; requestingAdmission = false; operation = nil
+    }
+    @MainActor private func importInvitation(_ values: [String]) {
+        guard canInteract, !busy else { return }
+        invalidate()
+        guard values.count == 1, let text = values.first else {
+            code = ""; problem = "Paste one invitation at a time. Nothing was sent."; return
+        }
         do {
-            let outcome = try await CommunityServices.rooms.requestAdmission(code: code, consent: consent)
-            code = ""; preview = nil; consent = false; problem = nil
-            switch outcome {
-            case .pendingOwnerApproval: onRequested("Request recorded. The owner must approve admission before anything is shared.")
-            case .alreadyRequested: onRequested("You already requested admission to this room. The owner still needs to approve it.")
+            code = try RoomInvitationPolicy.importedCode(from: text)
+        } catch { code = ""; problem = error.localizedDescription }
+    }
+    @MainActor private func cancelWaiting() {
+        let wasRequesting = requestingAdmission
+        invalidate()
+        problem = wasRequesting
+            ? "Stopped waiting. If the server already recorded your admission request, cancelling here cannot undo it. Refresh Rooms to check your pending requests."
+            : "Invitation review cancelled. No admission request was made."
+    }
+    @MainActor private func review() {
+        guard canInteract, !busy, let account = auth.userId, let capturedCode = parsedCode else { return }
+        invalidate(); busy = true
+        let id = requestID
+        operation = Task { @MainActor in
+            defer { finish(id) }
+            guard isCurrent(id, account: account, code: capturedCode) else { return }
+            do {
+                let value = try await CommunityServices.rooms.previewInvitation(code: capturedCode)
+                guard isCurrent(id, account: account, code: capturedCode) else { return }
+                preview = value; reviewedCode = capturedCode; problem = nil
+            } catch {
+                guard isCurrent(id, account: account, code: capturedCode) else { return }
+                problem = CommunityGateway.normalize(error).errorDescription
             }
-        } catch { problem = CommunityGateway.normalize(error).errorDescription }
+        }
+    }
+    @MainActor private func request() {
+        guard canInteract, !busy, consent, let account = auth.userId,
+              let capturedCode = parsedCode, reviewedCode == capturedCode, let reviewedRoom = preview else { return }
+        requestID = UUID(); let id = requestID
+        busy = true; requestingAdmission = true; problem = nil
+        operation = Task { @MainActor in
+            defer { finish(id) }
+            guard isCurrent(id, account: account, code: capturedCode) else { return }
+            do {
+                let outcome = try await CommunityServices.rooms.requestAdmission(code: capturedCode, consent: true)
+                guard isCurrent(id, account: account, code: capturedCode) else { return }
+                let note: String
+                switch outcome {
+                case .pendingOwnerApproval(let room):
+                    guard room == reviewedRoom.room else { throw CommunityError.invalidResponse("Admission response did not match the reviewed room.") }
+                    note = "Request recorded. The owner must approve admission before anything is shared."
+                case .alreadyRequested(let room):
+                    guard room == reviewedRoom.room else { throw CommunityError.invalidResponse("Admission response did not match the reviewed room.") }
+                    note = "You already requested admission to this room. The owner still needs to approve it."
+                }
+                code = ""; preview = nil; reviewedCode = nil; consent = false; problem = nil
+                onRequested(note)
+            } catch {
+                guard isCurrent(id, account: account, code: capturedCode) else { return }
+                problem = CommunityGateway.normalize(error).errorDescription
+            }
+        }
     }
 }
 

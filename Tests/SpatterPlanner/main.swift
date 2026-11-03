@@ -1102,6 +1102,42 @@ private enum Golden {
                 let hostile = "{\"schemaVersion\":1,\"requestID\":\"\(UUID().uuidString)\",\"projectID\":\"\(editor.document.id.uuidString)\",\"expectedRevision\":\(editor.document.revision),\"action\":{\"apply\":[{\"setSourceReference\":{\"reference\":{\"url\":\"https://example.com\",\"rightsBasis\":\"licensed\",\"recordedAt\":0,\"fetch\":true}}}]}}"
                 try rejects("unknown source field") { _ = try StudioCommandExecutor.decode(Data(hostile.utf8)) }
             }
+            try test("All and Invert drawing selection require live resolution, strict grammar and bounded explicit IDs") {
+                let all = try SpatterSelectByIDInstruction.parse(" SELECT ALL DRAWINGS . ")
+                let invert = try SpatterSelectByIDInstruction.parse(SpatterSelectByIDInstruction.invertExample)
+                try require(all.mode == .all && invert.mode == .invert
+                    && SpatterInstructionRouter.classify(SpatterSelectByIDInstruction.allExample) == .selectByID
+                    && SpatterInstructionRouter.classify(SpatterSelectByIDInstruction.invertExample) == .selectByID, "All/Invert routing")
+                for bad in ["Select all drawings", "Invert selection.", "Select all images.", "Select all drawings. Delete active layer.",
+                            "Invert drawing selection. Export project as MP4.", "Select all drawings.\n", "Please select all drawings."] {
+                    try rejects(bad) { _ = try SpatterSelectByIDInstruction.parse(bad) }
+                }
+                let context = StudioCommandContext(document: try document())
+                let preview = SpatterInstructionPreview.plan(SpatterSelectByIDInstruction.allExample, context: context)
+                try require(preview.contains("Lasso") && preview.contains("at most 64")
+                    && preview.contains("no project, save or Undo history") && !preview.contains("one Undo step"), "Selection preview promises an edit")
+                for instruction in [all, invert] {
+                    do { _ = try instruction.prepare(in: context, checkCancellation: {}); throw Failure(message: "Unresolved selection prepared") }
+                    catch SpatterSelectByIDInstruction.Failure.selectionContext {}
+                }
+                let resolved = try all.resolving(eligibleIDs: ["seed-0"], selectedIDs: [], checkCancellation: {})
+                var editor = try StudioDocumentEditor(document: try document())
+                let before = editor.document
+                let request = try resolved.prepare(in: StudioCommandContext(document: before), checkCancellation: {})
+                let receipt = try execute(request, on: &editor)
+                try require(request.expectedRevision == before.revision && receipt.outcome == .unchanged
+                    && editor.document == before && editor.selectedElementIDs == ["seed-0"] && !editor.canUndo, "All became a document edit")
+                let opposite = try invert.resolving(eligibleIDs: ["seed-0"], selectedIDs: ["seed-0", "stale-id"], checkCancellation: {})
+                _ = try execute(try opposite.prepare(in: StudioCommandContext(document: before), checkCancellation: {}), on: &editor)
+                try require(editor.selectedElementIDs.isEmpty && editor.document == before && !editor.canUndo, "Invert included ineligible IDs or history")
+                let many = (0..<65).map { "element-\($0)" }
+                do { _ = try all.resolving(eligibleIDs: many, selectedIDs: [], checkCancellation: {}); throw Failure(message: "Oversized selection truncated or accepted") }
+                catch SpatterSelectByIDInstruction.Failure.limit {}
+                do { _ = try all.resolving(eligibleIDs: ["seed-0", "seed-0"], selectedIDs: [], checkCancellation: {}); throw Failure(message: "Ambiguous eligibility accepted") }
+                catch SpatterSelectByIDInstruction.Failure.selectionContext {}
+                do { _ = try all.resolving(eligibleIDs: ["seed-0"], selectedIDs: [], checkCancellation: { throw CancellationError() }); throw Failure(message: "Cancellation ignored") }
+                catch is CancellationError {}
+            }
             try test("select-by-ID grammar selects exact drawings under canvas rules and fill commands require a prepared region") {
                 var editor = try StudioDocumentEditor(document: try document())
                 let frame = editor.document.activeFrameID, layer = editor.document.activeLayerID
@@ -1227,7 +1263,7 @@ private enum Golden {
                 try require(StudioSharedEdit.drawCommands(before: seed, after: moved, frameID: frameID) == nil, "Unrepresentable touch commit claimed shareable")
             }
             try test("catalog v5 selection picture and export grammars parse exactly and refuse injection and malformed input") {
-                try require(SpatterInstructionCatalog.version == 13 && SpatterInstructionCatalog.grammars.count == 52, "Catalog v13 not registered")
+                try require(SpatterInstructionCatalog.version == 14 && SpatterInstructionCatalog.grammars.count == 52, "Catalog v14 not registered")
                 // Area (Lasso) selection.
                 let rect = try SpatterAreaSelectInstruction.parse(SpatterAreaSelectInstruction.example)
                 try require(rect.isRectangle && rect.vertices == [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 90)]

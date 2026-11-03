@@ -138,6 +138,10 @@ final class SpatterStudioEditSession: ObservableObject {
                 return "Recorded \(recordedSource.url.absoluteString) as a \(recordedSource.rightsBasis.label) reference in one undoable local edit; nothing was downloaded. \(decision.allowed ? "20–60 s briefs may now generate from it." : "Generation stays refused:") \(decision.reason)"
             }
             if let selectByID {
+                if selectByID.mode != .explicitIDs {
+                    let action = selectByID.mode == .all ? "Select all" : "Invert"
+                    return "\(action): \(selectedDrawingCount) visible editable drawing\(selectedDrawingCount == 1 ? " is" : "s are") selected on the active frame. Hidden, locked, transparent, eraser and off-canvas artwork were excluded. The project and Undo history did not change; use Move next."
+                }
                 return selectByID.elementIDs.isEmpty ? "Cleared the drawing selection. The project did not change."
                     : "Selected \(selectByID.elementIDs.count) drawing\(selectByID.elementIDs.count == 1 ? "" : "s") on the active frame by ID. The project did not change; use Move or a selection instruction next."
             }
@@ -654,7 +658,18 @@ final class SpatterStudioEditSession: ObservableObject {
                 } else if !isBatch && isSelectByID {
                     guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before selecting drawings.") }
                     let instruction = try SpatterSelectByIDInstruction.parse(draft)
-                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    if instruction.mode == .explicitIDs {
+                        preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    } else {
+                        guard studio.currentFrame.id == document.activeFrameID, captured.selectedImage == nil, !studio.hasFillImageTarget,
+                              !studio.hasDrawingWandSelection, studio.wandSelectedPixels == 0, !studio.wandWorking else {
+                            throw SessionError.unavailable("Clear image and Wand pixel selections, then show the active frame before selecting whole drawings. Nothing was selected.")
+                        }
+                        let eligible = try studio.visibleEditableDrawingIDs(checkCancellation: check)
+                        let resolved = try instruction.resolving(eligibleIDs: eligible.sorted(), selectedIDs: captured.selectedElementIDs, checkCancellation: check)
+                        preparedRequest = try resolved.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                        selectedCount = resolved.elementIDs.count
+                    }
                     selectByIDInstruction = instruction
                 } else if !isBatch && isFill {
                     // The same capture and region computation as the Fill tool. A
@@ -910,6 +925,11 @@ final class SpatterStudioEditSession: ObservableObject {
                 // No suspension between the last fresh context check and this
                 // synchronous atomic VM transaction. Its own original revision,
                 // brush-input, work-budget and cancellation guards still apply.
+                if let instruction = selectByIDInstruction, instruction.mode != .explicitIDs {
+                    guard !studio.hasFillImageTarget, !studio.hasDrawingWandSelection, studio.wandSelectedPixels == 0, !studio.wandWorking else {
+                        throw SessionError.contextChanged
+                    }
+                }
                 let previousMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }

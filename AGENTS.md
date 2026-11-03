@@ -2,6 +2,13 @@
 
 Joseph Willis transferred primary implementation ownership of this native iOS project to Codex on 2026-09-08. Treat this file as project policy, subject to the owner's current instructions. The transition is recorded in issue #110.
 
+## Owner execution update (2026-11-03)
+
+- Deliver the actual SDI product against the preserved Viktor Studio reference. Studio retains its layout, single snapping toolbar and tool-specific popup options. Profile/feed may use the existing product website's old Mac OS design. No user messaging or calls.
+- Use GitHub issues as high-level requirements context. Prioritize working product components over issue-count closure; do not invent tasks or mark unfinished functionality complete.
+- The owner targets completion today and requests a product percentage-remaining estimate every 30 minutes. Label judgment estimates and uncertainty honestly; issue backlog counts and source mappings do not establish release readiness.
+- Build coherent batches with bounded agents and one canonical writer/compiler/publisher. Preserve failures and user data. Native build, regression and independent review gates remain required before merge or release claims; web previews are companions to SwiftUI.
+
 ## Owner execution update (2026-10-09)
 
 - Prioritize coherent implementation batches for native iOS, Android and the product website. Android delivery is explicitly authorized; preserve SwiftUI and do not replace iOS with a web wrapper.

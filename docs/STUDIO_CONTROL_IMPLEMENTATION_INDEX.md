@@ -156,3 +156,15 @@ A ready MP4/GIF destination shortcut now requests the same native Share action a
 Optional sound credits also resolve from pinned metadata on a receiving device that has never installed the sound pack; this does not download or enable any audio. Native runtime evidence and source review are recorded separately.
 
 Source review and syntax checks are distinct from native gesture, presentation, export and device acceptance. No live posting is a test.
+
+
+## Saved brushes and forwarded room invitations
+
+The existing brush-library popup can save, apply, rename and delete up to 24 named brush configurations on this device. A saved entry records the effective native brush size, opacity, smoothing, pressure/tilt and family effects; previews use the native brush renderer. Applying keeps the creator's current paint color, mirror and ruler settings and respects the existing brush-family plan gate. Stored data is validated and bounded; stale windows refresh rather than overwrite another saved entry. Unreadable records remain until the creator explicitly resets them. Project drawings, Undo and the sole toolbar layout are unchanged. Native save/reopen/apply gestures remain an acceptance gate.
+
+Rooms Join offers explicit system paste for a raw invitation code or the exact text shared by the app. Import is bounded and rejects ambiguous codes, unrelated prose and arbitrary URLs. Paste grants no access: server review, recipient consent, admission request and owner approval remain separate. In-flight review/request UI is cancelled and fenced when its code, account, scene or navigation changes. The confirmed server room must match the reviewed room. Cancelling a wait does not claim to revoke a request already recorded by the server. Actual configured-service admission remains a separate gate.
+
+Native capture launches now use the existing bounded command runner for both initial and project-library launches. An exited launch command with inherited output pipes can be distinguished from a genuine timeout; the unchanged launch arguments and deadlines retain bounded private diagnostics. This is a harness correction, not native runtime or screenshot acceptance.
+
+
+Spatter's existing explicit Apply flow accepts “Select all drawings.” and “Invert drawing selection.” Both use the manual whole-drawing eligibility rules and guarded stable-ID selection command. These transient selections create no project, save or Undo change; feedback reports the actual selected count. Results above 64 drawings refuse atomically with guidance to native Lasso. Selected images, active Wand pixel selection, playback, stale context and batching are refused. This source implementation still requires matching native session/UI acceptance; it does not claim arbitrary pixel-region transforms.

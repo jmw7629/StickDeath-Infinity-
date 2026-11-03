@@ -3434,6 +3434,83 @@ private final class NetworkTrap: URLProtocol {
             try require(timedOut >= 4 && vm.document.name == "Timed" && vm.layers.count == 3, "Deadline checkpoints did not cover preparation and commit (\(timedOut))")
             vm.undo(); try require(content(vm.document) == content(before), "Applied batch is not one Undo step")
         }
+        try await test("Spatter All and Invert match native whole-drawing eligibility without changing history or saved content") {
+            let (vm, store) = try await fixture("whole-drawing-selection")
+            let primary = vm.activeLayerID
+            func rect(_ id: String, _ x: CGFloat, opacity: Double = 1, tool: DrawingTool = .rectangle) -> DrawnElement {
+                .init(id: id, tool: tool, points: [.init(x: x, y: 20), .init(x: x + 20, y: 44)],
+                      color: "#FF0000", width: 2, opacity: opacity, layerID: vm.activeLayerID,
+                      shape: tool == .rectangle ? .init(fillColor: "#FF0000") : nil)
+            }
+            for element in [rect("left", 8), rect("right", 72), rect("transparent", 40, opacity: 0),
+                            rect("off-canvas", 200), rect("eraser", 10, tool: .eraser)] {
+                try require(vm.commitElement(element), "Drawing fixture rejected: \(element.id)")
+            }
+            vm.addLayer(); let hidden = vm.activeLayerID
+            try require(vm.commitElement(rect("hidden", 8)), "Hidden fixture rejected")
+            vm.toggleLayerVisibility(hidden)
+            vm.addLayer(); let locked = vm.activeLayerID
+            try require(vm.commitElement(rect("position-locked", 8)), "Lock fixture rejected")
+            vm.setLayerLockMode(locked, mode: .position)
+            vm.addLayer(); let transparentLayer = vm.activeLayerID
+            try require(vm.commitElement(rect("transparent-layer", 8)), "Layer fixture rejected")
+            vm.setLayerOpacity(transparentLayer, opacity: 0)
+            vm.selectLayer(primary); vm.selectedTool = .lasso; vm.areaSelectionTarget = .drawings
+            await vm.flush()
+            let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            let saved = try store.loadAnimation(id: before.id)!.editableDocumentData
+            try require(try vm.visibleEditableDrawingIDs(checkCancellation: {}) == ["left", "right"], "Eligibility differs from native rules")
+            try require(vm.selectVisibleArtwork(), "Native All unavailable")
+            let nativeAll = vm.selectedElementIDs
+            try require(vm.selectVisibleArtwork(inverting: true), "Native Invert unavailable")
+            let nativeInvert = vm.selectedElementIDs
+            vm.activePanel = .spatterAI
+            let all = SpatterStudioEditSession()
+            try require(all.submit(SpatterSelectByIDInstruction.allExample, in: vm, accountID: nil, currentScope: { guest }), "All not scheduled")
+            await all.waitForCompletion()
+            try require(all.status == .applied && vm.selectedElementIDs == nativeAll && nativeAll == ["left", "right"]
+                && all.appliedEdit?.receipt.outcome == .unchanged && all.appliedEdit?.summary.contains("Select all: 2") == true, "All selection/receipt wrong")
+            let invert = SpatterStudioEditSession()
+            try require(invert.submit(SpatterSelectByIDInstruction.invertExample, in: vm, accountID: nil, currentScope: { guest }), "Invert not scheduled")
+            await invert.waitForCompletion()
+            try require(invert.status == .applied && vm.selectedElementIDs == nativeInvert && nativeInvert.isEmpty
+                && invert.appliedEdit?.receipt.outcome == .unchanged && vm.document == before && vm.canUndo == undo && vm.canRedo == redo
+                && !vm.isDirty && !vm.isSaving, "Selection changed content/history/save state")
+            try require(try store.loadAnimation(id: before.id)!.editableDocumentData == saved, "Selection rewrote saved content")
+        }
+        try await test("All and Invert refuse oversized results and stale account, selection, revision or cancellation atomically") {
+            let (large, _) = try await fixture("whole-drawing-limit")
+            for index in 0..<65 { try require(large.commitElement(styledStroke(large, id: "many-\(index)")), "Large fixture rejected") }
+            await large.flush(); large.activePanel = .spatterAI
+            let unchanged = large.document, limit = SpatterStudioEditSession()
+            try require(limit.submit(SpatterSelectByIDInstruction.allExample, in: large, accountID: nil, currentScope: { guest }), "Limit not scheduled")
+            await limit.waitForCompletion()
+            try require(limit.status == .rejected && large.selectedElementIDs.isEmpty && large.document == unchanged
+                && limit.notice?.contains("more than 64") == true, "Limit partially selected or edited")
+            for change in ["account", "selection", "revision", "cancel"] {
+                let (vm, _) = try await fixture("whole-drawing-stale-" + change)
+                try require(vm.commitElement(styledStroke(vm, id: "chosen")), "Selection fixture rejected")
+                await vm.flush(); vm.activePanel = .spatterAI
+                _ = try vm.applyStudioCommands(try SpatterSelectByIDInstruction.parse("Select drawings \"chosen\".").prepare(in: StudioCommandContext(document: vm.document), checkCancellation: {}))
+                let gate = Gate(), session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                var account: String? = "creator-a"
+                try require(session.submit(SpatterSelectByIDInstruction.invertExample, in: vm, accountID: account,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) }), "Stale fixture not scheduled")
+                try await reachSecond(gate)
+                switch change {
+                case "account": account = "creator-b"
+                case "selection": vm.clearElementSelection()
+                case "revision": vm.addFrame()
+                default: try require(session.cancel(), "Cancel refused")
+                }
+                let before = vm.document, selected = vm.selectedElementIDs, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(2); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
+                    && vm.document == before && vm.selectedElementIDs == selected && vm.canUndo == undo && vm.canRedo == redo,
+                    "Stale whole-drawing selection committed: \(change)")
+                await vm.flush()
+            }
+        }
         try await test("catalog v5 typed Lasso and Wand selection, Image Library picture and export routes are validated and reversible") {
             // Lasso rules: only drawings fully inside the outline; selection never changes the document.
             let (vm, _) = try await fixture("v5-routes")

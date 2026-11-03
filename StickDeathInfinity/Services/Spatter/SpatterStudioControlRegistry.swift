@@ -45,6 +45,9 @@ enum SpatterStudioControlRegistry {
                     return "\(title): explicit Apply can verify/install/remove/cancel known optional picture packs through the shared owner. Pack actions change only library copies, not the project or Undo history; adding a picture is a separate edit."
                 }
                 let list = names.count == 1 ? "the " + names[0] + " instruction" : "these instructions: " + names.joined(separator: ", ")
+                if names.allSatisfy({ ["selectByID", "areaSelection", "wandSelection"].contains($0) }) {
+                    return "\(title): Spatter can prepare \(list). You still choose Apply. Selection changes no project, save or Undo history."
+                }
                 return "\(title): Spatter can prepare \(list) for this control. You still choose Apply, and one Undo reverses it."
             case .manual(let reason): return "\(title): manual only. \(reason)"
             case .blocked(let reason): return "\(title): Spatter will not do this. \(reason)"

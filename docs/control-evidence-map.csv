@@ -949,3 +949,11 @@ studio.audio.packs.loading,StickDeathInfinity/Views/Studio/Panels/AudioPanels.sw
 studio.audio.packs.notice,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,text,no,#191,deferred
 studio.audio.packs.operation,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,container 'studio.audio.packs.operation' (identifier-derived; review source),no,#191,deferred
 studio.audio.packs.refresh,StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift,StudioAudioWorkspace,button 'Refresh pack status' -> refresh,no,#191,deferred
+rooms.join.cancel,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,button 'Cancel waiting',no,#228 #234,deferred
+rooms.join.error,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,container 'rooms.join.error' (identifier-derived; review source),no,#228 #234,deferred
+rooms.join.paste,StickDeathInfinity/Views/Collab/CollabRoomView.swift,RoomJoinSection,'Paste room invitation',no,#228 #234,deferred
+studio.saved-brush.add,StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift,StudioBrushLibraryView,label 'Save current brush',no,unmapped,deferred
+studio.saved-brush.feedback,StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift,StudioBrushLibraryView,"text 'Tune a brush below, then save it here to use aga'",no,unmapped,deferred
+studio.saved-brush.name,StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift,StudioBrushLibraryView,"text field 'Brush name' -> binds namingBrush, binds draftName",no,unmapped,deferred
+studio.saved-brush.name.save,StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift,StudioBrushLibraryView,button 'Save',no,unmapped,deferred
+studio.saved-brush.reset,StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift,StudioBrushLibraryView,button 'Reset saved brushes',no,unmapped,deferred

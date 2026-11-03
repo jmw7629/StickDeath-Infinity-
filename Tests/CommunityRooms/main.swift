@@ -108,6 +108,27 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
             try require(text.contains(code) && text.contains("owner still approves") && text.contains("24 hours"), "share text")
         }
 
+        await test("forwarded invitation imports a single code without trusting its room title") {
+            try require(try RoomInvitationPolicy.importedCode(from: " \n" + code.uppercased() + "\n") == code, "raw code normalization")
+            let shared = RoomInvitationPolicy.shareText(code: code.uppercased(), roomTitle: "A creator's \"Duel\" — take 2")
+            try require(try RoomInvitationPolicy.importedCode(from: shared) == code, "own forwarded envelope and quoted title")
+            let exactLimit = code + String(repeating: " ", count: RoomInvitationPolicy.maximumSharedTextBytes - code.utf8.count)
+            try require(try RoomInvitationPolicy.importedCode(from: exactLimit) == code, "inclusive byte limit")
+        }
+
+        await test("invitation import refuses ambiguity, arbitrary credentials, URLs and oversized text") {
+            for raw in ["https://example.com/invite/" + code, "access_token=" + code,
+                        "Please join " + code, code + " " + code,
+                        RoomInvitationPolicy.shareText(code: code, roomTitle: "Duel") + " edited",
+                        String(repeating: "é", count: RoomInvitationPolicy.maximumSharedTextBytes / 2) + code] {
+                do { _ = try RoomInvitationPolicy.importedCode(from: raw); throw Failure(description: "unrecognized or oversized text accepted") }
+                catch is RoomInvitationPolicy.ImportFailure {}
+            }
+            let ambiguous = RoomInvitationPolicy.shareText(code: code, roomTitle: "Duel " + String(repeating: "f", count: 64))
+            do { _ = try RoomInvitationPolicy.importedCode(from: ambiguous); throw Failure(description: "ambiguous code accepted") }
+            catch RoomInvitationPolicy.ImportFailure.ambiguous {}
+        }
+
         await test("project share sends only an opaque reference, title and permissions") {
             let share = RoomProjectShare(projectID: project, title: "  Fight scene  ", permissions: [.view, .edit])
             try require(RoomProjectShare.validate(title: share.title, permissions: share.permissions) == nil, "valid share")

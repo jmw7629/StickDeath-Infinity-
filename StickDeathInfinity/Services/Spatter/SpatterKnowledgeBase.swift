@@ -1997,7 +1997,7 @@ struct SpatterInstructionGrammar: Equatable {
 }
 
 enum SpatterInstructionCatalog {
-    static let version = 13
+    static let version = 14
     static let grammars: [SpatterInstructionGrammar] = [
         .init(name: "multiClauseBrief", examples: ["A red stick figure walks left to right for 1 second, then punches, then falls; 3 seconds.",
                                                    "A red stick figure runs left to right, then kicks; a blue stick figure ducks, then jumps; 2.5 seconds.",
@@ -2083,8 +2083,8 @@ enum SpatterInstructionCatalog {
               commands: ["updateAudioTrack"], summary: "Track 1–4 volume, mute, pan L100–R100 and solo."),
         .init(name: "fill", examples: ["Fill at (50%, 50%) with #FF0000.", "Fill at (25%, 75%) with #00FF00, opacity 80%, tolerance 16, all layers."],
               commands: ["fillAtPoint"], summary: "Bucket fill on the active frame and layer at a canvas point given in percent, with #RRGGBB color, opacity 0–100%, tolerance 0–128 and active-layer or all-layer sampling. Studio's Fill tool computes the region."),
-        .init(name: "selectByID", examples: ["Select drawings \"stroke-1\", \"stroke-2\".", "Clear drawing selection."],
-              commands: ["selectElements"], summary: "Select 1–64 drawings on the active frame by their quoted IDs, or clear the drawing selection. Selection never changes the project."),
+        .init(name: "selectByID", examples: ["Select drawings \"stroke-1\", \"stroke-2\".", "Clear drawing selection.", "Select all drawings.", "Invert drawing selection."],
+              commands: ["selectElements"], summary: "Select 1–64 drawings on the active frame by quoted ID, or clear selection. All and Invert use Lasso's visible Free-layer, nontransparent, non-eraser, on-canvas drawings; clear image/Wand selections first. At most 64 resulting drawings; use native Lasso for more. All/Invert require live Studio outside batches. Selection changes no project, save or Undo history."),
         .init(name: "sourceReference", examples: ["Record source https://example.com/reference-clip as licensed reference.", "Record source https://example.com/reference-clip as creator-confirmed reference with note \"Permission email 2026-10-07\".", "Clear source reference."],
               commands: ["setSourceReference"], summary: "Record an https reference source with its rights basis (licensed, owner-authorized, creator-confirmed or unknown) and time, or clear it. Nothing is downloaded; with a source recorded, only 20–60 s briefs on an allowed basis generate."),
         // Catalog v5 (#204): Lasso and Wand selection, Image Library pictures and direct export.

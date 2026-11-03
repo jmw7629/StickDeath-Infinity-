@@ -144,8 +144,21 @@ def capture_command(stage, arguments, seconds):
                *arguments]
     result = run_bounded(command, started + seconds + 1, stdout_cap=16 * 1024,
                          stderr_cap=16 * 1024, work_deadline=started + seconds)
-    capture_steps.append({"stage": stage, "timeoutSeconds": seconds,
-                          "result": result_projection(result)})
+    step = {"stage": stage, "timeoutSeconds": seconds,
+            "result": result_projection(result)}
+    if stage in {"owned-app-launch", "owned-library-launch"}:
+        # These fixed simctl launch commands do not attach the app console or
+        # print launch arguments/environment. Preserve bounded command output
+        # privately so an actual launch failure is distinguishable from an
+        # exited command whose descendant retained a capture pipe.
+        outputs = {}
+        for stream, data in (("stdout", result.stdout), ("stderr", result.stderr)):
+            name = stage + "." + stream + ".txt"
+            (OUT / name).write_bytes(data)
+            outputs[stream] = {"file": name, "bytesRetained": len(data),
+                               "sha256": hashlib.sha256(data).hexdigest()}
+        step["privateCommandOutput"] = outputs
+    capture_steps.append(step)
     if result.spawn_error:
         raise OSError("The capture command could not be started")
     if result.timed_out:
@@ -219,7 +232,7 @@ try:
     built_info = plistlib.loads((app / "Info.plist").read_bytes())
     bundle = built_info["CFBundleIdentifier"]
     capture_stage = "owned-app-launch"
-    subprocess.run(["xcrun", "simctl", "launch", owned, bundle], env=env, capture_output=True, timeout=30, check=True)
+    capture_command("owned-app-launch", ["xcrun", "simctl", "launch", owned, bundle], 30)
     time.sleep(0.8)
     for name, delay in [("launch-early.png", 0), ("launch-settled.png", 3)]:
         if delay:
@@ -241,8 +254,7 @@ try:
         capture_stage = "owned-library-terminate"
         subprocess.run(["xcrun", "simctl", "terminate", owned, bundle], env=env, capture_output=True, timeout=30, check=True)
         capture_stage = "owned-library-launch"
-        subprocess.run(["xcrun", "simctl", "launch", owned, bundle, *LIBRARY_ARGUMENTS],
-                       env=env, capture_output=True, timeout=30, check=True)
+        capture_command("owned-library-launch", ["xcrun", "simctl", "launch", owned, bundle, *LIBRARY_ARGUMENTS], 30)
         time.sleep(3)
         name = "projects-library.png"
         capture_command(name, ["xcrun", "simctl", "io", owned, "screenshot", str(OUT / name)], 30)
@@ -269,5 +281,6 @@ finally:
         except (subprocess.TimeoutExpired, OSError) as e:
             capture["cleanupStatus"] = "failed"
             capture["cleanupReasonType"] = type(e).__name__
+capture["commandSteps"] = capture_steps
 (OUT / "capture.json").write_text(json.dumps(capture, indent=2) + "\n")
 print(json.dumps(capture), flush=True)

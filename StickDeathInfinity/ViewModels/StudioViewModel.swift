@@ -2358,6 +2358,25 @@ final class StudioViewModel: ObservableObject {
                 "This selection cannot be transformed. Select visible artwork on an unlocked layer."
         }
     }
+    /// Shared by native All/Invert and Spatter's equivalent drawing-only
+    /// route. Inspect the current frame without selecting or editing anything.
+    func visibleEditableDrawingIDs(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Set<String> {
+        let eligible = Set(layers.filter {
+            $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
+        }.map(\.id))
+        let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
+        var ids = Set<String>()
+        for element in currentFrame.elements {
+            try checkCancellation()
+            guard let layer = element.layerID, eligible.contains(layer), element.opacity > 0,
+                  element.tool != .eraser,
+                  let bounds = try StudioSelectionRegion.drawingBounds(element),
+                  !bounds.intersection(canvas).isNull else { continue }
+            ids.insert(element.id)
+        }
+        try checkCancellation()
+        return ids
+    }
     /// All/Invert operate on visible editable artwork only. They never create
     /// document history and never select an invisible or fully locked layer.
     @discardableResult
@@ -2368,19 +2387,7 @@ final class StudioViewModel: ObservableObject {
             // remain available there without allowing new lasso gestures in Move.
             let capturedTool = selectedTool
             guard ![.image, .imagePixels].contains(areaSelectionTarget), let capture = areaSelectionCapture(allowMove: true), textDraft == nil else { return false }
-            let eligible = Set(layers.filter {
-                $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
-            }.map(\.id))
-            let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
-            var ids = Set<String>()
-            for element in currentFrame.elements {
-                try checkCancellation()
-                guard let layer = element.layerID, eligible.contains(layer), element.opacity > 0,
-                      element.tool != .eraser,
-                      let bounds = try StudioSelectionRegion.drawingBounds(element),
-                      !bounds.intersection(canvas).isNull else { continue }
-                ids.insert(element.id)
-            }
+            let ids = try visibleEditableDrawingIDs(checkCancellation: checkCancellation)
             try checkCancellation()
             guard selectedTool == capturedTool, areaSelectionCapture(allowMove: true) == capture, textDraft == nil else { throw StudioCommandError.staleRevision }
             editor.selectedElementIDs = inverting ? ids.subtracting(capture.selectedIDs) : ids
