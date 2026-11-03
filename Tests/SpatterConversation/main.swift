@@ -264,7 +264,7 @@ private final class NetworkTrap: URLProtocol {
                 var calls = 0
                 let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
                 for (question, facts) in [
-                    ("Download thousands of pictures from the image library", ["207 pictures", "1818 more", "2025 pictures", "all six verified packs", "not a claim that your device has installed", "not an installation"]),
+                    ("Download thousands of pictures from the image library", ["243 pictures", "1818 more", "2061 pictures", "all six verified packs", "not a claim that your device has installed", "not an installation"]),
                     ("Remove my downloaded image pack", ["Remove download", "pictures already added to projects are kept", "cannot see whether"]),
                     ("Can Spatter memory learn from my history?", ["off by default", "fixed choices", "each account and guest", "does not learn from conversation history", "not automatically sent to cloud"]),
                     ("Import and export my personal preferences", ["Import preference JSON", "Save is required", "version 1", "at most 2 KB", "no extra fields", "no account identity or conversation"])
@@ -283,11 +283,11 @@ private final class NetworkTrap: URLProtocol {
                 let context = try unwrap(SpatterContext.studio(studio.commandScreenContext))
                 for question in ["Can I use Micro Roguelike offline?", "Where is Monochrome RPG?",
                                  "How do I install 1-Bit Characters and Props?", "I cancelled 1-Bit Platformer; are its pictures installed?",
-                                 "Smoke and Explosions says verification failed", "Which packs bring the image library to 2025 pictures?"] {
+                                 "Smoke and Explosions says verification failed", "Which packs bring the image library to 2061 pictures?"] {
                     try require(chat.submit(question,context:context), "Named pack question rejected")
                     try await idle(chat)
                     let answer = chat.messages.last!.content
-                    try require(answer.contains("2025 pictures") && answer.contains("Micro Roguelike (160)") &&
+                    try require(answer.contains("2061 pictures") && answer.contains("Micro Roguelike (160)") &&
                         answer.contains("Download 178 KB") && answer.contains("Already verified pictures can be used offline") &&
                         answer.contains("not an installation") && answer.contains("cannot see whether"), "Named pack help omitted actual state boundaries")
                     try require(!answer.contains("665 total") && !answer.contains("not thousands") && !answer.contains("download complete"),

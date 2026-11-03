@@ -7267,7 +7267,7 @@ final class StudioSmokeUITests: XCTestCase {
         try imageControl("studio.image.library", app: app).tap()
         let count = app.staticTexts["studio.image-library.count"]
         XCTAssertTrue(count.waitForExistence(timeout: 8))
-        XCTAssertEqual(count.label, "207 free pictures · available offline")
+        XCTAssertEqual(count.label, "243 free pictures · available offline")
         let search = app.textFields["studio.image-library.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("dragon\n")
         let picture = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]

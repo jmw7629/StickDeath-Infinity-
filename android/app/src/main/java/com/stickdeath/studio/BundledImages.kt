@@ -19,17 +19,18 @@ data class BundledImage(
     val height: Int, val author: String, val sourceURL: String
 )
 
-/** Release-approved offline originals. A catalogue update must explicitly update the release pin. */
+/** Release-approved offline images. A catalogue update must explicitly update the release pin. */
 object BundledImages {
     private const val ROOT = "StudioImages/"
-    private const val CATALOGUE_HASH = "bf31788360d7062876e2a632b56120b8fa5d289f41addd5de49a15afcd2c9a3a"
+    private const val CATALOGUE_HASH = "c5b0776b58f86a459120cd45dab3cd6499aede4a39d7f0d3257543c0ee97004b"
     private const val MAX_ENCODED = 8 * 1024 * 1024
     private val hashPattern = Regex("[0-9a-f]{64}")
     private val identifierPattern = Regex("[A-Za-z0-9._-]{1,160}")
     private val approvedLicenses = mapOf(
-        "kenney.scribble-platformer.cc0" to "2ac45344f3657a8dbac7360aeb53cfb0187cc24234979dcb0855b6e454c78973",
-        "kenney.scribble-platformer-expansion.cc0" to "e95232e20a6cabd13b9211c3293e21c4022ab2068e5ec67d701462276e13617d",
-        "kenney.scribble-dungeons.cc0" to "55b8024d2d21d66460d00eebffaa7f6235b70c92be00a42f0de0e61ca675b5c2"
+        "kenney.scribble-platformer.cc0" to ("2ac45344f3657a8dbac7360aeb53cfb0187cc24234979dcb0855b6e454c78973" to "Kenney"),
+        "kenney.scribble-platformer-expansion.cc0" to ("e95232e20a6cabd13b9211c3293e21c4022ab2068e5ec67d701462276e13617d" to "Kenney"),
+        "kenney.scribble-dungeons.cc0" to ("55b8024d2d21d66460d00eebffaa7f6235b70c92be00a42f0de0e61ca675b5c2" to "Kenney"),
+        "kenney.particle-pack.cc0" to ("9e5cdc39d4efbd505f9a3d5fe9ac5c075152f4235d5e962b444f17683a209e08" to "Kenney Vleugels")
     )
     @Volatile private var cached: List<BundledImage>? = null
 
@@ -95,9 +96,11 @@ object BundledImages {
             license.fields("id", "author", "sourceURL", "license", "licenseURL", "attribution", "licenseFilename", "licenseSHA256", "licenseByteCount", "sourceArchiveSHA256")
             val id = license.label("id", 160)
             val hash = license.label("licenseSHA256", 64)
-            require(approvedLicenses[id] == hash && !credits.containsKey(id)) { "Unapproved image license." }
+            val approved = requireNotNull(approvedLicenses[id]) { "Unapproved image license." }
+            require(approved.first == hash && !credits.containsKey(id)) { "Unapproved image license." }
             require(license.label("license") == "CC0-1.0" && license.label("licenseURL") == "https://creativecommons.org/publicdomain/zero/1.0/")
-            require(license.label("author") == "Kenney" && hashPattern.matches(license.label("sourceArchiveSHA256", 64)))
+            val author = license.label("author")
+            require(author == approved.second && hashPattern.matches(license.label("sourceArchiveSHA256", 64)))
             license.label("attribution", 500)
             val source = license.label("sourceURL")
             require(source == "https://kenney.nl/assets/" + id.removePrefix("kenney.").removeSuffix(".cc0"))
@@ -108,10 +111,10 @@ object BundledImages {
             val text = readBounded(context, filename, count, check)
             require(text.size == count && digest(text) == hash) { "Bundled image license could not be verified." }
             require(text.toString(Charsets.UTF_8).let { it.contains("CC0") && it.contains("Kenney") })
-            credits[id] = "Kenney" to source
+            credits[id] = author to source
         }
         val entries = root.getJSONArray("images")
-        require(entries.length() == 207) { "Incomplete bundled image catalogue." }
+        require(entries.length() == 243) { "Incomplete bundled image catalogue." }
         val ids = HashSet<String>(); val hashes = HashSet<String>(); val pixels = HashSet<String>()
         val result = ArrayList<BundledImage>(entries.length())
         for (index in 0 until entries.length()) {

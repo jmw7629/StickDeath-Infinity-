@@ -64,7 +64,7 @@ All CC0-1.0. Attribution is optional under CC0 and is recorded anyway.
 
 ## Image library — `Resources/StudioImages/`
 
-`catalogue.json` (207 bundled PNGs, every one hashed) declares three licenses, each with its license
+`catalogue.json` (243 bundled PNGs, every one hashed) declares four licenses, each with its license
 text bundled beside the catalogue (`<sha256>.txt`) and the source archive SHA-256 recorded:
 
 | License id | Author | Source | License | Bundled license file |
@@ -72,8 +72,11 @@ text bundled beside the catalogue (`<sha256>.txt`) and the source archive SHA-25
 | `kenney.scribble-platformer.cc0` | Kenney | https://kenney.nl/assets/scribble-platformer | CC0-1.0 | `2ac45344…c78973.txt` |
 | `kenney.scribble-platformer-expansion.cc0` | Kenney | https://kenney.nl/assets/scribble-platformer-expansion | CC0-1.0 | `e95232e2…13617d.txt` |
 | `kenney.scribble-dungeons.cc0` | Kenney | https://kenney.nl/assets/scribble-dungeons | CC0-1.0 | `55b8024d…a675b5c2.txt` |
+| `kenney.particle-pack.cc0` | Kenney Vleugels | https://kenney.nl/assets/particle-pack | CC0-1.0 | `9e5cdc39…3a209e08.txt` |
 
 Attribution text recorded in the catalogue: "Art by Kenney (kenney.nl), CC0; attribution is optional."
+
+The 36 selected Particle Pack 1.1 effects are ink derivatives that retain original transparency. Only one ink rendering per selected shape is shipped, with no rotated or opaque-background aliases. The bundled notice preserves the upstream filter-template contributor credits. Source/derivative/alpha/native-pixel hashes and the deterministic palette transformation are recorded in docs/assets/particle-pack-provenance.json.
 
 Optional on-demand packs (downloaded only when the user chooses, verified by archive, sheet and license
 SHA-256 before use; `remote-pack.json` and `additional-packs.json`), all by Kenney, CC0-1.0, each with

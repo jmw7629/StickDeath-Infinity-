@@ -14,6 +14,65 @@ import org.json.JSONObject
  * Fixtures are format-contract fixtures, not evidence of an iOS device export.
  */
 class SwiftProjectImportTest {
+    /** Uses the release APK's actual shared assets and production catalogue/thumbnail pipeline.
+     * This catches a stale release pin, wrong license/author pair or missing packaged PNG;
+     * it does not substitute a test catalogue or private parser. */
+    @Test fun testBundledInkImageCatalogueCreditsAndActualPreviews() = kotlinx.coroutines.runBlocking {
+        val context = instrumentation.targetContext
+        val images = BundledImages.load(context)
+        assertEquals(243, images.size)
+        assertEquals(images.size, images.map { it.id }.distinct().size)
+        assertEquals(images.size, images.map { it.sha256 }.distinct().size)
+        val ink = images.filter { it.id.startsWith("kenney.particle-pack.ink.") }
+        assertEquals(36, ink.size)
+        assertEquals(207, images.size - ink.size)
+        assertTrue(images.filterNot { it in ink }.all { it.author == "Kenney" })
+        assertTrue(ink.all { it.author == "Kenney Vleugels" &&
+            it.sourceURL == "https://kenney.nl/assets/particle-pack" && it.category == "effects" &&
+            it.width == 512 && it.height == 512 && "ink effect" in it.tags })
+        val manifest = context.assets.open("StudioImages/catalogue.json").bufferedReader().use { JSONObject(it.readText()) }
+        assertEquals(4, manifest.getJSONArray("licenses").length())
+        val rows = manifest.getJSONArray("images")
+        val byID = (0 until rows.length()).associate { index ->
+            rows.getJSONObject(index).let { it.getString("id") to it }
+        }
+        ink.forEach { image ->
+            val row = byID.getValue(image.id)
+            assertEquals("kenney.particle-pack.cc0", row.getString("licenseID"))
+            assertFalse(row.getString("originalSHA256") == row.getString("sha256"))
+            val preview = BundledImages.thumbnail(context, image) {}
+            try {
+                assertTrue(preview.width in 1..128 && preview.height in 1..128)
+                val pixels = IntArray(preview.width * preview.height)
+                preview.getPixels(pixels, 0, preview.width, 0, 0, preview.width, preview.height)
+                assertTrue("Ink preview has no transparent area: " + image.id,
+                    pixels.any { android.graphics.Color.alpha(it) == 0 })
+                assertTrue("Ink preview is invisible over white: " + image.id, pixels.count {
+                    val alpha = android.graphics.Color.alpha(it)
+                    alpha >= 32 && android.graphics.Color.red(it) <= 64 &&
+                        android.graphics.Color.green(it) <= 64 && android.graphics.Color.blue(it) <= 64
+                } >= 4)
+            } finally { preview.recycle() }
+        }
+    }
+
+    @Test fun testBundledImageForgedCreditsAndCancellationAreRefused() = kotlinx.coroutines.runBlocking {
+        val context = instrumentation.targetContext
+        val image = BundledImages.load(context).first { it.id.startsWith("kenney.particle-pack.ink.") }
+        for (forged in listOf(image.copy(author = "Unapproved author"), image.copy(sha256 = "0".repeat(64)),
+                image.copy(filename = "../unapproved.png"))) {
+            try {
+                BundledImages.thumbnail(context, forged) {}.recycle()
+                fail("Unapproved catalogue record was accepted")
+            } catch (_: IllegalArgumentException) { }
+        }
+        val cancelled = java.util.concurrent.CancellationException("fixture cancelled")
+        try {
+            BundledImages.thumbnail(context, image) { throw cancelled }.recycle()
+            fail("Cancelled image read returned")
+        } catch (actual: java.util.concurrent.CancellationException) { assertSame(cancelled, actual) }
+    }
+
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val magic = "SDIPROJECT000001\n".toByteArray(Charsets.US_ASCII)
     private fun fixture(name: String = "swift-legacy.sdi") = instrumentation.context.assets.open(name).use { it.readBytes() }
