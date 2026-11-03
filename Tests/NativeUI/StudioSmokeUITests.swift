@@ -4576,7 +4576,7 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["studio.audio.library.open"].tap()
         let catalogueCount = app.staticTexts["studio.audio.catalogue.count"]
         XCTAssertTrue(catalogueCount.waitForExistence(timeout: 8))
-        XCTAssertEqual(catalogueCount.label, "2,127 offline sounds · CC0")
+        XCTAssertEqual(catalogueCount.label, "2,212 offline sounds · CC0")
         let clipCount = app.staticTexts["studio.audio.clip-count"]
         XCTAssertEqual(clipCount.label, "0 clips")
         try audioLibraryButton("studio.audio.category.Impacts & Crashes", app: app).tap()
@@ -4596,7 +4596,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["studio.audio.search.empty"].exists)
         try audioLibraryButton("studio.audio.search.clear", app: app).tap()
         XCTAssertTrue(["", "Search sounds, tags, categories…"].contains(search.value as? String ?? "<missing>"), "Clear filters retained the query")
-        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "2,127 matching sounds"),
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "2,212 matching sounds"),
                                   evaluatedWith: resultCount).waitUntilFulfilled(timeout: 5),
                       "Clear filters must restore the entire catalogue")
         search.tap(); search.typeText("collision\n")
@@ -4689,7 +4689,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
         let catalogueCount = app.staticTexts["studio.audio.catalogue.count"]
         XCTAssertTrue(catalogueCount.waitForExistence(timeout: 8), "Expanded catalogue never finished loading")
-        XCTAssertEqual(catalogueCount.label, "2,127 offline sounds · CC0")
+        XCTAssertEqual(catalogueCount.label, "2,212 offline sounds · CC0")
         let search = app.textFields["studio.audio.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Card Fan 1 Kenney\n")
         try audioLibraryButton("studio.audio.catalogue.add.7a6ba4661a10ff06cd0c8c758f671bb4347fa6b4d26e23b6e7cb9165ee9aa24a", app: app).tap()

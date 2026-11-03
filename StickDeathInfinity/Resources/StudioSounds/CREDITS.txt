@@ -1,7 +1,8 @@
-StickDeath Infinity offline sound library — 2,127 real effects
+StickDeath Infinity offline sound library — 2,212 real effects and music jingles
 All sound assets: CC0-1.0. https://creativecommons.org/publicdomain/zero/1.0/
 Each catalogue entry retains its original creator, publisher source URL and original/installed SHA-256.
-M4A files are AAC derivatives produced with Apple afconvert; WAV files retain original bytes.
+Existing M4A files are AAC derivatives produced with Apple afconvert; existing WAV files retain original bytes.
+The 85 Music Jingles WAVs are signed 16-bit PCM derivatives of the official Ogg Vorbis files; each entry retains the original Ogg digest and the shipped WAV digest.
 
 Kenney — https://kenney.nl/assets/casino-audio
 Kenney — https://kenney.nl/assets/sci-fi-sounds
@@ -24,3 +25,6 @@ rubberduck — https://opengameart.org/content/80-cc0-creture-sfx-2
 rubberduck — https://opengameart.org/content/30-weird-cc0-sfx
 OwlishMedia — https://opengameart.org/content/202-more-sound-effects
 artisticdude — https://opengameart.org/content/rpg-sound-pack
+
+Kenney Vleugels (Kenney.nl) — https://kenney.nl/assets/music-jingles
+Music Jingles original CC0 terms: KenneyMusicJingles-License.txt. Archive SHA-256: b729ba57959bd58793d2c5cafa348aaf2655d354f3da35ec4729e03ec77197b8

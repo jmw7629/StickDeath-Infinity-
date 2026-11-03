@@ -42,7 +42,7 @@ func require(_ test: @autoclosure () throws -> Bool, _ message: String) throws {
             }
         }
         try await test("all bundled bytes decode with exact Apple measured timing and waveforms") {
-            try require(catalogue.sounds.count == 2127 && catalogue.categories.count == 21, "unexpected expanded bundle")
+            try require(catalogue.sounds.count == 2212 && catalogue.categories.count == 22, "unexpected expanded bundle")
             for sound in catalogue.sounds {
                 let resource = try catalogue.checkedResource(sound)
                 let decoded = try await StudioAudioImportService.shared.importAudio(from: resource.url, name: sound.title, scratchParent: scratch)
