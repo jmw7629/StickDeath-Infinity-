@@ -537,12 +537,14 @@ private struct Failure: Error { let message: String }
         await vm.flush()
         let before = vm.document
         var compactPixels = 0
+        var diagnosticAlphas: [StudioSelectionElementHitTest.AlphaCoverage] = []
         for element in elements {
             guard let alpha = try StudioFillService.wandElementCoverage(document: before, frame: vm.currentFrame,
                 element: element, maximumPixels: StudioSelectionMask.maximumElementProbes - compactPixels) else {
                 throw Failure(message: "Visible portrait ellipse has no compact alpha")
             }
             compactPixels += alpha.width * alpha.height
+            diagnosticAlphas.append(alpha)
         }
         try require(elements.count > 4 && compactPixels < 100_000 && compactPixels < StudioSelectionMask.maximumElementProbes,
             "Small portrait circles were charged once per whole canvas")
@@ -555,6 +557,62 @@ private struct Failure: Error { let message: String }
             return " [stage=\(stage) result=\(result) selectedIndexes=\(selectedIndexes) unknownSelected=\(unknownSelected) documentSame=\(vm.document == before) revision=\(vm.document.revision) expectedRevision=\(before.revision) compactPixels=\(compactPixels) maximumProbes=\(StudioSelectionMask.maximumElementProbes) message=\(message)]"
         }
         let outside = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: CGPoint(x: 1, y: 1))
+        if outside && !vm.selectedElementIDs.isEmpty {
+            // Diagnostic only: compare the actual compact source membership with
+            // the canonical full source and the exact visible-canvas Wand region.
+            // All six shapes are disjoint, so one full source union is sufficient.
+            // This neither changes production alpha nor replaces any original gate.
+            guard let full = try StudioFillService.selectionCoverage(document: before, frame: vm.currentFrame,
+                selectedIDs: Set(elements.map(\.id))) else { throw Failure(message: "Portrait diagnostic full source unavailable") }
+            let visible = try StudioFillService.capture(document: before, frameID: before.activeFrameID,
+                layerID: vm.activeLayerID, point: .init(x: 1, y: 1), color: "#000000", opacity: 1,
+                settings: .init(tolerance: 0, contiguous: true, expand: 0, gapClose: 0, antiAlias: false),
+                sampleAllLayers: true)
+            let region = try StudioWandRegion.select(rgba: visible.rgba, width: before.width, height: before.height,
+                x: 1, y: 1, settings: .init(tolerance: 0, contiguous: true, feather: 0,
+                    mode: .replace, rejectTransparentSeed: false))
+            func details(_ x: Int, _ y: Int, _ compact: UInt8) -> String {
+                let index = y * before.width + x, pixel = index * 4
+                return "x=\(x),y=\(y),compact=\(compact),full=\(full[index]),rgba=\(Array(visible.rgba[pixel..<pixel+4])),region=\(region[index])"
+            }
+            for (index, alpha) in diagnosticAlphas.enumerated() {
+                var compactPositive = 0, fullPositive = 0, compactOnly = 0, fullOnly = 0
+                var compactHitsRegion = 0, fullHitsRegion = 0, positiveOnExactWhite = 0
+                var hitAlphaMinimum = 256, hitAlphaMaximum = 0
+                var firstCompactOnly = "none", firstFullOnly = "none", firstHit = "none"
+                for row in 0..<alpha.height { for column in 0..<alpha.width {
+                    let x = alpha.x + column, y = alpha.y + row, target = y * before.width + x
+                    let source = alpha.bytes[row * alpha.rowStride + column], original = full[target]
+                    if source > 0 { compactPositive += 1 }; if original > 0 { fullPositive += 1 }
+                    if source > 0 && original == 0 {
+                        compactOnly += 1; if firstCompactOnly == "none" { firstCompactOnly = details(x, y, source) }
+                    }
+                    if original > 0 && source == 0 {
+                        fullOnly += 1; if firstFullOnly == "none" { firstFullOnly = details(x, y, source) }
+                    }
+                    if source > 0 {
+                        let pixel = target * 4
+                        if (0..<4).allSatisfy({ visible.rgba[pixel+$0] == 255 }) { positiveOnExactWhite += 1 }
+                        if region[target] >= 128 {
+                            compactHitsRegion += 1
+                            hitAlphaMinimum = min(hitAlphaMinimum, Int(source)); hitAlphaMaximum = max(hitAlphaMaximum, Int(source))
+                            if firstHit == "none" { firstHit = details(x, y, source) }
+                        }
+                    }
+                    if original > 0 && region[target] >= 128 { fullHitsRegion += 1 }
+                } }
+                let center = centers[index]
+                let centerX = Int(center.x), centerY = Int(center.y)
+                let localX = centerX - alpha.x, localY = centerY - alpha.y
+                let centerAlpha: UInt8
+                if localX >= 0 && localX < alpha.width && localY >= 0 && localY < alpha.height {
+                    centerAlpha = alpha.bytes[localY * alpha.rowStride + localX]
+                } else { centerAlpha = 0 }
+                let centerDetails = details(centerX, centerY, centerAlpha)
+                print("PORTRAIT_ALPHA index=\(index) affine=\(elements[index].transform != nil) crop=\(alpha.x),\(alpha.y),\(alpha.width),\(alpha.height) compactPositive=\(compactPositive) fullPositive=\(fullPositive) compactOnly=\(compactOnly) fullOnly=\(fullOnly) compactHitsRegion=\(compactHitsRegion) fullHitsRegion=\(fullHitsRegion) positiveOnExactWhite=\(positiveOnExactWhite) hitAlphaMin=\(hitAlphaMinimum) hitAlphaMax=\(hitAlphaMaximum) firstCompactOnly=[\(firstCompactOnly)] firstFullOnly=[\(firstFullOnly)] firstHit=[\(firstHit)] center=[\(centerDetails)]")
+            }
+            fflush(stdout)
+        }
         try require(outside && vm.selectedElementIDs.isEmpty && vm.document == before,
             "Ordinary portrait Wand failed its budget or selected circles through empty corners" + portraitContext("outside", outside))
         let one = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: centers[3])
