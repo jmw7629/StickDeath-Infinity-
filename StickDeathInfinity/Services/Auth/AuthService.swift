@@ -516,7 +516,7 @@ final class AuthService: ObservableObject {
         defer { authenticationInProgress = false }
         let client = try supabase
         do {
-            try await client.auth.signOut()
+            try await client.auth.signOut(scope: .local)
             setIdentity(nil)
         } catch {
             // The pinned SDK clears local credentials before remote revocation.

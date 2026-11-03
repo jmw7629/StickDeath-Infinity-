@@ -373,13 +373,14 @@ private struct Failure: Error { let message: String }
             }
             try require(alpha.width * alpha.height < 128 * 128 && alpha.rowStride == alpha.width,
                 "Small ellipse alpha allocated an entire canvas")
-            // Compare two real native renders: full-document alpha versus a translated,
-            // cropped target. This catches top-left origin, row-stride and crop clipping errors.
+            // Compact Wand candidates are consumed only as source alpha > 0.
+            // Compare exact positive membership at every canvas pixel, including
+            // outside-crop zeros; numeric no-crop Fill/effect masks are a separate API.
             for y in 0..<128 { for x in 0..<128 {
                 let localX = x - alpha.x, localY = y - alpha.y
                 let compact: UInt8 = localX >= 0 && localY >= 0 && localX < alpha.width && localY < alpha.height
                     ? alpha.bytes[localY * alpha.rowStride + localX] : 0
-                try require(compact == fullAlpha[y * 128 + x], "Cropped ellipse alpha differs from the canonical full render")
+                try require((compact > 0) == (fullAlpha[y * 128 + x] > 0), "Cropped ellipse hit membership differs from the canonical full render")
             } }
             let candidate = StudioSelectionElementHitTest.Candidate(id: ellipse.id, points: [], radius: 0,
                 alphaCoverage: alpha)
@@ -514,11 +515,13 @@ private struct Failure: Error { let message: String }
             }
             try require(StudioFillService.wandRequiresAlphaCoverage(element) && compact.width * compact.height < 128 * 128,
                 "Glyph/rounded capture used a full-canvas or box-only proxy")
+            // Only the compact Wand hit candidate uses this positive-membership
+            // contract. Preserve every full RGBA and numeric mask assertion below.
             for y in 0..<128 { for x in 0..<128 {
                 let localX = x - compact.x, localY = y - compact.y
                 let pixel: UInt8 = localX >= 0 && localY >= 0 && localX < compact.width && localY < compact.height
                     ? compact.bytes[localY * compact.rowStride + localX] : 0
-                try require(pixel == full[y * 128 + x], "Cropped native glyph/rounded alpha differs from the full renderer")
+                try require((pixel > 0) == (full[y * 128 + x] > 0), "Cropped native glyph/rounded hit membership differs from the full renderer")
             } }
             guard let maximum = full.max(), maximum > 0, let paintedIndex = full.firstIndex(of: maximum) else {
                 throw Failure(message: "Native glyph/rounded fixture has no painted body")

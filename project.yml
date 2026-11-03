@@ -103,4 +103,4 @@ schemes:
 packages:
   supabase-swift:
     url: https://github.com/supabase-community/supabase-swift.git
-    from: "2.0.0"
+    exactVersion: "2.55.6"

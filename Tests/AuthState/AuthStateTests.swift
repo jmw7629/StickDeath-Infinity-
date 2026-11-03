@@ -217,6 +217,107 @@ import Supabase
         XCTAssertEqual(AuthFixtureTransport.startupRequestCount, 0)
     }
 
+    func testHeldBackgroundRefreshCannotResurrectAfterNativeSignOut() async throws {
+        try await assertHeldBackgroundRefreshIsDiscarded(signInSecondAccount: false)
+    }
+
+    func testHeldBackgroundRefreshCannotReplaceSecondNativeAccount() async throws {
+        try await assertHeldBackgroundRefreshIsDiscarded(signInSecondAccount: true)
+    }
+
+    private func assertHeldBackgroundRefreshIsDiscarded(signInSecondAccount: Bool) async throws {
+        let probe = AuthFixtureTransport.RefreshFenceProbe()
+        let probeID = UUID().uuidString
+        AuthFixtureTransport.registerRefreshFence(probe, id: probeID)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AuthFixtureTransport.self]
+        let transport = URLSession(configuration: configuration)
+        defer {
+            // Release even when an assertion/wait throws; no held URLProtocol survives the case.
+            probe.releaseRefresh()
+            transport.invalidateAndCancel()
+            AuthFixtureTransport.removeRefreshFence(id: probeID)
+        }
+        let storage = AuthFixtureStorage()
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: storage, autoRefreshToken: false),
+                global: .init(headers: ["X-SDI-Refresh-Fence": probeID], session: transport)))
+        let service = AuthService(client: client)
+        let model = AuthViewModel(auth: service, initializeOnStart: false,
+            flushOpenProject: {}, closeOpenProject: {})
+        try await service.signIn(email: "first@example.invalid", password: "fixture-password")
+        let original = try XCTUnwrap(client.auth.currentSession)
+        XCTAssertEqual(original.refreshToken, probe.firstRefreshToken)
+        XCTAssertEqual(original.user.id.uuidString.lowercased(), AuthFixtureTransport.first)
+        XCTAssertEqual(storage.storedSessions.map(\.refreshToken), [probe.firstRefreshToken])
+        XCTAssertEqual(model.user?.username, "Existing owner-chosen name")
+
+        // This is the actual SDK background refresh path, outside a native identity operation.
+        // Auto-refresh scheduling is disabled; the HTTP response, not a timer, controls ordering.
+        let refresh = Task {
+            defer { probe.markRefreshFinished() }
+            return try await client.auth.refreshSession()
+        }
+        defer { refresh.cancel() }
+        try await waitFor { probe.hasHeldRefresh }
+        XCTAssertEqual(probe.requestedRefreshTokens, [original.refreshToken])
+        XCTAssertFalse(probe.refreshFinished, "Refresh completed before the intended sign-out interleaving")
+
+        // Native sign-out is allowed while an independent SDK refresh is in flight. It still
+        // performs its real local-scope logout HTTP request, answered by this fixture.
+        try await service.signOut()
+        XCTAssertEqual(probe.logoutScopes, ["local"])
+        XCTAssertEqual(probe.logoutAuthorizations, ["Bearer " + probe.firstAccessToken])
+        XCTAssertNil(client.auth.currentSession)
+        XCTAssertTrue(storage.storedSessions.isEmpty)
+        XCTAssertEqual(model.state, .unauthenticated)
+        XCTAssertNil(model.userId); XCTAssertNil(model.user)
+
+        if signInSecondAccount {
+            // Finish the ordinary serialized native sign-in before releasing A's old response.
+            try await service.signIn(email: "second@example.invalid", password: "fixture-password")
+            let second = try XCTUnwrap(client.auth.currentSession)
+            XCTAssertEqual(second.refreshToken, probe.secondRefreshToken)
+            XCTAssertEqual(storage.storedSessions.map(\.refreshToken), [probe.secondRefreshToken])
+            XCTAssertNotEqual(second.refreshToken, original.refreshToken,
+                "Different sessions must not share the old fixture-refresh token")
+            XCTAssertEqual(second.user.id.uuidString.lowercased(), AuthFixtureTransport.second)
+            XCTAssertTrue(model.isAuthenticated)
+            XCTAssertNil(model.user, "First account's profile leaked into second account before release")
+        }
+
+        probe.releaseRefresh()
+        try await waitFor { probe.refreshFinished }
+        switch await refresh.result {
+        case .success:
+            XCTFail("Held old refresh was accepted after its stored session changed")
+        case .failure(let error):
+            XCTAssertEqual(error as? AuthError, .refreshDiscarded)
+        }
+        // Replay queued old events deterministically against the SDK's actual post-response state.
+        service.reconcileAuthStateChange(.tokenRefreshed)
+        service.reconcileAuthStateChange(.initialSession)
+        XCTAssertEqual(probe.requestedRefreshTokens, [original.refreshToken], "Unexpected refresh retry")
+        XCTAssertEqual(probe.logoutScopes, ["local"], "Unexpected extra logout request")
+        if signInSecondAccount {
+            let second = try XCTUnwrap(client.auth.currentSession)
+            XCTAssertEqual(second.refreshToken, probe.secondRefreshToken)
+            XCTAssertEqual(second.user.id.uuidString.lowercased(), AuthFixtureTransport.second)
+            XCTAssertEqual(storage.storedSessions.map(\.refreshToken), [probe.secondRefreshToken])
+            XCTAssertEqual(service.userId?.lowercased(), AuthFixtureTransport.second)
+            XCTAssertEqual(model.userId?.lowercased(), AuthFixtureTransport.second)
+            XCTAssertTrue(model.isAuthenticated)
+            XCTAssertNil(model.user, "Delayed first-account response restored its profile")
+        } else {
+            XCTAssertNil(client.auth.currentSession, "Old refresh resurrected the SDK session")
+            XCTAssertTrue(storage.storedSessions.isEmpty, "Old refresh rewrote SDK-owned local storage")
+            XCTAssertEqual(service.state, .unauthenticated)
+            XCTAssertNil(service.currentUser); XCTAssertNil(service.currentProfile)
+            XCTAssertEqual(model.state, .unauthenticated)
+            XCTAssertNil(model.userId); XCTAssertNil(model.user)
+        }
+    }
+
     func testServiceEventsProfileFailureAndLogoutFailureStayTruthful() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [AuthFixtureTransport.self]
@@ -649,6 +750,10 @@ private final class AuthFixtureStorage: AuthLocalStorage, @unchecked Sendable {
         }
         XCTAssertEqual(expired, 1, "Fixture must expire the actual SDK-owned stored session")
     }
+    var storedSessions: [Session] {
+        lock.lock(); defer { lock.unlock() }
+        return values.values.compactMap { try? JSONDecoder().decode(Session.self, from: $0) }
+    }
     func store(key: String, value: Data) throws { lock.lock(); defer { lock.unlock() }; values[key] = value }
     func retrieve(key: String) throws -> Data? { lock.lock(); defer { lock.unlock() }; return values[key] }
     func remove(key: String) throws { lock.lock(); defer { lock.unlock() }; values[key] = nil }
@@ -682,6 +787,59 @@ private final class AuthFixtureTransport: URLProtocol {
             if count <= 0 { break }; result.append(bytes, count: count)
         }
         return result
+    }
+    // Each new race case owns its gate and token family. Existing fixtures keep their behavior.
+    final class RefreshFenceProbe: @unchecked Sendable {
+        let firstAccessToken = "held-first-access-" + UUID().uuidString
+        let firstRefreshToken = "held-first-refresh-" + UUID().uuidString
+        let secondRefreshToken = "held-second-refresh-" + UUID().uuidString
+        private let lock = NSLock()
+        private var pending: [AuthFixtureTransport] = []
+        private var requestedTokens: [String] = []
+        private var scopes: [String] = []
+        private var authorizations: [String] = []
+        private var released = false
+        private var finished = false
+        var requestedRefreshTokens: [String] { lock.lock(); defer { lock.unlock() }; return requestedTokens }
+        var logoutScopes: [String] { lock.lock(); defer { lock.unlock() }; return scopes }
+        var logoutAuthorizations: [String] { lock.lock(); defer { lock.unlock() }; return authorizations }
+        var hasHeldRefresh: Bool { lock.lock(); defer { lock.unlock() }; return !pending.isEmpty }
+        var refreshFinished: Bool { lock.lock(); defer { lock.unlock() }; return finished }
+        func markRefreshFinished() { lock.lock(); defer { lock.unlock() }; finished = true }
+        func holdRefresh(_ request: AuthFixtureTransport, token: String) {
+            lock.lock()
+            requestedTokens.append(token)
+            let canHold = !released && pending.count < 2
+            if canHold { pending.append(request) }
+            lock.unlock()
+            if !canHold { request.respond(400, ["code": "unexpected_failure", "msg": "Unexpected fixture refresh retry"]) }
+        }
+        func recordLogout(scope: String?, authorization: String?) {
+            lock.lock(); defer { lock.unlock() }
+            scopes.append(scope ?? "<missing>"); authorizations.append(authorization ?? "<missing>")
+        }
+        func releaseRefresh() {
+            lock.lock(); let requests = pending; pending = []; released = true; lock.unlock()
+            for request in requests { request.respond(200, sessionPayload(second: false, rotated: true)) }
+        }
+        func sessionPayload(second: Bool, rotated: Bool = false) -> [String: Any] {
+            let id = second ? AuthFixtureTransport.second : AuthFixtureTransport.first
+            return ["access_token": second ? "held-second-access" : (rotated ? "held-rotated-first-access" : firstAccessToken),
+                "refresh_token": second ? secondRefreshToken : (rotated ? firstRefreshToken + "-rotated" : firstRefreshToken),
+                "token_type": "bearer", "expires_in": 3600, "expires_at": Int(Date().timeIntervalSince1970) + 3600,
+                "user": ["id": id, "aud": "authenticated", "role": "authenticated",
+                    "email": second ? "second@example.invalid" : "first@example.invalid",
+                    "app_metadata": [:], "user_metadata": [:], "identities": [], "is_anonymous": false,
+                    "created_at": "2026-10-06T00:00:00Z", "updated_at": "2026-10-06T00:00:00Z"]]
+        }
+    }
+    private static var refreshFences: [String: RefreshFenceProbe] = [:]
+    static func registerRefreshFence(_ probe: RefreshFenceProbe, id: String) {
+        gate.lock(); defer { gate.unlock() }; refreshFences[id] = probe
+    }
+    static func removeRefreshFence(id: String) { gate.lock(); defer { gate.unlock() }; refreshFences[id] = nil }
+    private static func refreshFence(id: String) -> RefreshFenceProbe? {
+        gate.lock(); defer { gate.unlock() }; return refreshFences[id]
     }
     private static var delayed: [AuthFixtureTransport] = []
     private static var startupMode = "success"
@@ -725,6 +883,29 @@ private final class AuthFixtureTransport: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return
         }
         let url = request.url!
+        if let probeID = request.value(forHTTPHeaderField: "X-SDI-Refresh-Fence") {
+            guard let probe = Self.refreshFence(id: probeID) else {
+                client?.urlProtocol(self, didFailWithError: URLError(.cancelled)); return
+            }
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if url.path.hasSuffix("/logout") {
+                probe.recordLogout(scope: query.first { $0.name == "scope" }?.value,
+                    authorization: request.value(forHTTPHeaderField: "Authorization"))
+                respond(200, [:]); return
+            }
+            if url.path.hasSuffix("/token") {
+                let fields = (try? JSONSerialization.jsonObject(with: requestBody())) as? [String: Any] ?? [:]
+                if query.first(where: { $0.name == "grant_type" })?.value == "refresh_token" {
+                    probe.holdRefresh(self, token: fields["refresh_token"] as? String ?? "<missing>"); return
+                }
+                guard query.first(where: { $0.name == "grant_type" })?.value == "password",
+                      let email = fields["email"] as? String,
+                      ["first@example.invalid", "second@example.invalid"].contains(email) else {
+                    respond(400, ["code": "unexpected_failure", "msg": "Unexpected fixture token request"]); return
+                }
+                respond(200, probe.sessionPayload(second: email == "second@example.invalid")); return
+            }
+        }
         if url.path.hasSuffix("/users"), request.httpMethod == "PATCH" {
             let fields = (try? JSONSerialization.jsonObject(with: requestBody())) as? [String: Any] ?? [:]
             Self.gate.lock(); Self.patchCount += 1; Self.patchKeys = Set(fields.keys); let mode = Self.patchMode

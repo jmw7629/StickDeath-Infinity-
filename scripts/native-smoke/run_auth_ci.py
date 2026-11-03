@@ -46,7 +46,7 @@ def main():
     command = ["xcodebuild", "test", "-project", "StickDeathInfinity.xcodeproj",
                "-scheme", "StickDeathInfinityAuthTests", "-configuration", "Debug",
                # The bundle also hosts ServiceJourneyTests, which the separate
-               # native-ios-journeys job runs; this gate stays the 20 auth cases.
+               # native-ios-journeys job runs; this gate stays the 22 auth cases.
                "-only-testing:StickDeathInfinityAuthTests/AuthStateTests",
                "-destination", f"platform=iOS Simulator,id={udid}",
                "-derivedDataPath", str(derived), "-clonedSourcePackagesDirPath", str(packages),
@@ -66,7 +66,7 @@ def main():
                        evidence / "summary.json", 60)
         if exported == 0:
             summary = json.loads((evidence / "summary.json").read_text())
-            receipt["runtimeVerified"] = (code == 0 and summary.get("passedTests") == 20
+            receipt["runtimeVerified"] = (code == 0 and summary.get("passedTests") == 22
                                            and summary.get("failedTests") == 0
                                            and summary.get("skippedTests", 0) == 0)
     finally:
