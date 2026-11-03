@@ -90,6 +90,7 @@ PREFIX_ISSUES = [
     ("profile.projects", "#294", "reference profile"),
     ("profile.identity", "#294", "reference profile"),
     ("profile", "#224", "profile editing and portfolios"),
+    ("admin.support", "#272", "authenticated support queue and private audited status updates"),
     ("admin", "#210 #285", "admin roles, MFA, user directory"),
     ("spattercc", "#210", "admin credentials"),
     ("calendar", "#297", "native Calendar"),

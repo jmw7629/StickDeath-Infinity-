@@ -193,6 +193,99 @@ export async function runAdminEpochScenarios(sourcePath = path.join(repo, 'websi
     await h.signin('b@example.invalid'); old.fail(); await pending;
     assert.equal(h.get('admin-recover-result').textContent, ''); assert.match(h.get('admin-identity').textContent, /b@example/);
   });
+  const supportRow = () => ({ id: '11111111-1111-4111-8111-111111111111', user_id: '22222222-2222-4222-8222-222222222222',
+    receipt: 'SDI-ABCDEFGHIJ', category: 'studio', platform: 'ios', app_version: '1.0', subject: 'Synthetic save question <img src=x>',
+    body: 'Synthetic private support body', admin_note: 'Synthetic internal note', status: 'open', revision: 4,
+    created_at: '2026-11-03T12:00:00Z', updated_at: '2026-11-03T12:00:00Z' });
+  const supportButton = (h) => {
+    const visit = (e) => [e, ...e.children.flatMap((child) => child instanceof Element ? visit(child) : [])];
+    return visit(h.get('admin-support-queue')).find((e) => e.textContent === 'Select SDI-ABCDEFGHIJ');
+  };
+  const loadSupport = async (h, rows = [supportRow()], hasMore = false) => {
+    const reply = h.rpc('sdi_support_action', 'list'); const pending = h.get('admin-support-form').fire('submit'); await tick();
+    assert(reply.used); reply.release({ requests: rows, has_more: hasMore }); await pending; return reply;
+  };
+  await test('support queue selects a genuine row revision and confirms an audited status exactly once', async () => {
+    const h = harness(source); await h.signin('a@example.invalid'); h.get('admin-support-filter').value = 'open'; h.get('admin-support-page').value = '2';
+    const listed = await loadSupport(h, [supportRow()], true);
+    assert.deepEqual(listed.request.body, { action: 'list', status: 'open', page: 1 });
+    assert(!h.get('admin-support-prev').disabled && !h.get('admin-support-next').disabled);
+    assert.match(h.get('admin-support-queue').textContent, /Synthetic save question <img src=x>/);
+    const choose = supportButton(h); assert(choose); await choose.fire('click');
+    assert(!h.get('admin-support-fields').disabled); assert.match(h.get('admin-support-selected').textContent, /revision 4/);
+    h.get('admin-support-status').value = 'in_progress'; h.get('admin-support-note').value = 'Synthetic private triage reason'; h.get('admin-support-confirm').checked = true;
+    const changed = h.rpc('sdi_support_action', 'update_status'); const pending = h.get('admin-support-update-form').fire('submit'); await tick(); assert(changed.used);
+    assert.deepEqual(changed.request.body, { action: 'update_status', request: supportRow().id, revision: 4, status: 'in_progress', note: 'Synthetic private triage reason' });
+    changed.release({ status: 'confirmed', revision: 5 }); await pending;
+    assert.match(h.get('admin-support-result').textContent, /confirmed revision 5/); assert.match(h.get('admin-support-result').textContent, /private/);
+    assert.equal(h.get('admin-support-note').value, ''); assert(h.get('admin-support-fields').disabled);
+    const calls = h.requests.length; await h.get('admin-support-update-form').fire('submit'); assert.equal(h.requests.length, calls, 'Consumed status action replayed');
+  });
+  await test('support refuses missing confirmation invalid pages malformed revisions and withdrawn targets without mutation calls', async () => {
+    const h = harness(source); await h.signin('a@example.invalid'); h.get('admin-support-page').value = '1x';
+    const before = h.requests.length; await h.get('admin-support-form').fire('submit'); assert.equal(h.requests.length, before);
+    h.get('admin-support-page').value = '1'; await loadSupport(h, [{ ...supportRow(), revision: Number.MAX_SAFE_INTEGER + 1 }]);
+    assert.equal(supportButton(h), undefined); assert(h.get('admin-support-fields').disabled);
+    await loadSupport(h, [{ ...supportRow(), status: 'withdrawn' }]); assert.equal(supportButton(h), undefined);
+    const denied = h.rpc('sdi_support_action', 'list'); const pending = h.get('admin-support-form').fire('submit'); await tick(); denied.release({ code: 'forbidden' }); await pending;
+    assert.match(h.get('admin-support-queue').textContent, /forbidden/); assert(h.get('admin-support-fields').disabled);
+    await loadSupport(h); await supportButton(h).fire('click'); h.get('admin-support-note').value = 'Synthetic reason';
+    const calls = h.requests.length; await h.get('admin-support-update-form').fire('submit'); assert.equal(h.requests.length, calls, 'Unchecked support decision sent');
+  });
+  await test('support list and consumed status responses cannot restore a prior admin or detached target', async () => {
+    const h = harness(source); await h.signin('a@example.invalid'); await loadSupport(h); const oldButton = supportButton(h); await oldButton.fire('click');
+    h.get('admin-support-note').value = 'private-A-note'; h.get('admin-support-confirm').checked = true; h.get('admin-support-status').value = 'resolved';
+    const changed = h.rpc('sdi_support_action', 'update_status'); const pending = h.get('admin-support-update-form').fire('submit'); await tick(); assert(changed.used);
+    await h.signout(); await h.signin('b@example.invalid'); changed.release({ status: 'confirmed', revision: 5 }); await pending;
+    assert.equal(h.get('admin-support-result').textContent, ''); assert.equal(h.get('admin-support-selected').textContent, '');
+    assert.equal(h.get('admin-support-note').value, ''); assert(h.get('admin-support-fields').disabled);
+    const calls = h.requests.length; await oldButton.fire('click'); await h.get('admin-support-update-form').fire('submit'); assert.equal(h.requests.length, calls);
+    const listed = h.rpc('sdi_support_action', 'list'); const loading = h.get('admin-support-form').fire('submit'); await tick(); assert(listed.used);
+    await h.signout(); await h.signin('c@example.invalid'); listed.release({ requests: [supportRow()], has_more: false }); await loading;
+    assert.equal(h.get('admin-support-queue').textContent, ''); assert(h.get('admin-support-fields').disabled);
+  });
+  await test('support transport and revision conflicts require a fresh list and never invent success or replay', async () => {
+    for (const transportFailure of [false, true]) {
+      const h = harness(source); await h.signin('a@example.invalid'); await loadSupport(h); await supportButton(h).fire('click');
+      h.get('admin-support-note').value = 'Synthetic reason'; h.get('admin-support-confirm').checked = true;
+      const changed = h.rpc('sdi_support_action', 'update_status'); const pending = h.get('admin-support-update-form').fire('submit'); await tick();
+      if (transportFailure) changed.fail(); else changed.release({ error: 'Request changed or closed. Refresh the queue.' }); await pending;
+      assert.doesNotMatch(h.get('admin-support-result').textContent, /Updated SDI/);
+      assert.match(h.get('admin-support-result').textContent, /Reload the queue/); assert(h.get('admin-support-fields').disabled);
+      const calls = h.requests.length; await h.get('admin-support-update-form').fire('submit'); assert.equal(h.requests.length, calls);
+    }
+  });
+  await test('support accepts SQL-valid Unicode subject body staff note and a full 2000-code-point decision', async () => {
+    const supplementary = '\u{1F4A5}';
+    assert.match(fs.readFileSync(path.join(repo, 'website/admin.html'), 'utf8'), /id="admin-support-note"[^>]*maxlength="4000"/, 'HTML blocked a valid supplementary-character note');
+    for (const count of [1001, 2000]) {
+      const h = harness(source); await h.signin('unicode@example.invalid');
+      const row = { ...supportRow(), subject: supplementary.repeat(120), body: supplementary.repeat(count),
+        admin_note: supplementary.repeat(2000), app_version: supplementary.repeat(50) };
+      await loadSupport(h, [row]); const choose = supportButton(h); assert(choose, 'A valid Unicode row rejected its whole page');
+      assert.match(h.get('admin-support-queue').textContent, new RegExp(supplementary.repeat(120))); await choose.fire('click');
+      assert(!h.get('admin-support-fields').disabled);
+      const note = supplementary.repeat(2000); assert.equal(note.length, 4000);
+      h.get('admin-support-note').value = note; h.get('admin-support-confirm').checked = true;
+      const changed = h.rpc('sdi_support_action', 'update_status'); const pending = h.get('admin-support-update-form').fire('submit'); await tick();
+      assert(changed.used, 'Valid 2000-code-point note was refused'); assert.equal(changed.request.body.note, note);
+      assert.equal(changed.request.body.revision, row.revision); changed.release({ status: 'confirmed', revision: row.revision + 1 }); await pending;
+      assert.match(h.get('admin-support-result').textContent, /confirmed revision 5/); assert.equal(h.get('admin-support-note').value, '');
+    }
+  });
+  await test('support refuses over-limit Unicode rows and Unicode or ASCII notes without sending a decision', async () => {
+    const supplementary = '\u{1F4A5}'; const h = harness(source); await h.signin('unicode@example.invalid');
+    for (const [field, limit] of [['subject', 120], ['body', 2000], ['admin_note', 2000], ['app_version', 50]]) {
+      await loadSupport(h, [{ ...supportRow(), [field]: supplementary.repeat(limit + 1) }]);
+      assert.equal(supportButton(h), undefined, `Over-limit ${field} became actionable`); assert(h.get('admin-support-fields').disabled);
+    }
+    await loadSupport(h); await supportButton(h).fire('click'); h.get('admin-support-confirm').checked = true;
+    for (const note of ['a'.repeat(2001), supplementary.repeat(2001), 'a'.repeat(1999) + supplementary.repeat(2)]) {
+      h.get('admin-support-note').value = note; const calls = h.requests.length;
+      await h.get('admin-support-update-form').fire('submit'); assert.equal(h.requests.length, calls, 'An over-limit private note reached the server');
+      assert.match(h.get('admin-support-result').textContent, /2,000 characters/); assert(!h.get('admin-support-fields').disabled);
+    }
+  });
   return results;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

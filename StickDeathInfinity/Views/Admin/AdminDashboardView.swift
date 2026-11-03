@@ -30,7 +30,7 @@ struct AdminDashboardView: View {
         guard usesLiveOverview else { return tabs }
         let needed = ["dashboard": "overview", "health": "overview", "operations": "overview", "agents": "overview",
                       "agentInbox": "overview", "analytics": "overview",
-                      "users": "users", "approvals": "reviews", "decisions": "reviews", "spatter": "reviews",
+                      "users": "users", "support": "users", "approvals": "reviews", "decisions": "reviews", "spatter": "reviews",
                       "publishing": "publishing", "moderation": "moderation", "warReports": "moderation",
                       "warAppeals": "moderation", "content": "moderation", "challenges": "moderation",
                       "roomReports": "moderation", "removalAppeals": "moderation", "finance": "finance"]
@@ -42,6 +42,7 @@ struct AdminDashboardView: View {
         ("health", "waveform.path.ecg", "Service health"),
         ("operations", "externaldrive.badge.checkmark", "Backups & releases"),
         ("users", "person.2.fill", "Users"),
+        ("support", "lifepreserver", "Support queue"),
         ("permissions", "key", "Permissions"),
         ("content", "doc.fill", "Content"),
         ("approvals", "checkmark.shield", "Video approvals"),
@@ -143,6 +144,8 @@ struct AdminDashboardView: View {
                             AdminOperationsStatusContent()
                         case "users":
                             AdminUsersContent()
+                        case "support":
+                            AdminSupportQueueContent()
                         case "permissions":
                             AdminPermissionsContent()
                         case "approvals":

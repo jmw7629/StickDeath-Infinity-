@@ -41,6 +41,14 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
     #"{"id":"\#(id.uuidString)","review_id":"\#(target.uuidString)","actor":"\#(actor.uuidString)","owner_at_decision":true,"render_title":"T","source_revision":"r1","rights_summary":"ok","render_digest":"\#(String(repeating: "a", count: 64))","review_version":1,"consent_version":"v1","destinations":["feed"],"decision":"approved","note":"","created_at":"\#(iso)"}"#
 }
 
+private func supportItem(_ id: UUID = UUID(), status: String = "open", revision: Int64 = 7, subject: String = "Export stops") -> String {
+    let value: [String: Any] = ["id": id.uuidString, "user_id": actor.uuidString, "receipt": "SDI-ABCDEFGHIJ",
+        "category": "studio", "platform": "ios", "app_version": "1.0", "subject": subject,
+        "body": "The rendered movie did not finish.", "status": status, "admin_note": "Prior private triage note",
+        "revision": revision, "created_at": "2026-11-03T08:00:00Z", "updated_at": "2026-11-03T08:01:00Z"]
+    return String(data: try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)!
+}
+
 @main @MainActor struct CommunityAdminTests {
     static func main() async {
         setvbuf(stdout, nil, _IONBF, 0)
@@ -363,6 +371,92 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
             let q = AdminReviewEvidence.qualityLines(quality)
             try require(q.first == "Quality gates FAILED." && q.contains("• 1 blank frame(s); limit 0.") && q.contains("Decoded movie: 36/36 frames, 3/3 s.") && q.contains("Not measured: audioOffsetSeconds."), "quality lines: \(q)")
             try require(AdminReviewEvidence.qualityLines(.string("ok")) == ["Quality report: unrecognized format (not shown)."], "malformed quality")
+        }
+
+        await test("support queue uses real status/page filters and the server pagination flag") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let rows = (0..<50).map { _ in supportItem() }.joined(separator: ",")
+            transport.replies = [.success("{\"requests\":[\(rows)],\"has_more\":true}")]
+            let page = try await client.supportQueue(status: .inProgress, page: 2)
+            try require(page.items.count == 50 && page.page == 2 && page.hasMore, "server pagination decoded")
+            try require(page.items.first?.body == "The rendered movie did not finish." && page.items.first?.admin_note == "Prior private triage note"
+                && page.items.first?.receipt == "SDI-ABCDEFGHIJ", "real content and private note retained")
+            try require(transport.calls.last?.name == "sdi_support_action" && transport.calls.last?.params["action"] as? String == "list"
+                && transport.calls.last?.params["status"] as? String == "in_progress" && transport.calls.last?.params["page"] as? Int == 2, "bounded queue payload")
+            transport.replies = [.success("{\"requests\":[\(rows)],\"has_more\":false}")]
+            try require(try await client.supportQueue().hasMore == false, "must not infer has_more from fifty rows")
+            transport.replies = [.success(#"{"requests":[],"has_more":false}"#)]
+            let empty = try await client.supportQueue()
+            try require(empty.items.isEmpty && !empty.hasMore && transport.calls.last?.params["status"] == nil, "all-status empty queue is factual")
+        }
+
+        await test("support queue rejects missing pagination duplicate IDs invalid content and server refusals") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let duplicate = supportItem(review)
+            for bad in [#"{"requests":[]}"#, #"{"requests":[],"has_more":true}"#,
+                "{\"requests\":[\(duplicate),\(duplicate)],\"has_more\":false}",
+                "{\"requests\":[\(supportItem(subject: String(repeating: "x", count: 121)))],\"has_more\":false}",
+                "{\"requests\":[\(supportItem(revision: 0))],\"has_more\":false}"] {
+                transport.replies = [.success(bad)]
+                do { _ = try await client.supportQueue(); throw Failure(description: "invalid queue accepted") } catch CommunityError.invalidResponse {}
+            }
+            let count = transport.calls.count
+            for page in [-1, 200] {
+                do { _ = try await client.supportQueue(page: page); throw Failure(description: "invalid page sent") } catch CommunityError.invalidResponse {}
+            }
+            try require(transport.calls.count == count, "out-of-range pages must not make a request")
+            transport.replies = [.success(#"{"error":"Current administrator MFA session required.","code":"forbidden"}"#)]
+            do { _ = try await client.supportQueue(); throw Failure(description: "MFA refusal accepted") } catch CommunityError.server {}
+        }
+
+        await test("support status mutation binds selected UUID revision status and private note to a confirmed next revision") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            transport.replies = [.success("{\"requests\":[\(supportItem(review))],\"has_more\":false}")]
+            let item = try await client.supportQueue().items[0]
+            transport.replies = [.success(#"{"status":"confirmed","revision":8}"#)]
+            try require(try await client.updateSupport(item, to: .resolved, note: "  Reproduced; fixed in the next build.  ") == 8, "confirmed next revision")
+            let call = transport.calls.last!
+            try require(call.name == "sdi_support_action" && call.params["action"] as? String == "update_status"
+                && (call.params["request"] as? String)?.lowercased() == review.uuidString.lowercased()
+                && (call.params["revision"] as? NSNumber)?.int64Value == 7 && call.params["status"] as? String == "resolved"
+                && call.params["note"] as? String == "Reproduced; fixed in the next build.", "exact immutable target payload")
+            try require(Set(call.params.keys) == ["action", "request", "revision", "status", "note"], "no account token email project or attachment fields")
+            for bad in [#"{}"#, #"{"status":"confirmed"}"#, #"{"status":"confirmed","revision":7}"#,
+                #"{"status":"confirmed","revision":9}"#, #"{"status":"pending","revision":8}"#] {
+                transport.replies = [.success(bad)]
+                do { _ = try await client.updateSupport(item, to: .inProgress, note: "Checking"); throw Failure(description: "ambiguous status result accepted") } catch CommunityError.invalidResponse {}
+            }
+            transport.replies = [.success(#"{"error":"Request changed or closed. Refresh the queue."}"#)]
+            do { _ = try await client.updateSupport(item, to: .inProgress, note: "Checking"); throw Failure(description: "stale revision refusal accepted") } catch CommunityError.server {}
+        }
+
+        await test("support withdrawn records and invalid notes never send a status mutation") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            transport.replies = [.success("{\"requests\":[\(supportItem(review, status: "withdrawn")),\(supportItem(other))],\"has_more\":false}")]
+            let rows = try await client.supportQueue().items
+            let before = transport.calls.count
+            do { _ = try await client.updateSupport(rows[0], to: .open, note: "Reopen"); throw Failure(description: "withdrawn mutation sent") } catch CommunityError.server {}
+            do { _ = try await client.updateSupport(rows[1], to: .withdrawn, note: "Withdraw"); throw Failure(description: "admin withdrawal sent") } catch CommunityError.server {}
+            for note in [" \n ", String(repeating: "x", count: 2001), String(repeating: "🇺🇸", count: 1001)] {
+                do { _ = try await client.updateSupport(rows[1], to: .resolved, note: note); throw Failure(description: "invalid private note sent") } catch CommunityError.server {}
+            }
+            try require(transport.calls.count == before && !rows[0].canUpdate, "all invalid actions denied before transport")
+            try require(AdminOperationsClient.supportNoteIsValid(String(repeating: "🇺🇸", count: 1000)), "bounds count PostgreSQL code points")
+        }
+
+        await test("support context invalidates results and confirmations on account session scene or generation change") {
+            let generation = UUID()
+            let context = AdminSupportContext(accountID: actor.uuidString, generation: generation)
+            try require(context.admits(accountID: actor.uuidString, authenticated: true, active: true, generation: generation), "current context admitted")
+            try require(!context.admits(accountID: other.uuidString, authenticated: true, active: true, generation: generation)
+                && !context.admits(accountID: nil, authenticated: true, active: true, generation: generation)
+                && !context.admits(accountID: actor.uuidString, authenticated: false, active: true, generation: generation)
+                && !context.admits(accountID: actor.uuidString, authenticated: true, active: false, generation: generation)
+                && !context.admits(accountID: actor.uuidString, authenticated: true, active: true, generation: UUID()), "stale context must never publish private data or a success receipt")
         }
 
         print("COMMUNITY_ADMIN_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed) passed \(failed) failed")

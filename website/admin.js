@@ -110,14 +110,14 @@
 
   function clearPrivateView() {
     $('admin-panels').replaceChildren();
-    for (const id of ['admin-users-result', 'admin-history-result', 'admin-publish-result', 'admin-diagnostics-result', 'admin-announce-change-result', 'admin-agent-result', 'admin-finance-result', 'admin-report-result']) { const el = $(id); if (el) el.replaceChildren(); }
+    for (const id of ['admin-users-result', 'admin-history-result', 'admin-publish-result', 'admin-diagnostics-result', 'admin-announce-change-result', 'admin-agent-result', 'admin-finance-result', 'admin-report-result', 'admin-support-queue', 'admin-support-result']) { const el = $(id); if (el) el.replaceChildren(); }
     for (const id of ['admin-identity', 'admin-account-result', 'admin-proposal-result', 'admin-stop-result', 'admin-announce-result', 'admin-recover-result']) { const el = $(id); if (el) el.textContent = ''; }
     // Server-populated revision/cap fields, financial drafts and pending owner
     // action inputs also belong to the previous session, not the next admin.
     for (const form of document.querySelectorAll('#admin-console form')) form.reset();
     for (const id of ['admin-email', 'admin-password', 'admin-code', 'admin-enrol-code', 'admin-enrol-secret', 'admin-newpassword']) { const el = $(id); if (el) el.value = ''; }
     const qr = $('admin-enrol-qr'); if (qr) { qr.removeAttribute('src'); qr.hidden = true; }
-    lastExport = null; capsLoaded = null;
+    lastExport = null; capsLoaded = null; resetSupportView();
     const download = $('admin-report-download'); if (download) download.disabled = true;
   }
 
@@ -697,6 +697,128 @@
     } catch (_) { if (!lease.current()) return; say(out, 'The request did not complete. Refresh the Agents panel before retrying.'); }
   }
 
+  // --- support queue (#272): existing server-owned revision/audit workflow ---
+  const SUPPORT_STATUSES = ['open', 'in_progress', 'waiting_on_member', 'resolved', 'withdrawn'];
+  const SUPPORT_EDITABLE = SUPPORT_STATUSES.filter((value) => value !== 'withdrawn');
+  let supportCapture = null;
+  let supportPaging = null;
+  let supportRows = null;
+  function clearSupportSelection() {
+    supportCapture = null;
+    $('admin-support-fields').disabled = true;
+    $('admin-support-selected').textContent = '';
+    $('admin-support-note').value = '';
+    $('admin-support-confirm').checked = false;
+  }
+  function resetSupportView() {
+    clearSupportSelection(); supportPaging = null; supportRows = null;
+    $('admin-support-prev').disabled = true; $('admin-support-next').disabled = true;
+  }
+  // SQL length(text) counts Unicode code points, unlike JS .length and HTML
+  // maxlength, which count UTF-16 units. Reject huge inputs before iteration;
+  // at most two units per allowed code point can reach this bounded loop.
+  function supportTextWithin(value, limit, required = false) {
+    if (typeof value !== 'string' || value.length > limit * 2) return false;
+    let count = 0;
+    for (const _codePoint of value) { count += 1; if (count > limit) return false; }
+    return !required || count > 0;
+  }
+  function validSupportRow(row) {
+    const text = (key, limit, required = false) => supportTextWithin(row[key], limit, required);
+    return row && typeof row === 'object' && UUID_RE.test(row.id) && UUID_RE.test(row.user_id)
+      && /^SDI-[A-Z0-9]{10}$/.test(row.receipt) && SUPPORT_STATUSES.includes(row.status)
+      && Number.isSafeInteger(row.revision) && row.revision >= 1 && row.revision < Number.MAX_SAFE_INTEGER
+      && text('subject', 120, true) && text('body', 2000, true) && text('admin_note', 2000)
+      && text('category', 20, true) && text('platform', 10, true) && text('app_version', 50)
+      && text('created_at', 64, true) && text('updated_at', 64, true);
+  }
+  async function loadSupportQueue(event) {
+    if (event) event.preventDefault();
+    const lease = beginWork('support');
+    const out = $('admin-support-queue'); const status = $('admin-support-filter').value;
+    const page = wholeNumber($('admin-support-page').value, { min: 1, max: 200 });
+    resetSupportView(); $('admin-support-result').replaceChildren();
+    if (page === null || (status && !SUPPORT_STATUSES.includes(status))) { say(out, 'Choose a valid status and a whole page from 1 to 200; nothing was sent.'); return; }
+    say(out, 'Loading support requests…');
+    try {
+      const result = await rpc('sdi_support_action', { action: 'list', status: status || null, page: page - 1 });
+      lease.check();
+      if (!result || result.error || result.code) { say(out, refusal(result)); return; }
+      if (!Array.isArray(result.requests) || result.requests.length > 50 || typeof result.has_more !== 'boolean'
+        || !result.requests.every(validSupportRow) || new Set(result.requests.map((row) => row.id)).size !== result.requests.length) {
+        say(out, 'The server returned an unsupported queue response. Nothing was selected; refresh before acting.'); return;
+      }
+      const rows = document.createElement('fieldset'); const legend = document.createElement('legend');
+      legend.textContent = `Page ${page} · ${result.requests.length} support requests`; rows.append(legend);
+      for (const row of result.requests) {
+        const card = document.createElement('article'); const heading = document.createElement('h3');
+        heading.textContent = `${row.receipt} · ${row.subject}`;
+        const facts = renderValue({ account_id: row.user_id, category: row.category, platform: row.platform, app_version: row.app_version,
+          status: row.status, revision: row.revision, created_at: row.created_at, updated_at: row.updated_at,
+          member_request: row.body, private_admin_note: row.admin_note });
+        const choose = document.createElement('button'); choose.type = 'button'; choose.className = 'button';
+        choose.textContent = row.status === 'withdrawn' ? 'Withdrawn by member — read only' : `Select ${row.receipt}`;
+        choose.disabled = row.status === 'withdrawn';
+        choose.addEventListener('click', () => {
+          if (!lease.current() || row.status === 'withdrawn') return;
+          clearSupportSelection(); $('admin-support-result').replaceChildren();
+          supportCapture = Object.freeze({ request: row.id, receipt: row.receipt, revision: row.revision, status: row.status, lease });
+          $('admin-support-selected').textContent = `${row.receipt} · ${row.subject} · current status ${row.status} · revision ${row.revision}`;
+          $('admin-support-status').value = row.status; $('admin-support-fields').disabled = false;
+          $('admin-support-note').focus();
+        });
+        card.append(heading, facts, choose); rows.append(card);
+      }
+      if (!result.requests.length) rows.append(renderValue('No support requests match this filter.'));
+      supportRows = rows; supportPaging = { page, hasMore: result.has_more, lease };
+      $('admin-support-prev').disabled = page <= 1;
+      $('admin-support-next').disabled = !result.has_more || page >= 200;
+      out.replaceChildren(rows);
+    } catch (_) { if (!lease.current()) return; say(out, 'The support queue did not load. No request was selected. Try loading it again.'); }
+  }
+  async function supportPage(delta) {
+    const current = supportPaging;
+    if (!current || !current.lease.current() || (delta > 0 && !current.hasMore)) return;
+    const next = current.page + delta;
+    if (next < 1 || next > 200) return;
+    $('admin-support-page').value = String(next);
+    await loadSupportQueue();
+  }
+  async function updateSupportStatus(event) {
+    event.preventDefault();
+    const out = $('admin-support-result'); const selected = supportCapture;
+    if (!selected || !selected.lease.current()) { clearSupportSelection(); say(out, 'Load the queue and select a current request before applying a status. Nothing was sent.'); return; }
+    const status = $('admin-support-status').value; const note = $('admin-support-note').value.trim();
+    if (!SUPPORT_EDITABLE.includes(status) || !supportTextWithin(note, 2000, true) || !$('admin-support-confirm').checked) {
+      say(out, 'Choose a status, enter a private note of 1 to 2,000 characters and confirm the selected receipt. Nothing was sent.'); return;
+    }
+    const lease = beginWork('support');
+    // This immutable row/revision is consumed exactly once. A network failure
+    // is not permission to replay; a fresh list is needed even after refusal.
+    supportCapture = null; supportPaging = null;
+    $('admin-support-fields').disabled = true;
+    $('admin-support-prev').disabled = true; $('admin-support-next').disabled = true;
+    if (supportRows) supportRows.disabled = true;
+    say(out, `Sending the status update for ${selected.receipt}…`);
+    try {
+      const result = await rpc('sdi_support_action', { action: 'update_status', request: selected.request, revision: selected.revision, status, note });
+      lease.check();
+      if (result && result.status === 'confirmed' && Number.isSafeInteger(result.revision) && result.revision === selected.revision + 1) {
+        $('admin-support-note').value = ''; $('admin-support-confirm').checked = false;
+        $('admin-support-selected').textContent = `${selected.receipt} · server-confirmed status ${status} · revision ${result.revision}`;
+        say(out, `Updated ${selected.receipt} to ${status}; the server confirmed revision ${result.revision} and recorded the audit. Your note remains private to administrators. Reload the queue before another action.`);
+      } else if (result && (result.error || result.code)) {
+        const answer = String(result.error || result.code);
+        say(out, `Server answer: ${answer}. No status update is confirmed. Reload the queue to read its current status and revision before another action.${result.code === 'step_up_required' ? ' Sign out and sign in again with your authenticator.' : ''}`);
+      } else {
+        say(out, 'No verifiable confirmation was returned. The update may have reached the server. Reload the queue to check the status before trying again.');
+      }
+    } catch (_) {
+      if (!lease.current()) return;
+      say(out, 'The outcome is unconfirmed; the update may have reached the server. Reload the queue before trying again.');
+    }
+  }
+
   // --- finance records and reports (#254) -------------------------------------------------
   // CSV with optional double quotes; no formula evaluation, values are sent as text.
   function parseCSV(text) {
@@ -825,6 +947,10 @@
   $('admin-proposal-form').addEventListener('submit', decideProposal);
   $('admin-users-form').addEventListener('submit', searchUsers);
   $('admin-account-form').addEventListener('submit', accountAction);
+  $('admin-support-form').addEventListener('submit', loadSupportQueue);
+  $('admin-support-update-form').addEventListener('submit', updateSupportStatus);
+  $('admin-support-prev').addEventListener('click', () => supportPage(-1));
+  $('admin-support-next').addEventListener('click', () => supportPage(1));
   $('admin-history-form').addEventListener('submit', searchHistory);
   $('admin-publish-form').addEventListener('submit', showPublishing);
   $('admin-diagnostics-form').addEventListener('submit', showDiagnostics);

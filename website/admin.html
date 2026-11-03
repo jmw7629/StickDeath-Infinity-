@@ -90,6 +90,31 @@
 <div class="actions"><button class="button" type="submit">Apply</button></div>
 <p id="admin-account-result" class="quiet" aria-live="polite"></p>
 </form>
+<h2>Support requests</h2>
+<p class="quiet">Load current requests using the users capability and the server's MFA checks. A selected request carries its actual revision; if a member withdraws it or another administrator changes it, the server refuses an outdated action. Notes below are private administrator records and are never sent to the member. This is support triage, not a messaging service.</p>
+<form id="admin-support-form" class="support" novalidate>
+<label for="admin-support-filter">Request status</label>
+<select id="admin-support-filter" name="status"><option value="">All statuses</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting_on_member">Waiting on member</option><option value="resolved">Resolved</option><option value="withdrawn">Withdrawn (read only)</option></select>
+<label for="admin-support-page">Page (1 to 200, up to 50 requests each)</label>
+<input id="admin-support-page" name="page" inputmode="numeric" maxlength="3" value="1">
+<div class="actions"><button class="button" type="submit">Load support queue</button><button class="button" type="button" id="admin-support-prev" disabled>Previous page</button><button class="button" type="button" id="admin-support-next" disabled>Next page</button></div>
+<div id="admin-support-queue" aria-live="polite"></div>
+</form>
+<form id="admin-support-update-form" class="support" novalidate>
+<h3>Update selected support request</h3>
+<p id="admin-support-selected" class="quiet" aria-live="polite">Load the queue and select a request above.</p>
+<fieldset id="admin-support-fields" disabled>
+<legend>Selected request action</legend>
+<label for="admin-support-status">New status</label>
+<select id="admin-support-status" name="status"><option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting_on_member">Waiting on member</option><option value="resolved">Resolved</option></select>
+<label for="admin-support-note">Private admin note (required, up to 2,000 characters)</label>
+<textarea id="admin-support-note" name="note" maxlength="4000" rows="4" aria-describedby="admin-support-note-help" required></textarea>
+<p id="admin-support-note-help" class="quiet">Explain the status decision. The member sees the request status through their account; this note is not a reply and is not delivered by email or chat.</p>
+<label><input id="admin-support-confirm" type="checkbox" required> I checked the selected receipt and the status change.</label>
+<div class="actions"><button class="button" type="submit">Apply support status</button></div>
+</fieldset>
+<p id="admin-support-result" class="quiet" aria-live="polite"></p>
+</form>
 <h2>Agent run history and audit</h2>
 <p class="quiet">Searchable, paged (50 per page). Finished runs are kept 180 days and audit entries 400 days; audit entries cannot be edited.</p>
 <form id="admin-history-form" class="support" novalidate>
@@ -245,7 +270,7 @@
 <h2>What this shell does and does not do</h2>
 <ul>
 <li>Reads: health and queues, approvals, users, moderation, publishing, support, finance records, agents, announcements, marketing, consent versions, through the existing RPC contracts. Each panel shows the server's answer, including <code>forbidden</code> or <code>step_up_required</code>, verbatim.</li>
-<li>Writes: the emergency stop, owner decisions on agent proposals, agent controls (pause, resume, caps, permissions, instructions and rollback), account actions (note, sign-out, suspend, ban, restore, reset flags), finance records (expense, import, correction, reconciliation) and announcements (draft, schedule, cancel), each with a required reason and server-side audit. Render approvals, moderation decisions and publishing withdrawals stay in the native Admin, where the exact render is played before a decision.</li>
+<li>Writes: the emergency stop, owner decisions on agent proposals, agent controls (pause, resume, caps, permissions, instructions and rollback), account actions (note, sign-out, suspend, ban, restore, reset flags), finance records (expense, import, correction, reconciliation), support triage (revision-checked status changes and private staff notes) and announcements (draft, schedule, cancel), each with a required reason and server-side audit. Render approvals, moderation decisions and publishing withdrawals stay in the native Admin, where the exact render is played before a decision.</li>
 <li>Backups, restore drills, releases and retention are shown as reported outcomes only; no control or terminal endpoint exists on this page.</li>
 <li>Sessions live in page memory only; reloading signs you out. Tokens are never written to storage.</li>
 <li>No secrets: the configuration holds the backend origin and the publishable key only. Service keys, provider credentials and host details never reach this page.</li>

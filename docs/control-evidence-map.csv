@@ -82,6 +82,16 @@ admin.step-up.banner,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,Adm
 admin.step-up.notice,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminDashboardView,text 'Privileged actions need a recent authenticator v',n-a,#210 #285,deferred
 admin.step-up.verify,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminStepUpBanner,button 'Verify authenticator now',n-a,#210 #285,deferred
 admin.users.history,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminUsersContent,button 'Account history',n-a,#210 #285,deferred
+admin.support.body,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,text -> load,n-a,#272,deferred
+admin.support.error,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,text 'Loading support queue',n-a,#272,deferred
+admin.support.filter,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,"text 'Request status' -> binds 0.id, binds statusFilter, binds 0.title",n-a,#272,deferred
+admin.support.note,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,text field 'Required private note (up to 2000 characters)' -> binds note,n-a,#272,deferred
+admin.support.notice,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,text,n-a,#272,deferred
+admin.support.pagination,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,button 'Next page' -> load,n-a,#272,deferred
+admin.support.refresh,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,button 'Refresh queue' -> load,n-a,#272,deferred
+admin.support.review,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,button 'Review status change',n-a,#272,deferred
+admin.support.status,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,"text 'New status' -> binds nextStatus, binds 0.title, binds 0",n-a,#272,deferred
+admin.support.withdrawn,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,text 'This request was withdrawn by its member and is ',n-a,#272,deferred
 app.notice,StickDeathInfinity/App/AppFlowView.swift,AppFlowView,button 'Dismiss',no,unmapped,deferred
 auth.back,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,text '‹',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 auth.back,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,text 'Back to Welcome',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion

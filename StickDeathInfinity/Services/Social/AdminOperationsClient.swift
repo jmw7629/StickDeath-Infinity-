@@ -752,3 +752,118 @@ extension AdminOperationsClient {
 }
 struct AdminDiagnosticsRequest: Encodable, Equatable { let action: String; let days: Int }
 struct AdminDiagnosticsCounter: Identifiable, Equatable { var id: String { counter }; let counter: String; let total: Int }
+
+// MARK: - Private support triage (support-requests.sql)
+enum AdminSupportStatus: String, Codable, CaseIterable, Identifiable {
+    case open, inProgress = "in_progress", waitingOnMember = "waiting_on_member", resolved, withdrawn
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .open: return "Received"
+        case .inProgress: return "In progress"
+        case .waitingOnMember: return "Waiting on member"
+        case .resolved: return "Resolved"
+        case .withdrawn: return "Withdrawn"
+        }
+    }
+    static var editable: [Self] { allCases.filter { $0 != .withdrawn } }
+}
+
+/// Content remains in this view's memory only. No attachment, project, reply to
+/// a member or email delivery is part of the support RPC.
+struct AdminSupportItem: Decodable, Identifiable, Equatable {
+    let id: UUID
+    let user_id: UUID
+    let receipt: String
+    let category: String
+    let platform: String
+    let app_version: String
+    let subject: String
+    let body: String
+    let status: AdminSupportStatus
+    let admin_note: String
+    let revision: Int64
+    let created_at: Date
+    let updated_at: Date
+    var canUpdate: Bool { status != .withdrawn }
+
+    func validated() throws -> Self {
+        guard receipt.utf8.count == 14, receipt.range(of: #"^SDI-[A-Z0-9]{10}$"#, options: .regularExpression) != nil,
+              ["account", "billing", "studio", "publishing", "rights", "safety", "bug", "other"].contains(category),
+              ["ios", "android", "web", "other"].contains(platform), app_version.unicodeScalars.count <= 50,
+              (1...120).contains(subject.unicodeScalars.count), (1...2000).contains(body.unicodeScalars.count),
+              admin_note.unicodeScalars.count <= 2000, revision > 0, revision < Int64.max,
+              created_at.timeIntervalSinceReferenceDate.isFinite, updated_at.timeIntervalSinceReferenceDate.isFinite else {
+            throw CommunityError.invalidResponse("Support request unavailable. Refresh the queue.")
+        }
+        return self
+    }
+}
+
+struct AdminSupportPage: Equatable {
+    let items: [AdminSupportItem]
+    let hasMore: Bool
+    let page: Int
+}
+/// No token is retained: this binds a queue result/confirmation to the visible
+/// account and view generation, and is invalid on sign-out or scene departure.
+struct AdminSupportContext: Equatable {
+    let accountID: String
+    let generation: UUID
+    func admits(accountID current: String?, authenticated: Bool, active: Bool, generation currentGeneration: UUID) -> Bool {
+        authenticated && active && !accountID.isEmpty && current == accountID && generation == currentGeneration
+    }
+}
+struct AdminSupportActionRequest: Encodable, Equatable, Sendable {
+    let action: String
+    var request: UUID? = nil
+    var status: String? = nil
+    var note: String? = nil
+    var page: Int? = nil
+    var revision: Int64? = nil
+}
+struct AdminSupportResponse: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let status: String?
+    let requests: [AdminSupportItem]?
+    let has_more: Bool?
+    let revision: Int64?
+}
+
+extension AdminOperationsClient {
+    /// The server gates both operations with the users capability, active admin
+    /// membership and MFA. Tab visibility never substitutes for this gate.
+    func supportQueue(status: AdminSupportStatus? = nil, page: Int = 0) async throws -> AdminSupportPage {
+        guard (0...199).contains(page) else { throw CommunityError.invalidResponse("Support page out of range.") }
+        let response = try await gateway.call("sdi_support_action",
+            params: AdminSupportActionRequest(action: "list", status: status?.rawValue, page: page),
+            as: AdminSupportResponse.self)
+        guard let items = response.requests, items.count <= 50, let hasMore = response.has_more,
+              !hasMore || items.count == 50, Set(items.map(\.id)).count == items.count else {
+            throw CommunityError.invalidResponse("Support queue unavailable. Refresh access and verify MFA.")
+        }
+        return AdminSupportPage(items: try items.map { try $0.validated() }, hasMore: hasMore, page: page)
+    }
+
+    static func supportNoteIsValid(_ note: String) -> Bool {
+        (1...2000).contains(note.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars.count)
+    }
+
+    /// The UUID and expected revision belong to the exact selected row, never a
+    /// queue index. A missing, stale or ambiguous receipt is never a local success.
+    @discardableResult
+    func updateSupport(_ item: AdminSupportItem, to status: AdminSupportStatus, note: String) async throws -> Int64 {
+        _ = try item.validated()
+        let text = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard item.canUpdate, AdminSupportStatus.editable.contains(status), Self.supportNoteIsValid(text) else {
+            throw CommunityError.server(message: "Choose a current request, editable status and private note of up to 2000 characters.", code: nil)
+        }
+        let response = try await gateway.call("sdi_support_action", params: AdminSupportActionRequest(action: "update_status",
+            request: item.id, status: status.rawValue, note: text, revision: item.revision), as: AdminSupportResponse.self)
+        guard response.status == "confirmed", response.revision == item.revision + 1 else {
+            throw CommunityError.invalidResponse("The support change was not confirmed at the expected revision. Refresh before retrying.")
+        }
+        return item.revision + 1
+    }
+}

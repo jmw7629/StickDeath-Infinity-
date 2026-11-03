@@ -1,5 +1,179 @@
 import SwiftUI
 
+// MARK: - Private support triage
+@MainActor
+struct AdminSupportQueueContent: View {
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var queue: AdminSupportPage?
+    @State private var loadedAccount: String?
+    @State private var displayAccount: String?
+    @State private var statusFilter = ""
+    @State private var selectedID: UUID?
+    @State private var nextStatus = AdminSupportStatus.inProgress
+    @State private var note = ""
+    @State private var pending: Decision?
+    @State private var generation = UUID()
+    @State private var busy = false
+    @State private var error: String?
+    @State private var notice: String?
+
+    private struct Decision {
+        let item: AdminSupportItem
+        let status: AdminSupportStatus
+        let note: String
+        let context: AdminSupportContext
+    }
+    private var active: Bool { auth.isAuthenticated && auth.userId != nil && phase == .active }
+    private var visibleQueue: AdminSupportPage? { active && loadedAccount == auth.userId ? queue : nil }
+    private var selected: AdminSupportItem? { visibleQueue?.items.first { $0.id == selectedID } }
+    private func current(_ context: AdminSupportContext) -> Bool {
+        !Task.isCancelled && context.admits(accountID: auth.userId, authenticated: auth.isAuthenticated,
+            active: phase == .active, generation: generation)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Support queue").font(.specialElite(22))
+            Text("Private customer-service requests. Status changes and notes are audited. Notes stay private to authorized administrators; this does not send a reply or email.").font(.caption)
+            Text("The server requires the Users capability and an active MFA session.").font(.caption2).foregroundStyle(.secondary)
+            Picker("Request status", selection: $statusFilter) {
+                Text("All requests").tag("")
+                ForEach(AdminSupportStatus.allCases) { Text($0.title).tag($0.rawValue) }
+            }.disabled(busy || !active).accessibilityIdentifier("admin.support.filter")
+            Button("Refresh queue") { Task { await load(page: 0) } }
+                .disabled(busy || !active).accessibilityIdentifier("admin.support.refresh")
+            if busy { ProgressView().accessibilityLabel("Loading support queue") }
+            if !active { Text("Sign in and verify MFA to work the support queue.").font(.caption) }
+            if active, displayAccount == auth.userId, let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.support.error") }
+            if active, displayAccount == auth.userId, let notice { Text(notice).font(.caption).accessibilityIdentifier("admin.support.notice") }
+            if let queue = visibleQueue {
+                Text("Page \(queue.page + 1) · \(queue.items.count) requests").font(.specialElite(16))
+                if queue.items.isEmpty { Text("No requests match this status on this page.").font(.caption) }
+                ForEach(queue.items) { item in
+                    Button { select(item) } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.subject).font(.specialElite(15)).multilineTextAlignment(.leading)
+                            Text("\(item.receipt) · \(item.status.title)").font(.caption)
+                            Text("\(item.category) · \(item.platform) · \(item.created_at.formatted())").font(.caption2)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                            .background(selectedID == item.id ? Color.red.opacity(0.15) : Color.sdSurface)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }.buttonStyle(.plain).disabled(busy)
+                        .accessibilityIdentifier("admin.support.request.\(item.id.uuidString)")
+                        .accessibilityAddTraits(selectedID == item.id ? [.isSelected] : [])
+                }
+                HStack {
+                    if queue.page > 0 { Button("Previous page") { Task { await load(page: queue.page - 1) } } }
+                    if queue.hasMore, queue.page < 199 { Button("Next page") { Task { await load(page: queue.page + 1) } } }
+                }.disabled(busy).accessibilityIdentifier("admin.support.pagination")
+                if queue.hasMore, queue.page == 199 {
+                    Text("The queue page limit is reached. Narrow the status filter or refresh for current requests.").font(.caption)
+                }
+                if let item = selected { detail(item) }
+            }
+        }
+        .confirmationDialog("Confirm private support status change", isPresented: Binding(
+            get: { pending.map { current($0.context) && selected == $0.item } ?? false }, set: { if !$0 { pending = nil } }), titleVisibility: .visible, presenting: pending) { decision in
+                Button("Confirm status change") {
+                    pending = nil
+                    Task { await update(decision) }
+                }
+                Button("Cancel", role: .cancel) { pending = nil }
+            } message: { decision in
+                Text("\(decision.item.receipt) · revision \(decision.item.revision)\n\(decision.item.status.title) → \(decision.status.title)\nPrivate note: \(decision.note)\nNo reply or email is sent.")
+            }
+        .onChange(of: statusFilter) { _, _ in clear(); Task { await load(page: 0) } }
+        .onChange(of: auth.userId) { _, _ in clear() }
+        .onChange(of: auth.isAuthenticated) { _, _ in clear() }
+        .onChange(of: phase) { _, newPhase in if newPhase != .active { clear() } }
+        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
+            clear(); if active { await load(page: 0) }
+        }
+        .onDisappear { clear() }
+    }
+
+    @ViewBuilder private func detail(_ item: AdminSupportItem) -> some View {
+        Divider()
+        VStack(alignment: .leading, spacing: 8) {
+            Text(item.subject).font(.specialElite(18))
+            Text("Receipt: \(item.receipt) · revision \(item.revision)").font(.caption)
+            Text("Account: \(item.user_id.uuidString)").font(.caption2)
+            Text("\(item.category) · \(item.platform)\(item.app_version.isEmpty ? "" : " · version " + item.app_version)").font(.caption)
+            Text("Received \(item.created_at.formatted()) · updated \(item.updated_at.formatted())").font(.caption2)
+            Text(item.body).font(.body).textSelection(.enabled).accessibilityIdentifier("admin.support.body")
+            Text("Status: \(item.status.title)").font(.caption)
+            if !item.admin_note.isEmpty {
+                Text("Current private note").font(.specialElite(14))
+                Text(item.admin_note).font(.caption).textSelection(.enabled)
+            }
+            if item.canUpdate {
+                Picker("New status", selection: $nextStatus) {
+                    ForEach(AdminSupportStatus.editable) { Text($0.title).tag($0) }
+                }.accessibilityIdentifier("admin.support.status")
+                TextField("Required private note (up to 2000 characters)", text: $note, axis: .vertical)
+                    .lineLimit(3...8).textFieldStyle(.roundedBorder).accessibilityIdentifier("admin.support.note")
+                Button("Review status change") { prepare(item) }
+                    .disabled(busy || !AdminOperationsClient.supportNoteIsValid(note))
+                    .accessibilityIdentifier("admin.support.review")
+            } else {
+                Text("This request was withdrawn by its member and is read-only.").font(.caption)
+                    .accessibilityIdentifier("admin.support.withdrawn")
+            }
+        }.disabled(busy)
+    }
+
+    private func clearSelection() { selectedID = nil; note = ""; pending = nil; nextStatus = .inProgress }
+    private func clear() {
+        generation = UUID(); busy = false; queue = nil; loadedAccount = nil; displayAccount = nil
+        clearSelection(); error = nil; notice = nil
+    }
+    private func select(_ item: AdminSupportItem) {
+        guard !busy, visibleQueue?.items.contains(item) == true else { return }
+        generation = UUID(); clearSelection(); selectedID = item.id
+        nextStatus = item.canUpdate ? item.status : .inProgress
+    }
+    private func prepare(_ item: AdminSupportItem) {
+        guard !busy, active, let account = auth.userId, selected == item, item.canUpdate,
+              AdminSupportStatus.editable.contains(nextStatus), AdminOperationsClient.supportNoteIsValid(note) else { return }
+        pending = Decision(item: item, status: nextStatus, note: note.trimmingCharacters(in: .whitespacesAndNewlines),
+            context: AdminSupportContext(accountID: account, generation: generation))
+    }
+    private func load(page: Int, keepingNotice: Bool = false) async {
+        guard !busy, active, let account = auth.userId else { return }
+        generation = UUID(); clearSelection(); queue = nil; loadedAccount = nil; displayAccount = account; error = nil
+        if !keepingNotice { notice = nil }
+        let context = AdminSupportContext(accountID: account, generation: generation)
+        let filter = statusFilter.isEmpty ? nil : AdminSupportStatus(rawValue: statusFilter)
+        busy = true
+        defer { if current(context) { busy = false } }
+        do {
+            let value = try await CommunityServices.admin.supportQueue(status: filter, page: page)
+            guard current(context) else { return }
+            queue = value; loadedAccount = account
+        } catch {
+            guard current(context) else { return }
+            self.error = CommunityServices.admin.noteRefusal(error).errorDescription
+        }
+    }
+    private func update(_ decision: Decision) async {
+        guard !busy, current(decision.context), selected == decision.item else { return }
+        busy = true; error = nil; notice = nil
+        defer { if current(decision.context) { busy = false } }
+        do {
+            let revision = try await CommunityServices.admin.updateSupport(decision.item, to: decision.status, note: decision.note)
+            guard current(decision.context), selected == decision.item else { return }
+            notice = "\(decision.item.receipt): \(decision.status.title), revision \(revision), confirmed by the server."
+            busy = false
+            await load(page: 0, keepingNotice: true)
+        } catch {
+            guard current(decision.context) else { return }
+            queue = nil; loadedAccount = nil; clearSelection()
+            self.error = CommunityServices.admin.noteRefusal(error).errorDescription
+        }
+    }
+}
+
 // MARK: - Backups, releases and provider configuration (#257, #248)
 /// Read-only operations status from `sdi_admin_operations` (backups, restore
 /// drills, releases, rollbacks, retention) and presence-only provider
