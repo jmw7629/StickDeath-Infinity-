@@ -32,6 +32,52 @@ final class FakeTransport: CommunityTransport {
     }
 }
 
+/// A held real CommunityTransport response, used through production RoomsClient
+/// and public coordinator entrypoints. It contains no session/sync implementation.
+/// Protocol calls may run off the main actor; the held response is lock protected.
+private final class HeldRoomTransport: CommunityTransport, @unchecked Sendable {
+    let hasSession = true
+    private let lock = NSLock()
+    private var callCount = 0
+    private var reply: CheckedContinuation<CommunityReply, Error>?
+    private var requested = false
+    var calls: Int {
+        lock.lock(); defer { lock.unlock() }
+        return callCount
+    }
+    private var isHeld: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return reply != nil
+    }
+    private func beginRequest() throws {
+        lock.lock(); defer { lock.unlock() }
+        callCount += 1
+        guard !requested else { throw Failure(description: "Stale synchronise requested another RPC") }
+        requested = true
+    }
+    func rpc<P: Encodable & Sendable>(_ name: String, params: P) async throws -> CommunityReply {
+        try beginRequest()
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.lock(); reply = continuation; lock.unlock()
+        }
+    }
+    func rows(_ table: String, select: String, filters: [CommunityRowFilter], limit: Int) async throws -> CommunityReply {
+        throw Failure(description: "Unexpected held transport row request")
+    }
+    func waitUntilHeld() async throws {
+        for _ in 0..<100 { if isHeld { return }; await Task.yield() }
+        throw Failure(description: "Production RoomsClient RPC did not suspend")
+    }
+    func release(_ result: Result<String, Error>) {
+        lock.lock(); let continuation = reply; reply = nil; lock.unlock()
+        switch result {
+        case .success(let json):
+            continuation?.resume(returning: CommunityReply(data: Data(json.utf8), serverDate: nil, sentAt: Date(), receivedAt: Date()))
+        case .failure(let error): continuation?.resume(throwing: error)
+        }
+    }
+}
+
 private let room = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
 private let owner = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
 private let member = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
@@ -370,6 +416,152 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
             catch RoomAssetTransfer.TransferError.refused {}
             do { _ = try RoomAssetInbox.save(Data("x".utf8), asset: listed[0], room: room, base: base); throw Failure(description: "saved unverified data") }
             catch RoomAssetTransfer.TransferError.corrupt {}
+        }
+
+        await test("late room teardown preserves a replacement room and another account's handoff") {
+            let coordinator = RoomSessionCoordinator(client: nil)
+            let otherRoom = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: owner)
+            let originalID = coordinator.sessionID!
+            coordinator.handOffToStudio(room: room, roomTitle: "Original room", projectID: project)
+            coordinator.begin(room: otherRoom, head: 7, projectID: project, canEdit: true, account: owner)
+            coordinator.handOffToStudio(room: otherRoom, roomTitle: "Replacement room", projectID: project)
+            try require(coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(2)])), "real replacement edit queued")
+            let replacement = coordinator.session
+            let replacementSync = coordinator.sync
+            let replacementHandoff = coordinator.handoff
+            try require(!coordinator.end(room: room, account: owner, sessionID: originalID, reason: "stale leave"), "old room teardown refused")
+            try require(coordinator.session == replacement && coordinator.sync === replacementSync
+                && coordinator.handoff == replacementHandoff && coordinator.pendingLocalCount == 1
+                && coordinator.endReason == nil, "replacement room, queue and handoff stay intact")
+
+            coordinator.begin(room: room, head: 3, projectID: project, canEdit: false, account: member)
+            coordinator.handOffToStudio(room: room, roomTitle: "New account", projectID: project)
+            let accountSync = coordinator.sync
+            try require(!coordinator.end(room: room, account: owner, sessionID: originalID, reason: "stale account"), "same room under a different account is preserved")
+            try require(coordinator.session?.account == member && coordinator.sync === accountSync
+                && coordinator.isHandedOff(room: room) && coordinator.endReason == nil, "new account's session was not cleared")
+            let currentID = coordinator.sessionID!
+            try require(coordinator.end(room: room, account: member, sessionID: currentID, reason: "Current member left."),
+                "matching confirmed leave ends its own session")
+            try require(coordinator.session == nil && coordinator.sync == nil && coordinator.handoff == nil
+                && coordinator.endReason == "Current member left.", "matching teardown uses canonical cleanup")
+            try require(!coordinator.end(room: room, account: member, sessionID: currentID, reason: "late duplicate")
+                && coordinator.endReason == "Current member left.", "duplicate late result cannot overwrite the outcome")
+        }
+
+        await test("a same-room same-account rejoin rejects the previous lifecycle's delayed leave") {
+            let coordinator = RoomSessionCoordinator(client: nil)
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: owner)
+            let departedID = coordinator.sessionID!
+            var release: CheckedContinuation<Void, Never>?
+            let lateLeave = Task { @MainActor in
+                await withCheckedContinuation { continuation in release = continuation }
+                return coordinator.end(room: room, account: owner, sessionID: departedID, reason: "old leave finished")
+            }
+            for _ in 0..<100 { if release != nil { break }; await Task.yield() }
+            try require(release != nil, "old leave is actually suspended before replacing the session")
+            coordinator.end()
+            coordinator.begin(room: room, head: 4, projectID: project, canEdit: true, account: owner)
+            let rejoinedID = coordinator.sessionID!
+            try require(rejoinedID != departedID, "same account and room receive a fresh lifetime after rejoin")
+            coordinator.handOffToStudio(room: room, roomTitle: "Rejoined", projectID: project)
+            try require(coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(5)])), "real rejoined edit queued")
+            let rejoinedSync = coordinator.sync
+            release?.resume()
+            try require(!(await lateLeave.value), "held old same-room completion refused after rejoin")
+            try require(coordinator.sessionID == rejoinedID && coordinator.sync === rejoinedSync
+                && coordinator.pendingLocalCount == 1 && coordinator.isHandedOff(room: room)
+                && coordinator.endReason == nil, "rejoined live queue and handoff preserved")
+            coordinator.begin(room: room, head: 4, projectID: project, canEdit: false, account: owner)
+            try require(coordinator.sessionID == rejoinedID && coordinator.isHandedOff(room: room),
+                "ordinary permission refresh keeps the same lifecycle")
+            coordinator.begin(room: room, head: 4, projectID: project, canEdit: false, account: member)
+            try require(coordinator.sessionID != rejoinedID && coordinator.handoff == nil,
+                "another account cannot inherit the old account's Studio handoff")
+        }
+
+        await test("held catchUp drain and synchronise responses cannot mutate a same-account same-room replacement") {
+            for entry in ["catchUp", "drain", "synchronise"] {
+                for replyKind in ["accessEnded", "accepted", "transportError"] {
+                    let transport = HeldRoomTransport()
+                    let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+                    coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: owner)
+                    let departedID = coordinator.sessionID!
+                    if entry == "drain" { _ = coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(1)])) }
+                    let departedSync = coordinator.sync!
+                    var applied: [UUID] = []
+                    coordinator.applyRemote = { value in applied.append(value.op_id); return true }
+                    let held = Task { @MainActor in
+                        switch entry {
+                        case "catchUp": _ = await coordinator.catchUp()
+                        case "drain": _ = await coordinator.drain()
+                        default: _ = await coordinator.synchronise()
+                        }
+                    }
+                    try await transport.waitUntilHeld()
+                    coordinator.end()
+                    coordinator.begin(room: room, head: 20, projectID: project, canEdit: true, account: owner)
+                    let replacementID = coordinator.sessionID!
+                    let replacementSync = coordinator.sync!
+                    coordinator.handOffToStudio(room: room, roomTitle: "Rejoined", projectID: project)
+                    _ = coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(21)]))
+                    let context = "\(entry)/\(replyKind)"
+                    try require(replacementID != departedID && replacementSync !== departedSync, context + ": actual new lifetime")
+                    let response: Result<String, Error>
+                    switch replyKind {
+                    case "accessEnded": response = .success(#"{"error":"Room is unavailable."}"#)
+                    case "accepted":
+                        response = .success(entry == "drain" ? #"{"status":"applied","revision":1}"#
+                            : #"{"commands":[\#(record(1))],"head":1}"#)
+                    default: response = .failure(CommunityError.transport("Old room offline"))
+                    }
+                    transport.release(response)
+                    await held.value
+                    try require(coordinator.sessionID == replacementID && coordinator.sync === replacementSync
+                        && coordinator.session?.account == owner && coordinator.isHandedOff(room: room),
+                        context + ": replacement session/handoff preserved")
+                    try require(coordinator.head == 20 && coordinator.pendingLocalCount == 1
+                        && coordinator.pendingRemoteCount == 0 && coordinator.appliedRemoteCount == 0
+                        && coordinator.publishedLocalCount == 1 && coordinator.endReason == nil
+                        && coordinator.lastStopReason == nil && applied.isEmpty,
+                        context + ": no old queue, editor, counter, error or cleanup commit")
+                    try require(transport.calls == 1, context + ": old synchronise did not drain replacement")
+                    try require(!departedSync.accessEnded && departedSync.head == 0
+                        && departedSync.pending.count == (entry == "drain" ? 1 : 0)
+                        && departedSync.inbox.isEmpty, context + ": detached old queue not mutated")
+                }
+            }
+        }
+
+        await test("cancelled held synchronisation does not apply replies or overwrite current queue status") {
+            for entry in ["catchUp", "drain", "synchronise"] {
+                let transport = HeldRoomTransport()
+                let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+                coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: owner)
+                _ = coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(1)]))
+                let identity = coordinator.sessionID!
+                let sync = coordinator.sync!
+                var applied = 0
+                coordinator.applyRemote = { _ in applied += 1; return true }
+                let held = Task { @MainActor in
+                    switch entry {
+                    case "catchUp": _ = await coordinator.catchUp()
+                    case "drain": _ = await coordinator.drain()
+                    default: _ = await coordinator.synchronise()
+                    }
+                }
+                try await transport.waitUntilHeld()
+                held.cancel()
+                transport.release(entry == "drain" ? .failure(CommunityError.transport("Cancelled old append"))
+                    : .success(#"{"commands":[\#(record(1))],"head":1}"#))
+                await held.value
+                try require(coordinator.sessionID == identity && coordinator.sync === sync
+                    && coordinator.head == 0 && coordinator.pendingLocalCount == 1
+                    && coordinator.pendingRemoteCount == 0 && coordinator.lastStopReason == nil
+                    && coordinator.endReason == nil && applied == 0 && transport.calls == 1,
+                    entry + ": cancelled public pass left real current state intact")
+            }
         }
 
         await test("active-project handoff survives leaving Rooms for Studio and ends with the session") {

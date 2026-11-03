@@ -512,8 +512,12 @@ private final class NetworkTrap: URLProtocol {
             try await test("account and rooms guidance states current limits without inventing access") {
                 var calls = 0
                 let vm = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
+                let before = studio.document
+                let networkAttempts = NetworkTrap.count
                 for (question, expected) in [
-                    ("How do I delete my account?", ["Apple, Google, GitHub or Microsoft", "not available yet", "cannot delete"]),
+                    ("How do I delete my account?", ["Apple, Google, GitHub or Microsoft", "Profile → Settings", "Account deletion", "Delete account", "Request deletion", "server-side request", "seven-day cooling-off period", "cannot delete"]),
+                    ("How do I export my account data?", ["After signing in", "Your data", "Export my account data", "unavailable if the server is not configured", "displayed status or error", "Contact support"]),
+                    ("Cancel my account deletion now", ["While a request is pending", "Cancel deletion", "I cannot delete an account, request or cancel deletion", "from this conversation"]),
                     ("Can I sign in with Microsoft and keep guest projects?", ["separate guest scope", "does not merge"]),
                     ("How do room invites work?", ["revocable, expiring code", "never an account sign-in token", "no chat, direct messaging"]),
                     ("Can we chat or call inside a collaboration room?", ["have been removed", "Watch Together"]),
@@ -523,10 +527,16 @@ private final class NetworkTrap: URLProtocol {
                     try await idle(vm)
                     let answer = vm.messages.last!.content
                     try require(expected.allSatisfy { answer.contains($0) } && answer.contains("Guidance only"), "Account/rooms guidance missing fact: \(question)")
+                    try require(vm.status == .localGuide && vm.messages.last?.origin == .local,
+                        "Account/rooms guidance claimed a cloud result or executed action")
+                    try require(!answer.contains("In-app account deletion is not available yet") && !answer.contains("screen does not offer a delete button"),
+                        "Account guidance denied the implemented Profile controls")
                 }
+                try require(studio.document == before && NetworkTrap.count == networkAttempts,
+                    "Account/rooms guidance edited the project or attempted a network action")
                 try require(calls == 0 && SpatterAIViewModel.currentGuideVersion == "2026-10-13.1", "Guide used cloud or version was not bumped")
                 for fact in ["catalog v\(SpatterInstructionCatalog.version)", "selectionTranslate", "imagePlacement", "textCreate", "textUpdate", "pan L100–R100 and solo",
-                             "SHA-256", "In-app account deletion is not available yet", "revocable, expiring code",
+                             "SHA-256", "Under Account deletion, choose Delete account, then Request deletion", "revocable, expiring code",
                              "multiClauseBrief", "tween", "frameClipboard", "projectSettings", "brushStroke", "batch",
                              "USD 4.99 per month (Creator), USD 9.99 per month (Pro) and USD 19.99 per month (Unlimited)", "Preview plan", "Revert Spatter edit",
                              "areaSelection", "wandSelection", "libraryPicture", "projectExport"] {

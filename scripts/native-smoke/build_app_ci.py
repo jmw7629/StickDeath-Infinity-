@@ -11,6 +11,8 @@ import signal
 import subprocess
 import time
 
+from seed_diagnostics import result_projection, run_bounded, text_projection
+
 ROOT = Path(__file__).resolve().parents[2]
 if os.environ.get("GITHUB_ACTIONS") != "true":
     raise RuntimeError("This compile/capture helper is restricted to ephemeral CI")
@@ -128,12 +130,51 @@ def library_offline_preflight(info, environment):
     return {"status": "unconfigured", "checkedSettings": list(LIBRARY_OFFLINE_SETTINGS),
             "environmentChecked": True, "networkTrafficMeasured": False}
 
+capture_stage = "simulator-inventory"
+capture_steps = []
+
+def capture_command(stage, arguments, seconds):
+    """One bounded owned-device command; acknowledgement is never frame proof."""
+    global capture_stage
+    capture_stage = stage
+    started = time.monotonic()
+    # run_bounded inherits the process environment. Preserve this helper's
+    # selected Xcode and private scratch directory without changing that API.
+    command = ["/usr/bin/env", *(key + "=" + env[key] for key in ("DEVELOPER_DIR", "TMPDIR") if key in env),
+               *arguments]
+    result = run_bounded(command, started + seconds + 1, stdout_cap=16 * 1024,
+                         stderr_cap=16 * 1024, work_deadline=started + seconds)
+    capture_steps.append({"stage": stage, "timeoutSeconds": seconds,
+                          "result": result_projection(result)})
+    if result.spawn_error:
+        raise OSError("The capture command could not be started")
+    if result.timed_out:
+        raise subprocess.TimeoutExpired(arguments, seconds)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, arguments)
+    return result.stdout
+
+def capture_error(name, error):
+    # Retain only fixed stages, numeric results and irreversible projections in
+    # existing private artifact members. No argv, environment or raw log text.
+    detail = getattr(error, "stderr", None) or str(error)
+    raw = detail if isinstance(detail, bytes) else str(detail).encode()
+    report = {"scope": "private capture diagnostics; not app or display acceptance",
+              "stage": capture_stage, "reasonType": type(error).__name__,
+              "steps": capture_steps, "error": text_projection(raw[:16 * 1024])}
+    data = (json.dumps(report, indent=2) + "\n").encode()
+    if len(data) > 32 * 1024:
+        data = (json.dumps({"stage": capture_stage, "reasonType": type(error).__name__,
+                           "diagnosticByteBudgetExceeded": True}) + "\n").encode()
+    (OUT / name).write_bytes(data)
+
 capture = {"sourceCommit": receipt["sourceCommit"], "scope": "isolated native launch only; not Studio journey acceptance",
            "status": "unavailable"}
 owned = None
 try:
     previous = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "-j"], env=env))
     previous_ids = {d["udid"] for ds in previous["devices"].values() for d in ds}
+    capture_stage = "fresh-simulator-selection"
     created = subprocess.run(["python3", "scripts/native-smoke/select_simulator.py", "--device", "iphone"],
                              cwd=ROOT, env=env, text=True, capture_output=True, timeout=90, check=True)
     candidate = created.stdout.strip().splitlines()[-1]
@@ -149,18 +190,41 @@ try:
     owned = candidate
     (OUT / "fresh-simulator.json").write_bytes(marker_data)
     capture["simulatorUDID"] = owned
+    capture_stage = "owned-simulator-boot"
     subprocess.run(["xcrun", "simctl", "boot", owned], env=env, capture_output=True, timeout=30, check=True)
+    capture_stage = "owned-simulator-bootstatus"
     subprocess.run(["xcrun", "simctl", "bootstatus", owned, "-b"], env=env, capture_output=True, timeout=180, check=True)
+    # Experimental display activation after ca5 installed/launched successfully
+    # but its first screenshot timed out. Headless capture is supported; this is
+    # not a proven cause/fix. Never launch the default/recent simulator instead.
+    try:
+        capture_stage = "selected-sdk-simulator-path"
+        developer = env.get("DEVELOPER_DIR") or capture_command(
+            "selected-sdk-path", ["/usr/bin/xcode-select", "-p"], 10).decode().strip()
+        simulator = Path(developer) / "Applications/Simulator.app"
+        if not simulator.is_dir():
+            raise RuntimeError("The selected SDK has no Simulator application")
+        capture_command("owned-simulator-ui-activation", ["/usr/bin/open", "-a", str(simulator),
+                        "--args", "-CurrentDeviceUDID", owned], 30)
+        # One read-only IO acknowledgement; descriptor text is not interpreted as
+        # a rendered display. Only the original PNG captures count below.
+        capture_command("owned-display-io-enumeration", ["xcrun", "simctl", "io", owned, "enumerate"], 15)
+    except Exception as e:
+        # Optional setup must never disable the supported headless capture path.
+        # Retain its bounded failure only if a later actual capture also fails.
+        capture_steps.append({"stage": capture_stage, "optionalDisplaySetup": "unavailable",
+                              "reasonType": type(e).__name__, "continuedHeadlessCapture": True})
+    capture_stage = "owned-app-install"
     subprocess.run(["xcrun", "simctl", "install", owned, str(app)], env=env, capture_output=True, timeout=180, check=True)
     built_info = plistlib.loads((app / "Info.plist").read_bytes())
     bundle = built_info["CFBundleIdentifier"]
+    capture_stage = "owned-app-launch"
     subprocess.run(["xcrun", "simctl", "launch", owned, bundle], env=env, capture_output=True, timeout=30, check=True)
     time.sleep(0.8)
     for name, delay in [("launch-early.png", 0), ("launch-settled.png", 3)]:
         if delay:
             time.sleep(delay)
-        subprocess.run(["xcrun", "simctl", "io", owned, "screenshot", str(OUT / name)],
-                       env=env, capture_output=True, timeout=30, check=True)
+        capture_command(name, ["xcrun", "simctl", "io", owned, "screenshot", str(OUT / name)], 30)
     capture.update(status="captured", screenshots={n: sha(OUT / n) for n in ["launch-early.png", "launch-settled.png"]})
     # This optional second presentation uses the real remembered-guest route.
     # No document/media is seeded and no editor, project or panel is auto-opened.
@@ -170,31 +234,31 @@ try:
                "routeEvidence": "source-derived existing preferences; screenshot inspection required"}
     capture["library"] = library
     try:
+        capture_stage = "library-offline-preflight"
         library["offlineConfiguration"] = library_offline_preflight(built_info, env)
         if bundle != "com.willisbmb.StickDeathInfinity":
             raise RuntimeError("Unexpected native app identity")
+        capture_stage = "owned-library-terminate"
         subprocess.run(["xcrun", "simctl", "terminate", owned, bundle], env=env, capture_output=True, timeout=30, check=True)
+        capture_stage = "owned-library-launch"
         subprocess.run(["xcrun", "simctl", "launch", owned, bundle, *LIBRARY_ARGUMENTS],
                        env=env, capture_output=True, timeout=30, check=True)
         time.sleep(3)
         name = "projects-library.png"
-        subprocess.run(["xcrun", "simctl", "io", owned, "screenshot", str(OUT / name)],
-                       env=env, capture_output=True, timeout=30, check=True)
+        capture_command(name, ["xcrun", "simctl", "io", owned, "screenshot", str(OUT / name)], 30)
         library.update(status="captured", launchArguments=LIBRARY_ARGUMENTS,
                        screenshot={"file": name, "sha256": sha(OUT / name)})
     except Exception as e:
         # Keep both valid original launch captures and the passed build receipt.
         # A partial optional image never becomes a claimed library capture.
         library.update(status="unavailable", reasonType=type(e).__name__)
-        detail = getattr(e, "stderr", None) or str(e)
         try:
-            (OUT / "library-capture-error.txt").write_bytes(detail if isinstance(detail, bytes) else str(detail).encode())
+            capture_error("library-capture-error.txt", e)
         except OSError:
             pass  # An optional error log must not relabel the original captures.
 except Exception as e:
     capture.update(status="unavailable", reasonType=type(e).__name__)
-    detail = getattr(e, "stderr", None) or str(e)
-    (OUT / "capture-error.txt").write_bytes(detail if isinstance(detail, bytes) else str(detail).encode())
+    capture_error("capture-error.txt", e)
 finally:
     if owned:
         capture["cleanup"] = "Ephemeral CI teardown; no device erase or delete"

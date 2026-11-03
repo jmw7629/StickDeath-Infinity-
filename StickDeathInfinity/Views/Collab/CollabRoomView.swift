@@ -39,7 +39,7 @@ struct CollabRoomView: View {
                     if auth.isAuthenticated {
                         if let selected {
                             RoomDetailView(room: selected, onBack: {
-                                RoomSessionCoordinator.shared.end(); self.selected = nil; Task { await load() }
+                                self.selected = nil; Task { await load() }
                             },
                                            onLeft: { note in self.selected = nil; message = note; Task { await load() } })
                         } else {
@@ -133,10 +133,19 @@ struct CollabRoomView: View {
             guard !Task.isCancelled, revision == epoch, account == auth.userId else { return }
             rooms = result; failure = nil
             // Pending requests need rooms-v2; an older service answers with an error we report, not hide.
-            do { pending = try await CommunityServices.rooms.pendingRequests() }
-            catch { pending = []; if revision == epoch, case .server = CommunityGateway.normalize(error) { message = "Pending-request listing is not available from this service version." } }
+            do {
+                let requests = try await CommunityServices.rooms.pendingRequests()
+                guard !Task.isCancelled, phase == .active, revision == epoch, auth.isAuthenticated, account == auth.userId else { return }
+                pending = requests
+            } catch {
+                guard !Task.isCancelled, phase == .active, revision == epoch, auth.isAuthenticated, account == auth.userId else { return }
+                pending = []
+                if case .server = CommunityGateway.normalize(error) { message = "Pending-request listing is not available from this service version." }
+            }
         } catch {
-            if revision == epoch { rooms = []; pending = []; failure = CommunityGateway.normalize(error).errorDescription }
+            if !Task.isCancelled, phase == .active, revision == epoch, auth.isAuthenticated, account == auth.userId {
+                rooms = []; pending = []; failure = CommunityGateway.normalize(error).errorDescription
+            }
         }
     }
 }
@@ -275,6 +284,7 @@ private struct RoomDetailView: View {
     let onLeft: (String) -> Void
     @ObservedObject private var auth = AuthService.shared
     @ObservedObject private var studio = StudioViewModel.shared
+    @Environment(\.scenePhase) private var phase
     @State private var summary: RoomManageResponse?
     @State private var summaryProblem: String?
     @State private var members: [RoomMember] = []
@@ -287,6 +297,8 @@ private struct RoomDetailView: View {
     @State private var activity: [RoomCommandRecord] = []
     @State private var syncStatus = "Not synchronising."
     @State private var epoch = UUID()
+    @State private var activeAccount: UUID?
+    @State private var activeSessionID: UUID?
     private var owner: Bool { room.owner_id.uuidString.lowercased() == auth.userId?.lowercased() }
     private var account: UUID? { auth.userId.flatMap(UUID.init(uuidString:)) }
 
@@ -319,16 +331,22 @@ private struct RoomDetailView: View {
                     .accessibilityIdentifier(owner ? "rooms.room.close" : "rooms.room.leave")
             }
         }
-        .task(id: "\(room.id):\(auth.userId ?? "none")") {
-            epoch = UUID(); summary = nil; summaryProblem = nil; members = []; invitation = nil; activity = []; failure = nil; notice = nil
+        .task(id: "\(room.id):\(auth.userId ?? "none"):\(auth.isAuthenticated)") {
+            epoch = UUID(); activeAccount = auth.isAuthenticated ? account : nil; activeSessionID = nil
+            busy = false; summary = nil; summaryProblem = nil; members = []; invitation = nil; activity = []; failure = nil; notice = nil
+            syncStatus = "Not synchronising."
             await refresh()
             await pollActivity()
         }
         .onDisappear {
-            // Opening the shared project in Studio keeps synchronisation alive;
-            // any other exit ends it. The device project is never touched.
-            if !RoomSessionCoordinator.shared.isHandedOff(room: room.id) { RoomSessionCoordinator.shared.end() }
-            epoch = UUID()
+            // An old view must not end another room/account's replacement
+            // session. A deliberate Studio handoff keeps its session alive.
+            let departedAccount = activeAccount
+            let departedSessionID = activeSessionID
+            epoch = UUID(); activeAccount = nil; activeSessionID = nil; busy = false
+            if let departedAccount, let departedSessionID, !RoomSessionCoordinator.shared.isHandedOff(room: room.id) {
+                RoomSessionCoordinator.shared.end(room: room.id, account: departedAccount, sessionID: departedSessionID)
+            }
         }
         .confirmationDialog(owner ? "Close this room for everyone?" : "Leave this room?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button(owner ? "Close room" : "Leave room", role: .destructive) { Task { await closeOrLeave() } }
@@ -487,82 +505,125 @@ private struct RoomDetailView: View {
         }
     }
 
+    /// Recheck the live account as well as the view epoch: auth can change
+    /// before SwiftUI restarts its identity task. Cancellation never commits UI.
+    @MainActor private func isCurrent(_ revision: UUID, account expected: UUID) -> Bool {
+        !Task.isCancelled && revision == epoch && activeAccount == expected
+            && phase == .active && auth.isAuthenticated && account == expected
+    }
+
     @MainActor private func refresh() async {
-        guard auth.isAuthenticated else { return }
+        guard !Task.isCancelled, phase == .active, let account, auth.isAuthenticated, activeAccount == account else { return }
         let revision = epoch
-        busy = true; defer { if revision == epoch { busy = false } }
+        let sessionID = RoomSessionCoordinator.shared.sessionID
+        busy = true; defer { if isCurrent(revision, account: account) { busy = false } }
         do {
             let rows = try await CommunityServices.rooms.members(of: room.id)
-            guard !Task.isCancelled, revision == epoch else { return }
+            guard isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID else { return }
             members = rows; failure = nil
-        } catch { if revision == epoch { members = []; failure = CommunityGateway.normalize(error).errorDescription } }
+        } catch {
+            guard isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID else { return }
+            members = []; failure = CommunityGateway.normalize(error).errorDescription
+        }
+        guard isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID else { return }
         do {
             let value = try await CommunityServices.rooms.summary(of: room.id)
-            guard !Task.isCancelled, revision == epoch else { return }
+            guard isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID else { return }
             summary = value; summaryProblem = nil
-            if let account {
-                RoomSessionCoordinator.shared.attachClient(CommunityServices.rooms)
-                RoomSessionCoordinator.shared.begin(room: room.id, head: value.command_revision ?? 0,
-                    projectID: RoomProjectShare.projectID(from: value.project_ref), canEdit: value.can_edit ?? false, account: account)
-            }
+            RoomSessionCoordinator.shared.attachClient(CommunityServices.rooms)
+            RoomSessionCoordinator.shared.begin(room: room.id, head: value.command_revision ?? 0,
+                projectID: RoomProjectShare.projectID(from: value.project_ref), canEdit: value.can_edit ?? false, account: account)
+            activeSessionID = RoomSessionCoordinator.shared.sessionID
         } catch {
-            guard revision == epoch else { return }
+            guard isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID else { return }
             summary = nil
             summaryProblem = "Project sharing details are unavailable from this service version. Membership still works; no project is shared."
         }
     }
     @MainActor private func pollActivity() async {
-        guard auth.isAuthenticated, summary != nil else { return }
+        guard !Task.isCancelled, phase == .active, let account, auth.isAuthenticated, activeAccount == account, summary != nil else { return }
         let revision = epoch
+        let sessionID = RoomSessionCoordinator.shared.sessionID
         do {
             let response = try await CommunityServices.rooms.commands(RoomCommandRequest(action: "since", room: room.id, after: 0, page_size: 200))
-            guard !Task.isCancelled, revision == epoch else { return }
+            guard isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID else { return }
             if let problem = response.error, !problem.isEmpty {
                 if problem.contains("unavailable") {
-                RoomSessionCoordinator.shared.end(reason: "Room access ended. Your device copy of the project is unchanged.")
-                onLeft("Room access ended. Your device copy of the project is unchanged; nothing was deleted.")
-            }
-                else { syncStatus = problem }
+                    if let sessionID {
+                        RoomSessionCoordinator.shared.end(room: room.id, account: account, sessionID: sessionID,
+                            reason: "Room access ended. Your device copy of the project is unchanged.")
+                    }
+                    onLeft("Room access ended. Your device copy of the project is unchanged; nothing was deleted.")
+                } else { syncStatus = problem }
                 return
             }
             activity = (response.commands ?? []).sorted { $0.revision < $1.revision }
-            let outcome = await RoomSessionCoordinator.shared.catchUp()
-            guard revision == epoch else { return }
-            let pendingRemote = RoomSessionCoordinator.shared.pendingRemoteCount
-            let waitingFor = RoomSessionCoordinator.shared.isHandedOff(room: room.id) ? "to apply in Studio" : "until you open the shared project in Studio"
+            let coordinator = RoomSessionCoordinator.shared
+            guard coordinator.session?.room == room.id, coordinator.session?.account == account else { return }
+            let outcome = await coordinator.catchUp()
+            guard isCurrent(revision, account: account), coordinator.sessionID == sessionID,
+                  coordinator.session?.room == room.id, coordinator.session?.account == account else { return }
+            let pendingRemote = coordinator.pendingRemoteCount
+            let waitingFor = coordinator.isHandedOff(room: room.id) ? "to apply in Studio" : "until you open the shared project in Studio"
             syncStatus = "Server head revision \(response.head ?? 0). \(pendingRemote) remote edit\(pendingRemote == 1 ? "" : "s") waiting \(waitingFor). \(outcome == .accessEnded ? "Access ended." : "")"
-        } catch { if revision == epoch { syncStatus = CommunityGateway.normalize(error).errorDescription ?? "Edit stream unavailable." } }
+        } catch {
+            if isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID { syncStatus = CommunityGateway.normalize(error).errorDescription ?? "Edit stream unavailable." }
+        }
     }
     @MainActor private func act(_ operation: @MainActor () async throws -> Void) async {
-        guard !busy else { return }
-        let revision = epoch; busy = true; failure = nil; notice = nil
-        defer { if revision == epoch { busy = false } }
-        do { try await operation(); guard revision == epoch else { return }; busy = false; await refresh() }
-        catch { if revision == epoch { failure = CommunityGateway.normalize(error).errorDescription } }
+        await perform(operation) { _ in }
+    }
+    /// Keep server work separate from UI commits. An invite code or notice is
+    /// applied only after the originating room/account has been revalidated.
+    @MainActor private func perform<Value>(_ operation: @MainActor () async throws -> Value,
+                                          commit: @MainActor (Value) -> Void) async {
+        guard !Task.isCancelled, phase == .active, !busy, let account, auth.isAuthenticated, activeAccount == account else { return }
+        let revision = epoch
+        let sessionID = RoomSessionCoordinator.shared.sessionID
+        busy = true; failure = nil; notice = nil
+        defer { if isCurrent(revision, account: account) { busy = false } }
+        do {
+            let value = try await operation()
+            guard isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID else { return }
+            commit(value)
+            busy = false
+            await refresh()
+        } catch {
+            if isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID { failure = CommunityGateway.normalize(error).errorDescription }
+        }
     }
     @MainActor private func mint() async {
-        await act {
-            let code = try await CommunityServices.rooms.mintInvitation(room: room.id)
+        await perform({ try await CommunityServices.rooms.mintInvitation(room: room.id) }) { code in
             invitation = code; notice = "Invitation created. Pending requests from older codes were revoked."
         }
     }
     @MainActor private func revoke() async {
-        await act { try await CommunityServices.rooms.revokeInvitations(room: room.id); invitation = nil; notice = "Invitations and pending requests revoked." }
+        await perform({ try await CommunityServices.rooms.revokeInvitations(room: room.id) }) { _ in
+            invitation = nil; notice = "Invitations and pending requests revoked."
+        }
     }
     @MainActor private func closeOrLeave() async {
-        guard !busy else { return }
-        busy = true; defer { busy = false }
+        guard !Task.isCancelled, phase == .active, !busy, let account, auth.isAuthenticated, activeAccount == account else { return }
+        let revision = epoch
+        let sessionID = RoomSessionCoordinator.shared.sessionID
+        let wasOwner = owner
+        busy = true; defer { if isCurrent(revision, account: account) { busy = false } }
         do {
-            if owner { try await CommunityServices.rooms.close(room: room.id) } else { try await CommunityServices.rooms.leave(room: room.id) }
-            RoomSessionCoordinator.shared.end()
-            onLeft(owner ? "Room closed. Members lost access; no project was deleted." : "You left the room. Synchronisation stopped.")
-        } catch { failure = CommunityGateway.normalize(error).errorDescription }
+            if wasOwner { try await CommunityServices.rooms.close(room: room.id) }
+            else { try await CommunityServices.rooms.leave(room: room.id) }
+            guard isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID else { return }
+            if let sessionID { RoomSessionCoordinator.shared.end(room: room.id, account: account, sessionID: sessionID) }
+            onLeft(wasOwner ? "Room closed. Members lost access; no project was deleted." : "You left the room. Synchronisation stopped.")
+        } catch {
+            if isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID { failure = CommunityGateway.normalize(error).errorDescription }
+        }
     }
     /// Safe handoff: open the exact device project the owner shared, or the
     /// copy this device imported from the owner's handoff. Members without
     /// either are told to download it; nothing is invented.
     @MainActor private func openInStudio() async {
-        guard !busy, let summary, let ownerProjectID = RoomProjectShare.projectID(from: summary.project_ref) else {
+        guard !Task.isCancelled, phase == .active, !busy, let account, auth.isAuthenticated, activeAccount == account,
+              let summary, let ownerProjectID = RoomProjectShare.projectID(from: summary.project_ref) else {
             failure = "This room's project reference is not a device project."; return
         }
         guard !studio.isEditing else { failure = "Finish and save the project that is open in Studio first."; return }
@@ -574,8 +635,17 @@ private struct RoomDetailView: View {
             return
         }
         let projectID = metadata.id
-        busy = true; defer { busy = false }
-        if await studio.openProject(metadata) {
+        let revision = epoch
+        let sessionID = RoomSessionCoordinator.shared.sessionID
+        busy = true; defer { if isCurrent(revision, account: account) { busy = false } }
+        let opened = await studio.openProject(metadata)
+        guard isCurrent(revision, account: account), RoomSessionCoordinator.shared.sessionID == sessionID else { return }
+        if opened {
+            guard RoomSessionCoordinator.shared.session?.room == room.id,
+                  RoomSessionCoordinator.shared.session?.account == account else {
+                failure = "The room session ended. The opened device project is unchanged."
+                return
+            }
             RoomSessionCoordinator.shared.handOffToStudio(room: room.id, roomTitle: room.title, projectID: projectID)
             studio.startRoomSynchronisation()
             notice = "Opened \(metadata.title) in Studio. Edits are saved on this device and synchronised with this room while it stays open; overlapping edits wait for your decision. Return to Rooms to come back to this room."

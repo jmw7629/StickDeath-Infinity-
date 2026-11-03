@@ -90,7 +90,9 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   try require(governed.catalogueRevision == 1, "Legacy catalogue revision changed")
   let quarantine = StudioImageCatalogue.ReleasePolicy.Quarantine(assetID: selected.id, sha256: selected.sha256, reason: "Isolated test rights review")
   try policy.advance(revision: 2, quarantined: [quarantine])
-  try require(governed.images == catalogue.images && governed.availableImages.count == 206, "Policy mutated inventory or failed to hide asset")
+  let expectedQuarantinedIDs = Set(catalogue.images.map(\.id)).subtracting([selected.id])
+  try require(governed.images == catalogue.images && governed.availableImages.count == 242 &&
+              Set(governed.availableImages.map(\.id)) == expectedQuarantinedIDs, "Policy mutated inventory or failed to hide asset")
   try require(!governed.search("").contains(selected), "Quarantine search bypass")
   do { _ = try governed.checkedPNG(selected); throw TestFailure(message: "Quarantine bytes bypass") } catch StudioImageCatalogue.CatalogueError.quarantined { }
   do { _ = try governed.sourceURL(for: selected); throw TestFailure(message: "Quarantine URL bypass") } catch StudioImageCatalogue.CatalogueError.quarantined { }
@@ -106,7 +108,8 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   revisionManifest["catalogueRevision"] = 2
   try JSONSerialization.data(withJSONObject: revisionManifest).write(to: manifest)
   let revised = try StudioImageCatalogue(directory: copy, releasePolicy: policy)
-  try require(revised.catalogueRevision == 2 && revised.images == governed.images && revised.availableImages.count == 206, "New manifest overrode policy or IDs")
+  try require(revised.catalogueRevision == 2 && revised.images == governed.images && revised.availableImages.count == 242 &&
+              Set(revised.availableImages.map(\.id)) == expectedQuarantinedIDs, "New manifest overrode policy or IDs")
   revisionManifest["catalogueRevision"] = 0
   try JSONSerialization.data(withJSONObject: revisionManifest).write(to: manifest)
   do { _ = try StudioImageCatalogue(directory: copy); throw TestFailure(message: "Invalid revision accepted") } catch StudioImageCatalogue.CatalogueError.invalid { }
@@ -127,7 +130,9 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
     removed: [.init(assetID: dropped.id, sha256: dropped.sha256, reason: "Isolated test withdrawal")],
     metadata: [.init(assetID: corrected.id, sha256: corrected.sha256, title: "Revised test title", tags: ["revisedtesttag"], contentAdvisory: .cartoonWeapons)])
   try versioned.advance(to: revision2)
-  try require(versioned.currentRevision == 2 && live.images == catalogue.images && live.availableImages.count == 205, "Revision changed inventory or availability count")
+  let expectedWithdrawnIDs = Set(catalogue.images.map(\.id)).subtracting([held.id, dropped.id])
+  try require(versioned.currentRevision == 2 && live.images == catalogue.images && live.availableImages.count == 241 &&
+              Set(live.availableImages.map(\.id)) == expectedWithdrawnIDs, "Revision changed inventory or availability count")
   try require(live.removedImages == [dropped], "Removal not reported")
   guard let shown = live.availableImages.first(where: { $0.id == corrected.id }) else { throw TestFailure(message: "Corrected asset hidden") }
   try require(shown.title == "Revised test title" && shown.tags == ["revisedtesttag"] && shown.contentAdvisory == .cartoonWeapons

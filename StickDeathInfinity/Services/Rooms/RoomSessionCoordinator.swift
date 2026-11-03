@@ -34,6 +34,8 @@ final class RoomSessionCoordinator {
 
     private var client: RoomsClient?
     private(set) var session: Session?
+    /// Opaque lifetime of the current session; rejoining the same room creates a new identity.
+    private(set) var sessionID: UUID?
     private(set) var sync: RoomCommandSync?
     private(set) var handoff: Handoff?
     /// Why the last session ended, for a truthful notice. Device projects are
@@ -72,15 +74,24 @@ final class RoomSessionCoordinator {
             return
         }
         session = Session(room: room, projectID: projectID, canEdit: canEdit, account: account)
+        sessionID = UUID()
         sync = RoomCommandSync(room: room, head: head)
         endReason = nil
         resetCounters()
-        if let handoff, handoff.room != room { self.handoff = nil }
+        handoff = nil
     }
     func end(reason: String? = nil) {
-        session = nil; sync = nil; handoff = nil
+        session = nil; sessionID = nil; sync = nil; handoff = nil
         resetCounters()
         if let reason { endReason = reason }
+    }
+    /// Complete an action/teardown only for the session that originated it.
+    /// An old room view must not stop a newer room or another account's sync.
+    @discardableResult
+    func end(room: UUID, account: UUID, sessionID expectedID: UUID, reason: String? = nil) -> Bool {
+        guard sessionID == expectedID, session?.room == room, session?.account == account else { return false }
+        end(reason: reason)
+        return true
     }
     private func resetCounters() {
         blockedRemote = nil; skippedRemote = []; appliedRemoteCount = 0; publishedLocalCount = 0
@@ -196,20 +207,30 @@ final class RoomSessionCoordinator {
         return .init(level: .synced, label: "Room: in sync", detail: counts)
     }
 
+    /// Exact ownership of a synchronisation pass, including a same-room/account
+    /// rejoin. A stale or cancelled continuation must not mutate either queue.
+    private func owns(_ identity: UUID, sync expected: RoomCommandSync) -> Bool {
+        !Task.isCancelled && sessionID == identity && self.sync === expected && session != nil
+    }
+
     /// Send queued edits in order; stop at the first conflict so the editor
     /// applies the missing remote commands before retrying.
     func drain() async -> DrainOutcome {
-        guard let sync, let client, session != nil else { return .idle }
+        guard let sync, let client, let session, let identity = sessionID,
+              owns(identity, sync: sync) else { return .idle }
         if let held = sync.held { return .held(held.overlapping.count) }
         var sent = 0
         while let request = sync.nextAppend(), let opID = request.op_id {
+            guard owns(identity, sync: sync) else { return .idle }
             let response: RoomCommandResponse
             do { response = try await client.append(request) }
             catch {
+                guard owns(identity, sync: sync) else { return .idle }
                 let reason = CommunityGateway.normalize(error).errorDescription ?? "Synchronisation failed."
                 lastStopReason = reason
                 return .stopped(reason)
             }
+            guard owns(identity, sync: sync) else { return .idle }
             switch sync.handleAppend(response, for: opID) {
             case .applied, .duplicate: sent += 1
             case .rebased: sent += 1
@@ -217,35 +238,49 @@ final class RoomSessionCoordinator {
                 if let held = sync.held { return .held(held.overlapping.count) }
                 return .conflict(missing.count)
             case .refused(let message):
-                if sync.accessEnded { end(reason: "Room access ended. Your device copy of the project is unchanged.") }
-                else if sync.editingRevoked { endReason = "Editing permission was withdrawn. Your local edits stay on this device." }
-                if session != nil { lastStopReason = message }
+                if sync.accessEnded {
+                    end(room: session.room, account: session.account, sessionID: identity,
+                        reason: "Room access ended. Your device copy of the project is unchanged.")
+                } else if sync.editingRevoked {
+                    endReason = "Editing permission was withdrawn. Your local edits stay on this device."
+                }
+                if owns(identity, sync: sync) { lastStopReason = message }
                 return .stopped(message)
             }
         }
+        guard owns(identity, sync: sync) else { return .idle }
         lastStopReason = nil
         return sent == 0 ? .idle : .sent(sent)
     }
 
     /// Fetch newer commands and hand them to the editor hook in order.
     func catchUp() async -> RoomCommandSync.CatchUpOutcome {
-        guard let sync, let client, session != nil else { return .accessEnded }
+        guard let sync, let client, let session, let identity = sessionID,
+              owns(identity, sync: sync) else { return .accessEnded }
         let response: RoomCommandResponse
         do { response = try await client.commands(sync.catchUpRequest()) }
-        catch { return .upToDate }
+        catch {
+            guard owns(identity, sync: sync) else { return .upToDate }
+            return .upToDate
+        }
+        guard owns(identity, sync: sync) else { return .upToDate }
         let outcome = sync.handleCatchUp(response)
-        if sync.accessEnded { end(reason: "Room access ended. Your device copy of the project is unchanged."); return .accessEnded }
+        if sync.accessEnded {
+            end(room: session.room, account: session.account, sessionID: identity,
+                reason: "Room access ended. Your device copy of the project is unchanged.")
+            return .accessEnded
+        }
         applyQueued()
         return outcome
     }
     /// Hand queued remote commands to the editor hook, oldest first, stopping
     /// at the first one the editor cannot apply yet.
     func applyQueued() {
-        guard let sync else { return }
+        guard let sync, let identity = sessionID, owns(identity, sync: sync) else { return }
         while let record = sync.nextRemoteToApply() {
             guard let apply = applyRemote, apply(record) else { break }
-            // The hook may end the session (for example on a revoked project).
-            guard self.sync === sync else { return }
+            // The synchronous editor hook may end or replace the session.
+            guard owns(identity, sync: sync) else { return }
             sync.acknowledgeRemote(record)
             appliedRemoteCount += 1
             if blockedRemote?.opID == record.op_id { blockedRemote = nil }
@@ -254,10 +289,14 @@ final class RoomSessionCoordinator {
     /// One synchronisation pass: fetch and apply newer commands, then send
     /// queued local edits fenced on the resulting head.
     func synchronise() async -> (catchUp: RoomCommandSync.CatchUpOutcome, drain: DrainOutcome) {
+        guard let sync, let identity = sessionID, owns(identity, sync: sync) else { return (.accessEnded, .idle) }
         let received = await catchUp()
-        guard session != nil else { return (received, .idle) }
+        guard owns(identity, sync: sync) else { return (received, .idle) }
         // Remote edits that arrived with a conflict reply are applied first.
         applyQueued()
+        guard owns(identity, sync: sync) else { return (received, .idle) }
+        // drain fences its own continuations; return its truthful result even
+        // when a current access-ended reply deliberately ended this session.
         return (received, await drain())
     }
     var pendingRemoteCount: Int { sync?.inbox.count ?? 0 }
