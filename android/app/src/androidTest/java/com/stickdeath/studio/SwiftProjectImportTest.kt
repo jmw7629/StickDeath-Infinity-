@@ -1,8 +1,18 @@
 package com.stickdeath.studio
 
+import android.app.Application
+import androidx.core.content.FileProvider
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.junit.Assert.*
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
@@ -85,6 +95,99 @@ class SwiftProjectImportTest {
         // Only records freshly allocated by a test; never clear the user's library.
         listOf(".json", ".json.bak", ".json.new").forEach { suffix ->
             java.io.File(instrumentation.targetContext.filesDir, "studio-projects/$id$suffix").delete()
+        }
+    }
+    @Test fun testPendingRenderedExportKeepsItsProjectOpenUntilPickerReturns() = runBlocking {
+        val app = instrumentation.targetContext.applicationContext as Application
+        val store = ProjectStore(app)
+        val project = Document.create("Export boundary fixture", 640, 480, 12)
+        try {
+            store.save(project)
+            withContext(Dispatchers.Main) {
+                val models = ViewModelStore()
+                val vm = ViewModelProvider(models, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[StudioViewModel::class.java]
+                try {
+                    vm.open(project.id)
+                    withTimeout(10_000) { while (vm.busy) delay(10) }
+                    assertEquals(project, vm.document)
+
+                    vm.prepareExport(ExportKind.PNG)
+                    assertTrue(vm.exporting)
+                    vm.save(close = true)
+                    assertFalse(vm.closing)
+                    assertEquals(project.id, vm.document?.id)
+                    assertTrue(vm.message.contains("Finish or cancel"))
+                    withTimeout(10_000) { while (vm.exporting) delay(10) }
+
+                    val cancelled = requireNotNull(vm.exportArtifact)
+                    assertTrue(cancelled.file.length() > 0)
+                    val staleRequest = requireNotNull(vm.beginExportHandoff(cancelled))
+                    vm.cancelExport()
+                    assertNull(vm.exportHandoff)
+                    assertFalse(cancelled.file.exists())
+                    assertFalse(vm.offerExportHandoff(staleRequest))
+                    assertNull(vm.beginExportHandoff(cancelled))
+
+                    vm.prepareExport(ExportKind.PNG)
+                    withTimeout(10_000) { while (vm.exporting) delay(10) }
+                    val artifact = requireNotNull(vm.exportArtifact)
+                    assertTrue(artifact.file.length() > 0)
+                    assertNull(vm.beginExportHandoff(cancelled))
+                    val request = requireNotNull(vm.beginExportHandoff(artifact))
+                    assertTrue(vm.offerExportHandoff(request))
+                    assertFalse(vm.offerExportHandoff(request))
+                    vm.cancelExport()
+                    assertTrue(vm.message.contains("Cancel in Files"))
+                    vm.finishExport(staleRequest, null)
+                    vm.exportHandoffLaunchFailed(staleRequest, "Stale launch failure")
+                    vm.save(close = true)
+                    assertFalse(vm.closing)
+                    assertSame(request, vm.exportHandoff)
+                    assertSame(artifact, vm.exportArtifact)
+                    assertTrue(artifact.file.isFile)
+
+                    vm.finishExport(request, null)
+                    assertNull(vm.exportHandoff)
+                    assertNull(vm.exportArtifact)
+                    assertFalse(artifact.file.exists())
+
+                    vm.prepareExport(ExportKind.PNG)
+                    withTimeout(10_000) { while (vm.exporting) delay(10) }
+                    val evicted = requireNotNull(vm.exportArtifact)
+                    val evictedRequest = requireNotNull(vm.beginExportHandoff(evicted))
+                    assertTrue(vm.offerExportHandoff(evictedRequest))
+                    assertTrue(evicted.file.isFile && evicted.file.delete())
+                    val providerRoot = File(app.cacheDir, "studio-share").apply { check(isDirectory || mkdirs()) }
+                    val destination = File.createTempFile("export-boundary-", ".txt", providerRoot)
+                    try {
+                        val uri = FileProvider.getUriForFile(app, app.packageName + ".exports", destination)
+                        val original = "Existing destination bytes"
+                        destination.writeText(original.repeat(2))
+                        // The real provider accepts write-and-truncate for this owned fixture.
+                        requireNotNull(app.contentResolver.openOutputStream(uri, "wt")).use {
+                            it.write(original.toByteArray())
+                        }
+                        assertEquals(original, destination.readText())
+                        vm.finishExport(evictedRequest, uri)
+                        withTimeout(10_000) { while (vm.exporting) delay(10) }
+                        assertTrue(vm.message.contains("The prepared export is unavailable"))
+                        assertEquals(original, destination.readText())
+                        assertNull(vm.exportHandoff)
+                        assertNull(vm.exportArtifact)
+                    } finally {
+                        destination.delete()
+                    }
+
+                    vm.save(close = true)
+                    withTimeout(10_000) { while (vm.saving) delay(10) }
+                    assertNull(vm.document)
+                } finally {
+                    models.clear()
+                }
+            }
+            assertEquals(project, store.load(project.id))
+        } finally {
+            cleanup(project.id)
         }
     }
     /** Re-signs a portable root so only the JSON content differs from the fixture. */

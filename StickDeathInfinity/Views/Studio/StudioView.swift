@@ -209,6 +209,17 @@ struct StudioEditorWorkspace: View {
                 vm.activePanel = .none
             }
         }
+        .onChange(of: vm.showToolbar) { _, isVisible in
+            guard !isVisible else { return }
+            dragOrigin = nil
+            selectedToolFrame = nil
+            // Keep an unfinished text draft reachable when Show Tools restores the editor.
+            if vm.activePanel == .toolSettings, vm.textDraft == nil { vm.activePanel = .none }
+        }
+        .onChange(of: vm.activePanel) { _, panel in
+            // A canvas Text tap or accessibility action can request the popup.
+            if panel == .toolSettings && !vm.showToolbar { vm.showToolbar = true }
+        }
     }
 
     private func canvasStage(compactHeight: Bool) -> some View {
@@ -216,41 +227,50 @@ struct StudioEditorWorkspace: View {
             let top: CGFloat = vm.showToolbar ? 0 : min(44, geometry.size.height)
             let bounds = CGRect(x: 0, y: top, width: geometry.size.width, height: max(0, geometry.size.height - top))
             let placement = toolbar.placement(in: bounds, compactHeight: compactHeight)
-            let railFrame = dragOrigin.map { toolbar.draggingFrame(from: $0, translation: dragTranslation, in: bounds) } ?? placement.frame
-            let popupFrame = StudioToolbarLayout.settingsFrame(in: bounds, toolbar: placement,
-                                                               anchor: dragOrigin == nil ? selectedToolFrame : nil)
-            let canvasFrame = StudioToolbarLayout.canvasFrame(in: bounds, toolbar: placement)
+            let canvasFrame = vm.showToolbar ? StudioToolbarLayout.canvasFrame(in: bounds, toolbar: placement) : bounds
             ZStack(alignment: .topLeading) {
                 StudioCanvasView(vm: vm)
                     .frame(width: canvasFrame.width, height: canvasFrame.height)
                     .position(x: canvasFrame.midX, y: canvasFrame.midY)
 
-                StudioToolStrip(vm: vm, axis: placement.vertical ? .vertical : .horizontal,
-                    handleGesture: AnyGesture(DragGesture(minimumDistance: 5, coordinateSpace: .named("studio.toolbar.stage"))
-                        .updating($dragTranslation) { value, state, _ in state = value.translation }
-                        .onChanged { _ in if dragOrigin == nil { dragOrigin = placement.frame } }
-                        .onEnded { value in
-                            let origin = dragOrigin ?? placement.frame
-                            toolbar.finishDrag(release: value.location,
-                                proposedCenter: CGPoint(x: origin.midX + value.translation.width, y: origin.midY + value.translation.height),
-                                in: bounds)
+                if vm.showToolbar {
+                    let railFrame = dragOrigin.map { toolbar.draggingFrame(from: $0, translation: dragTranslation, in: bounds) } ?? placement.frame
+                    StudioToolStrip(vm: vm, axis: placement.vertical ? .vertical : .horizontal,
+                        handleGesture: AnyGesture(DragGesture(minimumDistance: 5, coordinateSpace: .named("studio.toolbar.stage"))
+                            .updating($dragTranslation) { value, state, _ in state = value.translation }
+                            .onChanged { _ in
+                                if vm.showToolbar && dragOrigin == nil { dragOrigin = placement.frame }
+                            }
+                            .onEnded { value in
+                                guard vm.showToolbar, let origin = dragOrigin else { return }
+                                toolbar.finishDrag(release: value.location,
+                                    proposedCenter: CGPoint(x: origin.midX + value.translation.width, y: origin.midY + value.translation.height),
+                                    in: bounds)
+                                dragOrigin = nil
+                            }),
+                        onDock: { dock in
+                            guard vm.showToolbar else { return }
+                            toolbar.choose(dock, in: bounds)
                             dragOrigin = nil
-                        }),
-                    onDock: { dock in toolbar.choose(dock, in: bounds); dragOrigin = nil })
-                    .frame(width: railFrame.width, height: railFrame.height)
-                    .position(x: railFrame.midX, y: railFrame.midY)
-                    .onPreferenceChange(StudioSelectedToolFrameKey.self) { frame in
-                        // The rail clips scrolled-out tools; only a button that still
-                        // overlaps the visible rail anchors the popup.
-                        selectedToolFrame = frame.flatMap { $0.intersects(railFrame) ? $0 : nil }
-                    }
+                        })
+                        .frame(width: railFrame.width, height: railFrame.height)
+                        .position(x: railFrame.midX, y: railFrame.midY)
+                        .onPreferenceChange(StudioSelectedToolFrameKey.self) { frame in
+                            guard vm.showToolbar else { return }
+                            // The rail clips scrolled-out tools; only a button that still
+                            // overlaps the visible rail anchors the popup.
+                            selectedToolFrame = frame.flatMap { $0.intersects(railFrame) ? $0 : nil }
+                        }
 
-                if vm.activePanel == .toolSettings && FloatingToolSettingsPanel.hasSettings(vm.selectedTool) {
-                    FloatingToolSettingsPanel(vm: vm,
-                        alignToBottom: !placement.vertical && popupFrame.maxY <= placement.frame.minY)
-                        .frame(width: popupFrame.width, height: popupFrame.height)
-                        .position(x: popupFrame.midX, y: popupFrame.midY)
-                        .transition(.opacity)
+                    if vm.activePanel == .toolSettings && FloatingToolSettingsPanel.hasSettings(vm.selectedTool) {
+                        let popupFrame = StudioToolbarLayout.settingsFrame(in: bounds, toolbar: placement,
+                                                                           anchor: dragOrigin == nil ? selectedToolFrame : nil)
+                        FloatingToolSettingsPanel(vm: vm,
+                            alignToBottom: !placement.vertical && popupFrame.maxY <= placement.frame.minY)
+                            .frame(width: popupFrame.width, height: popupFrame.height)
+                            .position(x: popupFrame.midX, y: popupFrame.midY)
+                            .transition(.opacity)
+                    }
                 }
             }
             .coordinateSpace(name: "studio.toolbar.stage")

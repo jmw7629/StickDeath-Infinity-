@@ -5,7 +5,7 @@ import java.util.UUID
 fun newID(): String = UUID.randomUUID().toString()
 data class Point(val x: Float, val y: Float)
 /** `SoftEraser` is Android-local v26 (feathered destination-out passes, see [SoftEraser]). */
-enum class Tool { Pencil, Eraser, SoftEraser, Line, Rectangle, Ellipse, Triangle, Diamond, Star, Arrow, Text, Image, Fill, Eyedropper, Lasso, Move, Hand;
+enum class Tool { Pencil, Eraser, SoftEraser, Line, Rectangle, Ellipse, Triangle, Diamond, Star, Arrow, Text, Image, Fill, Eyedropper, Lasso, Move, Hand, Zoom;
     val isClosedShape get() = this in listOf(Rectangle, Ellipse, Triangle, Diamond, Star, Arrow)
     val isShape get() = this == Line || isClosedShape
     val isEraser get() = this == Eraser || this == SoftEraser

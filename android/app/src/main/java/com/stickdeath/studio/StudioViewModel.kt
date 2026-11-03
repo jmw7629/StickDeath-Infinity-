@@ -879,7 +879,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     var color by mutableIntStateOf(0xffe52b38.toInt())
     var exporting by mutableStateOf(false); private set
     var exportArtifact by mutableStateOf<ExportArtifact?>(null); private set
-    var exportPickerRequested by mutableStateOf(false); private set
+    class ExportHandoff internal constructor(val artifact: ExportArtifact) {
+        val id = newID()
+    }
+    var exportHandoff by mutableStateOf<ExportHandoff?>(null); private set
+    private var exportHandoffOffered = false
+    private val hasPendingExport get() = exporting || exportArtifact != null || exportHandoff != null
     data class ExportProgress(val stage: String, val percent: Int? = null)
     // Exporters report from IO. StateFlow safely conflates updates without
     // launching one Main coroutine per video frame or output buffer.
@@ -890,7 +895,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     var exportTransparent by mutableStateOf(false)
     data class RenderManifest(val name: String, val text: String, val projectID: String, val revision: Long)
     /** The iOS-layout manifest of the most recent MP4/GIF render, offered as a separate file. */
-    var lastRenderManifest by mutableStateOf<RenderManifest?>(null); private set
+    private var renderManifest by mutableStateOf<RenderManifest?>(null)
+    val lastRenderManifest get() = renderManifest?.takeIf { it.projectID == document?.id }
     fun exportLastRenderManifest() {
         val manifest = lastRenderManifest ?: return
         prepareExport(ExportKind.MANIFEST, options = ExportOptions(manifestText = manifest.text, manifestName = manifest.name))
@@ -899,7 +905,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     val sdiExportBlockers: List<String> get() = document?.let { SwiftProjectExport.unsupportedReasons(it) } ?: emptyList()
     fun prepareExport(kind: ExportKind, share: Boolean = false, options: ExportOptions = ExportOptions(transparent = exportTransparent), targetPackages: List<String> = emptyList()) {
         val snapshot = document ?: return
-        if (exporting || exportArtifact != null || closing) return
+        if (hasPendingExport || closing) return
         if (kind == ExportKind.SEQUENCE && !requirePlan(planLimits.pngSequenceExport)) return
         // Free: MP4/GIF scaled to fit 720p (1280 px long edge) with the SDI watermark burned in.
         val limits = planLimits
@@ -929,34 +935,62 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 owned?.manifest?.let { text ->
-                    lastRenderManifest = RenderManifest(requireNotNull(owned).name.substringBeforeLast('.') + "-manifest.json", text, snapshot.id, snapshot.revision)
+                    renderManifest = RenderManifest(requireNotNull(owned).name.substringBeforeLast('.') + "-manifest.json", text, snapshot.id, snapshot.revision)
                 }
-                exportArtifact = owned; exportPickerRequested = false; delivered = true
+                exportArtifact = owned; delivered = true
                 message = if (share) "Choose an installed app to share this rendered file." else "Choose where to save the export."
             } catch (_: CancellationException) { message = "Export cancelled." }
             catch (e: Exception) { message = e.message ?: "Could not prepare export." }
             finally { if (!delivered) owned?.let { ShareExports.discard(it) }; mutableExportProgress.value = null; exporting = false; exportJob = null }
         }
     }
-    fun shareSheetOpened(artifact: ExportArtifact, directApp: Boolean = false) {
-        if (exportArtifact != artifact || !artifact.share) return
-        exportArtifact = null; exportPickerRequested = false
+    fun beginExportHandoff(expected: ExportArtifact): ExportHandoff? {
+        if (exporting || closing || exportHandoff != null || exportArtifact !== expected) return null
+        return ExportHandoff(expected).also { exportHandoff = it }
+    }
+    fun offerExportHandoff(request: ExportHandoff): Boolean {
+        if (exporting || closing || exportHandoffOffered || !ownsExportHandoff(request)) return false
+        exportHandoffOffered = true
+        return true
+    }
+    private fun ownsExportHandoff(request: ExportHandoff) =
+        exportHandoff === request && exportArtifact === request.artifact
+    private fun clearExportHandoff() {
+        exportArtifact = null
+        exportHandoff = null
+        exportHandoffOffered = false
+    }
+    private fun discardPendingExport(notice: String) {
+        exportArtifact?.let { ShareExports.discard(it) }
+        clearExportHandoff()
+        message = notice
+    }
+    fun shareSheetOpened(request: ExportHandoff, directApp: Boolean = false) {
+        val artifact = request.artifact
+        if (!exportHandoffOffered || !ownsExportHandoff(request) || !artifact.share) return
+        clearExportHandoff()
         message = when {
             directApp -> "Handed to the chosen app. SDI cannot confirm whether that app posts or sends the file."
             artifact.targetPackages.isNotEmpty() -> "That app is not installed or did not accept the file, so the share chooser opened. SDI cannot confirm whether another app posts or sends the file."
             else -> "Share chooser opened. SDI cannot confirm whether another app posts or sends the file."
         }
     }
-    fun markExportPickerRequested() { exportPickerRequested = true }
+    fun exportHandoffLaunchFailed(request: ExportHandoff, notice: String) {
+        if (exportHandoffOffered && ownsExportHandoff(request)) discardPendingExport(notice)
+    }
     fun cancelExport() {
         if (exporting) exportJob?.cancel()
-        else { exportArtifact?.let { ShareExports.discard(it) }; exportArtifact = null; exportPickerRequested = false; message = "Export cancelled." }
+        else if (exportHandoffOffered) {
+            if (exportHandoff?.artifact?.share == false) message = "Cancel in Files to stop this export."
+        } else if (exportArtifact != null) discardPendingExport("Export cancelled.")
     }
-    fun finishExport(uri: Uri?) {
-        val artifact = exportArtifact ?: return
-        if (exporting) return
-        if (uri == null) { cancelExport(); return }
-        exporting = true; exportArtifact = null; message = "Writing export…"
+    fun finishExport(request: ExportHandoff, uri: Uri?) {
+        val artifact = request.artifact
+        if (exporting || !exportHandoffOffered || !ownsExportHandoff(request) || artifact.share) return
+        if (uri == null) { discardPendingExport("Export cancelled."); return }
+        exporting = true
+        clearExportHandoff()
+        message = "Writing export…"
         mutableExportProgress.value = ExportProgress("Writing to Files", 0)
         exportJob = viewModelScope.launch {
             var destinationOpened = false
@@ -964,24 +998,32 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 withContext(Dispatchers.IO) {
                     val scope = currentCoroutineContext()
                     scope.ensureActive()
-                    val output = getApplication<Application>().contentResolver.openOutputStream(uri, "wt")
-                        ?: error("Document provider did not open the destination.")
-                    destinationOpened = true
-                    output.use { target -> artifact.file.inputStream().use { source ->
+                    check(artifact.file.isFile) { "The prepared export is unavailable. Prepare it again." }
+                    artifact.file.inputStream().use { source ->
                         val bytes = ByteArray(64 * 1024)
-                        val totalBytes = artifact.file.length()
-                        var written = 0L
-                        while (true) {
-                            scope.ensureActive()
-                            val count = source.read(bytes); if (count < 0) break
-                            target.write(bytes, 0, count)
-                            written += count
-                            mutableExportProgress.value = ExportProgress("Writing to Files",
-                                if (totalBytes > 0) (written * 100 / totalBytes).toInt().coerceIn(0, 99) else null)
+                        val totalBytes = source.channel.size()
+                        var count = source.read(bytes)
+                        check(count > 0) { "The prepared export is empty. Prepare it again." }
+                        // Keep the readable staging descriptor open before touching a
+                        // destination that the provider may truncate on open.
+                        scope.ensureActive()
+                        val output = getApplication<Application>().contentResolver.openOutputStream(uri, "wt")
+                            ?: error("Document provider did not open the destination.")
+                        destinationOpened = true
+                        output.use { target ->
+                            var written = 0L
+                            while (count > 0) {
+                                scope.ensureActive()
+                                target.write(bytes, 0, count)
+                                written += count
+                                mutableExportProgress.value = ExportProgress("Writing to Files",
+                                    if (totalBytes > 0) (written * 100 / totalBytes).toInt().coerceIn(0, 99) else null)
+                                count = source.read(bytes)
+                            }
+                            mutableExportProgress.value = ExportProgress("Finishing file")
+                            scope.ensureActive(); target.flush()
                         }
-                        mutableExportProgress.value = ExportProgress("Finishing file")
-                        scope.ensureActive(); target.flush()
-                    } }
+                    }
                 }
                 message = when (artifact.kind) {
                     ExportKind.CREDITS -> "Project asset credits exported; unknown sources remain identified."
@@ -1002,7 +1044,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             } finally {
                 // Only our staging file is owned. Never delete an arbitrary provider URI:
                 // the user may have chosen to replace an existing document.
-                ShareExports.discard(artifact); mutableExportProgress.value = null; exporting = false; exportPickerRequested = false; exportJob = null
+                ShareExports.discard(artifact); mutableExportProgress.value = null; exporting = false; exportJob = null
             }
         }
     }
@@ -1110,6 +1152,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
      * Closing waits for the latest revision; failure leaves the editor and history intact. */
     fun save(close: Boolean = false) {
         if (document == null) return
+        // The activity owns the export picker across recompositions. Keep the
+        // captured project open until its render, picker or Files copy settles.
+        if (close && hasPendingExport) {
+            report("Finish or cancel the current export before returning to Projects.")
+            return
+        }
         if (close) { cancelImageImport(); cancelFill(); cancelAudioImport(); stopAudioPreview(); closing = true }
         if (saving) return
         saving = true

@@ -12,6 +12,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -31,11 +35,14 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.stickdeath.studio.diagnostics.DiagnosticsSettingsSection
 import com.stickdeath.studio.diagnostics.DiagnosticsStore
@@ -67,34 +74,47 @@ class MainActivity : ComponentActivity() {
 
 @Composable private fun StudioApp(vm: StudioViewModel) {
     val context = LocalContext.current
-    val moviePicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("video/mp4")) { vm.finishExport(it) }
-    val gifPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/gif")) { vm.finishExport(it) }
-    val pngPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { vm.finishExport(it) }
-    val projectPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { vm.finishExport(it) }
-    val sdiPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { vm.finishExport(it) }
-    val zipPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { vm.finishExport(it) }
     val artifact = vm.exportArtifact
-    LaunchedEffect(artifact, vm.exportPickerRequested) {
-        if (artifact != null && !vm.exportPickerRequested) {
-            vm.markExportPickerRequested()
+    LaunchedEffect(artifact) {
+        val current = artifact ?: return@LaunchedEffect
+        val request = vm.beginExportHandoff(current) ?: return@LaunchedEffect
+        if (current.share && vm.offerExportHandoff(request)) {
             try {
-                if (artifact.share) {
-                    // Quick share: try each destination package; a missing app falls back to the chooser.
-                    val direct = artifact.targetPackages.any { target ->
-                        try { context.startActivity(ShareExports.direct(context, artifact, target)); true }
-                        catch (_: android.content.ActivityNotFoundException) { false }
-                    }
-                    if (!direct) context.startActivity(ShareExports.chooser(context, artifact))
-                    vm.shareSheetOpened(artifact, directApp = direct)
-                } else when (artifact.kind) {
-                    ExportKind.MP4 -> moviePicker.launch(artifact.name)
-                    ExportKind.GIF -> gifPicker.launch(artifact.name)
-                    ExportKind.PNG -> pngPicker.launch(artifact.name)
-                    ExportKind.PROJECT, ExportKind.CREDITS, ExportKind.MANIFEST -> projectPicker.launch(artifact.name)
-                    ExportKind.SDI -> sdiPicker.launch(artifact.name)
-                    ExportKind.SEQUENCE, ExportKind.SPRITESHEET -> zipPicker.launch(artifact.name)
+                // Quick share: try each destination package; a missing app falls back to the chooser.
+                val direct = current.targetPackages.any { target ->
+                    try { context.startActivity(ShareExports.direct(context, current, target)); true }
+                    catch (_: android.content.ActivityNotFoundException) { false }
                 }
-            } catch (e: Exception) { vm.cancelExport(); vm.report(e.message ?: "No compatible export or sharing app is available.") }
+                if (!direct) context.startActivity(ShareExports.chooser(context, current))
+                vm.shareSheetOpened(request, directApp = direct)
+            } catch (e: Exception) {
+                vm.exportHandoffLaunchFailed(request, e.message ?: "No compatible sharing app is available.")
+            }
+        }
+    }
+    val request = vm.exportHandoff
+    if (request != null && !request.artifact.share) {
+        // A new request gets a new callback. Recreating this one keeps its saved launcher key.
+        key(request.id) {
+            val mime = when (request.artifact.kind) {
+                ExportKind.MP4 -> "video/mp4"
+                ExportKind.GIF -> "image/gif"
+                ExportKind.PNG -> "image/png"
+                ExportKind.PROJECT, ExportKind.CREDITS, ExportKind.MANIFEST -> "application/json"
+                ExportKind.SDI -> "application/octet-stream"
+                ExportKind.SEQUENCE, ExportKind.SPRITESHEET -> "application/zip"
+            }
+            val picker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(mime)) { uri ->
+                vm.finishExport(request, uri)
+            }
+            LaunchedEffect(request) {
+                if (!vm.offerExportHandoff(request)) return@LaunchedEffect
+                try {
+                    picker.launch(request.artifact.name)
+                } catch (e: Exception) {
+                    vm.exportHandoffLaunchFailed(request, e.message ?: "No compatible app is available to save the export.")
+                }
+            }
         }
     }
     val document = vm.document
@@ -245,6 +265,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
 
 @Composable private fun Editor(vm: StudioViewModel, doc: Document) {
     val compactHeight = LocalConfiguration.current.screenHeightDp < 480
+    val viewportSize = remember { mutableStateOf(IntSize.Zero) }
     var thumbnailsOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
     val showThumbnails = thumbnailsOverride ?: !compactHeight
     val audioImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importAudio(it) }
@@ -311,7 +332,8 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.save() }, enabled = !vm.saving) { Text(if (vm.saving) "Saving…" else if (vm.dirty) "Save" else "Saved") }
         }
         Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xff303034)).padding(12.dp), contentAlignment = Alignment.Center) {
-            DrawingSurface(vm, doc, if (playing) doc.frames[previewIndex.coerceIn(doc.frames.indices)] else doc.frame, playing, doc.onion.enabled)
+            DrawingSurface(vm, doc, if (playing) doc.frames[previewIndex.coerceIn(doc.frames.indices)] else doc.frame,
+                playing, doc.onion.enabled, viewportSize)
             StudioFloatingToolbar {
             Tool.entries.filter { it != Tool.Image }.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(toolLabel(tool)) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
             TextButton({ panel = "spatter" }, enabled = !playing && !vm.closing) { Text("Spatter") }
@@ -479,8 +501,21 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                         } else if (vm.tool == Tool.Hand) {
                             Text("Hand · ${(vm.viewportZoom * 100).toInt()}%")
                             Text("Drag to pan; pinch to zoom around your fingers. This moves the view, not the artwork.")
-                            Slider(vm.viewportZoom, { vm.viewport(it, 0f, 0f) }, valueRange = 0.25f..8f)
+                            Slider(vm.viewportZoom, { vm.viewport(it, 0f, 0f) }, valueRange = viewportZoomRange)
                             TextButton({ vm.fitViewport() }) { Text("Fit canvas") }
+                        } else if (vm.tool == Tool.Zoom) {
+                            Text("Zoom · ${(vm.viewportZoom * 100).toInt()}%")
+                            Text("Tap the canvas to zoom in at that point. Pinch in either direction. The buttons zoom around the center of the view.")
+                            val size = viewportSize.value
+                            val enabled = !playing && !vm.closing && size.width > 0 && size.height > 0
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                TextButton({ transformViewport(vm, doc, size, center, Offset.Zero, 1f / viewportZoomStep) },
+                                    enabled = enabled && vm.viewportZoom > viewportZoomRange.start) { Text("Zoom out") }
+                                TextButton({ transformViewport(vm, doc, size, center, Offset.Zero, viewportZoomStep) },
+                                    enabled = enabled && vm.viewportZoom < viewportZoomRange.endInclusive) { Text("Zoom in") }
+                                TextButton({ vm.fitViewport() }, enabled = enabled) { Text("Fit canvas") }
+                            }
                         } else if (vm.tool == Tool.Lasso || vm.tool == Tool.Move) {
                             Text("In Move, tap or drag unlocked artwork to select it. Tap empty canvas outside the selection box to clear it. Drag inside the box to move the group, use the corners to resize, or use the top handle to rotate. Lasso encloses whole objects and uses the entire bounding box for fills. Keep transformed artwork inside the canvas.")
                             Text("${vm.selectedStrokeIDs.size} selected objects")
@@ -835,27 +870,114 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
     DiagnosticsSettingsSection(remember { DiagnosticsStore(diagnosticsContext) })
 }
 
-@Composable private fun DrawingSurface(vm: StudioViewModel, doc: Document, frame: Frame, playing: Boolean, onion: Boolean) {
+private val viewportZoomRange = 0.25f..8f
+private const val viewportZoomStep = 1.5f
+
+private fun transformViewport(
+    vm: StudioViewModel, doc: Document, viewport: IntSize,
+    anchor: Offset, pan: Offset, scale: Float, requireCanvasHit: Boolean = false,
+) {
+    val current = vm.document ?: return
+    if (vm.closing || current.id != doc.id || current.width != doc.width || current.height != doc.height ||
+        viewport.width <= 0 || viewport.height <= 0 || !scale.isFinite() || scale <= 0f ||
+        !anchor.x.isFinite() || !anchor.y.isFinite() || !pan.x.isFinite() || !pan.y.isFinite()) return
+
+    val old = vm.viewportZoom
+    val next = (old * scale).coerceIn(viewportZoomRange)
+    if (next == old && pan == Offset.Zero) return
+    val ratio = next / old
+    val cx = anchor.x - viewport.width / 2f
+    val cy = anchor.y - viewport.height / 2f
+    val fit = minOf(viewport.width.toFloat() / doc.width, viewport.height.toFloat() / doc.height)
+    val fittedWidth = doc.width * fit
+    val fittedHeight = doc.height * fit
+    if (requireCanvasHit && (kotlin.math.abs(cx - vm.viewportX) > fittedWidth * old / 2f ||
+            kotlin.math.abs(cy - vm.viewportY) > fittedHeight * old / 2f)) return
+
+    val width = fittedWidth * next
+    val height = fittedHeight * next
+    val limitX = ((width + viewport.width) / 2 - minOf(48f, width / 2)).coerceAtLeast(0f)
+    val limitY = ((height + viewport.height) / 2 - minOf(48f, height / 2)).coerceAtLeast(0f)
+    // Solve for the translation that keeps the same canvas point under the anchor.
+    vm.viewport(next, (cx - (cx - vm.viewportX) * ratio + pan.x).coerceIn(-limitX, limitX),
+        (cy - (cy - vm.viewportY) * ratio + pan.y).coerceIn(-limitY, limitY))
+}
+
+private suspend fun PointerInputScope.detectViewportZoom(
+    onTap: (Offset) -> Unit,
+    onPinch: (Offset, Offset, Float) -> Unit,
+) = awaitEachGesture {
+    val down = awaitFirstDown()
+    var tap = true
+    var usedMultiplePointers = false
+    var pastSlop = false
+    var totalPan = Offset.Zero
+    var totalZoom = 1f
+    do {
+        val event = awaitPointerEvent()
+        if (event.changes.any { it.isConsumed }) break
+        // Once a second pointer participates, its final release can never become a tap.
+        if (event.changes.any { it.id != down.id && it.pressed }) usedMultiplePointers = true
+        if (!usedMultiplePointers) {
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) tap = false
+            if (!change.pressed && tap) {
+                change.consume()
+                onTap(down.position)
+            }
+        } else if (event.changes.count { it.pressed && it.previousPressed } >= 2) {
+            val pan = event.calculatePan()
+            val zoom = event.calculateZoom()
+            if (!pastSlop) {
+                totalPan += pan
+                totalZoom *= zoom
+                val zoomMotion = kotlin.math.abs(1f - totalZoom) * event.calculateCentroidSize(useCurrent = false)
+                pastSlop = zoomMotion > viewConfiguration.touchSlop || totalPan.getDistance() > viewConfiguration.touchSlop
+            }
+            if (pastSlop) {
+                onPinch(event.calculateCentroid(useCurrent = false), pan, zoom)
+                event.changes.forEach { if (it.position != it.previousPosition) it.consume() }
+            }
+        }
+    } while (event.changes.any { it.pressed })
+}
+
+@Composable private fun DrawingSurface(
+    vm: StudioViewModel, doc: Document, frame: Frame, playing: Boolean, onion: Boolean,
+    viewportSize: MutableState<IntSize>,
+) {
     var pending by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<List<Point>>(emptyList()) }
     var pendingSeed by remember(doc.id) { mutableStateOf(0) }
     var transformed by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<Frame?>(null) }
     var movePreviewIDs by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<Set<String>?>(null) }
     LaunchedEffect(doc.id, doc.width, doc.height) { vm.fitViewport() }
-    BoxWithConstraints(Modifier.fillMaxSize().clipToBounds().onSizeChanged { vm.fitViewport() }
-        .pointerInput(doc.id, doc.width, doc.height, vm.tool, playing, vm.closing) {
-            if (vm.tool == Tool.Hand && !playing && !vm.closing) detectTransformGestures { centroid, pan, zoom, _ ->
-                val old = vm.viewportZoom
-                val next = (old * zoom).coerceIn(0.25f, 8f)
-                val ratio = next / old
-                val cx = centroid.x - size.width / 2f; val cy = centroid.y - size.height / 2f
-                val fit = minOf(size.width.toFloat() / doc.width, size.height.toFloat() / doc.height)
-                val canvasWidth = doc.width * fit * next; val canvasHeight = doc.height * fit * next
-                val limitX = ((canvasWidth + size.width) / 2 - minOf(48f, canvasWidth / 2)).coerceAtLeast(0f)
-                val limitY = ((canvasHeight + size.height) / 2 - minOf(48f, canvasHeight / 2)).coerceAtLeast(0f)
-                vm.viewport(next, (cx - (cx - vm.viewportX) * ratio + pan.x).coerceIn(-limitX, limitX),
-                    (cy - (cy - vm.viewportY) * ratio + pan.y).coerceIn(-limitY, limitY))
+    BoxWithConstraints(
+        Modifier.fillMaxSize().clipToBounds().onSizeChanged {
+            if (viewportSize.value != it) {
+                viewportSize.value = it
+                vm.fitViewport()
             }
-        }, contentAlignment = Alignment.Center) {
+        }.pointerInput(doc.id, doc.width, doc.height, vm.tool, playing, vm.closing) {
+            if (playing || vm.closing) return@pointerInput
+            when (vm.tool) {
+                Tool.Hand -> detectTransformGestures { centroid, pan, zoom, _ ->
+                    if (vm.tool == Tool.Hand) transformViewport(vm, doc, size, centroid, pan, zoom)
+                }
+                Tool.Zoom -> detectViewportZoom(
+                    onTap = { anchor ->
+                        if (vm.tool == Tool.Zoom) {
+                            transformViewport(vm, doc, size, anchor, Offset.Zero, viewportZoomStep, requireCanvasHit = true)
+                        }
+                    },
+                    onPinch = { anchor, pan, zoom ->
+                        if (vm.tool == Tool.Zoom) transformViewport(vm, doc, size, anchor, pan, zoom)
+                    },
+                )
+                else -> Unit
+            }
+        },
+        contentAlignment = Alignment.Center,
+    ) {
         val ratio = doc.width.toFloat() / doc.height
         val canvasWidth = minOf(maxWidth, maxHeight * ratio)
         val canvasHeight = canvasWidth / ratio
@@ -865,7 +987,7 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
         }.clipToBounds().pointerInput(doc.id, doc.revision, vm.tool, vm.width, vm.color, vm.strokeOpacity, vm.smoothing, vm.mirrorMode, vm.shapeFilled, vm.shapeEqualSides, playing, vm.closing, vm.selectedStrokeIDs, vm.selectionMode, vm.selectionShape, vm.selectionPreservesAspect, vm.brushFamily, vm.nibAngle, vm.rulerMode) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
-                if (playing || vm.closing || vm.tool == Tool.Hand) return@awaitEachGesture
+                if (playing || vm.closing || vm.tool == Tool.Hand || vm.tool == Tool.Zoom) return@awaitEachGesture
                 val tool = vm.tool; val width = vm.width; val color = vm.color; val opacity = vm.strokeOpacity
                 val mirror = vm.mirrorMode
                 val brush = vm.brushFamily; val nibAngle = vm.nibAngle; val brushSeed = newID().hashCode(); pendingSeed = brushSeed

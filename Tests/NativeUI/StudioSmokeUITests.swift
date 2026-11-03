@@ -2558,6 +2558,36 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(close.exists, "X did not dismiss tool-specific controls")
         try selectToolbarTool("hand", app: app)
         XCTAssertTrue(close.waitForExistence(timeout: 3), "Retapping Hand did not restore its context")
+
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        let dockedCanvas = canvas.frame
+        let hideTools = app.buttons["studio.toolbar.toggle"]
+        let showTools = app.buttons["studio.show-tools"]
+        XCTAssertTrue(hideTools.isHittable)
+        hideTools.tap()
+        let hidden = NSPredicate { _, _ in
+            showTools.isHittable && !rail.exists && !close.exists
+                && canvas.frame.width > dockedCanvas.width
+                && abs(canvas.frame.midX - stage.frame.midX) <= 2
+        }
+        XCTAssertTrue(expectation(for: hidden, evaluatedWith: nil).waitUntilFulfilled(timeout: 5),
+                      "Hiding tools should clear the rail and popup and give the canvas more room")
+        showTools.tap()
+        let hand = app.buttons["studio.tool.hand"]
+        let restored = NSPredicate { _, _ in
+            rail.value as? String == "Vertical" && grip.isHittable
+                && rail.frame.maxX > stage.frame.maxX - 20
+                && hand.isHittable && hand.isSelected && !showTools.exists
+                && abs(canvas.frame.midX - dockedCanvas.midX) <= 2
+        }
+        XCTAssertTrue(expectation(for: restored, evaluatedWith: nil).waitUntilFulfilled(timeout: 5),
+                      "Restoring tools should retain the right dock and selected Hand")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "studio.toolbar").count, 1)
+        XCTAssertFalse(close.exists, "Restoring the rail reopened the dismissed popup")
+        XCTAssertTrue(undo.exists && !undo.isEnabled, "Hiding and restoring tools altered undo history")
+
+        try selectToolbarTool("hand", app: app)
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
         try selectToolbarTool("eyedropper", app: app)
         XCTAssertFalse(close.exists, "An inapplicable tool kept the settings popup")
         XCTAssertFalse(app.buttons["studio.context.close"].exists, "The removed secondary toolbar returned")
@@ -2573,7 +2603,6 @@ final class StudioSmokeUITests: XCTestCase {
         try selectToolbarTool("hand", app: app)
         app.buttons["studio.tool-settings.zoom-in"].tap()
         app.buttons["studio.tool-settings.fit"].tap()
-        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertGreaterThan(canvas.frame.width, 80)
         XCTAssertGreaterThan(canvas.frame.height, 80)
         let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
