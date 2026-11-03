@@ -27,6 +27,27 @@ class DraftServiceError(RuntimeError):
     """Sanitized error. An unconfirmed RPC must not be retried by this pass."""
 
 
+def validate_draft_https_origin(origin: str) -> str:
+    """Check raw origin text before URL parsing can normalize whitespace."""
+    if (not isinstance(origin, str) or not 1 <= len(origin) <= 2048
+            or any(not 33 <= ord(char) <= 126 for char in origin)):
+        raise ValueError("Configure an authorized HTTPS origin.")
+    parsed = urllib.parse.urlsplit(origin)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None or parsed.password is not None
+            or "?" in origin or "#" in origin or "\\" in origin
+            or parsed.path not in ("", "/") or parsed.port not in (None, 443)):
+        raise ValueError("Configure an authorized HTTPS origin.")
+    return f"https://{parsed.netloc}"
+
+
+def validate_draft_backend(backend_url: str, server_secret_key: str) -> str:
+    """Validate private host settings without opening a connection."""
+    origin = validate_draft_https_origin(backend_url)
+    if not isinstance(server_secret_key, str) or not re.fullmatch(r"sb_secret_[A-Za-z0-9_-]{1,500}", server_secret_key):
+        raise ValueError("A server-only Supabase secret API key is required.")
+    return origin
+
+
 def _uuid(value: Any) -> str:
     try:
         return str(uuid.UUID(value))
@@ -42,13 +63,7 @@ class DraftRPCStore:
     """
 
     def __init__(self, backend_url: str, server_secret_key: str, *, clock=time.monotonic, opener=None):
-        parsed = urllib.parse.urlsplit(backend_url)
-        if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None or parsed.password is not None
-                or parsed.query or parsed.fragment or parsed.path not in ("", "/") or parsed.port not in (None, 443)):
-            raise ValueError("Configure the authorized HTTPS application backend.")
-        if not isinstance(server_secret_key, str) or not re.fullmatch(r"sb_secret_[A-Za-z0-9_-]{1,500}", server_secret_key):
-            raise ValueError("A server-only Supabase secret API key is required.")
-        self._origin = f"https://{parsed.netloc}"
+        self._origin = validate_draft_backend(backend_url, server_secret_key)
         self._key = server_secret_key
         self._clock = clock
         self._opener = opener if opener is not None else BoundedRPCOpener()

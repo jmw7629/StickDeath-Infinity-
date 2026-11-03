@@ -167,6 +167,42 @@ owner account for the review. The worker uses the existing service-only
 claim, progress and agent-heartbeat RPCs. It stops after `review_pending` and
 leaves review decisions and release to their existing owner-controlled routes.
 
+### Run one private draft from the render host
+
+After the owner approves capacity, configures the daily draft agent's limits,
+and verifies the private intake and its owner preview route, run from the
+deployed repository root on the trusted macOS render host:
+
+```sh
+python3 -m backend.spatter.daily_draft_cli --run-once
+```
+
+Set `SDI_BACKEND_URL` to the authorized HTTPS backend origin and
+`SDI_BACKEND_SERVICE_KEY_FILE` to the absolute path of an owner-private file
+containing the modern Supabase server secret API key. The file must belong to
+the worker, have no group or other permissions (for example `0600`), and be a
+regular file. Use the host's secure credential store to provision it. Never
+place its contents in arguments, environment variables, repository files or
+logs. Publishable and legacy JWT keys are refused.
+
+Set `SDI_DRAFT_RENDERER_CLI` to the built native executable and
+`SDI_DRAFT_RENDER_DIR` to an existing private worker-owned output directory.
+Provide the owner preview settings below, including an existing private intake
+directory that the serving intake worker actually uses. The intake origin,
+preview signing file and owner ID must agree with that serving worker; a local
+directory on a separate host is not a working preview handoff. The command
+rejects missing or invalid local configuration before its first RPC.
+
+The command prints one JSON object with a `state` field. Exit `0` means
+`review_pending`; exit `3` means `not_claimed` (nothing rendered); exit `2`
+means `invalid_invocation` or `invalid_configuration`; exit `1` means
+`failed`, `refused`, `unconfirmed` or `timed_out`; Ctrl-C returns
+`interrupted` with exit `130`. It never prints service reasons, keys, preview
+URLs or host paths. It runs one pass under the existing RPC/render limits
+and a 16-minute operator deadline. No retry or schedule is installed; inspect
+the existing private job state before manually rerunning an unconfirmed pass.
+This command cannot approve or release a draft.
+
 The adapter re-hashes the movie, manifest and editable project named by the
 receipt, requires `private_draft: true` / `published: false`, matches brief,
 seed and size to the job, and fails a passing verdict whose decoded frame count

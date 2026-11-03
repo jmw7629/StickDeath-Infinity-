@@ -104,6 +104,27 @@ class JourneyReceiptTests(unittest.TestCase):
         self.assertEqual(pbx.count('ServiceJourneyTests.swift in Sources'), 2)
         self.assertIn('path = Tests/AuthState/ServiceJourneyTests.swift; sourceTree = SOURCE_ROOT;', pbx)
 
+    def test_required_native_builds_keep_the_toolchain_and_package_lock(self):
+        workflow = (ROOT / '.github/workflows/spatter-client-verify.yml').read_text()
+        shards = workflow.split('  native-ios-shards:', 1)[1].split('  native-ios-build:', 1)[0]
+        journeys = workflow.split('  native-ios-journeys:', 1)[1]
+        command = 'python3 scripts/native-smoke/prepare_locked_build.py'
+        for job in (shards, journeys):
+            self.assertEqual(job.count(command), 1)
+            self.assertLess(job.index(command), job.index('select_simulator.py'))
+        for script in ('prepare_locked_build.py', 'run_smoke_ci.sh', 'run_journey_ci.py', 'run_auth_ci.py'):
+            source = (ROOT / 'scripts/native-smoke' / script).read_text()
+            with self.subTest(script=script):
+                for part in ('sdi-native-build', 'SourcePackages', '-clonedSourcePackagesDirPath',
+                             '-disableAutomaticPackageResolution', '-onlyUsePackageVersionsFromResolvedFile'):
+                    self.assertIn(part, source)
+        setup = (ROOT / 'scripts/native-smoke/prepare_locked_build.py').read_text()
+        self.assertIn('["git", "diff", "--quiet", "HEAD", "--"]', setup)
+        self.assertIn('"--name-status", "--no-renames", "HEAD", "--"', setup)
+        self.assertIn('clean_checkout("after the locked native build")', setup)
+        self.assertIn('os.environ["GITHUB_ENV"]', setup)
+        self.assertIn('DEVELOPER_DIR=', setup)
+
 
 if __name__ == '__main__':
     unittest.main()

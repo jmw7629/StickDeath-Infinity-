@@ -76,7 +76,8 @@ def main():
     assert (packages / "checkouts").is_dir(), "Reuse the successful native build package cache"
     destination = f"platform=iOS Simulator,id={udid}"
     common = ["-derivedDataPath", str(derived), "-clonedSourcePackagesDirPath", str(packages),
-              "-disableAutomaticPackageResolution", "-skipPackageUpdates", "-jobs", "2"]
+              "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
+              "-skipPackageUpdates", "-jobs", "2"]
     suites = []
 
     # UI journeys: same offline preflight as the smoke shards, then only JourneyUITests.

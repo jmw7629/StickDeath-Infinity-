@@ -403,6 +403,13 @@ Upgrades are not part of the apply order or the bundle.
   `tests/*.sql` file, and comparing functions, columns, constraints and views with
   a fresh install of the new candidates (identical).
 
+* `upgrades/2026-11-03-spatter-daily-owner-review.sql`: for the installed
+  parent schema at `96b68b8`, applies the owner-only daily Spatter review
+  functions from `6cf904d`. It preserves existing review rows and grants.
+  Verified in isolated PostgreSQL 17.11: applying the upgrade twice preserved
+  seed rows and matched a fresh `6cf904d` install, including grants. Five review
+  fixtures passed on each database. Fresh projects use the install bundle.
+
 ## Apply order (single source of truth; the local harness reads this block)
 
 <!-- apply-order -->

@@ -2968,14 +2968,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          xcodebuild -version
-          xcodebuild \
-            -project StickDeathInfinity.xcodeproj \
-            -scheme StickDeathInfinity \
-            -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/sdi-native-build" \
-            CODE_SIGNING_ALLOWED=NO build
+          python3 scripts/native-smoke/prepare_locked_build.py
           echo 'XCODE_IOS_BUILD=PASS'
       - name: Verify simulator review packaging rules
         id: native-review-rules
@@ -3158,17 +3151,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Build checked-in native iOS target without signing or deployment
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild -version
-          xcodebuild \
-            -project StickDeathInfinity.xcodeproj \
-            -scheme StickDeathInfinity \
-            -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/sdi-native-build" \
-            CODE_SIGNING_ALLOWED=NO build
+        run: python3 scripts/native-smoke/prepare_locked_build.py
       - name: Create one fresh simulator of this family
         id: simulator
         shell: bash
