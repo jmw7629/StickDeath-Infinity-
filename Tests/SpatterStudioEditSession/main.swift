@@ -3437,7 +3437,7 @@ private final class NetworkTrap: URLProtocol {
         try await test("Spatter All and Invert match native whole-drawing eligibility without changing history or saved content") {
             let (vm, store) = try await fixture("whole-drawing-selection")
             let primary = vm.activeLayerID
-            func rect(_ id: String, _ x: CGFloat, opacity: Double = 1, tool: DrawingTool = .rectangle) -> DrawnElement {
+            @MainActor func rect(_ id: String, _ x: CGFloat, opacity: Double = 1, tool: DrawingTool = .rectangle) -> DrawnElement {
                 .init(id: id, tool: tool, points: [.init(x: x, y: 20), .init(x: x + 20, y: 44)],
                       color: "#FF0000", width: 2, opacity: opacity, layerID: vm.activeLayerID,
                       shape: tool == .rectangle ? .init(fillColor: "#FF0000") : nil)

@@ -1234,6 +1234,64 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(original.rule.contains("right=1") && original.rule.contains("66x34"), "rule text \(original.rule)")
             try await rejected({ _ = try Service.RenderPlan.make(canvasWidth: 0, canvasHeight: 10, preset: .original) })
         }
+        await test("plan cap fits retained panoramas only when every preset refuses") {
+            let wide = try Service.RenderPlan.resolve(canvasWidth: 1920, canvasHeight: 640, requested: .original, maximumLongEdge: 1280)
+            try require(wide.fitLongEdge == 1280 && wide.resolutionLabel == "Fit to plan" && wide.scale == 2.0 / 3.0,
+                        "a retained panorama must fit the Free plan with one uniform scale")
+            try require(wide.contentWidth == 1280 && wide.contentHeight == 427 && wide.paddingRight == 0 && wide.paddingBottom == 1
+                        && wide.outputWidth == 1280 && wide.outputHeight == 428, "panorama must keep all content and pad to even output")
+            let tall = try Service.RenderPlan.resolve(canvasWidth: 640, canvasHeight: 1920, requested: .p480, maximumLongEdge: 1279)
+            try require(tall.fitLongEdge == 1279 && tall.outputWidth == 426 && tall.outputHeight == 1278,
+                        "portrait fallback must stay below an odd encoder cap")
+            let regular = try Service.RenderPlan.resolve(canvasWidth: 1920, canvasHeight: 1080, requested: .original, maximumLongEdge: 1280)
+            try require(regular.preset == .p720 && regular.fitLongEdge == nil && regular.outputWidth == 1280 && regular.outputHeight == 720,
+                        "ordinary Free output still uses the existing 720p preset")
+            let original = try Service.RenderPlan.resolve(canvasWidth: 641, canvasHeight: 360, requested: .p1080, maximumLongEdge: 650)
+            try require(original.preset == .original && original.fitLongEdge == nil && original.outputWidth == 642,
+                        "a fitting Original preset is preferable to a cap-fit fallback")
+            let paid = try Service.RenderPlan.resolve(canvasWidth: 1920, canvasHeight: 640, requested: .original, maximumLongEdge: nil)
+            try require(paid.fitLongEdge == nil && paid.outputWidth == 1920 && paid.outputHeight == 640, "unrestricted Original changed")
+            var render = Service.RenderOptions(watermark: true)
+            render.fitLongEdge = wide.fitLongEdge
+            let encoded = try JSONEncoder().encode(render)
+            let captured = try JSONDecoder().decode(Service.RenderOptions.self, from: encoded)
+            try require(captured.watermark == true && captured.plan(canvasWidth: 1920, canvasHeight: 640) == wide,
+                        "the immutable encoded render options must reconstruct the preflight and mux plan")
+            let oldOptions = Data(#"{"codec":"h264","preset":"original"}"#.utf8)
+            try require(JSONDecoder().decode(Service.RenderOptions.self, from: oldOptions) == .init(), "older render options remain readable")
+            try await rejected {
+                _ = try Service.RenderPlan.resolve(canvasWidth: 1920, canvasHeight: 640, requested: .original, maximumLongEdge: 1)
+            }
+        }
+        await test("Original and cap-fit MP4 refuse frames too small for the required watermark") {
+            let folder = try parent(root, "small-watermark")
+            let canvases: [(Int, Int, Int?)] = [(16, 16, nil), (4096, 16, 1280)]
+            for (width, height, cap) in canvases {
+                var input = snapshot(try StudioDocument.new(name: "Tiny watermark fixture", width: width, height: height, fps: 24))
+                input.render = .init(preset: .original, watermark: true)
+                input.render.fitLongEdge = cap
+                let plan = try input.render.plan(canvasWidth: width, canvasHeight: height)
+                try require(plan.outputWidth == (cap ?? 16) && plan.outputHeight == (cap == nil ? 16 : 6),
+                            "Expected a 16 × 16 Original and a 1280 × 6 cap-fit output")
+                do {
+                    _ = try await Service().export(snapshot: input, outputParent: folder, background: .white)
+                    throw Failure(message: "MP4 export silently omitted a required watermark")
+                } catch StudioExportService.ExportError.watermarkDoesNotFit {
+                    try require(contents(folder).isEmpty, "Too-small MP4 left a staging or published file")
+                }
+            }
+        }
+        await test("only a required watermark rejects a thin image") {
+            guard let tiny = try fixtureImage().cropping(to: CGRect(x: 0, y: 0, width: 32, height: 6)) else {
+                throw Failure(message: "Could not prepare a thin image")
+            }
+            let legacy = try StudioExportService.watermarked(tiny)
+            try require(legacy.width == tiny.width && legacy.height == tiny.height, "default watermark behavior changed")
+            do {
+                _ = try StudioExportService.watermarked(tiny, requiresVisibleMark: true)
+                throw Failure(message: "A required mark was silently omitted")
+            } catch StudioExportService.ExportError.watermarkDoesNotFit {}
+        }
         await test("odd canvas exports with one white padding column and row instead of failing") {
             let folder = try parent(root, "odd")
             let doc = try document(colors: ["#FF0000"], width: 65, height: 33)
@@ -1276,6 +1334,29 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             } catch Service.ExportError.codecUnavailable {
                 print("SKIP HEVC encoder unavailable on this host; explicit codecUnavailable returned")
                 try require(contents(folder).isEmpty, "Refused HEVC left staging files")
+            }
+        }
+        await test("larger HEVC export decodes a real frame or reports codec unavailability") {
+            let folder = try parent(root, "hevc-larger")
+            var input = snapshot(try document(colors: ["#00FF00"], width: 256, height: 128))
+            input.render = .init(codec: .hevc, preset: .original)
+            do {
+                let output = try await Service().export(snapshot: input, outputParent: folder, background: .white)
+                let asset = AVURLAsset(url: output.movieURL)
+                let video = try await asset.loadTracks(withMediaType: .video)
+                try require(video.count == 1, "Expected one real HEVC stream")
+                let formats = try await video[0].load(.formatDescriptions)
+                try require(formats.count == 1 && CMFormatDescriptionGetMediaSubType(formats[0]) == kCMVideoCodecType_HEVC
+                            && output.manifest.codec == "HEVC", "Larger export must encode actual HEVC")
+                let decoded = try await decode(output.movieURL)
+                try require(decoded.frames.count == 1 && decoded.frames[0].width == 256 && decoded.frames[0].height == 128,
+                            "Larger HEVC export must retain the requested picture size")
+                try pixel(decoded.frames[0].pixel(128, 64), [0, 255, 0, 255])
+                try output.cleanup()
+                try require(contents(folder).isEmpty, "Cleaned larger HEVC export left files")
+            } catch Service.ExportError.codecUnavailable {
+                print("SKIP larger HEVC encoder unavailable on this host; explicit codecUnavailable returned")
+                try require(contents(folder).isEmpty, "Refused larger HEVC left staging files")
             }
         }
         print("STUDIO_MOVIE_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")

@@ -283,6 +283,63 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(session.notice?.contains("MP4 ready on this device") == true && session.errorMessage == nil, "Actual ready receipt missing")
             session.close(); try require(contents(outputParent).isEmpty, "Closed ready export leaked owned files")
         }
+        await test("Free cap-fit renders a watermarked retained panorama and rechecks plan changes") {
+            let folder = try parent(root, "plan-fit")
+            let vm = try await editor(folder, width: 1920, height: 640)
+            for (x, color) in [(CGFloat(80), "#FF0000"), (CGFloat(1840), "#0000FF")] {
+                try require(vm.commitElement(DrawnElement(id: UUID().uuidString, tool: .brush,
+                    points: [.init(x: x - 30, y: 320), .init(x: x + 30, y: 320)], color: color,
+                    width: 32, opacity: 1, layerID: vm.activeLayerID)), "Panorama edge marker could not be drawn")
+            }
+            let original = vm.document
+            let outputParent = try parent(folder, "output")
+            let session = Session(outputParent: outputParent)
+            let provider = StudioPlanGate.provider
+            var gate = StudioPlanGate.unrestricted
+            StudioPlanGate.provider = { gate }
+            defer { session.close(); StudioPlanGate.provider = provider }
+
+            try require(session.start(from: vm, background: .white, scope: visible), "Paid export did not start")
+            gate.maxExportLongEdge = 1280
+            gate.exportWatermark = true
+            try await idle(session)
+            try require(session.output == nil && contents(outputParent).isEmpty, "A revoked in-flight plan published an MP4")
+
+            gate = .unrestricted
+            var obsolete = Service.RenderOptions()
+            obsolete.fitLongEdge = 1280
+            try require(session.start(from: vm, background: .white, scope: visible, options: .init(render: obsolete)),
+                        "Paid retry did not start with obsolete cap-fit settings")
+            try await idle(session)
+            guard let paid = session.output, let request = session.beginSharing(scope: visible) else {
+                throw Failure(message: session.errorMessage ?? "Paid output was unavailable")
+            }
+            try require(paid.manifest.width == 1920 && paid.manifest.height == 640, "Paid Original changed")
+            gate.maxExportLongEdge = 1280
+            gate.exportWatermark = true
+            try await rejected { _ = try request.checkedURLs() }
+            request.finish(completed: false, error: nil)
+            try require(session.beginSharing(scope: visible) == nil && session.beginPreview(scope: visible, stopConsumer: {}) == nil,
+                        "Resuming the panel exposed a ready output from a revoked plan")
+
+            try require(session.start(from: vm, background: .white, scope: visible), "Free fallback did not start")
+            try await idle(session)
+            guard let free = session.output else { throw Failure(message: session.errorMessage ?? "Free output was unavailable") }
+            let decoded = try await decode(free.movieURL)
+            try require(decoded.frames.count == 1 && decoded.frames[0].width == 1280 && decoded.frames[0].height == 428,
+                        "Decoded cap-fit output does not match even encoder dimensions")
+            let frame = decoded.frames[0]
+            try pixel(frame.pixel(640, 214), [255, 255, 255, 255])
+            try pixel(frame.pixel(53, 214), [255, 0, 0, 255])
+            try pixel(frame.pixel(1227, 214), [0, 0, 255, 255])
+            let marked = (388..<428).contains { y in
+                (1220..<1280).contains { x in frame.pixel(x, y).prefix(3).allSatisfy { $0 < 215 } }
+            }
+            try require(marked, "The decoded Free frame has no bottom-right SDI plate")
+            try require(free.manifest.renderPlan?.fitLongEdge == 1280 && free.manifest.renderPlan?.paddingBottom == 1
+                        && vm.document.width == original.width && vm.document.height == original.height
+                        && vm.document.revision == original.revision, "The fallback must keep the captured rule without resizing the project")
+        }
         await test("managed original raster survives production import save reopen and session MP4 capture") {
             let folder = try parent(root, "managed-raster"); let source = folder.appendingPathComponent("original.png")
             let original = try png(fixtureImage()); try original.write(to: source, options: .withoutOverwriting)

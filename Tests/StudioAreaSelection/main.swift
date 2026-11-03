@@ -691,6 +691,37 @@ private struct Failure: Error { let message: String }
         try require(empty && vm.selectedElementIDs.isEmpty && typedEmpty.isEmpty && vm.document == before && vm.canUndo == undo,
             "Visible foreign-layer color acquired active drawings or empty Replace changed history")
 
+        // One genuinely rendered painted pixel feathers below the 128 drawing-hit threshold.
+        // Fresh visible Replace should retain that drawing without hardening its effect coverage.
+        let seed = CGPoint(x: 20, y: 20)
+        let redo = vm.canRedo, clipboard = vm.copiedDrawingClipboardID
+        vm.wandFeather = 2
+        let feathered = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: seed)
+        guard let mask = try vm.effectSelectionMask(), let span = mask.spans.first else {
+            throw Failure(message: "A feathered painted seed lost its drawing or effect coverage")
+        }
+        try require(feathered && vm.selectedElementIDs == [tiny.id] && vm.hasDrawingWandSelection
+            && mask.coveredPixels == 1 && mask.spans.count == 1 && span.row == 20 && span.start == 20 && span.end == 21
+            && span.alpha > 0 && span.alpha < 128,
+            "Fresh feathered Wand hardened its mask or acquired another drawing")
+        let typedFeathered = try await vm.wandDrawingIDs(at: seed, tolerance: 0, sampleAllLayers: true,
+            checkCancellation: { try Task.checkCancellation() })
+        try require(typedFeathered == [tiny.id], "Visible Wand feather changed the typed hard selection")
+
+        vm.clearElementSelection()
+        for mode in [StudioImageRegionService.Mode.add, .subtract] {
+            vm.wandMode = mode
+            let selected = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: seed)
+            try require(selected && vm.selectedElementIDs.isEmpty,
+                "Feathered Add/Subtract adopted fresh Replace drawing admission")
+        }
+        vm.wandMode = .newSelection
+        let foreignFeathered = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: .init(x: 90, y: 90))
+        try require(foreignFeathered && vm.selectedElementIDs.isEmpty
+            && vm.document == before && vm.canUndo == undo && vm.canRedo == redo && vm.copiedDrawingClipboardID == clipboard,
+            "Feathered Replace acquired nonactive paint or changed document/history/clipboard")
+        vm.wandFeather = 0
+
         // Exercise the optional boundary independently; omitted eligibility keeps the old region behavior.
         let white = Data(repeating: 255, count: 16 * 16 * 4)
         var eligible = Data(count: 16 * 16); eligible[8 * 16 + 8] = 255

@@ -418,7 +418,8 @@ struct ExportPanel: View {
 
     private func runQuickShare(_ destination: StudioQuickShareDestination, proxy: ScrollViewProxy) {
         var ready: Set<StudioQuickShareFile> = []
-        if let output = movie.session.output, !movie.session.isClosed, !movie.session.needsCleanup, !output.isCleaned,
+        if let output = movie.session.output, movie.session.hasCurrentPlanAuthorization,
+           !movie.session.isClosed, !movie.session.needsCleanup, !output.isCleaned,
            output.manifest.projectID == vm.document.id, output.manifest.documentRevision == vm.document.revision {
             ready.insert(.mp4)
         }
@@ -501,6 +502,7 @@ struct ExportPanel: View {
         vm.isEditing && vm.activePanel == .export && scenePhase == .active
             && authVM.userId == request.accountID && vm.document.id == request.projectID
             && vm.document.revision == request.revision && request.accepts(vm.exportFormat)
+            && (request.file != .mp4 || movie.session.hasCurrentPlanAuthorization)
             && !(session.isRunning || session.isSharing || movie.isBusy || gif.isBusy)
     }
 

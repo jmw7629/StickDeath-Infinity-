@@ -35,21 +35,29 @@ final class StudioMovieExportService {
     struct RenderOptions: Codable, Equatable {
         var codec: Codec = .h264
         var preset: RenderPreset = .original
+        /// An authorized cap-fit fallback, captured only when no preset fits.
+        var fitLongEdge: Int? = nil
         /// Free-plan SDI mark burned into every rendered frame. Nil (absent from
         /// older encodings and proofs) means no mark.
         var watermark: Bool? = nil
         init(codec: Codec = .h264, preset: RenderPreset = .original, watermark: Bool = false) {
             self.codec = codec; self.preset = preset; self.watermark = watermark ? true : nil
         }
+        func plan(canvasWidth: Int, canvasHeight: Int) throws -> RenderPlan {
+            try RenderPlan.make(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: preset,
+                                fitLongEdge: fitLongEdge)
+        }
     }
     /// The exact scaling rule recorded in every MP4 manifest (#182/#185):
     /// `scale` = targetShortSide / min(canvasWidth, canvasHeight), or 1 for
-    /// Original. Content size = canvas × scale rounded to the nearest pixel,
+    /// Original. Fit to plan instead scales the long edge down to the even
+    /// encoder limit. Content size = canvas × scale rounded to the nearest pixel,
     /// drawn from the top-left origin. When the content width or height is
     /// odd, one white pixel column (right) or row (bottom) is appended so the
     /// encoder receives even dimensions; nothing is cropped or stretched.
     struct RenderPlan: Codable, Equatable {
         let preset: RenderPreset
+        let fitLongEdge: Int?
         let canvasWidth: Int
         let canvasHeight: Int
         let scale: Double
@@ -59,20 +67,60 @@ final class StudioMovieExportService {
         let paddingBottom: Int
         var outputWidth: Int { contentWidth + paddingRight }
         var outputHeight: Int { contentHeight + paddingBottom }
+        var resolutionLabel: String { fitLongEdge == nil ? preset.label : "Fit to plan" }
         var rule: String {
-            "scale=\(scale) (\(preset.label)); content \(contentWidth)x\(contentHeight) at top-left; white padding right=\(paddingRight) bottom=\(paddingBottom); output \(outputWidth)x\(outputHeight)"
+            "scale=\(scale) (\(resolutionLabel)); content \(contentWidth)x\(contentHeight) at top-left; white padding right=\(paddingRight) bottom=\(paddingBottom); output \(outputWidth)x\(outputHeight)"
         }
-        static func make(canvasWidth: Int, canvasHeight: Int, preset: RenderPreset) throws -> RenderPlan {
+        static func make(canvasWidth: Int, canvasHeight: Int, preset: RenderPreset, fitLongEdge: Int? = nil) throws -> RenderPlan {
             guard canvasWidth > 0, canvasHeight > 0 else { throw ExportError.limitExceeded }
             let scale: Double
-            if let target = preset.targetShortSide { scale = Double(target) / Double(min(canvasWidth, canvasHeight)) } else { scale = 1 }
+            if let fitLongEdge {
+                guard preset == .original, fitLongEdge >= 2 else { throw ExportError.limitExceeded }
+                let evenLimit = min(fitLongEdge, 8192) / 2 * 2
+                scale = min(1, Double(evenLimit) / Double(max(canvasWidth, canvasHeight)))
+            } else if let target = preset.targetShortSide {
+                scale = Double(target) / Double(min(canvasWidth, canvasHeight))
+            } else {
+                scale = 1
+            }
             guard scale.isFinite, scale > 0 else { throw ExportError.limitExceeded }
-            let contentWidth = max(1, Int((Double(canvasWidth) * scale).rounded()))
-            let contentHeight = max(1, Int((Double(canvasHeight) * scale).rounded()))
-            guard contentWidth <= 8192, contentHeight <= 8192 else { throw ExportError.limitExceeded }
-            return RenderPlan(preset: preset, canvasWidth: canvasWidth, canvasHeight: canvasHeight, scale: scale,
+            let roundedWidth = (Double(canvasWidth) * scale).rounded()
+            let roundedHeight = (Double(canvasHeight) * scale).rounded()
+            guard roundedWidth <= 8192, roundedHeight <= 8192 else { throw ExportError.limitExceeded }
+            let contentWidth = max(1, Int(roundedWidth))
+            let contentHeight = max(1, Int(roundedHeight))
+            return RenderPlan(preset: preset, fitLongEdge: fitLongEdge,
+                              canvasWidth: canvasWidth, canvasHeight: canvasHeight, scale: scale,
                               contentWidth: contentWidth, contentHeight: contentHeight,
                               paddingRight: contentWidth % 2, paddingBottom: contentHeight % 2)
+        }
+
+        static func allowedPreset(canvasWidth: Int, canvasHeight: Int, preset: RenderPreset,
+                                  maximumLongEdge: Int?) -> RenderPlan? {
+            guard let plan = try? make(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: preset),
+                  plan.isWithin(maximumLongEdge: maximumLongEdge) else { return nil }
+            return plan
+        }
+
+        /// Preserve the requested preset when it fits, then the existing order
+        /// of smaller presets. A cap-fit output is offered only when none fit.
+        static func resolve(canvasWidth: Int, canvasHeight: Int, requested: RenderPreset,
+                            maximumLongEdge: Int?) throws -> RenderPlan {
+            guard let maximumLongEdge else {
+                return try make(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: requested)
+            }
+            for preset in [requested, .p1080, .p720, .p480, .original] {
+                if let plan = allowedPreset(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: preset,
+                                            maximumLongEdge: maximumLongEdge) {
+                    return plan
+                }
+            }
+            return try make(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: .original,
+                            fitLongEdge: maximumLongEdge)
+        }
+
+        func isWithin(maximumLongEdge: Int?) -> Bool {
+            maximumLongEdge.map { max(outputWidth, outputHeight) <= $0 } ?? true
         }
     }
     struct Snapshot {
@@ -787,7 +835,18 @@ final class StudioMovieExportService {
                 try checkOutputSize(movie)
                 try await Task.sleep(nanoseconds: 10_000_000)
             }
-            guard writer!.status == .completed else { throw ExportError.writerFailed }
+            guard writer!.status == .completed else {
+                // Small HEVC configurations can be accepted up front and
+                // refused only on finalization. This is not a size preflight.
+                if codec == .hevc, writer!.status == .failed, min(plan.outputWidth, plan.outputHeight) <= 64,
+                   let error = writer!.error.map({ $0 as NSError }),
+                   error.domain == AVFoundationErrorDomain, error.code == AVError.Code.unknown.rawValue,
+                   let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError,
+                   underlying.domain == NSOSStatusErrorDomain, underlying.code == Int(kVTParameterErr) {
+                    throw ExportError.codecUnavailable
+                }
+                throw ExportError.writerFailed
+            }
             try checkpoint(started)
             // Seal the encoder-completed bytes before a caller callback can
             // replace their contents with different but otherwise valid media.
@@ -874,7 +933,7 @@ final class StudioMovieExportService {
             // Refuse before encoding: an unusable mark or an output too small to
             // carry it legibly never yields an unmarked "channel" copy.
             try StudioExportService.validateChannelMark(mark)
-            let plan = try RenderPlan.make(canvasWidth: snapshot.document.width, canvasHeight: snapshot.document.height, preset: snapshot.render.preset)
+            let plan = try snapshot.render.plan(canvasWidth: snapshot.document.width, canvasHeight: snapshot.document.height)
             _ = try StudioChannelRendition.placement(outputWidth: plan.outputWidth, outputHeight: plan.outputHeight, markWidth: mark.width, markHeight: mark.height)
         }
         if let componentProof {
@@ -886,13 +945,16 @@ final class StudioMovieExportService {
         try document.validate()
         // Odd canvases are no longer refused (#182): the render plan pads the
         // encoded frame with one white column/row and records that rule.
-        let plan = try RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: snapshot.render.preset)
+        let plan = try snapshot.render.plan(canvasWidth: document.width, canvasHeight: document.height)
         guard plan.outputWidth.isMultiple(of: 2), plan.outputHeight.isMultiple(of: 2), plan.outputWidth >= 2, plan.outputHeight >= 2 else {
             throw ExportError.oddDimensions
         }
         let pixels = plan.outputWidth * plan.outputHeight
         guard document.frames.count <= limits.maximumFrames, pixels <= limits.maximumFramePixels,
               pixels * document.frames.count <= limits.maximumTotalPixels else { throw ExportError.limitExceeded }
+        if snapshot.render.watermark == true, snapshot.channelMark == nil {
+            try StudioExportService.validateWatermarkPlacement(width: plan.outputWidth, height: plan.outputHeight)
+        }
         let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill, .smudge, .blur, .sharpen, .dodge, .burn]
         let blends = Set(StudioLayerBlendMode.allCases.map(\.rawValue))
         func colorValid(_ value: String) -> Bool {
@@ -972,7 +1034,7 @@ final class StudioMovieExportService {
         guard let image = renderer.cgImage, image.width == plan.outputWidth, image.height == plan.outputHeight else { throw ExportError.renderFailed }
         if let failure { throw failure }
         guard watermark else { return image }
-        let marked = try StudioExportService.watermarked(image)
+        let marked = try StudioExportService.watermarked(image, requiresVisibleMark: true)
         guard marked.width == plan.outputWidth, marked.height == plan.outputHeight else { throw ExportError.renderFailed }
         return marked
     }
@@ -1122,6 +1184,7 @@ final class StudioMovieExportService {
     enum ExportError: LocalizedError {
         case alreadyExporting, limitExceeded, unsafeDestination, transparentUnsupported, audioUnsupported, oddDimensions
         case missingRaster, invalidRaster, unsupportedContent, codecUnavailable, renderFailed, writerFailed, verificationFailed, timedOut, outputUnavailable
+        case planChanged
         case cleanupFailed(URL)
         var errorDescription: String? {
             switch self {
@@ -1140,6 +1203,7 @@ final class StudioMovieExportService {
             case .verificationFailed: return "The encoded movie did not pass its frame, timing or decoding checks. No movie was published."
             case .timedOut: return "The movie exporter exceeded its processing limit. No movie was published."
             case .outputUnavailable: return "These movie files are no longer available at their verified location. They were cancelled, removed or changed."
+            case .planChanged: return "This MP4 no longer fits your current plan. Export it again with the current settings."
             case .cleanupFailed: return "Movie files could not be safely removed. Their location or contents may have changed; cleanup can be retried after the conflict is resolved."
             }
         }

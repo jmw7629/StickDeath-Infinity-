@@ -1189,13 +1189,25 @@ final class StudioViewModel: ObservableObject {
     @discardableResult
     func createProject(name: String, width: Int, height: Int, fps: Int) async -> Bool {
         guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil, textDraft == nil else { message = "Finish or discard any drawing draft, then save and return to projects before creating another animation."; return false }
+        guard !isSaving, !isManagingProjects else { message = "Another project operation is running."; return false }
         do {
-            editor = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
+            let candidate = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
+            let snapshot = candidate.document
+            let project = try storageProject(snapshot, rasters: [:], audioTracks: [], videoSources: [:],
+                                             includeCurrentThumbnail: false)
+            // The new identity must be durably selected before the library
+            // can route into its editor. A failed first save leaves the form open.
+            try storage.saveNewAnimation(project)
             projectThumbnailData = nil
             imageClipboard = nil; imageClipboardEditorVersion = nil; copiedImageLayer = nil; retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll(); managedVideoSources.removeAll()
-            savedRevision = nil; lastSaveTime = nil; resetSession(); isEditing = true
-            return await save()
-        } catch { message = error.localizedDescription; return false }
+            editor = candidate; savedRevision = snapshot.revision; lastSaveTime = Date()
+            resetSession(); isEditing = true
+            await loadProjects()
+            return true
+        } catch {
+            message = "Project could not be saved: \(DeviceStorageManager.userMessage(for: error))"
+            return false
+        }
     }
     @discardableResult
     func openProject(_ metadata: AnimationMetadata) async -> Bool {
@@ -4510,12 +4522,29 @@ final class StudioViewModel: ObservableObject {
                                                       candidates: DrawingWandCandidates) throws -> DrawingWandResult {
         let coverage = try StudioWandRegion.select(rgba: rgba, width: width, height: height, x: x, y: y,
                                                    settings: settings, previous: previous, eligibility: eligibility)
-        var ids = try StudioSelectionElementHitTest.elements(intersecting: coverage, width: width, height: height,
-                                                            candidates: candidates.strokes)
-        for fill in candidates.fills where !ids.contains(fill.id) {
-            if try fill.touches(coverage, width: width, height: height) { ids.append(fill.id) }
+        func hitIDs(in mask: [UInt8]) throws -> [String] {
+            var ids = try StudioSelectionElementHitTest.elements(intersecting: mask, width: width, height: height,
+                                                                candidates: candidates.strokes)
+            for fill in candidates.fills where !ids.contains(fill.id) {
+                if try fill.touches(mask, width: width, height: height) { ids.append(fill.id) }
+            }
+            return ids
         }
-        return .init(coverage: coverage, ids: ids)
+
+        let ids = try hitIDs(in: coverage)
+        guard ids.isEmpty, settings.mode == .replace, previous == nil, settings.feather > 0,
+              let eligibility, coverage[y * width + x] > 0 else {
+            return .init(coverage: coverage, ids: ids)
+        }
+
+        // A narrow painted seed can feather below the drawing hit threshold.
+        // Recover drawing membership from its connected hard region and keep the soft mask for effects.
+        var seedSettings = settings
+        seedSettings.contiguous = true
+        seedSettings.feather = 0
+        let seedCoverage = try StudioWandRegion.select(rgba: rgba, width: width, height: height, x: x, y: y,
+            settings: seedSettings, previous: nil, eligibility: eligibility)
+        return .init(coverage: coverage, ids: try hitIDs(in: seedCoverage))
     }
 
     /// Wand drawing selection for Spatter's typed instruction (#204): the same
@@ -4832,7 +4861,8 @@ final class StudioViewModel: ObservableObject {
     }
     private func storageProject(_ snapshot: StudioDocument, rasters: [String: StoredAnimationFrame],
                                 audioTracks: [AudioTrack]? = nil,
-                                videoSources: [UUID: StoredVideoSource]? = nil) throws -> AnimationProject {
+                                videoSources: [UUID: StoredVideoSource]? = nil,
+                                includeCurrentThumbnail: Bool = true) throws -> AnimationProject {
         for frame in snapshot.frames {
             for instance in frame.rasterLayerInstances {
                 if let mask = instance.regionMask {
@@ -4862,7 +4892,8 @@ final class StudioViewModel: ObservableObject {
         }
         let metadata = AnimationMetadata(id: snapshot.id, title: snapshot.name, fps: snapshot.fps,
             canvasWidth: snapshot.width, canvasHeight: snapshot.height, frameCount: snapshot.frames.count,
-            layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt, thumbnailData: projectThumbnailData)
+            layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt,
+            thumbnailData: includeCurrentThumbnail ? projectThumbnailData : nil)
         // Movies follow the saved document only; history-only copies stay in memory.
         let videoIDs = snapshot.referencedVideoSourceIDs
         let videos = (videoSources ?? managedVideoSources).values.filter { videoIDs.contains($0.id) }
