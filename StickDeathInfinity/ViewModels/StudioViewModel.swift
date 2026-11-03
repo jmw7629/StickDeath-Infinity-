@@ -4367,6 +4367,30 @@ final class StudioViewModel: ObservableObject {
         return result
     }
 
+    /// Visible sampling reads displayed colors only where the active layer has
+    /// actual paint. One extra bounded layer render per gesture, never per object.
+    private func drawingWandSample(frame: AnimationFrame, layerID: String, point: CGPoint,
+                                   tolerance: Int, contiguous: Bool, sampleAllLayers: Bool) throws
+        -> (sample: StudioFillService.Capture, eligibility: Data?) {
+        let sources = rasterSources(for: frame), raster = rasterData(frame.rasterAssetID)
+        let settings = StudioFillRegion.Settings(tolerance: tolerance, contiguous: contiguous,
+            expand: 0, gapClose: 0, antiAlias: false)
+        let sample = try StudioFillService.capture(document: document, frameID: frame.id, layerID: layerID,
+            point: point, color: "#000000", opacity: 1, settings: settings,
+            sampleAllLayers: sampleAllLayers, rasterData: raster, rasterDataByID: sources)
+        guard sampleAllLayers else { return (sample, nil) }
+        let paint = try StudioFillService.capture(document: document, frameID: frame.id, layerID: layerID,
+            point: point, color: "#000000", opacity: 1, settings: settings,
+            sampleAllLayers: false, rasterData: raster, rasterDataByID: sources)
+        var eligibility = Data(count: paint.width * paint.height)
+        for index in 0..<eligibility.count {
+            if index % 4096 == 0 { try Task.checkCancellation() }
+            // Eligibility is binary; even source alpha1 remains fully eligible.
+            eligibility[index] = paint.rgba[paint.rgba.startIndex + index * 4 + 3] > 0 ? 255 : 0
+        }
+        return (sample, eligibility)
+    }
+
     /// Wand on a drawing layer (#153): selects the color region under the tap
     /// on the active layer or the visible canvas, feathers and combines it, then
     /// selects every drawing on the active layer it touches. Move, Copy, Cut and
@@ -4396,10 +4420,9 @@ final class StudioViewModel: ObservableObject {
             let frame = currentFrame
             // Fill's canonical renderer supplies the pixels; no Fill command or
             // document change is issued. Active-layer samples keep transparency.
-            let sample = try StudioFillService.capture(document: document, frameID: capture.frameID, layerID: capture.layerID,
-                point: point, color: "#000000", opacity: 1,
-                settings: .init(tolerance: tolerance, contiguous: contiguous, expand: 0, gapClose: 0, antiAlias: false),
-                sampleAllLayers: sampleAll, rasterData: rasterData(frame.rasterAssetID), rasterDataByID: rasterSources(for: frame))
+            let sampled = try drawingWandSample(frame: frame, layerID: capture.layerID, point: point,
+                tolerance: tolerance, contiguous: contiguous, sampleAllLayers: sampleAll)
+            let sample = sampled.sample, eligibility = sampled.eligibility
             let candidates = try drawingWandCandidates(frame: frame, layerID: capture.layerID)
             let settings = StudioWandRegion.Settings(tolerance: tolerance, contiguous: contiguous, feather: feather,
                                                      mode: mode, rejectTransparentSeed: !sampleAll)
@@ -4407,7 +4430,7 @@ final class StudioViewModel: ObservableObject {
             wandWorking = true
             let worker = Task.detached(priority: .userInitiated) { () throws -> DrawingWandResult in
                 try Self.drawingWandResult(rgba: rgba, width: width, height: height, x: x, y: y,
-                                           settings: settings, previous: previous, candidates: candidates)
+                                           settings: settings, previous: previous, eligibility: eligibility, candidates: candidates)
             }
             drawingWandWorker = worker
             defer { drawingWandWorker = nil; wandWorking = imageRegionWorker != nil }
@@ -4441,10 +4464,10 @@ final class StudioViewModel: ObservableObject {
 
     /// The Wand's region and drawing hit test, off the main actor.
     private nonisolated static func drawingWandResult(rgba: Data, width: Int, height: Int, x: Int, y: Int,
-                                                      settings: StudioWandRegion.Settings, previous: [UInt8]?,
+                                                      settings: StudioWandRegion.Settings, previous: [UInt8]?, eligibility: Data?,
                                                       candidates: DrawingWandCandidates) throws -> DrawingWandResult {
         let coverage = try StudioWandRegion.select(rgba: rgba, width: width, height: height, x: x, y: y,
-                                                   settings: settings, previous: previous)
+                                                   settings: settings, previous: previous, eligibility: eligibility)
         var ids = try StudioSelectionElementHitTest.elements(intersecting: coverage, width: width, height: height,
                                                             candidates: candidates.strokes)
         for fill in candidates.fills where !ids.contains(fill.id) {
@@ -4467,10 +4490,9 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.unavailable("Wand selects drawings on a visible drawing layer whose lock is Free or Position. Nothing was selected.")
         }
         let frame = currentFrame, layerID = activeLayerID
-        let sample = try StudioFillService.capture(document: document, frameID: frame.id, layerID: layerID,
-            point: point, color: "#000000", opacity: 1,
-            settings: .init(tolerance: tolerance, contiguous: true, expand: 0, gapClose: 0, antiAlias: false),
-            sampleAllLayers: sampleAllLayers, rasterData: rasterData(frame.rasterAssetID), rasterDataByID: rasterSources(for: frame))
+        let sampled = try drawingWandSample(frame: frame, layerID: layerID, point: point,
+            tolerance: tolerance, contiguous: true, sampleAllLayers: sampleAllLayers)
+        let sample = sampled.sample, eligibility = sampled.eligibility
         let candidates = try drawingWandCandidates(frame: frame, layerID: layerID)
         let settings = StudioWandRegion.Settings(tolerance: tolerance, contiguous: true, feather: 0,
                                                  mode: .replace, rejectTransparentSeed: !sampleAllLayers)
@@ -4478,7 +4500,7 @@ final class StudioViewModel: ObservableObject {
         try checkCancellation()
         let worker = Task.detached(priority: .userInitiated) { () throws -> DrawingWandResult in
             try Self.drawingWandResult(rgba: rgba, width: width, height: height, x: x, y: y,
-                                       settings: settings, previous: nil, candidates: candidates)
+                                       settings: settings, previous: nil, eligibility: eligibility, candidates: candidates)
         }
         let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
         try checkCancellation()

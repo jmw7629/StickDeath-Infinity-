@@ -623,7 +623,92 @@ private struct Failure: Error { let message: String }
         try require(all && vm.selectedElementIDs == Set(elements.map(\.id)) && vm.document == before,
             "Global color Wand failed to select six actual portrait ellipses within its unchanged budget" + portraitContext("all", all))
         await vm.flush()
+        // The default tolerance must also stay within actual active-layer paint.
+        vm.wandTolerance = 32; vm.wandContiguous = true
+        let outside32 = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: .init(x: 1, y: 1))
+        let typedOutside32 = try await vm.wandDrawingIDs(at: .init(x: 1, y: 1), tolerance: 32,
+            sampleAllLayers: true, checkCancellation: { try Task.checkCancellation() })
+        try require(outside32 && vm.selectedElementIDs.isEmpty && typedOutside32.isEmpty && vm.document == before,
+            "Default-tolerance visible Wand acquired blank portrait paper")
+        let one32 = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: centers[3])
+        try require(one32 && vm.selectedElementIDs == [elements[3].id] && vm.document == before,
+            "Default-tolerance portrait Wand lost the tapped transformed paint")
+        vm.wandContiguous = false
+        let all32 = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: centers[0])
+        try require(all32 && vm.selectedElementIDs == Set(elements.map(\.id)) && vm.document == before,
+            "Default-tolerance global Wand lost actual portrait paint")
         pass("six small native ellipses on a1080x1920 canvas use compact alpha and select within the unchanged work bound")
+    }
+
+    static func visibleWandPaintDomainAndEmptyModes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-wand-paint-domain-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vm = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"),
+            cachesDirectory: root.appendingPathComponent("Cache")))
+        let created = await vm.createProject(name: "Actual Wand paint domain", width: 128, height: 128, fps: 12)
+        try require(created, "Paint-domain project creation")
+        let foreign = DrawnElement(id: UUID().uuidString, tool: .rectangle,
+            points: [.init(x: 80, y: 80), .init(x: 104, y: 104)], color: "#0000FF", width: 2,
+            opacity: 1, layerID: vm.activeLayerID, shape: .init(fillColor: "#0000FF"))
+        try require(vm.commitElement(foreign), "Other-layer visible artwork")
+        vm.addLayer()
+        let faint = DrawnElement(id: UUID().uuidString, tool: .circle,
+            points: [.init(x: 40, y: 40), .init(x: 56, y: 56)], color: "#000000", width: 1,
+            opacity: 1.0 / 255, layerID: vm.activeLayerID, shape: .init(fillColor: "#000000"))
+        let tiny = DrawnElement(id: UUID().uuidString, tool: .fill,
+            points: [.init(x: 20, y: 20), .init(x: 21, y: 21)], color: "#000000", width: 1,
+            opacity: 1, layerID: vm.activeLayerID,
+            fillMask: .init(width: 128, height: 128, spans: [.init(row: 20, start: 20, end: 21, alpha: 1)]))
+        try require(vm.commitElement(faint) && vm.commitElement(tiny), "Actual faint/single-pixel artwork")
+        await vm.flush()
+        let before = vm.document, undo = vm.canUndo
+        let paint = try StudioFillService.capture(document: before, frameID: vm.currentFrame.id,
+            layerID: vm.activeLayerID, point: .init(x: 48, y: 48), color: "#000000", opacity: 1,
+            settings: .init(tolerance: 0, contiguous: true, expand: 0, gapClose: 0, antiAlias: false), sampleAllLayers: false)
+        try require(paint.rgba[(48 * 128 + 48) * 4 + 3] == 1 && paint.rgba[(20 * 128 + 20) * 4 + 3] == 1
+            && paint.rgba[(90 * 128 + 90) * 4 + 3] == 0,
+            "Actual alpha1 paint and transparent foreign-layer position were not rendered")
+        vm.selectedTool = .wand; vm.wandSampleVisibleCanvas = true; vm.wandTolerance = 0
+        vm.wandContiguous = true; vm.wandFeather = 0; vm.wandMode = .newSelection
+        for (point, id) in [(CGPoint(x: 48, y: 48), faint.id), (CGPoint(x: 20, y: 20), tiny.id)] {
+            let selected = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: point)
+            let typed = try await vm.wandDrawingIDs(at: point, tolerance: 0, sampleAllLayers: true,
+                checkCancellation: { try Task.checkCancellation() })
+            try require(selected && vm.selectedElementIDs == [id] && typed == [id] && vm.document == before,
+                "Visible Wand lost actual faint/single-pixel paint or crossed blank paper")
+        }
+        // Empty active paint is a successful empty next region, even over another layer's blue paint.
+        for mode in [StudioImageRegionService.Mode.add, .subtract] {
+            vm.wandMode = mode
+            let selected = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: .init(x: 90, y: 90))
+            try require(selected && vm.selectedElementIDs == [tiny.id] && vm.document == before,
+                "Empty visible-domain Add/Subtract lost the previous drawing selection")
+        }
+        vm.wandMode = .newSelection
+        let empty = await vm.selectDrawingRegion(try vm.captureDrawingWand(), at: .init(x: 90, y: 90))
+        let typedEmpty = try await vm.wandDrawingIDs(at: .init(x: 90, y: 90), tolerance: 32,
+            sampleAllLayers: true, checkCancellation: { try Task.checkCancellation() })
+        try require(empty && vm.selectedElementIDs.isEmpty && typedEmpty.isEmpty && vm.document == before && vm.canUndo == undo,
+            "Visible foreign-layer color acquired active drawings or empty Replace changed history")
+
+        // Exercise the optional boundary independently; omitted eligibility keeps the old region behavior.
+        let white = Data(repeating: 255, count: 16 * 16 * 4)
+        var eligible = Data(count: 16 * 16); eligible[8 * 16 + 8] = 255
+        let previous = [UInt8](repeating: 255, count: 16 * 16)
+        for mode in [StudioSelectionMask.Mode.replace, .add, .subtract, .intersect] {
+            let next = try StudioWandRegion.select(rgba: white, width: 16, height: 16, x: 0, y: 0,
+                settings: .init(tolerance: 32, contiguous: true, feather: 0, mode: mode, rejectTransparentSeed: false),
+                previous: previous, eligibility: eligible)
+            try require(next == (mode == .add || mode == .subtract ? previous : [UInt8](repeating: 0, count: 256)),
+                "Ineligible seed changed established selection combination semantics")
+        }
+        let unrestricted = try StudioWandRegion.select(rgba: white, width: 16, height: 16, x: 0, y: 0,
+            settings: .init(rejectTransparentSeed: false), previous: nil)
+        try require(unrestricted == previous, "Optional drawing eligibility changed existing nil/image region behavior")
+        try rejects { _ = try StudioWandRegion.select(rgba: white, width: 16, height: 16, x: 0, y: 0,
+            settings: .init(rejectTransparentSeed: false), previous: nil, eligibility: Data(count: 255)) }
+        await vm.flush()
+        pass("visible drawing Wand keeps alpha1/tiny paint and combines empty active-layer seeds without acquiring other layers")
     }
 
     static func fullCanvasSelectionCoverageKeepsExistingLargeDocumentCapacity() throws {
@@ -1109,6 +1194,7 @@ private struct Failure: Error { let message: String }
         try await wandHighTranslationLinePixels()
         try await wandFilledEllipsePixels()
         try await wandPortraitSmallEllipsesStayWithinBudget()
+        try await visibleWandPaintDomainAndEmptyModes()
         try fullCanvasSelectionCoverageKeepsExistingLargeDocumentCapacity()
         try await wandGlyphAndRoundedCornerCoverage()
         try await wandSkipsInertHistoricalText()

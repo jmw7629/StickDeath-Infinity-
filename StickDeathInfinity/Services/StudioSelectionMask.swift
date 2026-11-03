@@ -189,8 +189,10 @@ enum StudioWandRegion {
     }
 
     /// `rgba` is straight RGBA8 from the canonical renderer, top-left origin.
+    /// Optional eligibility restricts drawing-layer sampling to actual paint;
+    /// nil retains existing active-layer and image-pixel sampling behavior.
     static func select(rgba: Data, width: Int, height: Int, x: Int, y: Int, settings: Settings,
-                       previous: [UInt8]?,
+                       previous: [UInt8]?, eligibility: Data? = nil,
                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [UInt8] {
         guard (0...StudioSelectionMask.maximumFeatherRadius).contains(settings.feather) else {
             throw StudioSelectionMask.Failure.invalidSettings
@@ -203,11 +205,29 @@ enum StudioWandRegion {
         var fill = StudioFillRegion.Settings()
         fill.tolerance = settings.tolerance; fill.contiguous = settings.contiguous
         fill.antiAlias = false
-        let mask = try StudioFillRegion.compute(rgba: rgba, width: width, height: height, x: x, y: y,
-                                                settings: fill, checkCancellation: checkCancellation)
+        let mask: StudioFillRegion.Mask
+        do {
+            // An explicit paint domain bounds traversal, not just its final crop.
+            mask = try StudioFillRegion.compute(rgba: rgba, width: width, height: height, x: x, y: y,
+                settings: fill, selectionCoverage: eligibility, checkCancellation: checkCancellation)
+        } catch StudioFillRegion.Failure.outsideSelection where eligibility != nil {
+            // Visible colors do not make blank paper paint on the active layer.
+            // Preserve the existing Replace/Add/Subtract/Intersect algebra.
+            let empty = [UInt8](repeating: 0, count: width * height)
+            let result = try StudioSelectionMask.combine(previous, empty, mode: settings.mode)
+            try checkCancellation()
+            return result
+        }
         var region = try StudioSelectionMask.coverage(from: mask)
         region = try StudioSelectionMask.feather(region, width: width, height: height, radius: settings.feather,
                                                  checkCancellation: checkCancellation)
+        if let eligibility {
+            // Feather softens painted pixels without acquiring unpainted paper.
+            for index in region.indices {
+                if index % 4096 == 0 { try checkCancellation() }
+                if eligibility[eligibility.startIndex + index] == 0 { region[index] = 0 }
+            }
+        }
         let result = try StudioSelectionMask.combine(previous, region, mode: settings.mode)
         try checkCancellation()
         return result
