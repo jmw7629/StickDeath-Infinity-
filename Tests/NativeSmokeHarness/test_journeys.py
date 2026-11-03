@@ -87,7 +87,7 @@ class JourneyReceiptTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/spatter-client-verify.yml').read_text()
         job = workflow.split('  native-ios-journeys:', 1)[1]
         aggregate = workflow.split('  native-ios-build:', 1)[1].split('  native-ios-journeys:', 1)[0]
-        self.assertIn('needs: [native-production-tests, native-ios-shards]', job)
+        self.assertIn('needs: [native-app-compile]', job)
         self.assertIn('      max-parallel: 1', job)
         self.assertIn('journey_receipt.py aggregate', aggregate)
         self.assertIn('native-journey-receipt-$SDI_EXPECTED_HEAD-$GITHUB_RUN_ATTEMPT-*', aggregate)

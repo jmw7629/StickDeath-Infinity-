@@ -48,6 +48,9 @@ final class PackTransportStub: URLProtocol {
             let response = HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: "HTTP/1.1",
                 headerFields: ["Location": destination.absoluteString])!
             client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: destination), redirectResponse: response)
+            // A refused redirect still completes with its original HTTP response.
+            // Creating that response is distinct from notifying a redirect.
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocolDidFinishLoading(self)
         case .hold: break
         }
