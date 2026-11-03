@@ -121,7 +121,15 @@ struct StudioBrushLibraryView: View {
     }
 
     private func savedBrushRow(_ brush: StudioSavedBrush) -> some View {
-        HStack(spacing: 0) {
+        // Resolve formatted strings outside the result builder so Swift can
+        // type-check the row without expanding every Text/string overload.
+        let familyTitle: String = brush.settings.family.title
+        let sizeTitle: String = brush.settings.size.formatted(.number.precision(.fractionLength(0...1)))
+        let detailTitle: String = familyTitle + " · " + sizeTitle + "px"
+        let accessibleSize: String = brush.settings.size.formatted()
+        let accessibleOpacity: String = (brush.settings.opacity * 100).formatted()
+        let accessibleValue: String = "\(familyTitle), \(accessibleSize) pixels, \(accessibleOpacity) percent opacity"
+        return HStack(spacing: 0) {
             Button { apply(brush) } label: {
                 HStack(spacing: 6) {
                     StudioSavedBrushSwatch(settings: brush.settings)
@@ -129,7 +137,7 @@ struct StudioBrushLibraryView: View {
                         .frame(width: 64, height: 30)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(brush.name).font(.specialElite(11)).lineLimit(2)
-                        Text(brush.settings.family.title + " · " + brush.settings.size.formatted(.number.precision(.fractionLength(0...1))) + "px")
+                        Text(detailTitle)
                             .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                     }
                     Spacer(minLength: 0)
@@ -145,7 +153,7 @@ struct StudioBrushLibraryView: View {
             .buttonStyle(.plain).foregroundColor(.white)
             .disabled(!canChangeBrush)
             .accessibilityLabel("Apply saved brush " + brush.name)
-            .accessibilityValue(brush.settings.family.title + ", " + brush.settings.size.formatted() + " pixels, " + (brush.settings.opacity * 100).formatted() + " percent opacity")
+            .accessibilityValue(accessibleValue)
             .accessibilityIdentifier("studio.saved-brush.apply." + brush.id.uuidString)
             Menu {
                 Button("Rename") { beginRenaming(brush) }
