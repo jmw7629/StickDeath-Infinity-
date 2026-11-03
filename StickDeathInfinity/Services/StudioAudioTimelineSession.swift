@@ -23,6 +23,8 @@ enum StudioAudioPreviewSilence {
 /// microphone or rendered-video export. Immutable owned bytes outlive the player.
 @MainActor
 final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    enum Purpose: Equatable { case timeline, libraryPreview }
+
     @Published private(set) var isPreparing = false
     @Published private(set) var isPlaying = false
     @Published private(set) var currentTime = 0.0
@@ -47,6 +49,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
     private static var retainedRecovery: StudioAudioMixService.Recovery?
     private let ownerID = UUID()
     private var playbackBegan = false
+    private var purpose: Purpose = .timeline
     private var player: AVAudioPlayer?
     private var timer: Timer?
     private var awaitingCompletionSince: TimeInterval?
@@ -63,7 +66,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
     @discardableResult
     func play(document: StudioDocument, tracks: [AudioTrack], duration: Double,
               from start: Double, auditionVolume: Float = 1, loop: Bool = false,
-              frameClock: StudioAudioTransport.FrameClock? = nil,
+              frameClock: StudioAudioTransport.FrameClock? = nil, purpose: Purpose = .timeline,
               stillCurrent: @escaping () -> Bool,
               onTime: @escaping (Double, Bool) -> Void) -> Bool {
         guard !isPreparing, work == nil else { return false }
@@ -94,6 +97,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
         let playsLoop = loop && windowRange == nil
         Self.activeOwner = ownerID
         let token = UUID(); generation = token
+        self.purpose = purpose
         self.stillCurrent = stillCurrent; self.onTime = onTime
         self.duration = duration; currentTime = start; progress = 0; notice = nil
         self.window = windowRange
@@ -143,7 +147,11 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
                 }
                 onTime(start, true)
                 self.timer = Timer.scheduledTimer(withTimeInterval: 1 / 60, repeats: true) { [weak self] _ in
-                    Task { @MainActor in self?.tick() }
+                    Task { @MainActor in
+                        // A queued tick can outlive the timer that scheduled it.
+                        guard let self, self.generation == token else { return }
+                        self.tick()
+                    }
                 }
             } catch {
                 if let failure = error as? StudioAudioMixService.Failure {
@@ -217,6 +225,9 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
         generation = UUID(); work?.cancel()
         releasePlayerAndOutput()
     }
+    func stopLibraryPreview() {
+        if purpose == .libraryPreview { stop() }
+    }
     /// System interruption or lost output route: stop and say so (#180).
     func handleSessionEvent(_ event: StudioAudioSessionController.Event) {
         guard player != nil || isPreparing else { return }
@@ -229,6 +240,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
         player?.stop(); player?.delegate = nil; player = nil
         StudioAudioSessionController.shared.end(owner: ownerID)
         isPlaying = false
+        purpose = .timeline
         window = nil
         let callback = playbackBegan ? onTime : nil
         playbackBegan = false; onTime = nil; stillCurrent = nil

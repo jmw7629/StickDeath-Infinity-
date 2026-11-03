@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preserve the real, unconfigured universal simulator app after Xcode builds it.
+"""Preserve the real, unconfigured simulator app after Xcode builds it.
 
 This archive is a native review input, not evidence that it runs on another Mac.
 No runtime, signing identity, backend configuration or existing simulator changes.
@@ -52,7 +52,7 @@ def inventory(app: Path) -> dict[str, tuple]:
     return found
 
 
-def package(app: Path, output: Path, commit: str) -> dict:
+def package(app: Path, output: Path, commit: str, *, require_universal: bool = True) -> dict:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Exact source commit required")
     deadline = time.monotonic() + 120
@@ -97,10 +97,17 @@ def package(app: Path, output: Path, commit: str) -> dict:
     for name in binaries:
         binary = app / name
         archs = inspect(["xcrun", "lipo", "-archs", str(binary)]).decode().split()
-        if not {"x86_64", "arm64"}.issubset(archs):
-            raise ValueError("Every preserved native binary needs Intel and Apple-silicon simulator slices")
+        supported = {"x86_64", "arm64"}
+        if require_universal:
+            if not supported.issubset(archs):
+                raise ValueError("Every preserved native binary needs Intel and Apple-silicon simulator slices")
+            checked_architectures = ["x86_64", "arm64"]
+        else:
+            if not archs or not set(archs).issubset(supported):
+                raise ValueError("The compile review binary lacks a supported simulator architecture")
+            checked_architectures = sorted(set(archs))
         versions = {}
-        for arch in ["x86_64", "arm64"]:
+        for arch in checked_architectures:
             text = inspect(["xcrun", "vtool", "-arch", arch, "-show-build", str(binary)]).decode()
             if not re.search(r"platform\s+IOSSIMULATOR\b", text):
                 raise ValueError("Native executable slice is not built for the iOS simulator")
@@ -112,6 +119,10 @@ def package(app: Path, output: Path, commit: str) -> dict:
         binary_versions[name] = {"architectures": sorted(archs), "buildVersions": versions}
     archs = binary_versions[executable]["architectures"]
     build_versions = binary_versions[executable]["buildVersions"]
+    if not require_universal and any(
+        not set(archs).issubset(details["architectures"]) for details in binary_versions.values()
+    ):
+        raise ValueError("Embedded native code lacks a simulator architecture advertised by the app")
     check_deadline()
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     partial = output / "StickDeathInfinity-simulator.zip.partial"
@@ -196,6 +207,13 @@ if __name__ == "__main__":
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--ci-compile-product", action="store_true",
+                        help="Preserve the exact architecture set of an ephemeral CI compile product")
     arguments = parser.parse_args()
-    result = package(arguments.app, arguments.output, arguments.commit)
+    if arguments.ci_compile_product and (
+        os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
+    ):
+        parser.error("The compile product packaging mode is restricted to hosted CI")
+    result = package(arguments.app, arguments.output, arguments.commit,
+                     require_universal=not arguments.ci_compile_product)
     print(json.dumps({key: value for key, value in result.items() if key != "fileHashes"}))

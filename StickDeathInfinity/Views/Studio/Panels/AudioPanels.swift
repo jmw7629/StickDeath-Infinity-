@@ -187,6 +187,12 @@ private struct StudioAudioWorkspace: View {
     @State private var showingLibrary = false
     private var canOpenLibrary: Bool { vm.planLimits.soundLibrary || vm.planLimits.audioImport }
     private func openLibrary() { if vm.requirePlan(canOpenLibrary) { showingLibrary = true } }
+    private func closeLibrary() {
+        soundPacks.close()
+        audio.stopCataloguePreview()
+        timeline.stopLibraryPreview()
+        showingLibrary = false
+    }
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     @State private var category: String?
@@ -503,7 +509,7 @@ private struct StudioAudioWorkspace: View {
                 if category != nil || browseAllSounds { Button("‹") { category = nil; browseAllSounds = false; search = ""; soundDuration = .any; soundSort = .catalogue }.frame(width: 32, height: 44).accessibilityLabel("All sound categories") }
                 Text(category ?? "Sound Library").font(.specialElite(16))
                 Spacer()
-                Button { soundPacks.close(); showingLibrary = false } label: {
+                Button { closeLibrary() } label: {
                     Image(systemName: "xmark").font(.system(size: 10)).frame(width: 44, height: 44)
                 }.accessibilityLabel("Close sound library")
                     .accessibilityIdentifier("studio.audio.library.close")
@@ -1783,6 +1789,7 @@ private struct AudioProjectClips: View {
                         let project = vm.document.id, revision = vm.document.revision
                         auditionID = clip.id
                         let accepted = timeline.play(document: solo, tracks: [track], duration: clip.duration, from: 0,
+                            purpose: .libraryPreview,
                             stillCurrent: { vm.isEditing && vm.document.id == project && vm.document.revision == revision },
                             onTime: { _, playing in if !playing { auditionID = nil } })
                         if !accepted { auditionID = nil }

@@ -182,13 +182,19 @@ jobs:
     # alongside serial phone/iPad journeys, with at most two Mac jobs per run.
     needs: [source-security, spatter-production-tests]
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 42
     steps:
+      - name: Set the optional Simulator review window
+        id: native-compile-review-window
+        continue-on-error: true
+        run: |
+          python3 -c 'import time; print("start_cutoff_ns=" + str(time.monotonic_ns() + 35 * 60 * 10**9))' >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Build the checked-in unsigned iOS app and capture isolated launch evidence
+        timeout-minutes: 35
         run: python3 scripts/native-smoke/build_app_ci.py
       - name: Preserve exact-source native compilation evidence
         if: always()
@@ -197,6 +203,29 @@ jobs:
           name: native-app-compile-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/sdi-native-compile-evidence/
           retention-days: 3
+          if-no-files-found: error
+      - name: Package the completed Simulator compile for optional review
+        id: native-compile-package
+        if: ${{ success() && steps.native-compile-review-window.outputs.start_cutoff_ns != '' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          SDI_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          SDI_REVIEW_PACKAGE_START_CUTOFF_NS: ${{ steps.native-compile-review-window.outputs.start_cutoff_ns }}
+        run: python3 scripts/native-smoke/package_compile_review_ci.py
+      - name: Upload the early unconfigured Simulator review app
+        if: ${{ !cancelled() && steps.native-compile-package.outcome == 'success' && steps.native-compile-package.outputs.review_app_ready == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-compiled-simulator-app-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sdi-native-compile-review-app/StickDeathInfinity-simulator.zip
+            ${{ runner.temp }}/sdi-native-compile-review-app/manifest.json
+            ${{ runner.temp }}/sdi-native-compile-review-app/compile-provenance.json
+          retention-days: 3
+          compression-level: 0
           if-no-files-found: error
 
   native-production-tests:

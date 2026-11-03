@@ -123,6 +123,10 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
     private var fingerprints: [UUID: SHA256.Digest] = [:]
     private var task: Task<Void, Never>?
     private var generation = UUID()
+    private enum CataloguePreview: Equatable {
+        case preparing, playing
+    }
+    private var cataloguePreview: CataloguePreview?
     private var player: AVAudioPlayer?
     private var playerIdentity: ObjectIdentifier?
     private var playbackTimer: Timer?
@@ -320,10 +324,14 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
         stop()
         let id = UUID(); generation = id
         isBusy = true; state = attach == nil ? .analyzing : .importing
+        if attach == nil { cataloguePreview = .preparing }
         progress = 0; lastImportedClipID = nil
         task = Task { [weak self] in
             guard let self else { return }
-            defer { self.isBusy = false; self.task = nil }
+            defer {
+                if self.cataloguePreview == .preparing { self.cataloguePreview = nil }
+                self.isBusy = false; self.task = nil
+            }
             do {
                 let prepared = try await StudioCatalogueSoundSource.prepare(sound, catalogue: catalogue,
                     importer: self.importer, scratchParent: self.scratchParent) { [weak self] value in
@@ -349,7 +357,9 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
                 } else {
                     self.remember(result, for: track.id)
                     self.progress = 1; self.state = .ready; self.isBusy = false
-                    _ = self.play(clipID: sound.id, track: track, volume: 1)
+                    if self.play(clipID: sound.id, track: track, volume: 1) {
+                        self.cataloguePreview = .playing
+                    }
                 }
             } catch is CancellationError {
                 if self.generation == id { self.state = .cancelled }
@@ -404,7 +414,20 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
         guard playingClipID == clipID, value.isFinite, (0...1).contains(value) else { return }
         player?.volume = Float(value)
     }
+    /// Dismissing the library cancels its audition, including pending decoding.
+    func stopCataloguePreview() {
+        switch cataloguePreview {
+        case .preparing:
+            generation = UUID(); task?.cancel()
+            cataloguePreview = nil; state = .stopped
+        case .playing:
+            stop()
+        case nil:
+            break
+        }
+    }
     func stop() {
+        if cataloguePreview == .playing { cataloguePreview = nil }
         playbackTimer?.invalidate(); playbackTimer = nil
         player?.stop(); player?.delegate = nil; player = nil; playerIdentity = nil
         StudioAudioSessionController.shared.end(owner: sessionOwnerID)
