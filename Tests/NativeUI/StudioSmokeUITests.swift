@@ -1211,15 +1211,43 @@ final class StudioSmokeUITests: XCTestCase {
         let settingsName = app.textFields["studio.settings.name"]
         XCTAssertTrue(settingsName.waitForExistence(timeout: 8))
         let settingsScroll = app.scrollViews["studio.settings.scroll"]
+        let close = app.buttons["studio.settings.close"]
+        let discard = app.alerts["Discard unapplied settings?"]
+        try setName(settingsName, originalName + " discarded")
+        try reveal(close, in: settingsScroll, application: app, upward: false); close.tap()
+        XCTAssertTrue(discard.waitForExistence(timeout: 5))
+        discard.buttons["Discard Changes"].tap()
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in !settingsScroll.exists }, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: 5), "Confirmed discard did not close Project Settings")
+        app.buttons["studio.menu.open"].tap()
+        XCTAssertTrue(settings.waitForExistence(timeout: 5)); settings.tap()
+        XCTAssertTrue(settingsName.waitForExistence(timeout: 8))
+        XCTAssertEqual(settingsName.value as? String, originalName, "Discarded name became a project edit")
+
         try setName(settingsName, finalName)
         let hd = app.buttons["studio.project.preset.hd"]
         try reveal(hd, in: settingsScroll, application: app); hd.tap()
         let fps30 = app.buttons["studio.project.fps.30"]
         try reveal(fps30, in: settingsScroll, application: app); fps30.tap()
         capture(app, name: "owner-project-settings-reference-card")
+        let export = app.buttons["studio.settings.open-export"]
+        try reveal(export, in: settingsScroll, application: app); export.tap()
+        XCTAssertTrue(discard.waitForExistence(timeout: 5))
+        discard.buttons["Keep Editing"].tap()
+        XCTAssertTrue(settingsScroll.exists)
+        XCTAssertFalse(app.buttons["studio.export.start"].exists, "Cancel still opened Export")
+
+        let reload = app.buttons["studio.settings.reload-name"]
+        try reveal(reload, in: settingsScroll, application: app, upward: false); reload.tap()
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "Reload silently discarded the form")
+        discard.buttons["Keep Editing"].tap()
+        try reveal(settingsName, in: settingsScroll, application: app, upward: false)
+        XCTAssertEqual(settingsName.value as? String, finalName, "Cancel lost the edited name")
+        try reveal(fps30, in: settingsScroll, application: app)
+        XCTAssertTrue(fps30.isSelected, "Cancel lost the edited frame rate")
+
         let apply = app.buttons["studio.settings.rename"]
         try reveal(apply, in: settingsScroll, application: app); apply.tap()
-        let close = app.buttons["studio.settings.close"]
         try reveal(close, in: settingsScroll, application: app, upward: false); close.tap()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "30 FPS")).firstMatch.exists)
         try waitForButton("UNDO", in: app).tap()

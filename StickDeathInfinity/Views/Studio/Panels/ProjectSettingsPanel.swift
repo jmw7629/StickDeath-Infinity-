@@ -1,21 +1,36 @@
 import SwiftUI
 
 struct ProjectSettingsPanel: View {
+    private struct Form: Equatable {
+        var name = ""
+        var width = 1080
+        var height = 1920
+        var fps = 12
+    }
+    private enum DraftAction {
+        case open(StudioPanelType)
+        case reload
+    }
+
     @ObservedObject var vm: StudioViewModel
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
-    @State private var projectName = ""
-    @State private var width = 1080
-    @State private var height = 1920
-    @State private var fps = 12
+    @State private var form = Form()
+    @State private var loadedForm: Form?
     @State private var backgroundID: String?
     @State private var anchor: StudioCanvasAnchor = .topLeading
     @State private var capturedProjectID: UUID?
     @State private var capturedRevision = -1
+    @State private var capturedAccountID: String?
+    @State private var pendingAction: DraftAction?
     @State private var notice: String?
     @State private var showingOnionSettings = false
     @State private var showingGridSettings = false
 
+    private var settingsContextIsOpen: Bool {
+        scenePhase == .active && vm.activePanel == .projectSettings
+            && capturedProjectID == vm.document.id && capturedAccountID == authVM.userId
+    }
     private var settingsAreCurrent: Bool {
         capturedProjectID == vm.document.id && capturedRevision == vm.document.revision
     }
@@ -33,24 +48,24 @@ struct ProjectSettingsPanel: View {
                     HStack {
                         Text("Project Settings").font(.specialElite(25)).foregroundStyle(.white)
                         Spacer()
-                        Button { vm.activePanel = .none } label: {
+                        Button { leaveSettings(for: .none) } label: {
                             Image(systemName: "xmark").foregroundStyle(.gray).frame(width: 44, height: 44)
                         }.accessibilityLabel("Close project settings").accessibilityIdentifier("studio.settings.close")
                     }
-                    StudioProjectConfigurationCard(name: $projectName, width: $width, height: $height,
-                        fps: $fps, backgroundID: $backgroundID, submitTitle: "Apply Changes →",
+                    StudioProjectConfigurationCard(name: $form.name, width: $form.width, height: $form.height,
+                        fps: $form.fps, backgroundID: $backgroundID, submitTitle: "Apply Changes →",
                         submitIdentifier: "studio.settings.rename", nameIdentifier: "studio.settings.name",
                         notice: settingsNotice, busy: vm.isSaving,
-                        canSubmit: capturedProjectID != nil && settingsAreCurrent && scenePhase == .active && !vm.isPlaying,
-                        chooseExistingBackground: chooseBackground,
+                        canSubmit: settingsContextIsOpen && settingsAreCurrent && !vm.isPlaying,
+                        chooseExistingBackground: { leaveSettings(for: .backgroundLibrary) },
                         keepsCustomSize: (width: vm.canvasWidth, height: vm.canvasHeight), onSubmit: apply)
-                    if width != vm.canvasWidth || height != vm.canvasHeight {
+                    if form.width != vm.canvasWidth || form.height != vm.canvasHeight {
                         StudioCanvasAnchorPicker(anchor: $anchor, fromWidth: vm.canvasWidth, fromHeight: vm.canvasHeight,
-                                                 toWidth: width, toHeight: height)
+                                                 toWidth: form.width, toHeight: form.height)
                     }
                     Text("Canvas changes keep artwork at its original size and change the visible area; the anchor chooses which edge or corner stays fixed. Frame rate changes animation speed; audio stays at its time in seconds. Undo restores the previous settings. Resizing may be unavailable for historical flattened images, pixel effects or a smaller size that would discard fill coverage.")
                         .font(.specialElite(12)).foregroundStyle(.gray)
-                    Button("Reload current settings") { load() }
+                    Button("Reload current settings") { request(.reload) }
                         .font(.specialElite(14)).foregroundStyle(.red).frame(minHeight: 44)
                         .accessibilityIdentifier("studio.settings.reload-name")
                     extraTools
@@ -59,27 +74,58 @@ struct ProjectSettingsPanel: View {
             .accessibilityIdentifier("studio.settings.scroll")
         }
         .onAppear { load() }
-        .onChange(of: authVM.userId) { _, _ in capturedProjectID = nil; vm.activePanel = .none }
-        .onChange(of: vm.document.id) { _, _ in capturedProjectID = nil; vm.activePanel = .none }
+        .onChange(of: authVM.userId) { _, _ in invalidate() }
+        .onChange(of: vm.document.id) { _, _ in invalidate() }
+        .alert("Discard unapplied settings?", isPresented: Binding(
+            get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }),
+            presenting: pendingAction) { action in
+                Button("Discard Changes", role: .destructive) {
+                    pendingAction = nil
+                    request(action, discarding: true)
+                }
+                Button("Keep Editing", role: .cancel) { pendingAction = nil }
+            } message: { _ in
+                Text("This clears the changes you entered on this screen.")
+            }
     }
     private func load() {
-        projectName = vm.projectName; width = vm.canvasWidth; height = vm.canvasHeight; fps = vm.fps
+        let current = Form(name: vm.projectName, width: vm.canvasWidth, height: vm.canvasHeight, fps: vm.fps)
+        form = current; loadedForm = current
         anchor = .topLeading
-        capturedProjectID = vm.document.id; capturedRevision = vm.document.revision; notice = nil
+        capturedProjectID = vm.document.id; capturedRevision = vm.document.revision
+        capturedAccountID = authVM.userId; notice = nil
+    }
+    private func invalidate() {
+        pendingAction = nil; capturedProjectID = nil; vm.activePanel = .none
     }
     private func apply() {
-        guard let id = capturedProjectID, scenePhase == .active else { return }
-        if vm.updateProjectSettings(name: projectName, width: width, height: height, fps: fps, anchor: anchor,
+        guard let id = capturedProjectID, settingsContextIsOpen else { return }
+        if vm.updateProjectSettings(name: form.name, width: form.width, height: form.height, fps: form.fps, anchor: anchor,
                                     expectedProjectID: id, expectedRevision: capturedRevision) {
             load(); notice = vm.isDirty ? "Settings applied to the open project. Check the Studio save indicator for device-save status." : "Settings match the current project."
         } else { notice = vm.message ?? "Settings could not be changed." }
     }
-    private func chooseBackground() {
-        guard capturedProjectID == vm.document.id, capturedRevision == vm.document.revision,
-              projectName == vm.projectName, width == vm.canvasWidth, height == vm.canvasHeight, fps == vm.fps else {
-            notice = "Apply or reload your settings before opening Background Library."; return
+    private func leaveSettings(for destination: StudioPanelType) {
+        request(.open(destination))
+    }
+    private func request(_ action: DraftAction, discarding: Bool = false) {
+        guard settingsContextIsOpen else { return }
+        // Background Library still requires the captured revision. The stale
+        // notice already tells the creator how to reload the current settings.
+        if case .open(.backgroundLibrary) = action, !settingsAreCurrent { return }
+        if case .open(.magicCut) = action, !vm.planLimits.advancedTools {
+            // The existing VM gate reports the locked tool without leaving.
+            vm.activePanel = .magicCut
+            return
         }
-        vm.activePanel = .backgroundLibrary
+        if !discarding, let loadedForm, form != loadedForm {
+            pendingAction = action
+            return
+        }
+        switch action {
+        case .open(let destination): vm.activePanel = destination
+        case .reload: load()
+        }
     }
     private var extraTools: some View {
         VStack(spacing: 0) {
@@ -94,7 +140,7 @@ struct ProjectSettingsPanel: View {
                 .padding(.bottom, 4)
             
             PanelSettingsRow(icon: "🎞", label: "Frames Viewer") {
-                vm.activePanel = .framesViewer
+                leaveSettings(for: .framesViewer)
             }
             
             // Onion Skin (toggle + Edit)
@@ -165,21 +211,21 @@ struct ProjectSettingsPanel: View {
             
             if showingGridSettings { StudioGridSettingsControls(vm: vm) }
 
-            PanelSettingsRow(icon: "✨", label: "Magic Cut", locked: !vm.planLimits.advancedTools) { vm.activePanel = .magicCut }
-            PanelSettingsRow(icon: "🖼", label: "Background Library") { chooseBackground() }
-            PanelSettingsRow(icon: "🎬", label: "Rotoscope / Video") { vm.activePanel = .rotoscope }
+            PanelSettingsRow(icon: "✨", label: "Magic Cut", locked: !vm.planLimits.advancedTools) { leaveSettings(for: .magicCut) }
+            PanelSettingsRow(icon: "🖼", label: "Background Library") { leaveSettings(for: .backgroundLibrary) }
+            PanelSettingsRow(icon: "🎬", label: "Rotoscope / Video") { leaveSettings(for: .rotoscope) }
             
             PanelSettingsRow(icon: "📸", label: "Add Picture") {
-                vm.activePanel = .addImage
+                leaveSettings(for: .addImage)
             }
             
             PanelSettingsRow(icon: "😀", label: "Stickers & Emoji") {
-                vm.activePanel = .stickerEmoji
+                leaveSettings(for: .stickerEmoji)
             }
             
             PanelSettingsRow(icon: "📤", label: "Export") {
-                vm.activePanel = .export
-            }
+                leaveSettings(for: .export)
+            }.accessibilityIdentifier("studio.settings.open-export")
             
         }
     }
