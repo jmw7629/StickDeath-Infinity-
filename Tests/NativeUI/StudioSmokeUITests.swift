@@ -4199,11 +4199,13 @@ final class StudioSmokeUITests: XCTestCase {
                           "Transform control is not fully visible inside its sole popup")
         }
         try revealTransformControl(scale)
-        scale.adjust(toNormalizedSliderPosition: 0.4667) // roughly 200% in 25...400
+        try adjustNativeDraftSlider(scale, target: 200, range: 25...400, tolerance: 20,
+                                    app: app, name: "selection-scale")
         let actualScale = try XCTUnwrap(Double((scale.value as? String ?? "").filter { "0123456789.-".contains($0) }))
         XCTAssertTrue((180...220).contains(actualScale), "Scale gesture did not reach the actual control; value=\(actualScale)")
         try revealTransformControl(angle)
-        angle.adjust(toNormalizedSliderPosition: 0.75) // roughly 90 degrees
+        try adjustNativeDraftSlider(angle, target: 90, range: -180...180, tolerance: 15,
+                                    app: app, name: "selection-angle")
         let actualAngle = try XCTUnwrap(Double((angle.value as? String ?? "").filter { "0123456789.-".contains($0) }))
         XCTAssertTrue((75...105).contains(actualAngle), "Angle gesture did not reach the actual control; value=\(actualAngle)")
         try revealTransformControl(apply)
@@ -5209,7 +5211,29 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
         let savedClip = reopened.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.audio.clip.")).firstMatch
-        XCTAssertTrue(savedClip.waitForExistence(timeout: 8) && savedClip.isHittable)
+        let savedLanes = reopened.scrollViews["studio.audio.lanes"]
+        let savedWorkspace = reopened.scrollViews["studio.audio.compact.scroll"]
+        let savedClipReady = NSPredicate { _, _ in
+            guard savedClip.exists, savedClip.isHittable, savedClip.isEnabled,
+                  savedLanes.exists, savedWorkspace.exists else { return false }
+            let viewport = savedLanes.frame.intersection(savedWorkspace.frame).intersection(reopened.frame)
+            let clipFrame = savedClip.frame
+            return !viewport.isNull && !viewport.isEmpty && clipFrame.width > 0 && clipFrame.height > 0
+                && viewport.contains(clipFrame)
+        }
+        let savedClipBecameReady = expectation(for: savedClipReady, evaluatedWith: nil).waitUntilFulfilled(timeout: 8)
+        if !savedClipBecameReady {
+            capture(reopened, name: "audio-trim-saved-clip-not-ready")
+            captureHierarchy(reopened, name: "audio-trim-saved-clip-not-ready-hierarchy")
+            let clip = savedClip.exists ? "type=\(savedClip.elementType.rawValue), frame=\(savedClip.frame), hittable=\(savedClip.isHittable), enabled=\(savedClip.isEnabled)" : "missing"
+            let lanes = savedLanes.exists ? "\(savedLanes.frame)" : "missing"
+            let workspace = savedWorkspace.exists ? "\(savedWorkspace.frame)" : "missing"
+            let bounds = XCTAttachment(string: "clip=\(clip); lanes=\(lanes); workspace=\(workspace); app=\(reopened.frame)")
+            bounds.name = "audio-trim-saved-clip-bounds"; bounds.lifetime = .keepAlways; add(bounds)
+        }
+        XCTAssertTrue(savedClipBecameReady, "The actual saved clip must be fully visible, enabled and hittable before tapping")
+        guard savedClipBecameReady else { throw NSError(domain: "NativeAudioTrimReadiness", code: 1) }
+        XCTAssertTrue(savedClip.exists && savedClip.isHittable && savedClip.isEnabled)
         savedClip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(reopened.staticTexts["studio.audio.clip-timing"].label.contains("Source 0.05s · 0.10s"), "Cold reopen lost the applied trim values")
         capture(reopened, name: "audio-numeric-trim-cold-reopened")
@@ -6845,7 +6869,9 @@ final class StudioSmokeUITests: XCTestCase {
         try reveal(app.buttons["studio.image-placement.open"]).tap()
         try reveal(app.buttons["studio.image-placement.half"]).tap()
         let angle = app.sliders.matching(NSPredicate(format: "label == %@", "Additional angle")).firstMatch
-        try reveal(angle).adjust(toNormalizedSliderPosition: 0.625)
+        let visibleAngle = try reveal(angle)
+        try adjustNativeDraftSlider(visibleAngle, target: 45, range: -180...180, tolerance: 5,
+                                    app: app, name: "image-additional-angle")
         let degrees = try XCTUnwrap(Double((angle.value as? String ?? "").replacingOccurrences(of: "°", with: "")))
         XCTAssertGreaterThan(degrees, 40); XCTAssertLessThan(degrees, 50)
         capture(app, name: "image-additional-angle-draft")
@@ -8664,6 +8690,35 @@ final class StudioSmokeUITests: XCTestCase {
         let foregroundA = exportForegroundMask(lhs), foregroundB = exportForegroundMask(rhs)
         return unmatched(a, b) + unmatched(b, a)
             + unmatched(foregroundA, foregroundB) + unmatched(foregroundB, foregroundA)
+    }
+
+    /// Native slider adjustment is approximate. Correct from its actual displayed
+    /// value while this remains an uncommitted draft; Apply is still tapped once.
+    @MainActor
+    private func adjustNativeDraftSlider(_ slider: XCUIElement, target: Double, range: ClosedRange<Double>,
+                                         tolerance: Double, app: XCUIApplication, name: String) throws {
+        let span = range.upperBound - range.lowerBound
+        var aim = (target - range.lowerBound) / span
+        var observed = [String]()
+        let scroll = app.scrollViews["studio.tool-settings.scroll"]
+        for _ in 0..<3 {
+            guard slider.exists, slider.isHittable, slider.isEnabled, scroll.exists else { break }
+            let viewport = scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 12)
+            guard viewport.contains(slider.frame) else { break }
+            slider.adjust(toNormalizedSliderPosition: CGFloat(aim))
+            let displayed = slider.value as? String ?? ""
+            observed.append(displayed)
+            guard let actual = Double(displayed.filter { "0123456789.-".contains($0) }),
+                  actual.isFinite, range.contains(actual) else { break }
+            if abs(actual - target) < tolerance { return }
+            aim = min(1, max(0, aim + (target - actual) / span))
+        }
+        capture(app, name: name + "-slider-target-not-reached")
+        captureHierarchy(app, name: name + "-slider-target-not-reached-hierarchy")
+        let values = XCTAttachment(string: "target=\(target); range=\(range); values=\(observed)")
+        values.name = name + "-slider-observed-values"; values.lifetime = .keepAlways; add(values)
+        XCTFail("The actual native slider did not reach its existing target band after at most three adjustments")
+        throw NSError(domain: "NativeDraftSlider", code: 1)
     }
 
     @MainActor
