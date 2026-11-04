@@ -19,7 +19,7 @@ from test_budget import build_test_budget, build_shard_budget
 
 # Whole-file pin covers test bodies AND shared helpers. Unreviewed source changes
 # retain both mandatory fixtures rather than silently omitting a new dependency.
-FIXTURE_SOURCE_SHA256 = "a8cfdddc2e4c7753e65db9bebdd9e1d710dbcb485463cceac0116af0225293bb"
+FIXTURE_SOURCE_SHA256 = "14cd0a0712b8bac9e4a4481ab7b3e788666490d0b837de589ceb66f8753a094e"
 PHOTO_FIXTURE_CASE = "testPhotoImportUndoPersistenceAndRealPNGExport"
 VIDEO_FIXTURE_CASE = "testRotoscopePhotosActualPlayheadUndoAndColdReopen"
 
@@ -61,6 +61,8 @@ _ENCODER_LINE = re.compile(
     r" codec=(?:h264|hevc) writerStatus=[0-4]"
     rf" domain={_ENCODER_DOMAIN} code=-?[0-9]{{1,19}}"
     rf" underlyingDomain={_ENCODER_DOMAIN} underlyingCode=-?[0-9]{{1,19}}"
+    r"(?: publicationSubstage=(?:0|1[0-5]|2[0-5]|3[0-4]) fileRole=[0-2]"
+    r" systemError=(?P<system_error>0|[1-9][0-9]{0,9}) identityMatch=(?:-1|0|1))?"
 )
 
 
@@ -76,7 +78,8 @@ def movie_encoder_records(raw: bytes) -> tuple[list[str], bool]:
                 _ENCODER_SUBSYSTEM, _ENCODER_CATEGORY):
             continue
         message = event.get("eventMessage")
-        if isinstance(message, str) and _ENCODER_LINE.fullmatch(message):
+        match = _ENCODER_LINE.fullmatch(message) if isinstance(message, str) else None
+        if match and (match["system_error"] is None or int(match["system_error"]) <= 2**31 - 1):
             if len(records) == _ENCODER_LOG_RECORDS:
                 return records, True
             records.append(message)

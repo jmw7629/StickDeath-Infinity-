@@ -1498,32 +1498,37 @@ private struct StudioAudioTimelineClip: View {
     @State private var trimmingLeading: Bool?
     @GestureState private var trimTranslation: CGFloat = 0
     @GestureState private var translation: CGSize = .zero
+    private var hasTrimHandles: Bool { clip.duration * pointsPerSecond >= 88 }
+    private func selectClip() { stop(); vm.selectedAudioClip = clip }
     @ViewBuilder private var clipAppearance: some View {
         let visible = trimPreview ?? clip
         let width = visible.duration * pointsPerSecond
         let radius = min(14.0, width / 2)
         HStack(spacing: 0) {
-            if clip.duration * pointsPerSecond >= 88 { handle(leading: true) }
-            VStack(alignment: .leading, spacing: 3) {
-                if width >= 44 {
-                    Text(clip.soundName).lineLimit(1).font(.specialElite(11))
-                    Text(String(format: "%.2fs", visible.duration)).font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
-                    if let measurement {
-                        MeasuredAudioWaveform(peaks: measurement.peaks, rms: measurement.rms, sourceDuration: measurement.duration,
-                            sourceOffset: visible.sourceOffset, duration: visible.duration)
-                            .frame(height: 14).allowsHitTesting(false)
+            if hasTrimHandles { handle(leading: true) }
+            Button(action: selectClip) {
+                VStack(alignment: .leading, spacing: 3) {
+                    if width >= 44 {
+                        Text(clip.soundName).lineLimit(1).font(.specialElite(11))
+                        Text(String(format: "%.2fs", visible.duration)).font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                        if let measurement {
+                            MeasuredAudioWaveform(peaks: measurement.peaks, rms: measurement.rms, sourceDuration: measurement.duration,
+                                sourceOffset: visible.sourceOffset, duration: visible.duration)
+                                .frame(height: 14).allowsHitTesting(false)
+                        }
+                    } else if width >= 12 {
+                        Image(systemName: "waveform").font(.system(size: 10))
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Color.clear
                     }
-                } else if width >= 12 {
-                    Image(systemName: "waveform").font(.system(size: 10))
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Color.clear
-                }
-            }.frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .clipped()
-                .contentShape(Rectangle()).onTapGesture { stop(); vm.selectedAudioClip = clip }
-                .gesture(moveGesture)
-            if clip.duration * pointsPerSecond >= 88 { handle(leading: false) }
+                }.frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .clipped()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(moveGesture)
+            if hasTrimHandles { handle(leading: false) }
         }.frame(width: width, height: 58)
             .background(Color(hex: StudioCraftAudio.trackColor(clip.track)).opacity(clip.isMuted || !vm.document.isAudioTrackAudible(clip.track) ? 0.08 : 0.30))
             .clipShape(RoundedRectangle(cornerRadius: radius))
@@ -1540,11 +1545,16 @@ private struct StudioAudioTimelineClip: View {
     }
     var body: some View {
         clipAppearance
-            .accessibilityElement(children: .contain)
+            // A short clip has no trim children. Expose its real selection
+            // action as one button even when its temporal width fits no icon.
+            // Wider clips retain the independently accessible trim handles.
+            .accessibilityElement(children: hasTrimHandles ? .contain : .ignore)
+            .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("studio.audio.clip.\(clip.id)")
             .accessibilityLabel("\(clip.soundName), track \(clip.track), start \(clip.startTime.formatted()) seconds, duration \(clip.duration.formatted()) seconds")
             .accessibilityValue(overlaps ? "Overlaps another clip on this track; both play mixed together" : "")
-            .accessibilityAction(named: "Select clip") { stop(); vm.selectedAudioClip = clip }
+            .accessibilityAction { selectClip() }
+            .accessibilityAction(named: "Select clip") { selectClip() }
             .accessibilityAction(named: "Move earlier one frame") {
                 accessibleEdit(.place(start: max(0, clip.startTime - 1 / Double(vm.fps)), track: clip.track))
             }

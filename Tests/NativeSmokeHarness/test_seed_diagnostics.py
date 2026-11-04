@@ -205,4 +205,126 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(result.spawn_error,'FileNotFoundError');self.assertIsNone(result.returncode)
 
 
+class EncoderDiagnostics(unittest.TestCase):
+    """Real redaction and bounded transport with mocked simulator output only."""
+    LEGACY = ('MP4 encoding failed stage=publication codec=h264 writerStatus=3'
+              ' domain=POSIX code=13 underlyingDomain=none underlyingCode=0')
+    SUFFIX = ' publicationSubstage=34 fileRole=2 systemError=13 identityMatch=1'
+
+    def event(self, message, **fields):
+        return (json.dumps({'subsystem': rec._ENCODER_SUBSYSTEM,
+                            'category': rec._ENCODER_CATEGORY,
+                            'eventMessage': message, **fields}) + '\n').encode()
+
+    def test_legacy_and_new_records_survive_together(self):
+        messages = [self.LEGACY, self.LEGACY + self.SUFFIX]
+        self.assertEqual(rec.movie_encoder_records(b''.join(map(self.event, messages))),
+                         (messages, False))
+
+    def test_every_public_numeric_stage_role_and_identity_accepts(self):
+        for stage in (0, *range(10, 16), *range(20, 26), *range(30, 35)):
+            for role in range(3):
+                for identity in (-1, 0, 1):
+                    for errno in (0, 1, 2147483647):
+                        message = (self.LEGACY + f' publicationSubstage={stage} fileRole={role}'
+                                   f' systemError={errno} identityMatch={identity}')
+                        with self.subTest(stage=stage, role=role, identity=identity, errno=errno):
+                            self.assertEqual(rec.movie_encoder_records(self.event(message)), ([message], False))
+
+    def test_invalid_numeric_values_reject_whole_record(self):
+        good = self.LEGACY + self.SUFFIX
+        values = {'publicationSubstage': [-1, *range(1, 10), *range(16, 20),
+                                         *range(26, 30), 35, 100, '034', '+34', '٣٤'],
+                  'fileRole': [-1, 3, 10, '02', '+2'],
+                  'systemError': [-1, 2147483648, 9999999999, 10000000000, '013', '+13', '١٣'],
+                  'identityMatch': [-2, 2, '01', '+1', '-0']}
+        originals = {'publicationSubstage': '34', 'fileRole': '2', 'systemError': '13', 'identityMatch': '1'}
+        for field, invalid in values.items():
+            for value in invalid:
+                message = good.replace(f'{field}={originals[field]}', f'{field}={value}')
+                with self.subTest(field=field, value=value):
+                    self.assertEqual(rec.movie_encoder_records(self.event(message)), ([], False))
+
+    def test_partial_reordered_unknown_or_private_fields_reject(self):
+        for suffix in (self.SUFFIX.split(' identityMatch=')[0],
+                       self.SUFFIX.replace(' fileRole=2', ''),
+                       self.SUFFIX.replace('fileRole=2 systemError=13', 'systemError=13 fileRole=2'),
+                       self.SUFFIX + ' fileRole=2', self.SUFFIX + ' path=/private/movie.mp4',
+                       ' token=secret-token', self.SUFFIX + ' token=secret-token',
+                       self.SUFFIX + ' ', self.SUFFIX + '\nsecret-token',
+                       self.SUFFIX.replace('systemError=13', 'systemError=<private>')):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(rec.movie_encoder_records(self.event(self.LEGACY + suffix)), ([], False))
+
+    def test_existing_prefix_domains_and_numeric_constraints_stay_strict(self):
+        for old, new in (('MP4 encoding failed ', 'prefix MP4 encoding failed '),
+                         ('stage=publication', 'stage=unknown'), ('codec=h264', 'codec=av1'),
+                         ('writerStatus=3', 'writerStatus=5'), ('domain=POSIX', 'domain=secret-token'),
+                         ('underlyingDomain=none', 'underlyingDomain=/private'),
+                         ('code=13', 'code=' + '1' * 20), ('underlyingCode=0', 'underlyingCode=+1')):
+            for suffix in ('', self.SUFFIX):
+                with self.subTest(old=old, suffix=suffix):
+                    self.assertEqual(rec.movie_encoder_records(self.event(self.LEGACY.replace(old, new) + suffix)),
+                                     ([], False))
+
+    def test_only_scoped_complete_json_events_survive(self):
+        raw = (b'not-json secret-token\n[]\n' + self.event(self.LEGACY, subsystem='private.app')
+               + self.event(self.LEGACY, category='other') + self.event(None)
+               + self.event(self.LEGACY + self.SUFFIX) + self.event(self.LEGACY)[:-1])
+        self.assertEqual(rec.movie_encoder_records(raw), ([self.LEGACY + self.SUFFIX], True))
+
+    def test_record_and_byte_caps_stay_exact(self):
+        line = self.event(self.LEGACY + self.SUFFIX)
+        self.assertEqual(rec.movie_encoder_records(line * 32), ([self.LEGACY + self.SUFFIX] * 32, False))
+        self.assertEqual(rec.movie_encoder_records(line * 33), ([self.LEGACY + self.SUFFIX] * 32, True))
+        cap = 64 * 1024
+        # One valid record exactly at the retained boundary; another is never read.
+        raw = b' ' * (cap - len(line) - 1) + b'\n' + line
+        self.assertEqual(rec.movie_encoder_records(raw), ([self.LEGACY + self.SUFFIX], False))
+        self.assertEqual(rec.movie_encoder_records(raw + line), ([self.LEGACY + self.SUFFIX], True))
+        self.assertEqual(rec.movie_encoder_records(b' ' * (cap - 1) + line), ([], True))
+
+    def test_transport_keeps_eight_second_budget_and_only_redacted_records(self):
+        safe = self.LEGACY + self.SUFFIX
+        raw = self.event(safe) + self.event(safe + ' path=/private secret-token')
+        result = diag.Result(0, False, 0.1, stdout=raw, stdout_seen=len(raw))
+        with tempfile.TemporaryDirectory() as directory:
+            out = pathlib.Path(directory)
+            with patch.object(rec.time, 'monotonic', return_value=100), patch.object(rec, 'run_bounded', return_value=result) as run:
+                self.assertIsNone(rec.record_movie_encoder_failure(ID, out, 123))
+            run.assert_called_once()
+            command, deadline = run.call_args.args
+            self.assertEqual(deadline, 108)
+            self.assertEqual(run.call_args.kwargs, {'stdout_cap': 64 * 1024, 'stderr_cap': 0})
+            self.assertEqual(command[:4], ['xcrun', 'simctl', 'spawn', ID])
+            self.assertEqual(command[4:10], ['log', 'show', '--start', '@123', '--style', 'ndjson'])
+            self.assertIn('subsystem == "' + rec._ENCODER_SUBSYSTEM + '"', command[-1])
+            self.assertIn('category == "StudioMovieEncoder"', command[-1])
+            self.assertIn('logType == "error"', command[-1])
+            report = json.loads((out / 'studio-movie-encoder-failures.json').read_text())
+            self.assertEqual(report, {'complete': True, 'truncated': False, 'records': [safe]})
+
+    def test_incomplete_transport_and_secondary_errors_never_become_success(self):
+        raw = self.event(self.LEGACY)
+        for result in (diag.Result(7, False, 0, stdout=raw, stdout_seen=len(raw)),
+                       diag.Result(-9, True, 8, stdout=raw, stdout_seen=len(raw)),
+                       diag.Result(0, False, 0, stdout=raw, stdout_seen=len(raw) + 1)):
+            with tempfile.TemporaryDirectory() as directory:
+                out = pathlib.Path(directory)
+                with patch.object(rec, 'run_bounded', return_value=result):
+                    self.assertIsNone(rec.record_movie_encoder_failure(ID, out, 123))
+                report = json.loads((out / 'studio-movie-encoder-failures.json').read_text())
+                self.assertFalse(report['complete'])
+        with tempfile.TemporaryDirectory() as directory:
+            out = pathlib.Path(directory)
+            with patch.object(rec, 'run_bounded', side_effect=OSError('secret-token')):
+                self.assertIsNone(rec.record_movie_encoder_failure(ID, out, 123))
+            self.assertEqual(list(out.iterdir()), [])
+            target = out / 'studio-movie-encoder-failures.json'
+            target.write_text('existing evidence')
+            with patch.object(rec, 'run_bounded', return_value=diag.Result(0, False, 0, stdout=raw)):
+                self.assertIsNone(rec.record_movie_encoder_failure(ID, out, 123))
+            self.assertEqual(target.read_text(), 'existing evidence')
+
+
 if __name__=='__main__':unittest.main(verbosity=2)

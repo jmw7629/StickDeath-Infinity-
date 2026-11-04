@@ -435,9 +435,10 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(reviewedCount, 8, "Review must obey production batch bound")
         let remove = app.buttons["studio.storage.remove-revisions"]
         try reveal(remove); remove.tap()
-        let confirm = app.buttons["studio.storage.confirm-remove-revisions"]
+        let removalAlert = app.alerts["Permanently remove these older saved versions?"].firstMatch
+        let confirm = removalAlert.buttons["studio.storage.confirm-remove-revisions"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        let cancel = app.buttons["studio.storage.cancel-confirmation"]
+        let cancel = removalAlert.buttons["studio.storage.cancel-confirmation"].firstMatch
         let cancelReady = expectation(
             for: NSPredicate(format: "exists == true AND hittable == true AND enabled == true"),
             evaluatedWith: cancel).waitUntilFulfilled(timeout: 5)
@@ -1138,7 +1139,21 @@ final class StudioSmokeUITests: XCTestCase {
             "Profile Projects did not open the actual project library")
         XCTAssertTrue(app.scrollViews["studio.library.scroll"].exists)
         try waitForButton("Profile", in: app).tap()
-        try waitForButton("Settings", in: app).tap()
+        // The actual guest row combines its title and subtitle. It appears
+        // below the device inventory, outside the initial profile viewport.
+        let settings = app.buttons.matching(NSPredicate(format: "label == %@",
+            "Settings, Identity, security, privacy & your data")).firstMatch
+        let profileScroll = app.scrollViews.containing(.button, identifier: "profile.projects.open").firstMatch
+        XCTAssertTrue(profileScroll.waitForExistence(timeout: 5))
+        for _ in 0..<8 {
+            if settings.exists && settings.isHittable,
+               profileScroll.frame.intersection(app.frame).insetBy(dx: 2, dy: 2).contains(settings.frame) { break }
+            profileScroll.swipeUp()
+        }
+        XCTAssertTrue(settings.exists && settings.isEnabled && settings.isHittable
+            && profileScroll.frame.intersection(app.frame).insetBy(dx: 2, dy: 2).contains(settings.frame),
+            "The actual profile Settings row must be visible before opening it")
+        settings.tap()
         XCTAssertTrue(app.staticTexts["No signed-in account"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Sign Out"].exists, "Guest settings invented an authenticated account")
         capture(app, name: "owner-guest-profile-settings")
@@ -3719,16 +3734,16 @@ final class StudioSmokeUITests: XCTestCase {
             let swatch = picker.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2))
             swatch.tap()
-            // iOS exposes this native picker track as Other, with a separate
-            // percentage TextField; the Studio opacity Slider is underneath.
+            // The actual UIKit hierarchy exposes sliderAlpha as a Slider and
+            // a separate percentage TextField; the Studio Slider is underneath.
             let systemPicker = app.otherElements["UIColorPickerView"].firstMatch
             // Hosted runners intermittently drop the first swatch tap (3 of 4
             // runs on 2026-10-21 never presented the picker); tap the same
             // swatch once more before failing.
             if !systemPicker.waitForExistence(timeout: 10) { swatch.tap() }
             XCTAssertTrue(systemPicker.waitForExistence(timeout: 20))
-            let alpha = systemPicker.otherElements.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
-            let alphaValue = systemPicker.textFields.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
+            let alpha = systemPicker.sliders["sliderAlpha"].firstMatch
+            let alphaValue = systemPicker.textFields["sliderAlpha"].firstMatch
             XCTAssertTrue(alpha.waitForExistence(timeout: 5) && alpha.isHittable && alpha.isEnabled)
             XCTAssertTrue(alphaValue.exists && alphaValue.isEnabled)
             let priorAlpha = try XCTUnwrap(alphaValue.value as? String)
@@ -4958,6 +4973,56 @@ final class StudioSmokeUITests: XCTestCase {
             let slider = target.sliders["studio.audio.track-volume.1"]
             try reveal(slider, in: target, down: true); return slider
         }
+        func captureVolumeMismatch(_ slider: XCUIElement, observed: String,
+                                   renderedIdentifier: String, expected: ClosedRange<Int>, name: String) {
+            let scroll = app.scrollViews["studio.audio.compact.scroll"]
+            let viewport = scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 12)
+            let details = XCTAttachment(string: "observed=\(observed); current=\(slider.value as? String ?? ""); rendered=\(app.staticTexts[renderedIdentifier].label); expected=\(expected); sliderFrame=\(slider.frame); audioScrollFrame=\(scroll.frame); viewport=\(viewport); fullyVisible=\(viewport.contains(slider.frame)); enabled=\(slider.isEnabled); hittable=\(slider.isHittable); clipMute=\(app.buttons["studio.audio.clip-mute"].label)")
+            details.name = name + "-observed-volume-and-bounds"
+            details.lifetime = .keepAlways; add(details)
+            capture(app, name: name + "-volume-mismatch")
+            captureHierarchy(app, name: name + "-volume-mismatch-hierarchy")
+        }
+        // Clip volume is setup for the following single track-volume gesture.
+        // Each native adjustment can commit history, so never retry the track
+        // gesture whose one-step Undo is asserted below.
+        func acquireClipVolumeSetup(_ slider: XCUIElement) {
+            let scroll = app.scrollViews["studio.audio.compact.scroll"]
+            var aim = 0.4
+            var previous: (aim: Double, percent: Int)?
+            var observations = [String]()
+            defer {
+                let details = XCTAttachment(string: observations.joined(separator: "\n"))
+                details.name = "audio-clip-setup-native-values-and-bounds"
+                details.lifetime = .keepAlways; add(details)
+            }
+            for attempt in 1...3 {
+                guard scroll.exists, slider.exists else {
+                    observations.append("attempt=\(attempt); audioScrollExists=\(scroll.exists); sliderExists=\(slider.exists)")
+                    break
+                }
+                let viewport = scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 12)
+                observations.append("attempt=\(attempt); aim=\(aim); before=\(slider.value as? String ?? ""); sliderFrame=\(slider.frame); audioScrollFrame=\(scroll.frame); viewport=\(viewport); enabled=\(slider.isEnabled); hittable=\(slider.isHittable)")
+                guard slider.isHittable, slider.isEnabled, viewport.contains(slider.frame) else { break }
+                slider.adjust(toNormalizedSliderPosition: CGFloat(aim))
+                let displayed = slider.value as? String ?? ""
+                observations.append("attempt=\(attempt); actual=\(displayed); sliderFrameAfter=\(slider.frame)")
+                guard let actual = Int(displayed.components(separatedBy: " ")[0]),
+                      (0...100).contains(actual) else { break }
+                if (35...45).contains(actual) { return }
+                var nextAim = aim + (40 - Double(actual)) / 100
+                if let previous, (previous.percent - 40) * (actual - 40) < 0 {
+                    let interpolated = previous.aim + (40 - Double(previous.percent))
+                        * (aim - previous.aim) / Double(actual - previous.percent)
+                    if interpolated.isFinite,
+                       (min(previous.aim, aim)...max(previous.aim, aim)).contains(interpolated) {
+                        nextAim = interpolated
+                    }
+                }
+                previous = (aim: aim, percent: actual)
+                aim = min(1, max(0, nextAim))
+            }
+        }
         let audio = app.buttons["studio.audio.open"]
         XCTAssertTrue(audio.exists && audio.isHittable); audio.tap()
         let library = app.buttons["studio.audio.library.open"]
@@ -4974,10 +5039,14 @@ final class StudioSmokeUITests: XCTestCase {
         let clipSlider = app.sliders["studio.audio.volume"]
         try reveal(clipSlider, in: app, down: true)
         XCTAssertEqual(clipSlider.value as? String, "80 percent")
-        clipSlider.adjust(toNormalizedSliderPosition: 0.4)
+        acquireClipVolumeSetup(clipSlider)
         XCTAssertTrue(expectation(for: NSPredicate(format: "value != %@", "80 percent"), evaluatedWith: clipSlider).waitUntilFulfilled(timeout: 8))
         let clipVolume = try XCTUnwrap(clipSlider.value as? String)
         let clipPercent = try XCTUnwrap(Int(clipVolume.components(separatedBy: " ")[0]))
+        if !(35...45).contains(clipPercent) {
+            captureVolumeMismatch(clipSlider, observed: clipVolume,
+                                  renderedIdentifier: "studio.audio.clip-volume-value", expected: 35...45, name: "audio-clip")
+        }
         XCTAssertTrue((35...45).contains(clipPercent), "Clip slider did not commit the requested region")
         XCTAssertEqual(app.staticTexts["studio.audio.clip-volume-value"].label, "\(clipPercent)%")
         XCTAssertEqual(clipMute.label, "Unmute selected clip")
@@ -4987,6 +5056,10 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "value != %@", "100 percent"), evaluatedWith: slider).waitUntilFulfilled(timeout: 8))
         let savedValue = try XCTUnwrap(slider.value as? String)
         let percent = try XCTUnwrap(Int(savedValue.components(separatedBy: " ")[0]))
+        if !(20...30).contains(percent) {
+            captureVolumeMismatch(slider, observed: savedValue,
+                                  renderedIdentifier: "studio.audio.track-volume-value.1", expected: 20...30, name: "audio-track")
+        }
         XCTAssertTrue((20...30).contains(percent), "Track slider did not commit the requested region")
         XCTAssertEqual(app.sliders["studio.audio.volume"].value as? String, clipVolume)
         XCTAssertEqual(clipMute.label, "Unmute selected clip")
@@ -7883,13 +7956,27 @@ final class StudioSmokeUITests: XCTestCase {
         let share = try exportControl("studio.export.share", app: app)
         XCTAssertTrue(share.isEnabled); share.tap()
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
-        let saveToFiles = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
-        // The remote share sheet populates its actions slowly on hosted runners.
-        XCTAssertTrue(saveToFiles.waitForExistence(timeout: 20)); XCTAssertTrue(saveToFiles.isHittable)
+        // The real GIF consumer presents horizontal Copy / Save Image / More
+        // actions in a popover, without a Save to Files row or header close.
+        let saveImage = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save Image")).firstMatch
+        XCTAssertTrue(saveImage.waitForExistence(timeout: 20))
+        XCTAssertTrue(nativeShare.exists); XCTAssertTrue(saveImage.isHittable)
         capture(app, name: "gif-native-share-sheet")
-        let dismiss = nativeShare.buttons["header.closeButton"]
-        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
-        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        captureHierarchy(app, name: "gif-native-share-sheet-hierarchy")
+        // Tap the visible dismissal backdrop below the actual popover. No
+        // consumer action runs; UIKit's real cancellation callback must follow.
+        let visibleSheet = nativeShare.frame.intersection(app.frame)
+        let outside = CGPoint(x: visibleSheet.midX, y: (visibleSheet.maxY + app.frame.maxY) / 2)
+        XCTAssertFalse(visibleSheet.isEmpty)
+        XCTAssertGreaterThan(app.frame.maxY - visibleSheet.maxY, 20)
+        let outsideIsVisible = app.frame.contains(outside) && !nativeShare.frame.contains(outside)
+        XCTAssertTrue(outsideIsVisible)
+        guard !visibleSheet.isEmpty, app.frame.maxY - visibleSheet.maxY > 20, outsideIsVisible else {
+            throw NSError(domain: "NativeGIFShareDismissal", code: 1)
+        }
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: outside.x - app.frame.minX, dy: outside.y - app.frame.minY)).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: nativeShare).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The GIF remains available."),
             evaluatedWith: status).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled)
@@ -8700,6 +8787,7 @@ final class StudioSmokeUITests: XCTestCase {
         let span = range.upperBound - range.lowerBound
         var aim = (target - range.lowerBound) / span
         var observed = [String]()
+        var previousSample: (aim: Double, value: Double)? = nil
         let scroll = app.scrollViews["studio.tool-settings.scroll"]
         for _ in 0..<3 {
             guard slider.exists, slider.isHittable, slider.isEnabled, scroll.exists else { break }
@@ -8711,7 +8799,19 @@ final class StudioSmokeUITests: XCTestCase {
             guard let actual = Double(displayed.filter { "0123456789.-".contains($0) }),
                   actual.isFinite, range.contains(actual) else { break }
             if abs(actual - target) < tolerance { return }
-            aim = min(1, max(0, aim + (target - actual) / span))
+            var nextAim = aim + (target - actual) / span
+            if let previousSample, (previousSample.value - target) * (actual - target) < 0 {
+                // Two actual native values bracket the target. Interpolate
+                // within that measured bracket instead of oscillating past it.
+                let interpolated = previousSample.aim + (target - previousSample.value)
+                    * (aim - previousSample.aim) / (actual - previousSample.value)
+                if interpolated.isFinite,
+                   (min(previousSample.aim, aim)...max(previousSample.aim, aim)).contains(interpolated) {
+                    nextAim = interpolated
+                }
+            }
+            previousSample = (aim: aim, value: actual)
+            aim = min(1, max(0, nextAim))
         }
         capture(app, name: name + "-slider-target-not-reached")
         captureHierarchy(app, name: name + "-slider-target-not-reached-hierarchy")

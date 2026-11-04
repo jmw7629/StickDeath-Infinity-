@@ -1426,8 +1426,9 @@ final class StudioViewModel: ObservableObject {
             _ = await self.save()
         }
     }
-    private func command(_ operation: (inout StudioDocumentEditor) throws -> Void) {
-        guard allowDocumentEditDuringInput() else { return }
+    private func command(unlockingRejectedDraftLayerID: String? = nil,
+                         _ operation: (inout StudioDocumentEditor) throws -> Void) {
+        guard allowDocumentEditDuringInput(unlockingRejectedDraftLayerID: unlockingRejectedDraftLayerID) else { return }
         do {
             var candidate = editor
             try operation(&candidate)
@@ -1437,9 +1438,21 @@ final class StudioViewModel: ObservableObject {
             editor = candidate; pruneManagedAudio(); scheduleSave()
         } catch { message = error.localizedDescription }
     }
-    private func allowDocumentEditDuringInput() -> Bool {
+    private func allowDocumentEditDuringInput(unlockingRejectedDraftLayerID: String? = nil) -> Bool {
         guard textDraft == nil else { message = "Apply or cancel the text draft before changing the document."; return false }
         guard activeStrokeID == nil else { message = "Finish the current touch stroke before changing the document."; return false }
+        if let pending = pendingBrushStroke {
+            // The existing explicit Free control may recover this exact draft's
+            // locked layer without allowing any other document operation.
+            guard let layerID = unlockingRejectedDraftLayerID,
+                  isEditing, !isPlaying, !isSaving, pending.projectID == document.id,
+                  pending.frameID == document.activeFrameID, pending.element.layerID == layerID,
+                  document.activeLayerID == layerID,
+                  frames.contains(where: { $0.id == pending.frameID }),
+                  layers.contains(where: { $0.id == layerID }) else {
+                message = "Retry or discard the rejected drawing draft before changing the document."; return false
+            }
+        }
         return true
     }
     private func change(_ operation: (inout StudioDocument) throws -> Void) { command { try $0.change(operation) } }
@@ -2948,7 +2961,9 @@ final class StudioViewModel: ObservableObject {
     func toggleLayerVisibility(_ id: String) { command { try $0.updateLayer(id) { $0.visible.toggle() } } }
     func toggleLayerLock(_ id: String) { command { try $0.updateLayer(id) { layer in layer.locked.toggle(); layer.lockMode = layer.locked ? "full" : "free" } } }
     func setLayerLockMode(_ id: String, mode: LayerLockMode) {
-        command { try $0.updateLayer(id) { $0.lockMode = mode.rawValue; $0.locked = mode == .full } }
+        command(unlockingRejectedDraftLayerID: mode == .free ? id : nil) {
+            try $0.updateLayer(id) { $0.lockMode = mode.rawValue; $0.locked = mode == .full }
+        }
     }
     struct LayerSliderCapture: Equatable {
         let projectID: UUID
