@@ -6,6 +6,46 @@ import Supabase
 /// Native unit tests execute the actual AuthService and AuthViewModel against
 /// the pinned SDK's injected URLSession. No external provider or host is called.
 @MainActor final class AuthStateTests: XCTestCase {
+    func testSignupProfileBootstrapUsesGrantedFieldsAndPreservesServerFacts() async throws {
+        let probe = AuthFixtureTransport.BootstrapProbe()
+        let probeID = UUID().uuidString
+        AuthFixtureTransport.registerBootstrap(probe, id: probeID)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AuthFixtureTransport.self]
+        let transport = URLSession(configuration: configuration)
+        defer {
+            transport.invalidateAndCancel()
+            AuthFixtureTransport.removeBootstrap(id: probeID)
+        }
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: AuthFixtureStorage(), autoRefreshToken: false),
+                global: .init(headers: ["X-SDI-Bootstrap": probeID], session: transport)))
+        let service = AuthService(client: client)
+        for requestedName in ["First chosen name", "Replacement must be ignored"] {
+            let signedIn = try await service.signUp(email: "first@example.invalid", password: "fixture-password", username: requestedName)
+            XCTAssertTrue(signedIn)
+            XCTAssertTrue(service.isAuthenticated)
+            XCTAssertEqual(service.userId?.lowercased(), AuthFixtureTransport.first)
+            let request = try XCTUnwrap(probe.requests.last)
+            XCTAssertEqual(Set(request.fields.keys), ["id", "email", "username"], "Bootstrap wrote a server-owned or ungranted column")
+            XCTAssertEqual(request.fields["id"] as? String, service.userId)
+            XCTAssertEqual(request.fields["email"] as? String, "first@example.invalid")
+            XCTAssertEqual(request.fields["username"] as? String, requestedName)
+            XCTAssertEqual(request.conflict, "id")
+            XCTAssertTrue(request.preference.split(separator: ",").contains("resolution=ignore-duplicates"))
+            XCTAssertTrue(request.preference.split(separator: ",").contains("return=representation"))
+            let profile = try XCTUnwrap(service.currentProfile, "Granted bootstrap must produce a fetchable profile")
+            XCTAssertEqual(profile.id, AuthFixtureTransport.first)
+            XCTAssertEqual(profile.username, "First chosen name", "Repeated bootstrap overwrote the existing profile")
+            XCTAssertEqual(profile.createdAt, probe.serverCreatedAt)
+            XCTAssertEqual(profile.role, .user)
+            XCTAssertEqual(profile.subscriptionTier, "free")
+            XCTAssertNil(service.profileNotice)
+        }
+        XCTAssertEqual(probe.requests.count, 2, "Each signup must exercise actual AuthService bootstrap")
+        XCTAssertEqual(probe.rejectedWrites, 0)
+    }
+
     func testTypedProfileEditConfirmsExactFieldsAndPreservesAccountFacts() async throws {
         let (service, model, transport, _, _) = try await profileFixture()
         defer { transport.invalidateAndCancel() }
@@ -833,6 +873,48 @@ private final class AuthFixtureTransport: URLProtocol {
                     "created_at": "2026-10-06T00:00:00Z", "updated_at": "2026-10-06T00:00:00Z"]]
         }
     }
+    /// This transport enforces the column contract, not database/RLS execution.
+    /// A dedicated header keeps its signup/insert state isolated from other cases.
+    final class BootstrapProbe: @unchecked Sendable {
+        struct Request {
+            let fields: [String: Any]
+            let conflict: String?
+            let preference: String
+        }
+        let serverCreatedAt = "2026-10-06T00:00:00Z"
+        private let lock = NSLock()
+        private var captured: [Request] = []
+        private var rejected = 0
+        private var stored: [String: Any]?
+        var requests: [Request] { lock.lock(); defer { lock.unlock() }; return captured }
+        var rejectedWrites: Int { lock.lock(); defer { lock.unlock() }; return rejected }
+        func insert(_ fields: [String: Any], conflict: String?, preference: String) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            captured.append(Request(fields: fields, conflict: conflict, preference: preference))
+            guard Set(fields.keys) == ["id", "email", "username"],
+                  (fields["id"] as? String)?.lowercased() == AuthFixtureTransport.first,
+                  conflict == "id", preference.split(separator: ",").contains("resolution=ignore-duplicates") else {
+                rejected += 1; return false
+            }
+            if stored == nil {
+                stored = fields
+                stored?["id"] = AuthFixtureTransport.first
+                stored?["created_at"] = serverCreatedAt
+                stored?["role"] = "user"
+                stored?["subscription_tier"] = "free"
+            }
+            return true
+        }
+        var profile: [String: Any]? { lock.lock(); defer { lock.unlock() }; return stored }
+    }
+    private static var bootstraps: [String: BootstrapProbe] = [:]
+    static func registerBootstrap(_ probe: BootstrapProbe, id: String) {
+        gate.lock(); defer { gate.unlock() }; bootstraps[id] = probe
+    }
+    static func removeBootstrap(id: String) { gate.lock(); defer { gate.unlock() }; bootstraps[id] = nil }
+    private static func bootstrap(id: String) -> BootstrapProbe? {
+        gate.lock(); defer { gate.unlock() }; return bootstraps[id]
+    }
     private static var refreshFences: [String: RefreshFenceProbe] = [:]
     static func registerRefreshFence(_ probe: RefreshFenceProbe, id: String) {
         gate.lock(); defer { gate.unlock() }; refreshFences[id] = probe
@@ -883,6 +965,29 @@ private final class AuthFixtureTransport: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return
         }
         let url = request.url!
+        if let probeID = request.value(forHTTPHeaderField: "X-SDI-Bootstrap") {
+            guard let probe = Self.bootstrap(id: probeID) else {
+                client?.urlProtocol(self, didFailWithError: URLError(.cancelled)); return
+            }
+            if url.path.hasSuffix("/signup"), request.httpMethod == "POST" {
+                respond(200, RefreshFenceProbe().sessionPayload(second: false)); return
+            }
+            if url.path.hasSuffix("/users"), request.httpMethod == "POST" {
+                let fields = (try? JSONSerialization.jsonObject(with: requestBody())) as? [String: Any] ?? [:]
+                let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                let accepted = probe.insert(fields, conflict: query.first { $0.name == "on_conflict" }?.value,
+                    preference: request.value(forHTTPHeaderField: "Prefer") ?? "")
+                respond(accepted ? 201 : 403, accepted ? [:] : ["code": "42501", "message": "Fixture column grant rejected"])
+                return
+            }
+            if url.path.hasSuffix("/users"), request.httpMethod == "GET",
+               url.query?.lowercased().contains(Self.first) == true {
+                if let row = probe.profile { respond(200, row) }
+                else { respond(406, ["message": "Fixture profile does not exist"]) }
+                return
+            }
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL)); return
+        }
         if let probeID = request.value(forHTTPHeaderField: "X-SDI-Refresh-Fence") {
             guard let probe = Self.refreshFence(id: probeID) else {
                 client?.urlProtocol(self, didFailWithError: URLError(.cancelled)); return

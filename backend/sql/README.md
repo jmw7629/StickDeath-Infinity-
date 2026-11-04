@@ -410,6 +410,15 @@ Upgrades are not part of the apply order or the bundle.
   seed rows and matched a fresh `6cf904d` install, including grants. Five review
   fixtures passed on each database. Fresh projects use the install bundle.
 
+* `upgrades/2026-11-04-profile-server-columns.sql`: resets `public.users` client
+  table/column ACLs before restoring the existing profile insert/update allowlists.
+  It preserves data, defaults, policies and service grants, and is idempotent on the
+  installed canonical table. Effective privilege postconditions refuse surviving
+  rights from other grantors or role memberships instead of changing those roles.
+  Fresh installs use the corrected candidate/bundle. This source change does not
+  establish the unknown live cloud project's permissions; review/inventory and
+  isolated runtime validation precede any separate installed-project application.
+
 ## Apply order (single source of truth; the local harness reads this block)
 
 <!-- apply-order -->

@@ -7118,7 +7118,7 @@ revoke all on function public.sdi_admin_provider_health() from public,anon;
 grant execute on function public.sdi_admin_provider_health() to authenticated;
 commit;
 
--- ===== users-profiles.sql (sha256 ece91881ad9f7fa7) =====
+-- ===== users-profiles.sql (sha256 59b7d8a9155dc003) =====
 -- Unapplied candidate. Install last. The member profile row the native app reads and
 -- writes as `users` (Models.swift `UserProfile`, AuthService): the member inserts their
 -- own row after sign-up and may edit only the editable columns; `role` and
@@ -7141,7 +7141,9 @@ create table public.users (
  updated_at timestamptz not null default now()
 );
 alter table public.users enable row level security;
-revoke all on public.users from public,anon;
+-- Clear platform/default table ACLs before restoring the client column allowlist.
+-- Table REVOKE also clears this grantor's old column ACLs; service grants stay intact.
+revoke all on public.users from public,anon,authenticated;
 grant select on public.users to authenticated;
 grant insert(id,email,username,bio,avatar_url,onboarded,skill_level,interests) on public.users to authenticated;
 grant update(username,bio,avatar_url,onboarded,skill_level,interests) on public.users to authenticated;

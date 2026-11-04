@@ -783,8 +783,8 @@ final class AuthService: ObservableObject {
             try await supabase.from("users").upsert([
                 "id": AnyJSON.string(userId),
                 "email": email.map { AnyJSON.string($0) } ?? .null,
-                "username": .string(username),
-                "created_at": .string(ISO8601DateFormatter().string(from: Date()))
+                // Creation time and account privileges are server-owned.
+                "username": .string(username)
             ], onConflict: "id", ignoreDuplicates: true).execute()
         } catch let error as PostgrestError where error.code == "23505" {
             // Unique violation on a non-identity column: the account exists and
