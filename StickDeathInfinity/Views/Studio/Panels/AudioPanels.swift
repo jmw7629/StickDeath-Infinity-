@@ -407,6 +407,7 @@ private struct StudioAudioWorkspace: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text("♫ Audio Timeline").font(.specialElite(16))
+                .lineLimit(1).minimumScaleFactor(0.85)
             Text("\(vm.audioClips.count) clips").font(.specialElite(10))
                 .padding(5).background(Color.white.opacity(0.05)).clipShape(Capsule())
                 .accessibilityIdentifier("studio.audio.clip-count")
@@ -418,11 +419,6 @@ private struct StudioAudioWorkspace: View {
                     .padding(5).background(StudioCraftTheme.solo.opacity(0.18)).clipShape(Capsule())
                     .accessibilityLabel("\(overlapping) clips overlap another clip on the same track and play mixed together")
                     .accessibilityIdentifier("studio.audio.overlap-count")
-            }
-            if audio.restoredFromCacheCount > 0 {
-                Text("\(audio.restoredFromCacheCount) waveforms from cache").font(.specialElite(9))
-                    .foregroundColor(.sdStudioSecondaryText)
-                    .accessibilityIdentifier("studio.audio.waveforms-restored")
             }
             Spacer(minLength: 0)
             Button(vm.snapEnabled ? "Snap: ON" : "Snap: OFF") { vm.snapEnabled.toggle() }
@@ -1023,7 +1019,9 @@ private struct StudioAudioWorkspace: View {
             if let id = clip.assetID, let measurement = audio.measurements[id] {
                 MeasuredAudioWaveform(peaks: measurement.peaks, rms: measurement.rms, sourceDuration: measurement.duration,
                     sourceOffset: clip.sourceOffset, duration: clip.duration).frame(height: 28)
-                    .accessibilityValue(measurement.restoredFromCache ? "Measured earlier and restored from the waveform cache" : "Measured from the decoded audio")
+                    .accessibilityValue(measurement.restoredFromCache
+                        ? "Restored measured waveform; \(audio.restoredFromCacheCount) waveform\(audio.restoredFromCacheCount == 1 ? "" : "s") restored"
+                        : "Measured from the decoded audio")
                     .accessibilityIdentifier("studio.audio.selected-waveform")
             } else if let id = clip.assetID, let track = vm.audioTrack(forAssetID: id) {
                 Button("Load measured waveform") {

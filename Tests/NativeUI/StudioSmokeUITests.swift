@@ -7956,26 +7956,32 @@ final class StudioSmokeUITests: XCTestCase {
         let share = try exportControl("studio.export.share", app: app)
         XCTAssertTrue(share.isEnabled); share.tap()
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
-        // The real GIF consumer presents horizontal Copy / Save Image / More
-        // actions in a popover, without a Save to Files row or header close.
+        // The actual GIF consumer offers Save Image in both UIKit presentations.
+        // Read the real action without saving to Photos or invoking a consumer.
         let saveImage = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save Image")).firstMatch
         XCTAssertTrue(saveImage.waitForExistence(timeout: 20))
         XCTAssertTrue(nativeShare.exists); XCTAssertTrue(saveImage.isHittable)
         capture(app, name: "gif-native-share-sheet")
         captureHierarchy(app, name: "gif-native-share-sheet-hierarchy")
-        // Tap the visible dismissal backdrop below the actual popover. No
-        // consumer action runs; UIKit's real cancellation callback must follow.
-        let visibleSheet = nativeShare.frame.intersection(app.frame)
-        let outside = CGPoint(x: visibleSheet.midX, y: (visibleSheet.maxY + app.frame.maxY) / 2)
-        XCTAssertFalse(visibleSheet.isEmpty)
-        XCTAssertGreaterThan(app.frame.maxY - visibleSheet.maxY, 20)
-        let outsideIsVisible = app.frame.contains(outside) && !nativeShare.frame.contains(outside)
-        XCTAssertTrue(outsideIsVisible)
-        guard !visibleSheet.isEmpty, app.frame.maxY - visibleSheet.maxY > 20, outsideIsVisible else {
-            throw NSError(domain: "NativeGIFShareDismissal", code: 1)
+        // UIKit uses a Close button in its full-height container on iOS 18.
+        // Current iOS also presents a smaller popover without that button.
+        // Exercise the real dismissal control or visible outside backdrop.
+        let close = nativeShare.buttons["header.closeButton"].firstMatch
+        if close.exists && close.isHittable {
+            close.tap()
+        } else {
+            let visibleSheet = nativeShare.frame.intersection(app.frame)
+            let outside = CGPoint(x: visibleSheet.midX, y: (visibleSheet.maxY + app.frame.maxY) / 2)
+            XCTAssertFalse(visibleSheet.isEmpty)
+            XCTAssertGreaterThan(app.frame.maxY - visibleSheet.maxY, 20)
+            let outsideIsVisible = app.frame.contains(outside) && !nativeShare.frame.contains(outside)
+            XCTAssertTrue(outsideIsVisible)
+            guard !visibleSheet.isEmpty, app.frame.maxY - visibleSheet.maxY > 20, outsideIsVisible else {
+                throw NSError(domain: "NativeGIFShareDismissal", code: 1)
+            }
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: outside.x - app.frame.minX, dy: outside.y - app.frame.minY)).tap()
         }
-        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
-            dx: outside.x - app.frame.minX, dy: outside.y - app.frame.minY)).tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: nativeShare).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The GIF remains available."),
             evaluatedWith: status).waitUntilFulfilled(timeout: 8))
