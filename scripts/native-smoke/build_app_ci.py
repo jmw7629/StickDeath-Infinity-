@@ -79,7 +79,7 @@ with (OUT / "xcodebuild.log").open("w") as log:
             break
         except subprocess.TimeoutExpired:
             print(f"Native app compilation active: {int(time.monotonic()-start)}s", flush=True)
-            if time.monotonic() - start >= 1500:
+            if time.monotonic() - start >= 1800:
                 os.killpg(child.pid, signal.SIGINT)
                 try:
                     code = child.wait(timeout=15)
