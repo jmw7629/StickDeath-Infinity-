@@ -774,7 +774,7 @@ studio.sharpen.cancel,StickDeathInfinity/Views/Studio/StudioCanvasView.swift,Stu
 studio.sharpen.instructions,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,"text 'Threshold' -> vm.sharpenHardness, vm.sharpenAmount, vm.sharpenThreshold",no,#149,testSharpenPixelsUndoAndColdReopen
 studio.sharpen.progress,StickDeathInfinity/Views/Studio/StudioCanvasView.swift,StudioCanvasView,progress indicator 'studio.sharpen.progress' (identifier-derived; review source),no,#149,deferred
 studio.sharpen.release-hint,StickDeathInfinity/Views/Studio/StudioCanvasView.swift,StudioCanvasView,text 'Release to sharpen the active layer',no,#149,deferred
-studio.show-tools,StickDeathInfinity/Views/Studio/StudioView.swift,StudioEditorWorkspace,text 'Show Studio tools' -> vm.showToolbar,no,#139,deferred
+studio.show-tools,StickDeathInfinity/Views/Studio/StudioView.swift,StudioEditorWorkspace,text 'Show Studio tools' -> vm.showToolbar,no,#139,testFloatingToolbarDockingAndPopupDismissal
 studio.smudge.cancel,StickDeathInfinity/Views/Studio/StudioCanvasView.swift,StudioCanvasView,button 'Cancel',no,#149,deferred
 studio.smudge.instructions,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text 'Opacity' -> binds vm.strokeWidth,no,#149,testSmudgePixelsUndoAndColdReopen
 studio.smudge.progress,StickDeathInfinity/Views/Studio/StudioCanvasView.swift,StudioCanvasView,progress indicator 'studio.smudge.progress' (identifier-derived; review source),no,#149,deferred
@@ -833,7 +833,7 @@ studio.tool-settings.zoom-value,StickDeathInfinity/Views/Studio/Panels/ToolSetti
 studio.toolbar,StickDeathInfinity/Views/Studio/StudioToolStrip.swift,StudioToolStrip,toolbar container 'studio.toolbar' (identifier-derived; review source),no,#139,testFloatingToolbarDockingAndPopupDismissal testGuestStudioPortraitLandscapeAndPersistedGuideControls helper:assertStudioChromeReachable helper:pickerRailControl
 studio.toolbar.grip,StickDeathInfinity/Views/Studio/StudioToolStrip.swift,StudioToolStrip,gesture target 'Move Studio toolbar',no,#139,testFloatingToolbarDockingAndPopupDismissal
 studio.toolbar.stage,StickDeathInfinity/Views/Studio/StudioView.swift,StudioEditorWorkspace,"-> vm.activePanel, binds 0.intersects, binds 0",no,#139,testFloatingToolbarDockingAndPopupDismissal
-studio.toolbar.toggle,StickDeathInfinity/Views/Studio/StudioHeaderBar.swift,StudioHeaderBar,"text -> vm.showToolbar.toggle, vm.showToolbar",no,#139,helper:assertStudioChromeReachable
+studio.toolbar.toggle,StickDeathInfinity/Views/Studio/StudioHeaderBar.swift,StudioHeaderBar,"text -> vm.showToolbar.toggle, vm.showToolbar",no,#139,testFloatingToolbarDockingAndPopupDismissal helper:assertStudioChromeReachable
 studio.tween.apply,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioTweenOptions,"button 'Insert in-betweens' -> vm.applyTween, dismiss, vm.prepareTween",yes,#166,deferred
 studio.tween.count,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioTweenOptions,stepper -> binds count,no,#166,testImageQuarterTweenPixelsUndoAndColdReopen testImageTweenLinearPixelsUndoAndColdReopen testTweenEasingEditableFramesUndoAndColdReopen
 studio.tween.easing,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioTweenOptions,text 'Easing' -> binds easing,no,#166,testImageQuarterTweenPixelsUndoAndColdReopen testImageTweenLinearPixelsUndoAndColdReopen testTweenEasingEditableFramesUndoAndColdReopen
