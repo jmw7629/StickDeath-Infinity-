@@ -29,8 +29,8 @@ struct StudioView: View {
             if vm.isEditing { editorBody }
             else { StudioProjectLibrary(vm: vm) }
         }
-        .confirmationDialog("Delete this frame's image?", isPresented: $showingBottomImageDeletion,
-            titleVisibility: .visible, presenting: bottomImageDeletion) { capture in
+        .alert("Delete this frame's image?", isPresented: $showingBottomImageDeletion,
+            presenting: bottomImageDeletion) { capture in
             Button("Delete image", role: .destructive) { _ = vm.deleteBottomImage(capture) }
             Button("Cancel", role: .cancel) { }
         } message: { _ in

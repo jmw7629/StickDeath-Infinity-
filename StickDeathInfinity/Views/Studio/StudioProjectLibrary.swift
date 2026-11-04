@@ -626,10 +626,9 @@ private struct StudioStorageSheet: View {
             .accessibilityIdentifier("studio.storage.list")
             .navigationTitle("Device Storage")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { cleanup.cancel(); dismiss() } } }
-            .confirmationDialog(confirmingCleanup ? "Permanently remove these older saved versions?" : "Clear regenerable working cache?",
-                                isPresented: Binding(get: { confirmingClear || confirmingCleanup },
-                                    set: { if !$0 { confirmingClear = false; confirmingCleanup = false } }),
-                                titleVisibility: .visible) {
+            .alert(confirmingCleanup ? "Permanently remove these older saved versions?" : "Clear regenerable working cache?",
+                   isPresented: Binding(get: { confirmingClear || confirmingCleanup },
+                       set: { if !$0 { confirmingClear = false; confirmingCleanup = false } })) {
                 if confirmingCleanup {
                     Button("Remove reviewed old versions", role: .destructive) { performCleanup() }
                         .accessibilityIdentifier("studio.storage.confirm-remove-revisions")

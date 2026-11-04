@@ -119,8 +119,8 @@ struct FloatingToolSettingsPanel: View {
         } message: { capture in
             Text("All artwork on these \(capture.layerIDs.count) layers will be locked across every frame, including unselected artwork. Undo restores all locks in one step, or unlock them in Layers.")
         }
-        .confirmationDialog("Delete this frame's image?", isPresented: $showingImageDeletion,
-            titleVisibility: .visible, presenting: imageDeletion) { capture in
+        .alert("Delete this frame's image?", isPresented: $showingImageDeletion,
+            presenting: imageDeletion) { capture in
             // SwiftUI dismisses the dialog. Keep its immutable presenting data
             // alive through action dispatch; the next request replaces it.
             Button("Delete image", role: .destructive) { _ = vm.deleteImage(capture) }
@@ -175,11 +175,14 @@ struct FloatingToolSettingsPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             toolSpecificSettings(def, compactHeight: compactHeight)
             if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text, .fill, .gradient, .move, .lasso, .wand].contains(def.tool) {
-                Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
-                    .font(.specialElite(10))
-                    .foregroundColor(.sdStudioSecondaryText)
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("studio.tool-settings.reset")
+                Button { vm.resetCurrentDrawingToolPreferences() } label: {
+                    Text("Reset this tool")
+                        .font(.specialElite(10))
+                        .foregroundColor(.sdStudioSecondaryText)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier("studio.tool-settings.reset")
             }
             if let warning = vm.toolPreferencesWarning {
                 Text(warning).font(.specialElite(9)).foregroundColor(.orange)
@@ -201,9 +204,13 @@ struct FloatingToolSettingsPanel: View {
                             .font(.specialElite(12))
                         Spacer()
                         Image(systemName: showBrushLibrary ? "chevron.up" : "chevron.down")
-                    }.foregroundColor(.white)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .foregroundColor(.white)
                 }
                 .accessibilityIdentifier("studio.brush-library")
+                .accessibilityValue(showBrushLibrary ? "Expanded" : "Collapsed")
                 if showBrushLibrary {
                     StudioBrushLibraryView(vm: vm) { showBrushLibrary = false }
                 }

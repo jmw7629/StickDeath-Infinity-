@@ -44,7 +44,7 @@ final class JourneyUITests: XCTestCase {
             let overlap = timeline.frame.intersection(canvas.frame)
             XCTAssertTrue(overlap.isNull || overlap.width * overlap.height < canvas.frame.width * canvas.frame.height * 0.1,
                           "Frame timeline covers the canvas")
-            capture(app, name: "journey-\(idiom)-studio-\(orientation == .portrait ? "portrait" : "landscape")")
+            capture(app, name: "journey-\(idiom)-studio-\(orientation == .portrait ? "portrait" : "landscape")", entireScreen: orientation.isLandscape)
         }
     }
 
@@ -78,7 +78,7 @@ final class JourneyUITests: XCTestCase {
             XCTAssertTrue(canvas.exists, "Opening audio removed the canvas")
             XCTAssertGreaterThan(canvas.frame.height, 80, "Audio workspace collapsed the canvas")
             XCTAssertGreaterThan(canvas.frame.width, 80, "Audio workspace collapsed the canvas")
-            capture(app, name: "journey-\(idiom)-audio-\(orientation == .portrait ? "portrait" : "landscape")")
+            capture(app, name: "journey-\(idiom)-audio-\(orientation == .portrait ? "portrait" : "landscape")", entireScreen: orientation.isLandscape)
             app.buttons["studio.audio.close"].tap()
             XCTAssertTrue(waitUntilGone(app.buttons["studio.audio.close"]), "Audio workspace did not close")
         }
@@ -98,7 +98,7 @@ final class JourneyUITests: XCTestCase {
             XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(popup.frame), "Options popup extends outside the window")
             let close = app.buttons["studio.tool-settings.close"]
             XCTAssertTrue(close.isHittable && min(close.frame.width, close.frame.height) >= 44, "Popup close unreachable")
-            capture(app, name: "journey-\(idiom)-options-\(orientation == .portrait ? "portrait" : "landscape")")
+            capture(app, name: "journey-\(idiom)-options-\(orientation == .portrait ? "portrait" : "landscape")", entireScreen: orientation.isLandscape)
             close.tap()
             XCTAssertTrue(waitUntilGone(popup), "Options popup did not dismiss")
             let after = try settledCanvas(app)
@@ -291,8 +291,11 @@ final class JourneyUITests: XCTestCase {
         return XCTWaiter.wait(for: [gone], timeout: timeout) == .completed
     }
 
-    @MainActor private func capture(_ app: XCUIApplication, name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+    @MainActor private func capture(_ app: XCUIApplication, name: String, entireScreen: Bool = false) {
+        // Application-scoped captures can crop a rotated Simulator window even
+        // after the orientation and canvas geometry assertions have settled.
+        let screenshot = entireScreen ? XCUIScreen.main.screenshot() : app.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)

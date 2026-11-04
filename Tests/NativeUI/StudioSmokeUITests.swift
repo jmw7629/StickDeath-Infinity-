@@ -1610,13 +1610,11 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     private func gradientPopupControl(_ id: String, app: XCUIApplication, scrollUp: Bool) throws -> XCUIElement {
-        let control = app.descendants(matching: .any)[id].firstMatch
-        for attempt in 0...4 {
-            if control.exists && control.isHittable { return control }
-            guard attempt < 4 else { break }
-            let scroll = app.scrollViews.containing(.button, identifier: "studio.tool-settings.reset").firstMatch
-            XCTAssertTrue(scroll.exists, "Gradient controls must stay inside the one scrollable popup")
-            if scrollUp { scroll.swipeUp() } else { scroll.swipeDown() }
+        let scroll = app.scrollViews["studio.tool-settings.scroll"]
+        let control = scroll.descendants(matching: .any)[id].firstMatch
+        if revealToolPopupControl(control, in: scroll, fallbackUp: scrollUp, horizontalRounding: 1,
+                                 missingScroll: "Gradient controls must stay inside the one scrollable popup") {
+            return control
         }
         captureHierarchy(app, name: "gradient-control-unreachable-" + id)
         XCTFail("Gradient control is unreachable: " + id)
@@ -1631,7 +1629,9 @@ final class StudioSmokeUITests: XCTestCase {
         try choosePickerTestColor("#FF0000", app: app)
         try selectToolbarTool("brush", app: app)
         try resetToolPreferencesInPopup(app)
-        try gradientPopupControl("studio.brush-library", app: app, scrollUp: false).tap()
+        let library = try gradientPopupControl("studio.brush-library", app: app, scrollUp: false)
+        XCTAssertGreaterThanOrEqual(library.frame.height.rounded(), 44, "Brush Library requires a full touch target")
+        library.tap()
         try gradientPopupControl("studio.brush-family.gradient", app: app, scrollUp: true).tap()
         XCTAssertTrue(app.buttons["studio.brush-library"].label.contains("Gradient"))
         let size = try gradientPopupControl("studio.setting.size", app: app, scrollUp: false)
@@ -3252,29 +3252,48 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     private func sharpenSetting(_ name: String, in target: XCUIApplication) throws -> XCUIElement {
-        let slider = target.sliders["studio.setting." + name]
-        let scroll = target.scrollViews.containing(.button, identifier: "studio.tool-settings.reset").firstMatch
-        for attempt in 0...5 {
-            XCTAssertTrue(scroll.exists, "Sharpen popup must scroll to every real setting")
-            guard scroll.exists else { break }
-            let viewport = scroll.frame
-            let sliderFrame = slider.exists ? slider.frame : CGRect.null
-            // A partially clipped slider can report hittable while its adjustment
-            // coordinates reach the canvas underneath. Require its whole track.
-            if !sliderFrame.isNull && viewport.contains(sliderFrame) && slider.isHittable { return slider }
-            guard attempt < 5 else { break }
-            // Reset leaves this popup at its bottom. Revisit Size by scrolling
-            // down; reveal settings below the viewport by scrolling up.
-            if !sliderFrame.isNull && sliderFrame.minY < viewport.minY {
-                scroll.swipeDown()
-            } else {
-                scroll.swipeUp()
-            }
+        let scroll = target.scrollViews["studio.tool-settings.scroll"]
+        let slider = scroll.sliders["studio.setting." + name]
+        if revealToolPopupControl(slider, in: scroll, fallbackUp: name != "size",
+                                 missingScroll: "Sharpen popup must scroll to every real setting") {
+            return slider
         }
         capture(target, name: "tool-setting-unreachable-" + name)
         captureHierarchy(target, name: "sharpen-setting-unreachable-" + name)
         XCTFail("Sharpen setting is unreachable: " + name)
         throw NSError(domain: "SharpenNative", code: 1)
+    }
+
+    @MainActor
+    private func revealToolPopupControl(_ control: XCUIElement, in scroll: XCUIElement, fallbackUp: Bool,
+                                        horizontalRounding: CGFloat = 0, missingScroll: String) -> Bool {
+        for attempt in 0...6 {
+            guard scroll.exists else { XCTFail(missingScroll); return false }
+            let viewport = scroll.frame
+            let frame = control.exists ? control.frame : .null
+            // A clipped control can report hittable. Keep its whole hit area in
+            // the popup before tapping or adjusting it.
+            let hasFrame = !frame.isNull && !frame.isEmpty
+            let visible = viewport.insetBy(dx: -horizontalRounding, dy: 0)
+            if hasFrame && visible.contains(frame) && control.isHittable { return true }
+            guard attempt < 6, viewport.width > 0, viewport.height > 0 else { break }
+            // Expansion and momentum can put the target on either side of
+            // the viewport. Use the direction hint when the frame gives no direction.
+            let above = hasFrame && frame.minY < viewport.minY
+            let below = hasFrame && frame.maxY > viewport.maxY
+            let up = !above && (below || fallbackUp)
+            let startFractions: [CGFloat] = up ? [0.78, 0.74, 0.70, 0.66, 0.62, 0.58]
+                : [0.22, 0.26, 0.30, 0.34, 0.38, 0.42]
+            let tracks = scroll.sliders.allElementsBoundByIndex.map(\.frame)
+            let startY = startFractions.first { fraction in
+                let y = viewport.minY + viewport.height * fraction
+                return !tracks.contains { y >= $0.minY && y <= $0.maxY }
+            } ?? startFractions[0]
+            let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: startY))
+            let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: up ? 0.18 : 0.82))
+            start.press(forDuration: 0.10, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.25)
+        }
+        return false
     }
     @MainActor
     func testSharpenPixelsUndoAndColdReopen() throws {
