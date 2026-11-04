@@ -351,16 +351,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     var fillTolerance by mutableIntStateOf(24); private set
     var fillContiguous by mutableStateOf(true); private set
     var filling by mutableStateOf(false); private set
+    var wandTolerance by mutableIntStateOf(24); private set
+    var wandContiguous by mutableStateOf(true); private set
+    var wandSelecting by mutableStateOf(false); private set
     private var fillJob: Job? = null
     // Cancellation is cooperative during native raster calls. Keep one allocation
-    // owner until that call unwinds before admitting the next requested fill.
+    // owner across Fill and Wand until that call unwinds.
     private val fillComputeMutex = Mutex()
     private var fillGeneration = 0L
     fun cancelFill() {
         if (filling) message = "Fill cancelled; no fill was added."
+        if (wandSelecting) message = "Wand selection cancelled."
         fillGeneration++
-        fillJob?.cancel(); fillJob = null; filling = false
+        fillJob?.cancel(); fillJob = null; filling = false; wandSelecting = false
     }
+    fun cancelWand() { if (wandSelecting) cancelFill() }
     fun configureFill(tolerance: Int = fillTolerance, contiguous: Boolean = fillContiguous) {
         require(tolerance in 0..255)
         cancelFill(); fillTolerance = tolerance; fillContiguous = contiguous
@@ -404,6 +409,49 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 if (generation == fillGeneration) report(error.message ?: "Fill could not be completed; no fill was added.")
             } finally {
                 if (generation == fillGeneration) { filling = false; fillJob = null }
+            }
+        }
+    }
+    fun configureWand(tolerance: Int = wandTolerance, contiguous: Boolean = wandContiguous) {
+        require(tolerance in 0..255)
+        cancelWand()
+        wandTolerance = tolerance; wandContiguous = contiguous
+    }
+    fun wandAt(captured: Document, point: Point) {
+        if (document != captured || closing || playbackActive || tool != Tool.Wand) return
+        cancelFill()
+        val generation = fillGeneration
+        val tolerance = wandTolerance
+        val contiguous = wandContiguous
+        val prior = selectedStrokeIDs
+        wandSelecting = true
+        message = "Selecting painted artwork by color…"
+        fillJob = viewModelScope.launch {
+            try {
+                val ids = withContext(Dispatchers.Default) {
+                    fillComputeMutex.withLock {
+                        val context = currentCoroutineContext()
+                        context.ensureActive()
+                        DrawingWand.select(captured, point, tolerance, contiguous) { context.ensureActive() }
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                if (generation != fillGeneration || document != captured || closing || playbackActive ||
+                    tool != Tool.Wand || prior != selectedStrokeIDs ||
+                    tolerance != wandTolerance || contiguous != wandContiguous) {
+                    if (generation == fillGeneration) report("Wand cancelled because the canvas or settings changed.")
+                    return@launch
+                }
+                fillJob = null
+                wandSelecting = false
+                selectedStrokeIDs = ids
+                if (ids.isEmpty()) message = "No painted artwork found at that point on the active layer."
+                else finishSelection()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                if (generation == fillGeneration) report(error.message ?: "Wand selection is unavailable.")
+            } finally {
+                if (generation == fillGeneration) { wandSelecting = false; fillJob = null }
             }
         }
     }

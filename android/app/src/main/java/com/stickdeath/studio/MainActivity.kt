@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    override fun onStop() { studio.stopScenePlayback(); studio.save(); super.onStop() }
+    override fun onStop() { studio.cancelWand(); studio.stopScenePlayback(); studio.save(); super.onStop() }
     override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handleAuthCallback(intent) }
     /** Only the app's own OAuth redirect is handled; the in-memory PKCE verifier makes it single-use. */
     private fun handleAuthCallback(received: android.content.Intent?) {
@@ -335,7 +335,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             DrawingSurface(vm, doc, if (playing) doc.frames[previewIndex.coerceIn(doc.frames.indices)] else doc.frame,
                 playing, doc.onion.enabled, viewportSize)
             StudioFloatingToolbar {
-            Tool.entries.filter { it != Tool.Image }.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(toolLabel(tool)) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
+            studioTools.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(toolLabel(tool)) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
             TextButton({ panel = "spatter" }, enabled = !playing && !vm.closing) { Text("Spatter") }
             TextButton({ panel = "account" }, enabled = !vm.closing) { Text("Account") }
             TextButton({
@@ -496,6 +496,14 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             Text(if (vm.fillContiguous) "Only the connected region (four neighboring pixels)." else "Every matching pixel across the canvas, including disconnected regions.")
                             Text("Up to 4,194,304 canvas pixels and 20,000 pixel runs per fill, with a five-second work limit. Fills keep their original pixel mask when moved, resized, rotated, flipped or fitted to a new canvas. Lasso selects the whole fill by its bounds. Keep all fill edges inside the canvas; Undo/Redo and layer locks apply.")
                             if (vm.filling) TextButton({ vm.cancelFill(); vm.report("Fill cancelled; no fill was added.") }) { Text("Cancel fill") }
+                        } else if (vm.tool == Tool.Wand) {
+                            Text("Tap a color on the top painted layer. Wand selects the whole artwork on top at matching pixels, then opens Move.")
+                            Text("Tolerance: ${vm.wandTolerance} / 255")
+                            Slider(vm.wandTolerance.toFloat(), { vm.configureWand(tolerance = it.toInt()) },
+                                valueRange = 0f..255f, steps = 254)
+                            FilterChip(vm.wandContiguous, { vm.configureWand(contiguous = !vm.wandContiguous) }, { Text("Contiguous") })
+                            Text(if (vm.wandContiguous) "Match connected paint only." else "Match colors across this layer, including disconnected paint.")
+                            if (vm.wandSelecting) TextButton({ vm.cancelWand() }) { Text("Cancel Wand") }
                         } else if (vm.tool == Tool.Eyedropper) {
                             Text("Tap to sample the visible canvas, including layer opacity and erased areas. Hidden layers, onion skin and selection handles are excluded. Sampling returns to your previous color drawing tool.")
                         } else if (vm.tool == Tool.Hand) {
@@ -776,6 +784,10 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
         })
 }
 
+private val studioTools: List<Tool> = Tool.entries
+    .filterNot { it == Tool.Image || it == Tool.Wand }.toMutableList()
+    .apply { add(indexOf(Tool.Lasso), Tool.Wand) }
+
 private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft eraser"; else -> tool.name }
 
 /** Crop and quarter turns of the single selected image (iOS rasterCrop / rasterQuarterTurns). */
@@ -984,14 +996,21 @@ private suspend fun PointerInputScope.detectViewportZoom(
         Canvas(Modifier.size(canvasWidth, canvasHeight).graphicsLayer {
             scaleX = vm.viewportZoom; scaleY = vm.viewportZoom
             translationX = vm.viewportX; translationY = vm.viewportY
-        }.clipToBounds().pointerInput(doc.id, doc.revision, vm.tool, vm.width, vm.color, vm.strokeOpacity, vm.smoothing, vm.mirrorMode, vm.shapeFilled, vm.shapeEqualSides, playing, vm.closing, vm.selectedStrokeIDs, vm.selectionMode, vm.selectionShape, vm.selectionPreservesAspect, vm.brushFamily, vm.nibAngle, vm.rulerMode) {
+        }.clipToBounds().pointerInput(doc.id, doc.revision, vm.tool, vm.width, vm.color, vm.strokeOpacity, vm.smoothing, vm.mirrorMode, vm.shapeFilled, vm.shapeEqualSides, playing, vm.closing, vm.selectedStrokeIDs, vm.selectionMode, vm.selectionShape, vm.selectionPreservesAspect, vm.brushFamily, vm.nibAngle, vm.rulerMode, vm.wandTolerance, vm.wandContiguous) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
                 if (playing || vm.closing || vm.tool == Tool.Hand || vm.tool == Tool.Zoom) return@awaitEachGesture
                 val tool = vm.tool; val width = vm.width; val color = vm.color; val opacity = vm.strokeOpacity
+                val wandGesture = tool == Tool.Wand
+                fun isInCanvas(position: Offset): Boolean =
+                    position.x >= 0f && position.x < size.width && position.y >= 0f && position.y < size.height
+                if (wandGesture && (down.isConsumed || currentEvent.changes.size != 1 || !isInCanvas(down.position))) {
+                    return@awaitEachGesture
+                }
                 val mirror = vm.mirrorMode
                 val brush = vm.brushFamily; val nibAngle = vm.nibAngle; val brushSeed = newID().hashCode(); pendingSeed = brushSeed
                 val drawing = tool.isDrawing
+                val tapTool = tool == Tool.Fill || tool == Tool.Eyedropper || tool == Tool.Text || wandGesture
                 val filled = vm.shapeFilled && tool.isClosedShape
                 val equalSides = vm.shapeEqualSides
                 if (drawing && (doc.layer.locked || !doc.layer.visible || doc.layer.opacity == 0f)) return@awaitEachGesture
@@ -1041,7 +1060,7 @@ private suspend fun PointerInputScope.detectViewportZoom(
                     }
                 }
                 var overflow = false
-                if (tool != Tool.Move && tool != Tool.Fill && tool != Tool.Eyedropper && tool != Tool.Text && !tool.isShape) pending = points.toList()
+                if (tool != Tool.Move && !tapTool && !tool.isShape) pending = points.toList()
                 down.consume()
                 vm.noteGesture(true)
                 try {
@@ -1050,10 +1069,12 @@ private suspend fun PointerInputScope.detectViewportZoom(
                     if (tool == Tool.Move) movePreviewIDs = ids
                     while (true) {
                         val event = awaitPointerEvent()
-                        // A second touch cancels the single-object gesture without committing.
-                        if (event.changes.any { it.id != down.id && it.pressed }) break
+                        // Wand also refuses a second pointer that is already releasing.
+                        if (event.changes.any { it.id != down.id && (wandGesture || it.pressed) }) break
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (tool == Tool.Move && change.isConsumed) break
+                        // Compose can deliver cancellation as a consumed synthetic up.
+                        if ((tool == Tool.Move || wandGesture) && change.isConsumed) break
+                        if (wandGesture && (!change.previousPressed || !isInCanvas(change.position))) break
                         val current = point(change.position.x, change.position.y)
                         if (tool == Tool.Move) {
                             if (bounds != null) {
@@ -1071,7 +1092,7 @@ private suspend fun PointerInputScope.detectViewportZoom(
                                 }
                             }
                         }
-                        else if (tool == Tool.Fill || tool == Tool.Eyedropper || tool == Tool.Text) {
+                        else if (tapTool) {
                             val dx = current.x - first.x; val dy = current.y - first.y
                             val tolerance = 8f * doc.width / size.width / vm.viewportZoom
                             if (dx * dx + dy * dy > tolerance * tolerance) overflow = true
@@ -1096,11 +1117,18 @@ private suspend fun PointerInputScope.detectViewportZoom(
                         }
                         change.consume()
                         if (!change.pressed) {
-                            if (overflow) vm.report(if (tool == Tool.Text) "Tap without dragging to place text." else if (tool == Tool.Eyedropper) "Tap without dragging to sample a color." else if (tool == Tool.Fill) "Tap without dragging to fill." else "Outline too long. Draw a simpler outline.")
+                            if (overflow) vm.report(when (tool) {
+                                Tool.Text -> "Tap without dragging to place text."
+                                Tool.Eyedropper -> "Tap without dragging to sample a color."
+                                Tool.Fill -> "Tap without dragging to fill."
+                                Tool.Wand -> "Tap without dragging to select a color with Wand."
+                                else -> "Outline too long. Draw a simpler outline."
+                            })
                             else when(tool) {
                                 Tool.Text -> vm.addText(doc, first)
                                 Tool.Eyedropper -> vm.sampleColor(doc, current)
                                 Tool.Fill -> vm.fillAt(doc, first)
+                                Tool.Wand -> vm.wandAt(doc, first)
                                 Tool.Lasso -> vm.selectArea(doc, if (selectionShape == SelectionShape.Rectangle) pending else points, selectionMode, priorIDs, selectionShape)
                                 Tool.Move -> vm.finishMoveGesture(doc, priorIDs, ids, movement(current))
                                 else -> vm.commitStroke(doc, if (tool.isShape) pending else points, tool, width, color, filled, opacity, mirror, brush, brushSeed, nibAngle)

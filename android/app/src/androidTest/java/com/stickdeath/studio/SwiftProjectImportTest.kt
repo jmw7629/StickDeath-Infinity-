@@ -190,6 +190,75 @@ class SwiftProjectImportTest {
             cleanup(project.id)
         }
     }
+    @Test fun testWandUsesTopmostPaintAndPassesEditableIDsToMove() = runBlocking {
+        val app = instrumentation.targetContext.applicationContext as Application
+        val store = ProjectStore(app)
+        val project = Document.create("Wand fixture", 64, 64, 12)
+        val layer = project.layer
+        val red = 0xffff0000.toInt()
+        fun square(x: Float, y: Float, color: Int = red, filled: Boolean = true) =
+            Stroke(layerID = layer.id, points = ShapePath.points(Tool.Rectangle, Point(x, y), Point(x + 12, y + 12), false),
+                color = color, width = 2f, tool = Tool.Rectangle, filled = filled)
+        val covered = square(4f, 4f, color = 0xff0000ff.toInt())
+        val top = square(4f, 4f)
+        val disconnected = square(32f, 4f)
+        val outline = square(32f, 32f, filled = false)
+        val painted = project.copy(frames = listOf(project.frame.copy(strokes = listOf(covered, top, disconnected, outline)))).validated()
+        val seed = Point(10f, 10f)
+        assertEquals(setOf(top.id), DrawingWand.select(painted, seed, 0, contiguous = true) {})
+        assertEquals(setOf(top.id, disconnected.id, outline.id), DrawingWand.select(painted, seed, 0, contiguous = false) {})
+        assertTrue(DrawingWand.select(painted, Point(38f, 38f), 255, contiguous = false) {}.isEmpty())
+        val above = Layer(name = "Locked cover", lockMode = LayerLockMode.Full)
+        val layered = painted.copy(layers = listOf(above, layer),
+            frames = listOf(painted.frame.copy(strokes = painted.frame.strokes + top.copy(id = newID(), layerID = above.id))))
+        try {
+            DrawingWand.select(layered, seed, 0, contiguous = true) {}
+            fail("Wand selected through a higher painted layer")
+        } catch (error: IllegalArgumentException) {
+            assertTrue(error.message.orEmpty().contains("top painted layer"))
+        }
+        val erased = painted.copy(frames = listOf(painted.frame.copy(strokes = painted.frame.strokes +
+            Stroke(layerID = layer.id, points = listOf(seed), color = red, width = 8f, tool = Tool.Eraser))))
+        try {
+            DrawingWand.select(erased, seed, 0, contiguous = true) {}
+            fail("Wand attributed paint through a dependent eraser operation")
+        } catch (error: IllegalArgumentException) {
+            assertTrue(error.message.orEmpty().contains("eraser"))
+        }
+
+        try {
+            store.save(painted)
+            withContext(Dispatchers.Main) {
+                val models = ViewModelStore()
+                val vm = ViewModelProvider(models, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[StudioViewModel::class.java]
+                try {
+                    vm.open(painted.id)
+                    withTimeout(10_000) { while (vm.busy) delay(10) }
+                    val current = requireNotNull(vm.document)
+                    vm.chooseTool(Tool.Wand)
+                    vm.configureWand(tolerance = 0)
+                    vm.wandAt(current, seed)
+                    assertTrue(vm.wandSelecting)
+                    vm.cancelWand()
+                    assertFalse(vm.wandSelecting)
+                    assertEquals(Tool.Wand, vm.tool)
+                    assertTrue(vm.selectedStrokeIDs.isEmpty())
+                    vm.wandAt(current, seed)
+                    withTimeout(10_000) { while (vm.wandSelecting) delay(10) }
+                    assertEquals(setOf(top.id), vm.selectedStrokeIDs)
+                    assertEquals(Tool.Move, vm.tool)
+                    assertEquals(current, vm.document)
+                    assertFalse(vm.canUndo)
+                } finally {
+                    models.clear()
+                }
+            }
+            assertEquals(painted, store.load(painted.id))
+        } finally {
+            cleanup(painted.id)
+        }
+    }
+
     /** Re-signs a portable root so only the JSON content differs from the fixture. */
     private fun envelope(root: JSONObject): ByteArray {
         val payload = root.toString().toByteArray(Charsets.UTF_8)

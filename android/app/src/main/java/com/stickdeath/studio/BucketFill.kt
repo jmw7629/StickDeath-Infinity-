@@ -24,26 +24,34 @@ object BucketFill {
      * before its following cancellation/time checkpoint can run. */
     fun compute(document: Document, point: Point, tolerance: Int, contiguous: Boolean,
                 checkCancellation: () -> Unit): List<FillSpan> = try {
-        computeBounded(document, point, tolerance, contiguous, checkCancellation)
+        computeBounded(document, point, tolerance, contiguous, includeBackground = true,
+            checkCancellation = checkCancellation)
     } catch (error: OutOfMemoryError) {
         // computeBounded's bitmap finally has already run. Surface allocation
         // failure through the editor's existing error path without adding artwork.
         throw IllegalArgumentException("Not enough memory to fill this canvas; no fill was added. Try a smaller canvas or simpler frame.", error)
     }
 
+    internal fun paintedColorRegion(document: Document, point: Point, tolerance: Int, contiguous: Boolean,
+                                    checkCancellation: () -> Unit): List<FillSpan> =
+        computeBounded(document, point, tolerance, contiguous, includeBackground = false,
+            checkCancellation = checkCancellation)
+
     private fun computeBounded(document: Document, point: Point, tolerance: Int, contiguous: Boolean,
-                checkCancellation: () -> Unit): List<FillSpan> {
+                               includeBackground: Boolean, checkCancellation: () -> Unit): List<FillSpan> {
         require(tolerance in 0..255)
         require(point.x.isFinite() && point.y.isFinite() && point.x in 0f..document.width.toFloat() && point.y in 0f..document.height.toFloat())
         require(document.width in 16..4096 && document.height in 16..4096 &&
             document.width.toLong() * document.height <= MAX_PIXELS) {
-            "Fill supports canvases up to 4,194,304 pixels, with each edge from 16 to 4096 pixels; no fill was added."
+            if (includeBackground) "Fill supports canvases up to 4,194,304 pixels, with each edge from 16 to 4096 pixels; no fill was added."
+            else "Wand supports canvases up to 4,194,304 pixels, with each edge from 16 to 4096 pixels."
         }
         val started = android.os.SystemClock.elapsedRealtime()
         fun checkpoint() {
             checkCancellation()
             require(android.os.SystemClock.elapsedRealtime() - started <= MAX_MILLIS) {
-                "Fill exceeded its 5-second work limit; no fill was added. Simplify the frame."
+                if (includeBackground) "Fill exceeded its 5-second work limit; no fill was added. Simplify the frame."
+                else "Wand exceeded its 5-second work limit. Simplify the frame."
             }
         }
         checkpoint()
@@ -51,7 +59,8 @@ object BucketFill {
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val pixels = try {
             checkpoint()
-            FrameRenderer.draw(Canvas(bitmap), document, document.frame, checkCancellation = ::checkpoint)
+            FrameRenderer.draw(Canvas(bitmap), document, document.frame,
+                background = includeBackground, checkCancellation = ::checkpoint)
             checkpoint()
             // Allocate readback only after rendering has released its saved layers.
             // Copy bounded strips so cancellation need not wait for full readback.
@@ -65,9 +74,11 @@ object BucketFill {
         } finally { bitmap.recycle() }
         val seed = point.y.toInt().coerceIn(0, height - 1) * width + point.x.toInt().coerceIn(0, width - 1)
         val target = pixels[seed]
+        if (!includeBackground && target ushr 24 == 0) return emptyList()
         fun matches(index: Int): Boolean {
             val value = pixels[index]
-            return abs((value ushr 16 and 255) - (target ushr 16 and 255)) <= tolerance &&
+            return (includeBackground || value ushr 24 != 0) &&
+                abs((value ushr 16 and 255) - (target ushr 16 and 255)) <= tolerance &&
                 abs((value ushr 8 and 255) - (target ushr 8 and 255)) <= tolerance &&
                 abs((value and 255) - (target and 255)) <= tolerance
         }
@@ -100,7 +111,7 @@ object BucketFill {
                 if (matches(index)) state[index] = 2
             }
         }
-        val existingPoints = document.pointCount
+        val existingPoints = if (includeBackground) document.pointCount else 0
         val spans = ArrayList<FillSpan>()
         for (y in 0 until height) {
             checkpoint()
@@ -109,8 +120,9 @@ object BucketFill {
                 if (state[y * width + x].toInt() != 2) { x++; continue }
                 val start = x++
                 while (x < width && state[y * width + x].toInt() == 2) x++
-                require(spans.size < MAX_SPANS && existingPoints + (spans.size + 1) * 3 + 1 <= 100_000) {
-                    "Fill is too complex or project capacity is reached (20,000 runs per fill); no fill was added."
+                require(spans.size < MAX_SPANS && (!includeBackground || existingPoints + (spans.size + 1) * 3 + 1 <= 100_000)) {
+                    if (includeBackground) "Fill is too complex or project capacity is reached (20,000 runs per fill); no fill was added."
+                    else "Wand selection is too complex (20,000 pixel runs). Try Contiguous or a lower tolerance."
                 }
                 spans.add(FillSpan(y, start, x))
             }
