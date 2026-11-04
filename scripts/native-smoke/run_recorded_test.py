@@ -5,11 +5,13 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import sys
 import time
 
+from seed_diagnostics import run_bounded
 from seed_image_fixture import seed_verified_fixture, wait_for_command_readiness
 from seed_video_fixture import seed_video_fixture
 from test_budget import build_test_budget, build_shard_budget
@@ -17,7 +19,7 @@ from test_budget import build_test_budget, build_shard_budget
 
 # Whole-file pin covers test bodies AND shared helpers. Unreviewed source changes
 # retain both mandatory fixtures rather than silently omitting a new dependency.
-FIXTURE_SOURCE_SHA256 = "37010dba36a99c25c35691c4449cc9c76a8728907751329be70028bfdce2eda5"
+FIXTURE_SOURCE_SHA256 = "0a277d407a5d91cb31c51c7af2552169ceef396e93ee2eaed90203608e4924ca"
 PHOTO_FIXTURE_CASE = "testPhotoImportUndoPersistenceAndRealPNGExport"
 VIDEO_FIXTURE_CASE = "testRotoscopePhotosActualPlayheadUndoAndColdReopen"
 
@@ -47,6 +49,60 @@ def stop_owned_process(process: subprocess.Popen, grace_seconds: float = 30) -> 
         except subprocess.TimeoutExpired:
             process.kill()
             return process.wait(timeout=10)
+
+
+_ENCODER_LOG_BYTES = 64 * 1024
+_ENCODER_LOG_RECORDS = 32
+_ENCODER_SUBSYSTEM = "com.willisbmb.StickDeathInfinity"
+_ENCODER_CATEGORY = "StudioMovieEncoder"
+_ENCODER_DOMAIN = r"(?:AVFoundation|OSStatus|Cocoa|POSIX|none|other)"
+_ENCODER_LINE = re.compile(
+    r"MP4 encoding failed stage=(?:staging|configuration|start|fileOwnership|session|frames|finalization|verification|publication)"
+    r" codec=(?:h264|hevc) writerStatus=[0-4]"
+    rf" domain={_ENCODER_DOMAIN} code=-?[0-9]{{1,19}}"
+    rf" underlyingDomain={_ENCODER_DOMAIN} underlyingCode=-?[0-9]{{1,19}}"
+)
+
+
+def movie_encoder_records(raw: bytes) -> tuple[list[str], bool]:
+    """Keep only complete records matching the exact public encoder log schema."""
+    records = []
+    for line in raw[:_ENCODER_LOG_BYTES].split(b"\n")[:-1]:
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict) or (event.get("subsystem"), event.get("category")) != (
+                _ENCODER_SUBSYSTEM, _ENCODER_CATEGORY):
+            continue
+        message = event.get("eventMessage")
+        if isinstance(message, str) and _ENCODER_LINE.fullmatch(message):
+            if len(records) == _ENCODER_LOG_RECORDS:
+                return records, True
+            records.append(message)
+    return records, len(raw) > _ENCODER_LOG_BYTES or bool(raw and not raw.endswith(b"\n"))
+
+
+def record_movie_encoder_failure(udid: str, output: pathlib.Path, started_at: int) -> None:
+    predicate = (f'subsystem == "{_ENCODER_SUBSYSTEM}" AND category == "{_ENCODER_CATEGORY}"'
+                 ' AND logType == "error" AND composedMessage BEGINSWITH "MP4 encoding failed "')
+    try:
+        result = run_bounded(["xcrun", "simctl", "spawn", udid, "log", "show",
+                              "--start", f"@{started_at}", "--style", "ndjson", "--no-loss",
+                              "--predicate", predicate],
+                             time.monotonic() + 8, stdout_cap=_ENCODER_LOG_BYTES, stderr_cap=0)
+        records, record_cap = movie_encoder_records(result.stdout)
+        complete = (result.returncode == 0 and not result.timed_out
+                    and result.reaped and not result.capture_incomplete)
+        truncated = record_cap or result.stdout_seen > len(result.stdout)
+        # Raw stdout and stderr remain only in the bounded helper's memory.
+        with (output / "studio-movie-encoder-failures.json").open("x", encoding="utf-8") as stream:
+            json.dump({"complete": complete and not truncated, "truncated": truncated, "records": records}, stream)
+            stream.write("\n")
+    except Exception:
+        # This optional diagnostic must preserve the real UI result even when
+        # the simulator command, output file, or redaction cannot be used.
+        return
 
 
 def main() -> int:
@@ -148,6 +204,7 @@ def main() -> int:
             if recorder.poll() is not None:
                 recording_error = "Recorder exited before UI tests started"
             try:
+                test_started_at = int(time.time())
                 test_process = subprocess.Popen(command, stdout=test_log, stderr=subprocess.STDOUT)
                 test_exit = test_process.wait(timeout=test_timeout_seconds)
             except subprocess.TimeoutExpired:
@@ -172,6 +229,9 @@ def main() -> int:
                 except subprocess.TimeoutExpired:
                     recorder.kill()
                     recording_exit = recorder.wait(timeout=10)
+
+    if test_exit != 0:
+        record_movie_encoder_failure(args.udid, output, test_started_at)
 
     verifier = output / "verify-recording"
     try:

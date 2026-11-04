@@ -13,15 +13,92 @@ struct StudioTimeline: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var timingCapture: StudioFrameTimingCapture?
     @State private var tweenCapture: StudioViewModel.TweenCapture?
+    @State private var actionsCapture: StudioFrameActionsCapture?
+    @State private var pendingFrameAction: StudioPendingFrameAction?
     @State private var frameDrag: StudioFrameStripDrag?
     @State private var hoveredFrame: String?
     @State private var hoverAfter = false
 
-    private var canReorderFrames: Bool {
+    private var frameActionsAvailable: Bool {
         vm.isEditing && !vm.isManagingProjects && !vm.isSaving && !vm.isPlaying &&
         vm.activePanel == .none && vm.activeStrokeID == nil && vm.pendingBrushStroke == nil &&
         vm.textDraft == nil && !audioPlayback.isPreparing && !audioPlayback.isPlaying &&
         scenePhase == .active && timingCapture == nil && tweenCapture == nil
+    }
+
+    private var canReorderFrames: Bool {
+        frameActionsAvailable && actionsCapture == nil && pendingFrameAction == nil
+    }
+
+    private func openFrameActions() {
+        guard canReorderFrames, vm.frames.indices.contains(vm.currentFrameIndex) else { return }
+        actionsCapture = StudioFrameActionsCapture(accountID: authVM.userId, projectID: vm.document.id,
+            revision: vm.document.revision, activeFrameID: vm.document.activeFrameID,
+            frameIDs: vm.frames.map(\.id), initialIndex: vm.currentFrameIndex)
+    }
+
+    private func frameActionsAreCurrent(_ capture: StudioFrameActionsCapture) -> Bool {
+        frameActionsAvailable && capture.accountID == authVM.userId && capture.projectID == vm.document.id
+            && capture.revision == vm.document.revision && capture.activeFrameID == vm.document.activeFrameID
+    }
+
+    private func queueFrameAction(_ action: StudioFrameAction, frameID: String, capture: StudioFrameActionsCapture) {
+        guard actionsCapture?.id == capture.id, frameActionsAreCurrent(capture),
+              capture.frameIDs.contains(frameID), vm.frames.contains(where: { $0.id == frameID }) else { return }
+        var tween: StudioViewModel.TweenCapture?
+        if case .tween = action {
+            guard let current = vm.prepareTween(frameID) else {
+                vm.message = "Select a frame with a following endpoint and finish any draft before tweening."
+                return
+            }
+            tween = current
+        }
+        pendingFrameAction = StudioPendingFrameAction(context: capture, frameID: frameID, action: action, tween: tween)
+        actionsCapture = nil
+    }
+
+    private func finishFrameAction() {
+        guard let pending = pendingFrameAction else { return }
+        pendingFrameAction = nil
+        guard actionsCapture == nil, frameActionsAreCurrent(pending.context),
+              vm.frames.contains(where: { $0.id == pending.frameID }) else {
+            vm.message = "The editor changed. Reopen Frame actions for the current frame."
+            return
+        }
+        switch pending.action {
+        case .duplicate: vm.duplicateFrame(pending.frameID)
+        case .exposure(let ticks): vm.setFrameHold(pending.frameID, ticks: ticks)
+        case .repeatFrame(let copies): _ = vm.repeatFrame(pending.frameID, additionalCopies: copies)
+        case .tween:
+            guard let captured = pending.tween, vm.prepareTween(pending.frameID) == captured else {
+                vm.message = "The tween endpoints or editor state changed. Reopen Frame actions."
+                return
+            }
+            tweenCapture = captured
+        }
+    }
+
+    private func clearFrameActions() {
+        pendingFrameAction = nil
+        actionsCapture = nil
+    }
+
+    private var frameActionsButton: some View {
+        Button(action: openFrameActions) {
+            HStack(spacing: 3) {
+                Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
+                    .font(.specialElite(10, relativeTo: .caption2)).monospacedDigit()
+                Image(systemName: "ellipsis").font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundColor(.white.opacity(0.7))
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canReorderFrames)
+        .accessibilityLabel("Frame actions")
+        .accessibilityValue("Frame \(vm.currentFrameIndex + 1) of \(vm.frames.count)")
+        .accessibilityIdentifier("studio.frame-actions.open")
     }
 
     private func clearFrameDrag() {
@@ -128,8 +205,8 @@ struct StudioTimeline: View {
             .disabled(i + 1 >= vm.frames.count)
             .accessibilityIdentifier("studio.frame-menu.tween")
             Menu("Frame exposure") {
-                ForEach([1, 2, 3, 6, 12, 24, 60], id: \.self) { ticks in
-                    Button("\(ticks) ticks (\(String(format: "%.2f", Double(ticks) / Double(vm.fps)))s)") {
+                ForEach(StudioFrameAction.exposurePresets, id: \.self) { ticks in
+                    Button(StudioFrameAction.exposureLabel(ticks: ticks, fps: vm.fps)) {
                         vm.setFrameHold(frame.id, ticks: ticks)
                     }.accessibilityIdentifier("studio.frame-menu.hold.\(ticks)")
                 }
@@ -141,8 +218,8 @@ struct StudioTimeline: View {
             }
             .accessibilityIdentifier("studio.frame-menu.range-exposure")
             Menu("Repeat frame") {
-                ForEach([2, 4, 8, 12, 24], id: \.self) { copies in
-                    Button("Add \(copies) copies (\(String(format: "%.2f", Double(copies * frame.durationTicks) / Double(vm.fps)))s)") {
+                ForEach(StudioFrameAction.repeatPresets, id: \.self) { copies in
+                    Button(StudioFrameAction.repeatLabel(copies: copies, ticks: frame.durationTicks, fps: vm.fps)) {
                         _ = vm.repeatFrame(frame.id, additionalCopies: copies)
                     }
                     .disabled(vm.frames.count + copies > 1000)
@@ -249,10 +326,7 @@ struct StudioTimeline: View {
 
             Spacer()
 
-            // Frame counter
-            Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
-                .font(.specialElite(10, relativeTo: .caption2)).monospacedDigit()
-                .foregroundColor(.white.opacity(0.4))
+            frameActionsButton
         }
         // A timeline is a bounded control row, not a second flexible canvas.
         // The thumbnail label must never expand the horizontal scroll view
@@ -261,11 +335,11 @@ struct StudioTimeline: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color(hex: "0A0A10"))
-        .onDisappear { clearFrameDrag(); audioPlayback.close() }
-        .onChange(of: vm.document.id) { _, _ in clearFrameDrag(); audioPlayback.close() }
+        .onDisappear { clearFrameDrag(); clearFrameActions(); audioPlayback.close() }
+        .onChange(of: vm.document.id) { _, _ in clearFrameDrag(); clearFrameActions(); audioPlayback.close() }
         .onChange(of: vm.document.revision) { _, _ in clearFrameDrag(); audioPlayback.stop() }
         .onChange(of: vm.document.activeFrameID) { _, _ in clearFrameDrag() }
-        .onChange(of: authVM.userId) { _, _ in clearFrameDrag() }
+        .onChange(of: authVM.userId) { _, _ in clearFrameDrag(); clearFrameActions() }
         .onChange(of: canReorderFrames) { _, ready in if !ready { clearFrameDrag() } }
         .onChange(of: vm.playbackLoops) { _, _ in audioPlayback.stop() }
         .onChange(of: vm.activePanel) { _, panel in
@@ -275,10 +349,15 @@ struct StudioTimeline: View {
             if !playing && audioPlayback.isPlaying { audioPlayback.stop() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { clearFrameDrag(); audioPlayback.close() }
+            if phase != .active { clearFrameDrag(); clearFrameActions(); audioPlayback.close() }
         }
         .onChange(of: audioPlayback.notice) { _, notice in
             if let notice { vm.message = notice }
+        }
+        .sheet(item: $actionsCapture, onDismiss: finishFrameAction) { capture in
+            StudioFrameActionsSheet(vm: vm, capture: capture,
+                isCurrent: { frameActionsAreCurrent(capture) },
+                perform: { action, frameID in queueFrameAction(action, frameID: frameID, capture: capture) })
         }
         .sheet(item: $timingCapture) { capture in
             StudioFrameTimingOptions(vm: vm, capture: capture)
@@ -402,6 +481,115 @@ private struct StudioFrameStripDropDelegate: DropDelegate {
     }
 }
 
+
+private struct StudioFrameActionsCapture: Identifiable {
+    let id = UUID()
+    let accountID: String?
+    let projectID: UUID
+    let revision: Int
+    let activeFrameID: String
+    let frameIDs: [String]
+    let initialIndex: Int
+}
+
+private enum StudioFrameAction {
+    case duplicate, exposure(Int), repeatFrame(Int), tween
+
+    static let exposurePresets = [1, 2, 3, 6, 12, 24, 60]
+    static let repeatPresets = [2, 4, 8, 12, 24]
+
+    static func exposureLabel(ticks: Int, fps: Int) -> String {
+        "\(ticks) ticks (\(String(format: "%.2f", Double(ticks) / Double(fps)))s)"
+    }
+
+    static func repeatLabel(copies: Int, ticks: Int, fps: Int) -> String {
+        "Add \(copies) copies (\(String(format: "%.2f", Double(copies * ticks) / Double(fps)))s)"
+    }
+}
+
+private struct StudioPendingFrameAction {
+    let context: StudioFrameActionsCapture
+    let frameID: String
+    let action: StudioFrameAction
+    let tween: StudioViewModel.TweenCapture?
+}
+
+private struct StudioFrameActionsSheet: View {
+    private enum Choices: String { case exposure = "Frame exposure", repeatFrame = "Repeat frame" }
+
+    @ObservedObject var vm: StudioViewModel
+    let capture: StudioFrameActionsCapture
+    let isCurrent: @MainActor () -> Bool
+    let perform: @MainActor (StudioFrameAction, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var targetIndex: Int
+    @State private var choices: Choices?
+
+    init(vm: StudioViewModel, capture: StudioFrameActionsCapture, isCurrent: @escaping @MainActor () -> Bool,
+         perform: @escaping @MainActor (StudioFrameAction, String) -> Void) {
+        self.vm = vm
+        self.capture = capture
+        self.isCurrent = isCurrent
+        self.perform = perform
+        _targetIndex = State(initialValue: capture.initialIndex)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if isCurrent(), capture.frameIDs.indices.contains(targetIndex),
+                   let frame = vm.frames.first(where: { $0.id == capture.frameIDs[targetIndex] }) {
+                    switch choices {
+                    case .exposure:
+                        ForEach(StudioFrameAction.exposurePresets, id: \.self) { ticks in
+                            Button(StudioFrameAction.exposureLabel(ticks: ticks, fps: vm.fps)) {
+                                perform(.exposure(ticks), frame.id)
+                            }.accessibilityIdentifier("studio.frame-actions.hold.\(ticks)")
+                        }
+                    case .repeatFrame:
+                        ForEach(StudioFrameAction.repeatPresets, id: \.self) { copies in
+                            Button(StudioFrameAction.repeatLabel(copies: copies, ticks: frame.durationTicks, fps: vm.fps)) {
+                                perform(.repeatFrame(copies), frame.id)
+                            }
+                            .disabled(vm.frames.count + copies > 1000)
+                            .accessibilityIdentifier("studio.frame-actions.repeat.\(copies)")
+                        }
+                    case nil:
+                        Section("Action target") {
+                            Stepper("Frame \(targetIndex + 1)", value: $targetIndex, in: 0...(capture.frameIDs.count - 1))
+                                .accessibilityIdentifier("studio.frame-actions.target")
+                            Text("The canvas stays on the selected frame while you choose the action target.")
+                        }
+                        Section {
+                            Button("Duplicate frame") { perform(.duplicate, frame.id) }
+                                .disabled(vm.frames.count >= 1000)
+                                .accessibilityIdentifier("studio.frame-actions.duplicate")
+                            Button("Frame exposure") { choices = .exposure }
+                                .accessibilityIdentifier("studio.frame-actions.exposure")
+                            Button("Repeat frame") { choices = .repeatFrame }
+                                .accessibilityIdentifier("studio.frame-actions.repeat")
+                            Button("Tween to next frame…") { perform(.tween, frame.id) }
+                                .disabled(targetIndex + 1 >= capture.frameIDs.count)
+                                .accessibilityIdentifier("studio.frame-actions.tween")
+                        }
+                    }
+                } else {
+                    Text("Finish the current editor operation or reopen Frame actions for the current frame.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.specialElite(14))
+            .navigationTitle(choices?.rawValue ?? "Frame actions")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(choices == nil ? "Close" : "Back") {
+                        if choices == nil { dismiss() } else { choices = nil }
+                    }
+                }
+            }
+        }.preferredColorScheme(.dark)
+    }
+}
 
 private struct StudioTweenOptions: View {
     @ObservedObject var vm: StudioViewModel

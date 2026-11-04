@@ -50,6 +50,7 @@ PREFIX_ISSUES = [
     # delivery issue whose title owns the control family (scratch issue index).
     ("studio.export", "#182 #183 #184 #185", "export issues EX01–EX04"),
     ("studio.storage", "#171 #167", "local storage bounds and the project browser"),
+    ("studio.frame-actions", "#161", "frames, duration, duplication, tweening"),
     ("studio.frame-menu", "#161", "frames, duration, duplication, reordering"),
     ("studio.frame-timing", "#161", "frames, duration, duplication, reordering"),
     ("studio.frames-viewer", "#161", "frames, duration, duplication, reordering"),

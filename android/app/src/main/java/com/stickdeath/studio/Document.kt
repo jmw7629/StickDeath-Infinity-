@@ -296,10 +296,21 @@ enum class MirrorMode { Off, Vertical, Horizontal, Both }
 fun Stroke.mirrored(canvasWidth: Int, canvasHeight: Int, mode: MirrorMode): List<Stroke> {
     if (mode == MirrorMode.Off || tool.isEraser) return listOf(this)
     val result = mutableListOf(this)
+    val usesSwiftBrush = swiftRoundBrush != null
+    fun BrushTransform.nibCrossTerm() = a.toDouble() * b + c.toDouble() * d
+
     fun reflect(horizontal: Boolean, vertical: Boolean) {
         val reflected = points.map { Point(if (horizontal) canvasWidth - it.x else it.x, if (vertical) canvasHeight - it.y else it.y) }
-        // Avoid double opacity for artwork lying exactly on a mirror axis.
-        if (result.none { it.points == reflected || it.points == reflected.asReversed() }) result += copy(id = newID(), points = reflected, brushTransform = if (brush == BrushFamily.Round && swiftRoundBrush == null) brushTransform else brushTransform.then(if (horizontal) -1f else 1f,0f,0f,if (vertical) -1f else 1f))
+        if (!usesSwiftBrush && result.any { it.points == reflected || it.points == reflected.asReversed() }) return
+
+        val transform = if (brush == BrushFamily.Round && !usesSwiftBrush) brushTransform else
+            brushTransform.then(if (horizontal) -1f else 1f, 0f, 0f, if (vertical) -1f else 1f)
+        // A reversed sample sequence can change pressure and smoothing. For identical
+        // ordered samples, a reflection preserves a round nib only when its off-diagonal
+        // term in T*Tᵀ matches; reflection cannot change either diagonal term.
+        if (usesSwiftBrush && result.any { it.points == reflected && it.brushTransform.nibCrossTerm() == transform.nibCrossTerm() }) return
+
+        result += copy(id = newID(), points = reflected, brushTransform = transform)
     }
     if (mode == MirrorMode.Vertical || mode == MirrorMode.Both) reflect(true, false)
     if (mode == MirrorMode.Horizontal || mode == MirrorMode.Both) reflect(false, true)

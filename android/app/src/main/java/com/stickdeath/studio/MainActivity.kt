@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -644,7 +645,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             }
                             TextButton({ vm.resetSelectedBrush() }) { Text("Reset this brush") }
                             Text("Size, opacity, smoothing and nib angle are remembered separately for each brush.")
-                            Text("Textures retain their pattern when saved or exported. Dip Pen varies width with stroke direction; stylus pressure is not yet supported.")
+                            Text("Textures retain their pattern when saved or exported. Round responds to compatible stylus pressure. Dip Pen varies width with stroke direction.")
                         }
                         Text("Width: ${vm.width.toInt()} pixels")
                         Slider(vm.width, { vm.width = it }, valueRange = 1f..128f)
@@ -954,11 +955,19 @@ private suspend fun PointerInputScope.detectViewportZoom(
     } while (event.changes.any { it.pressed })
 }
 
+private data class DrawingPreview(
+    val points: List<Point> = emptyList(),
+    val roundBrush: SwiftRoundBrush? = null,
+)
+
+private fun stylusPressure(value: Float, fallback: Double = 1.0): Double =
+    if (value.isFinite()) value.coerceIn(0f, 1f).toDouble() else fallback
+
 @Composable private fun DrawingSurface(
     vm: StudioViewModel, doc: Document, frame: Frame, playing: Boolean, onion: Boolean,
     viewportSize: MutableState<IntSize>,
 ) {
-    var pending by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<List<Point>>(emptyList()) }
+    var pending by remember(doc.id, doc.revision, vm.tool) { mutableStateOf(DrawingPreview()) }
     var pendingSeed by remember(doc.id) { mutableStateOf(0) }
     var transformed by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<Frame?>(null) }
     var movePreviewIDs by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<Set<String>?>(null) }
@@ -1017,6 +1026,12 @@ private suspend fun PointerInputScope.detectViewportZoom(
                 fun point(x: Float, y: Float) = Point((x * doc.width / size.width).coerceIn(0f, doc.width.toFloat()), (y * doc.height / size.height).coerceIn(0f, doc.height.toFloat()))
                 val first = point(down.position.x, down.position.y)
                 val points = mutableListOf(first)
+                val usesStylusPressure = tool == Tool.Pencil && brush == BrushFamily.Round && down.type == PointerType.Stylus
+                if (usesStylusPressure && (down.isConsumed || !isInCanvas(down.position) ||
+                        currentEvent.changes.any { it.id != down.id && it.pressed })) return@awaitEachGesture
+                val roundBrush = if (usesStylusPressure) SwiftRoundBrush.stylus(vm.smoothing, stylusPressure(down.pressure)) else null
+                val pressureSamples = roundBrush?.pressures?.toMutableList()
+                fun drawingPreview() = DrawingPreview(points.toList(), roundBrush?.copy(pressures = requireNotNull(pressureSamples).toList()))
                 val smoother = StrokeSmoother(first, if (tool == Tool.Pencil || tool.isEraser) vm.smoothing else 0f)
                 // Ruler applies to freehand pencil/eraser gestures only; shapes already have straight geometry.
                 val ruler = RulerConstraint(first, if (tool == Tool.Pencil || tool.isEraser) vm.rulerMode else RulerMode.Off)
@@ -1060,7 +1075,7 @@ private suspend fun PointerInputScope.detectViewportZoom(
                     }
                 }
                 var overflow = false
-                if (tool != Tool.Move && !tapTool && !tool.isShape) pending = points.toList()
+                if (tool != Tool.Move && !tapTool && !tool.isShape) pending = drawingPreview()
                 down.consume()
                 vm.noteGesture(true)
                 try {
@@ -1073,7 +1088,7 @@ private suspend fun PointerInputScope.detectViewportZoom(
                         if (event.changes.any { it.id != down.id && (wandGesture || it.pressed) }) break
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         // Compose can deliver cancellation as a consumed synthetic up.
-                        if ((tool == Tool.Move || wandGesture) && change.isConsumed) break
+                        if ((tool == Tool.Move || wandGesture || usesStylusPressure) && change.isConsumed) break
                         if (wandGesture && (!change.previousPressed || !isInCanvas(change.position))) break
                         val current = point(change.position.x, change.position.y)
                         if (tool == Tool.Move) {
@@ -1098,9 +1113,23 @@ private suspend fun PointerInputScope.detectViewportZoom(
                             if (dx * dx + dy * dy > tolerance * tolerance) overflow = true
                         }
                         else if (tool == Tool.Lasso && selectionShape == SelectionShape.Rectangle) {
-                            pending = ShapePath.points(Tool.Rectangle, first, current, false)
+                            pending = DrawingPreview(ShapePath.points(Tool.Rectangle, first, current, false))
                         }
-                        else if (tool.isShape) pending = ShapePath.points(tool, first, current, equalSides)
+                        else if (tool.isShape) pending = DrawingPreview(ShapePath.points(tool, first, current, equalSides))
+                        else if (pressureSamples != null) {
+                            // The brush renderer smooths these raw, ruler-constrained samples once.
+                            // Lift events often report zero pressure; retain the last contact pressure.
+                            val next = ruler.constrain(current)
+                            val previousPressure = pressureSamples.last()
+                            val pressure = if (change.pressed) stylusPressure(change.pressure, previousPressure) else previousPressure
+                            if (next != points.last() || pressure != previousPressure) {
+                                if (points.size < 8192) {
+                                    points.add(next)
+                                    pressureSamples.add(pressure)
+                                    pending = drawingPreview()
+                                } else overflow = true
+                            }
+                        }
                         else {
                             val cap = if (tool == Tool.Lasso) 1024 else 8192
                             val ruled = ruler.constrain(current)
@@ -1113,7 +1142,7 @@ private suspend fun PointerInputScope.detectViewportZoom(
                             if (!change.pressed && points.last() != ruled) {
                                 if (points.size < cap) points.add(ruled) else overflow = true
                             }
-                            pending = points.toList()
+                            pending = drawingPreview()
                         }
                         change.consume()
                         if (!change.pressed) {
@@ -1129,15 +1158,16 @@ private suspend fun PointerInputScope.detectViewportZoom(
                                 Tool.Eyedropper -> vm.sampleColor(doc, current)
                                 Tool.Fill -> vm.fillAt(doc, first)
                                 Tool.Wand -> vm.wandAt(doc, first)
-                                Tool.Lasso -> vm.selectArea(doc, if (selectionShape == SelectionShape.Rectangle) pending else points, selectionMode, priorIDs, selectionShape)
+                                Tool.Lasso -> vm.selectArea(doc, if (selectionShape == SelectionShape.Rectangle) pending.points else points, selectionMode, priorIDs, selectionShape)
                                 Tool.Move -> vm.finishMoveGesture(doc, priorIDs, ids, movement(current))
-                                else -> vm.commitStroke(doc, if (tool.isShape) pending else points, tool, width, color, filled, opacity, mirror, brush, brushSeed, nibAngle)
+                                else -> vm.commitStroke(doc, if (tool.isShape) pending.points else points, tool, width, color,
+                                    filled, opacity, mirror, brush, brushSeed, nibAngle, swiftRoundBrush = pending.roundBrush)
                             }
                             break
                         }
                     }
                 } finally {
-                    pending = emptyList()
+                    pending = DrawingPreview()
                     transformed = null
                     movePreviewIDs = null
                     vm.noteGesture(false)
@@ -1148,11 +1178,13 @@ private suspend fun PointerInputScope.detectViewportZoom(
             val checkpoint = canvas.save()
             try {
                 canvas.scale(size.width / doc.width, size.height / doc.height)
-                val live = if (pending.isNotEmpty() && !playing && vm.tool.isDrawing)
-                    Stroke(layerID = doc.activeLayerID, points = pending, color = vm.color, width = vm.width, tool = vm.tool,
+                val live = if (pending.points.isNotEmpty() && !playing && vm.tool.isDrawing)
+                    Stroke(layerID = doc.activeLayerID, points = pending.points, color = vm.color, width = vm.width, tool = vm.tool,
                         filled = vm.shapeFilled && (vm.tool.isClosedShape), opacity = vm.strokeOpacity,
-                        brush = if (vm.tool == Tool.Pencil) vm.brushFamily else BrushFamily.Round, brushSeed = pendingSeed, nibAngle = vm.nibAngle)
-                        .takeIf { runCatching { BrushRenderer.work(it) }.isSuccess } else null
+                        brush = if (vm.tool == Tool.Pencil) vm.brushFamily else BrushFamily.Round, brushSeed = pendingSeed,
+                        nibAngle = vm.nibAngle, swiftRoundBrush = pending.roundBrush,
+                        preservesLayerAlpha = pending.roundBrush != null && doc.layer.lockMode == LayerLockMode.Alpha)
+                        .takeIf { runCatching { it.swiftRoundBrush?.dabs(it)?.size ?: BrushRenderer.work(it) }.isSuccess } else null
                 val shown = if (!playing) transformed ?: frame else frame
                 val preview = if (live != null) shown.copy(strokes = shown.strokes + live.mirrored(doc.width, doc.height, vm.mirrorMode)) else shown
                 if (onion && !playing) FrameRenderer.drawOnion(canvas, doc, preview, maxPrevious = vm.planLimits.maxOnionSkinBack, maxNext = vm.planLimits.maxOnionSkinForward)
@@ -1172,10 +1204,10 @@ private suspend fun PointerInputScope.detectViewportZoom(
                         color = 0xffe52b38.toInt(); style = android.graphics.Paint.Style.STROKE; strokeWidth = 1.5f*unit
                         pathEffect = android.graphics.DashPathEffect(floatArrayOf(5f*unit,4f*unit),0f)
                     }
-                    if (vm.tool == Tool.Lasso && pending.isNotEmpty()) {
+                    if (vm.tool == Tool.Lasso && pending.points.isNotEmpty()) {
                         val path = android.graphics.Path().apply {
-                            moveTo(pending.first().x,pending.first().y)
-                            pending.drop(1).forEach { lineTo(it.x,it.y) }; close()
+                            moveTo(pending.points.first().x,pending.points.first().y)
+                            pending.points.drop(1).forEach { lineTo(it.x,it.y) }; close()
                         }
                         canvas.drawPath(path,paint)
                     }

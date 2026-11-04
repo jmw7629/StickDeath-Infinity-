@@ -438,7 +438,15 @@ final class StudioSmokeUITests: XCTestCase {
         let confirm = app.buttons["studio.storage.confirm-remove-revisions"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         let cancel = app.buttons["studio.storage.cancel-confirmation"]
-        XCTAssertTrue(cancel.isHittable); cancel.tap()
+        let cancelReady = expectation(
+            for: NSPredicate(format: "exists == true AND hittable == true AND enabled == true"),
+            evaluatedWith: cancel).waitUntilFulfilled(timeout: 5)
+        if !cancelReady {
+            capture(app, name: "storage-cleanup-cancel-not-ready")
+            captureHierarchy(app, name: "storage-cleanup-cancel-not-ready-hierarchy")
+        }
+        XCTAssertTrue(cancelReady, "The actual removal alert must expose an interactive Cancel button")
+        cancel.tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: confirm).waitUntilFulfilled(timeout: 5))
         XCTAssertEqual(preview.label, reviewedText, "Cancelling must preserve the exact reviewed batch")
         XCTAssertFalse(app.staticTexts["studio.storage.revision-result"].exists, "Cancel must not claim or perform a completed removal")
@@ -825,8 +833,10 @@ final class StudioSmokeUITests: XCTestCase {
         try cleanCanvas()
         let firstID = frames(app).firstMatch.identifier
         let first = try pixels(canvas.screenshot().image), startInk = try ink(first)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Duplicate frame", in: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in frames(app).count == 2 }, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: 5))
         XCTAssertEqual(frames(app).count, 2)
         let lastID = try XCTUnwrap(frames(app).allElementsBoundByIndex.first { $0.identifier != firstID }).identifier
         XCTAssertEqual(app.buttons[lastID].value as? String, "Selected")
@@ -845,7 +855,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(endInk.y, startInk.y, accuracy: 0.01)
         XCTAssertEqual(Double(endInk.count) / Double(startInk.count), 1, accuracy: 0.05,
                        "Moving the endpoint cropped or replaced source artwork")
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Tween to next frame…", in: app).tap()
         let count = app.steppers["studio.tween.count"]
         XCTAssertTrue(count.waitForExistence(timeout: 5))
@@ -922,8 +932,10 @@ final class StudioSmokeUITests: XCTestCase {
         try cleanCanvas()
         let firstID = frames(app).firstMatch.identifier
         let first = try pixels(canvas.screenshot().image)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Duplicate frame", in: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in frames(app).count == 2 }, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: 5))
         XCTAssertEqual(frames(app).count, 2)
         let lastID = try XCTUnwrap(frames(app).allElementsBoundByIndex.first { $0.identifier != firstID }).identifier
         XCTAssertEqual(app.buttons[lastID].value as? String, "Selected")
@@ -934,7 +946,7 @@ final class StudioSmokeUITests: XCTestCase {
         try cleanCanvas()
         let last = try pixels(canvas.screenshot().image)
         try assertQuarterTweenRotation(first, last, degrees: 90)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Tween to next frame…", in: app).tap()
         let count = app.steppers["studio.tween.count"]
         XCTAssertTrue(count.waitForExistence(timeout: 5))
@@ -1841,10 +1853,10 @@ final class StudioSmokeUITests: XCTestCase {
         @MainActor func repeatOption(_ target: XCUIApplication, frameID: String) throws -> XCUIElement {
             let frame = target.buttons[frameID]
             XCTAssertTrue(frame.waitForExistence(timeout: 5) && frame.isHittable)
-            frame.press(forDuration: 0.7)
-            let menu = target.buttons["studio.frame-menu.repeat"]
+            try openFrameActions(frameID, in: target)
+            let menu = target.buttons["studio.frame-actions.repeat"]
             XCTAssertTrue(menu.waitForExistence(timeout: 5) && menu.isHittable); menu.tap()
-            let option = target.buttons["studio.frame-menu.repeat.2"]
+            let option = target.buttons["studio.frame-actions.repeat.2"]
             XCTAssertTrue(option.waitForExistence(timeout: 5) && option.isEnabled && option.isHittable)
             // This label is computed from this cel's stored durationTicks and the
             // project's actual FPS, rather than the exposure menu's fixed presets.
@@ -1853,9 +1865,9 @@ final class StudioSmokeUITests: XCTestCase {
         }
         XCTAssertEqual(thumbnails(app).count, 1)
         let originalID = thumbnails(app).firstMatch.identifier
-        app.buttons[originalID].press(forDuration: 0.7)
+        try openFrameActions(originalID, in: app)
         try waitForButton("Frame exposure", in: app).tap()
-        let hold = app.buttons["studio.frame-menu.hold.3"]
+        let hold = app.buttons["studio.frame-actions.hold.3"]
         XCTAssertTrue(hold.waitForExistence(timeout: 5) && hold.isEnabled && hold.isHittable)
         XCTAssertEqual(hold.label, "3 ticks (0.25s)"); hold.tap()
         try settlePickerCanvasAfterSave(app, canvas: canvas)
@@ -1892,6 +1904,35 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(restored.screenshot().image)), 4)
         _ = try repeatOption(reopened, frameID: copyID)
         capture(reopened, name: "frame-exposure-repeat-duration-cold-reopened")
+    }
+
+    @MainActor
+    private func openFrameActions(_ frameID: String, in app: XCUIApplication) throws {
+        let target = app.buttons[frameID]
+        XCTAssertTrue(target.waitForExistence(timeout: 5))
+        let targetLabel = target.label
+        let thumbnails = app.scrollViews["studio.frame-timeline"].buttons
+        let active = thumbnails.matching(NSPredicate(format: "value == %@", "Selected")).firstMatch
+        XCTAssertTrue(active.exists)
+        let activeIndex = try XCTUnwrap(active.label.split(separator: " ").last.flatMap { Int($0) })
+        let targetIndex = try XCTUnwrap(targetLabel.split(separator: " ").last.flatMap { Int($0) })
+        let offset = targetIndex - activeIndex
+        guard abs(offset) <= 1 else {
+            XCTFail("This fixture expects the action frame to be active or adjacent")
+            throw NSError(domain: "NativeFrameActions", code: 1)
+        }
+
+        let open = app.buttons["studio.frame-actions.open"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5) && open.isHittable && open.isEnabled)
+        open.tap()
+        let stepper = app.steppers["studio.frame-actions.target"]
+        XCTAssertTrue(stepper.waitForExistence(timeout: 5))
+        if offset != 0 {
+            let step = stepper.buttons["studio.frame-actions.target-" + (offset < 0 ? "Decrement" : "Increment")]
+            XCTAssertTrue(step.exists && step.isHittable && step.isEnabled)
+            step.tap()
+        }
+        XCTAssertEqual(stepper.label, targetLabel, "Frame actions must target the requested frame")
     }
 
     @MainActor
@@ -5483,16 +5524,31 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(undo.isEnabled, "The brush journey requires a new blank project")
 
         try selectToolbarTool("brush", app: app)
+        let popup = app.scrollViews["studio.tool-settings.scroll"]
+        let reset = popup.buttons["studio.tool-settings.reset"]
+        XCTAssertTrue(revealToolPopupControl(reset, in: popup, fallbackUp: true,
+                                            missingScroll: "Brush reset must use the tool popup"))
+        reset.tap()
         let library = app.buttons["studio.brush-library"]
-        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        XCTAssertTrue(library.waitForExistence(timeout: 5))
+        XCTAssertTrue(revealToolPopupControl(library, in: popup, fallbackUp: false,
+                                            missingScroll: "Brush Library must use the tool popup"))
+        library.tap()
         let round = app.buttons["studio.brush-family.round"]
-        XCTAssertTrue(round.waitForExistence(timeout: 5)); XCTAssertTrue(round.isHittable); round.tap()
+        XCTAssertTrue(round.waitForExistence(timeout: 5))
+        XCTAssertTrue(revealToolPopupControl(round, in: popup, fallbackUp: true, horizontalRounding: 1,
+                                            missingScroll: "Built-in brushes must use the tool popup"))
+        XCTAssertTrue(round.isHittable); round.tap()
         let size = app.sliders["studio.setting.size"]
         let opacity = app.sliders["studio.setting.opacity"]
-        XCTAssertTrue(size.waitForExistence(timeout: 5)); XCTAssertTrue(size.isHittable)
+        XCTAssertTrue(size.waitForExistence(timeout: 5))
+        XCTAssertTrue(revealToolPopupControl(size, in: popup, fallbackUp: false,
+                                            missingScroll: "Brush Size must use the tool popup"))
+        XCTAssertTrue(size.isHittable)
         XCTAssertTrue(opacity.isHittable)
         let initialSize = try XCTUnwrap(size.value as? String)
         let initialOpacity = try XCTUnwrap(opacity.value as? String)
+        XCTAssertEqual(initialSize, "3px", "Reset must restore the Brush size before testing an adjustment")
         size.adjust(toNormalizedSliderPosition: 0.75)
         opacity.adjust(toNormalizedSliderPosition: 0.6)
         let selectedSize = try XCTUnwrap(size.value as? String)

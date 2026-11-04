@@ -1285,7 +1285,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             d.copy(frames = d.frames.map { if (it.id == d.activeFrameID) it.copy(strokes = it.strokes.map { s -> if (s.id == id) updated else s }) else it })
         }
     }
-    fun commitStroke(captured: Document, points: List<Point>, strokeTool: Tool, strokeWidth: Float, strokeColor: Int, filled: Boolean = false, opacity: Float = 1f, mirror: MirrorMode = MirrorMode.Off, brush: BrushFamily = BrushFamily.Round, brushSeed: Int = newID().hashCode(), nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f) {
+    fun commitStroke(captured: Document, points: List<Point>, strokeTool: Tool, strokeWidth: Float, strokeColor: Int, filled: Boolean = false, opacity: Float = 1f, mirror: MirrorMode = MirrorMode.Off, brush: BrushFamily = BrushFamily.Round, brushSeed: Int = newID().hashCode(), nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f,
+                     swiftRoundBrush: SwiftRoundBrush? = null) {
         val now = document ?: return
         if (!strokeTool.isDrawing) return
         if (now.id != captured.id || now.revision != captured.revision || closing) return
@@ -1300,7 +1301,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         if (alphaLocked && strokeTool != Tool.Pencil) { report("Alpha lock supports brush painting only. Unlock ${now.layer.name} before adding shapes; nothing changed."); return }
         if (!alphaLocked && !mode.allowsNewMarks) return
         change { d -> d.copy(frames = d.frames.map { f -> if (f.id != d.activeFrameID) f else
-            f.copy(strokes = f.strokes + Stroke(layerID = d.activeLayerID, points = points.toList(), color = strokeColor, width = strokeWidth, tool = strokeTool, filled = filled, opacity = opacity, brush = if (strokeTool == Tool.Pencil) brush else BrushFamily.Round, brushSeed = brushSeed, nibAngle = nibAngle, preservesLayerAlpha = alphaLocked).mirrored(d.width, d.height, mirror)) }) }
+            f.copy(strokes = f.strokes + Stroke(layerID = d.activeLayerID, points = points.toList(), color = strokeColor, width = strokeWidth, tool = strokeTool, filled = filled, opacity = opacity, brush = if (strokeTool == Tool.Pencil) brush else BrushFamily.Round, brushSeed = brushSeed, nibAngle = nibAngle,
+                swiftRoundBrush = swiftRoundBrush, preservesLayerAlpha = alphaLocked).mirrored(d.width, d.height, mirror)) }) }
     }
     /** Apply one parsed Spatter instruction through the ordinary guarded history path. */
     fun applySpatterCommand(captured: Document, command: SpatterCommand): Boolean {

@@ -5,12 +5,39 @@ import VideoToolbox
 import ImageIO
 import CryptoKit
 import Darwin
+import OSLog
 
 /// Animation-only MP4 foundation. The caller captures the entire document,
 /// including retained legacy audio and raster bytes, before starting this work.
 /// No picker, Photos, cloud, publishing, or background-task side effects.
 @MainActor
 final class StudioMovieExportService {
+    private static let encoderLog = Logger(subsystem: "com.willisbmb.StickDeathInfinity", category: "StudioMovieEncoder")
+    private enum EncodingStage: String {
+        case staging, configuration, start, fileOwnership, session, frames, finalization, verification, publication
+    }
+
+    private static func logEncoderFailure(_ writer: AVAssetWriter, stage: EncodingStage, codec: Codec) {
+        let error = writer.error.map { $0 as NSError }
+        let underlying = error?.userInfo[NSUnderlyingErrorKey] as? NSError
+        let code = error?.code ?? 0
+        let underlyingCode = underlying?.code ?? 0
+        let status = writer.status.rawValue
+        // Only predefined categories and numeric status codes are logged. AVFoundation's
+        // error text and userInfo can contain private source and staging paths.
+        func category(_ error: NSError?) -> String {
+            switch error?.domain {
+            case AVFoundationErrorDomain: return "AVFoundation"
+            case NSOSStatusErrorDomain: return "OSStatus"
+            case NSCocoaErrorDomain: return "Cocoa"
+            case NSPOSIXErrorDomain: return "POSIX"
+            case nil: return "none"
+            default: return "other"
+            }
+        }
+        encoderLog.error("MP4 encoding failed stage=\(stage.rawValue, privacy: .public) codec=\(codec.rawValue, privacy: .public) writerStatus=\(status, privacy: .public) domain=\(category(error), privacy: .public) code=\(code, privacy: .public) underlyingDomain=\(category(underlying), privacy: .public) underlyingCode=\(underlyingCode, privacy: .public)")
+    }
+
     enum Background: String, Codable { case white, transparent }
     /// H.264 is the default; HEVC is offered only where AVAssetWriter accepts it (#182).
     enum Codec: String, Codable, CaseIterable, Hashable {
@@ -738,6 +765,7 @@ final class StudioMovieExportService {
         var outputOwnership: OutputOwnership?
         var capturingOutputOwnership = false
         var encodingOwnership: EncodingOwnership?
+        var encodingStage = EncodingStage.staging
         do {
             let identity = try DirectoryIdentity(staging)
             stagingIdentity = identity
@@ -747,6 +775,7 @@ final class StudioMovieExportService {
             }
             try confirmOwnership()
             let movie = staging.appendingPathComponent(movieFilename)
+            encodingStage = .configuration
             writer = try AVAssetWriter(outputURL: movie, fileType: .mp4)
             writer!.movieTimeScale = CMTimeScale(document.fps * 600)
             writer!.shouldOptimizeForNetworkUse = true
@@ -781,11 +810,15 @@ final class StudioMovieExportService {
             let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: bufferAttributes)
             guard writer!.canAdd(input) else { throw ExportError.codecUnavailable }
             writer!.add(input)
+            encodingStage = .start
             guard writer!.startWriting() else { throw ExportError.writerFailed }
+            encodingStage = .fileOwnership
             try encodingOwnership!.captureStartedMovie(named: movieFilename)
+            encodingStage = .session
             writer!.startSession(atSourceTime: .zero)
             guard let pool = adaptor.pixelBufferPool else { throw ExportError.codecUnavailable }
             var formatDescription: CMVideoFormatDescription?
+            encodingStage = .frames
             for (index, frame) in document.frames.enumerated() {
                 try await waitUntilReady(input, writer: writer!, movie: movie, started: started)
                 let buffer = try await pixelBuffer(pool, writer: writer!, movie: movie, started: started)
@@ -827,6 +860,7 @@ final class StudioMovieExportService {
             try checkpoint(started)
             // The end time includes the full last frame, even for one-frame or
             // 1 FPS movies; nothing is duplicated to manufacture that duration.
+            encodingStage = .finalization
             writer!.endSession(atSourceTime: CMTime(value: Int64(document.totalTimelineTicks), timescale: CMTimeScale(document.fps)))
             input.markAsFinished()
             writer!.finishWriting {}
@@ -851,6 +885,7 @@ final class StudioMovieExportService {
             // Seal the encoder-completed bytes before a caller callback can
             // replace their contents with different but otherwise valid media.
             // The post-verification/publication comparison must match this seal.
+            encodingStage = .verification
             let verifiedBytes = try fingerprint(movie, started: started)
             try progress(Progress(phase: .verifying, completedFrames: document.frames.count, totalFrames: document.frames.count))
             try confirmOwnership()
@@ -888,6 +923,7 @@ final class StudioMovieExportService {
             // Byte verification is insufficient if a caller replaced a file
             // with an identical clone. The final owner must inherit the actual
             // encoder/manifest descriptor identities before it may clean them.
+            encodingStage = .publication
             let originalIdentity = try encodingOwnership!.publicationIdentity(movieFilename: movieFilename)
             capturingOutputOwnership = true
             let ownership = try OutputOwnership(parent: parent, staging: staging, movieFilename: movieFilename,
@@ -898,6 +934,9 @@ final class StudioMovieExportService {
             return Output(directory: destination, movieURL: destination.appendingPathComponent(movieFilename),
                 manifestURL: destination.appendingPathComponent("manifest.json"), manifest: manifest, ownership: ownership)
         } catch {
+            if let writer, !(error is CancellationError) {
+                Self.logEncoderFailure(writer, stage: encodingStage, codec: codec)
+            }
             if capturingOutputOwnership {
                 // A failed ownership capture may have found a foreign entry.
                 // Retain it and surface cleanup instead of falling through to
