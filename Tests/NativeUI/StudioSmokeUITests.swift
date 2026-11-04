@@ -3734,17 +3734,32 @@ final class StudioSmokeUITests: XCTestCase {
             let swatch = picker.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2))
             swatch.tap()
-            // The actual UIKit hierarchy exposes sliderAlpha as a Slider and
-            // a separate percentage TextField; the Studio Slider is underneath.
+            // Captured native pickers expose sliderAlpha controls or an
+            // Opacity-labeled track and percentage field; scope both to the picker.
             let systemPicker = app.otherElements["UIColorPickerView"].firstMatch
             // Hosted runners intermittently drop the first swatch tap (3 of 4
             // runs on 2026-10-21 never presented the picker); tap the same
             // swatch once more before failing.
             if !systemPicker.waitForExistence(timeout: 10) { swatch.tap() }
             XCTAssertTrue(systemPicker.waitForExistence(timeout: 20))
-            let alpha = systemPicker.sliders["sliderAlpha"].firstMatch
-            let alphaValue = systemPicker.textFields["sliderAlpha"].firstMatch
-            XCTAssertTrue(alpha.waitForExistence(timeout: 5) && alpha.isHittable && alpha.isEnabled)
+            let alphaCandidates = [
+                (track: systemPicker.sliders["sliderAlpha"].firstMatch,
+                 percentage: systemPicker.textFields["sliderAlpha"].firstMatch),
+                (track: systemPicker.otherElements.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch,
+                 percentage: systemPicker.textFields.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch)
+            ]
+            func actionableAlphaControls() -> (track: XCUIElement, percentage: XCUIElement)? {
+                alphaCandidates.first {
+                    $0.track.exists && $0.track.isHittable && $0.track.isEnabled
+                        && $0.percentage.exists && $0.percentage.isEnabled
+                }
+            }
+            let alphaReady = expectation(for: NSPredicate { _, _ in
+                actionableAlphaControls() != nil
+            }, evaluatedWith: systemPicker).waitUntilFulfilled(timeout: 5)
+            XCTAssertTrue(alphaReady, "Actual native picker opacity controls did not become actionable")
+            let alphaControls = try XCTUnwrap(actionableAlphaControls(), "Actual native picker opacity controls are unavailable")
+            let alpha = alphaControls.track, alphaValue = alphaControls.percentage
             XCTAssertTrue(alphaValue.exists && alphaValue.isEnabled)
             let priorAlpha = try XCTUnwrap(alphaValue.value as? String)
             // Actual captured UIKit hierarchy identifies the track and its
@@ -7762,7 +7777,8 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     /// Real native consumer -> local Files copy -> source disposal/re-export ->
-    /// cold launch -> real AVFoundation-backed Files import. No file seeding.
+    /// cold launch -> real AVFoundation-backed Files import. The separate test
+    /// app supplies an empty local Files location; it never supplies the movie.
     @MainActor
     func testMP4FilesSaveSurvivesReexportAndColdSourceDisposal() throws {
         var app = try launchGuestStudio()
@@ -7778,31 +7794,75 @@ final class StudioSmokeUITests: XCTestCase {
 
         func localFilesRoot() throws {
             // Save to Files launches an asynchronous system extension. Wait for
-            // its actual location controls before resolving the local root.
+            // its actual location controls and navigate the fixture through UI.
+            // Presentation and all provider navigation share the existing 30s.
+            let deadline = Date().addingTimeInterval(30)
+            func waitForProvider(_ predicate: NSPredicate, failure: String) throws {
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0,
+                      expectation(for: predicate, evaluatedWith: app).waitUntilFulfilled(timeout: remaining) else {
+                    capture(app, name: "mp4-files-provider-transition-failed")
+                    captureHierarchy(app, name: "mp4-files-provider-transition-failed-hierarchy")
+                    XCTFail(failure)
+                    throw NSError(domain: "SDIMP4FilesUI", code: 2)
+                }
+            }
             let providerReady = NSPredicate { _, _ in
                 app.navigationBars["FullDocumentManagerViewControllerNavigationBar"].exists
                     || app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"].exists
                     || app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Browse", "Locations")).firstMatch.exists
             }
-            // abc9b2e CI: the provider's navigation bar and Save arrived just after a 10s wait.
-            guard expectation(for: providerReady, evaluatedWith: app).waitUntilFulfilled(timeout: 30) else {
-                capture(app, name: "mp4-files-provider-transition-failed")
-                captureHierarchy(app, name: "mp4-files-provider-transition-failed-hierarchy")
-                XCTFail("Actual Files provider did not finish presenting")
-                throw NSError(domain: "SDIMP4FilesUI", code: 2)
+            try waitForProvider(providerReady, failure: "Actual Files provider did not finish presenting")
+            let localRoot = app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"]
+            let fileView = app.collectionViews["File View"]
+            let providerNavigation = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
+            let localSidebar = app.collectionViews["Browse View"].cells["DOC.sidebar.item.On My iPhone"]
+            func localRootReady() -> Bool {
+                // The system retains this browsingRoot identifier on the Browse
+                // sidebar. Require the actual local content and navigation title.
+                localRoot.exists && fileView.exists
+                    && providerNavigation.staticTexts["On My iPhone"].exists
+            }
+            func localRootIdentifier() -> String {
+                guard fileView.exists else { return "" }
+                let root = app.otherElements.matching(NSPredicate(format: "identifier BEGINSWITH %@",
+                    "DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: ")).firstMatch
+                return root.exists ? root.identifier : ""
             }
             for _ in 0..<5 {
-                if app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"].exists { return }
-                let local = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "On My iPhone"))
+                if localRootReady() { break }
+                if localSidebar.exists && localSidebar.isHittable {
+                    localSidebar.tap()
+                    break
+                }
+                // Cold import can remember this test's unique child folder.
+                // Ascend only the exact fixture path or system Browse controls.
+                let previousRoot = localRootIdentifier()
+                let browse = app.buttons.matching(NSPredicate(format: "label IN %@",
+                    ["Exports", "SDI Export Test Files", "Browse", "Locations"]))
                     .allElementsBoundByIndex.first { $0.exists && $0.isHittable }
-                if let local { local.tap(); return }
-                let browse = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Browse", "Locations"))
-                    .allElementsBoundByIndex.first { $0.exists && $0.isHittable }
-                if let browse { browse.tap() } else { break }
+                guard let browse else { break }
+                browse.tap()
+                try waitForProvider(NSPredicate { _, _ in
+                    return localRootReady() || localRootIdentifier() != previousRoot
+                        || (localSidebar.exists && localSidebar.isHittable)
+                }, failure: "Files did not finish navigating back to the local fixture root")
             }
-            captureHierarchy(app, name: "mp4-files-local-location-missing")
-            XCTFail("Actual local Files location unavailable; never substitute cloud or a remembered destination")
-            throw NSError(domain: "SDIMP4FilesUI", code: 1)
+            try waitForProvider(NSPredicate { _, _ in localRootReady() },
+                failure: "Actual On My iPhone root unavailable")
+            for name in ["SDI Export Test Files", "Exports"] {
+                let folder = app.collectionViews["File View"].cells[name]
+                try waitForProvider(NSPredicate { _, _ in folder.exists && folder.isHittable },
+                    failure: "The real local Files fixture folder is unavailable: " + name)
+                // The observed icon grid exposes a non-actionable title child;
+                // the exact cell's upper quarter lies inside its folder glyph.
+                // A single observed glyph tap selected the folder without opening;
+                // activate it with one native double-tap gesture.
+                folder.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).doubleTap()
+                let location = app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: " + name]
+                try waitForProvider(NSPredicate { _, _ in location.exists },
+                    failure: "Files did not enter the exact fixture folder: " + name)
+            }
         }
         func renderMovie() throws {
             try openExportPanel(app)
@@ -7852,7 +7912,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: folderInput)
             .waitUntilFulfilled(timeout: 20), "Actual folder rename must finish before choosing the destination")
         let destination = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", folderName)).firstMatch
-        if destination.waitForExistence(timeout: 3) && destination.isHittable { destination.tap() }
+        if destination.waitForExistence(timeout: 3) && destination.isHittable { destination.doubleTap() }
         // Files exposes the folder title as an Actions Menu button. Match the
         // observed browsing-root identity to prove this exact local destination.
         let localDestination = app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: " + folderName]
@@ -7900,7 +7960,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(importFiles.waitForExistence(timeout: 8)); importFiles.tap()
         try localFilesRoot()
         let savedFolder = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", folderName)).firstMatch
-        XCTAssertTrue(savedFolder.waitForExistence(timeout: 8)); XCTAssertTrue(savedFolder.isHittable); savedFolder.tap()
+        XCTAssertTrue(savedFolder.waitForExistence(timeout: 8)); XCTAssertTrue(savedFolder.isHittable); savedFolder.doubleTap()
         let movie = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@",
             projectName.replacingOccurrences(of: " ", with: "-"))).firstMatch
         XCTAssertTrue(movie.waitForExistence(timeout: 8)); XCTAssertTrue(movie.isHittable); movie.tap()

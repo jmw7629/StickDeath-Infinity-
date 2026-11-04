@@ -166,6 +166,7 @@ struct StudioGIFExportControls: View {
                             .accessibilityLabel("Frame \(previewFrame + 1) decoded from exported GIF")
                             .accessibilityIdentifier("studio.export.gif.preview")
                         Button(previewPlaying ? "Pause GIF preview" : "Play exported GIF") { previewPlaying.toggle() }
+                            .font(.specialElite(17))
                             .disabled(gif.isBusy || session.needsCleanup)
                             .accessibilityIdentifier("studio.export.gif.preview-playback")
                         Text("Actual exported file · frame \(previewFrame + 1) of \(output.receipt.frameIDs.count) · silent")
