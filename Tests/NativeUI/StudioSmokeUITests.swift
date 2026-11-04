@@ -1069,12 +1069,12 @@ final class StudioSmokeUITests: XCTestCase {
         let last = try pixels(canvas.screenshot().image)
         let startX = try redCenter(first), endX = try redCenter(last)
         XCTAssertGreaterThan(endX - startX, 0.25)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Tween to next frame…", in: app).tap()
         try waitForButton("Cancel", in: app).tap()
         XCTAssertEqual(app.buttons[lastID].value as? String, "Selected", "Cancelled tween must retain the previous frame")
         XCTAssertEqual(frames(app).count, 2)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Tween to next frame…", in: app).tap()
         let count = app.steppers["studio.tween.count"]
         XCTAssertTrue(count.waitForExistence(timeout: 5))
@@ -1126,7 +1126,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Guest"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["On-device guest"].exists)
         // XCUIElementQuery string subscripts reject identifiers over 128 characters.
-        let inventoryNote = "Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall; a dash means the total was not loaded, never an estimate."
+        let inventoryNote = "Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall. A dash means a total was not loaded."
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", inventoryNote)).firstMatch.exists,
             "Profile must identify actual device inventory and unavailable connected totals")
         XCTAssertFalse(app.staticTexts["StickMaster"].exists, "Guest profile displayed a fabricated sample identity")

@@ -126,7 +126,7 @@ class NativeSharding(unittest.TestCase):
         self.assertIn("if: ${{ needs.native-production-tests.result == 'success' }}",shards)
         self.assertNotIn('if: ${{ always() }}',shards.split('    steps:',1)[0])
         self.assertIn('      fail-fast: false',shards)
-        self.assertIn('      max-parallel: 1',shards)
+        self.assertIn('      max-parallel: 2',shards)
         self.assertEqual(shards.count('          - shard:'),2)
         self.assertIn('needs: [source-security, spatter-production-tests, native-production-tests, native-ios-shards, native-ios-journeys]',aggregate)
         self.assertIn('if: ${{ always() }}',aggregate)
