@@ -14,19 +14,32 @@
 
   // --- configuration -------------------------------------------------------
   let base = null;
+  let apiPrefix = '';
+  let apikey = null;
   try {
-    if (typeof config === 'object' && typeof config.backendURL === 'string' && typeof config.publishableKey === 'string') {
+    if (typeof config === 'object' && typeof config.backendURL === 'string') {
       const url = new URL(config.backendURL);
-      const keyOk = config.publishableKey.length >= 20 && config.publishableKey.length <= 2048 && /^[\x21-\x7e]+$/.test(config.publishableKey);
-      if (url.protocol === 'https:' && url.hostname && (url.pathname === '/' || url.pathname === '') && !url.search && !url.hash && !url.username && keyOk) base = url.origin;
+      const originOnly = url.protocol === 'https:' && url.hostname &&
+        (url.pathname === '/' || url.pathname === '') && !url.search && !url.hash && !url.username && !url.password;
+      // The self-hosted gateway authenticates real GoTrue bearer tokens and
+      // PostgREST enforces the server role, live session and MFA on every RPC.
+      // Only this fixed same-origin namespace may omit a hosted publishable key.
+      const sameOriginGateway = config.transport === 'same-origin-gateway' &&
+        url.origin === location.origin && config.apiPrefix === '/_sdi_admin_api';
+      const key = config.publishableKey;
+      const keyOk = typeof key === 'string' && key.length >= 20 && key.length <= 2048 && /^[\x21-\x7e]+$/.test(key);
+      if (originOnly && sameOriginGateway) {
+        base = url.origin; apiPrefix = '/_sdi_admin_api';
+      } else if (originOnly && config.transport === undefined && keyOk) {
+        base = url.origin; apikey = key;
+      }
     }
   } catch (_) { base = null; }
   if (!base) {
     statusTitle.textContent = 'Command center configuration is present but invalid.';
-    statusDetail.textContent = 'admin-config.js must provide an https backend origin without a path and a publishable key. Nothing was sent.';
+    statusDetail.textContent = 'Use the approved same-origin gateway or an HTTPS hosted backend with a publishable key. Nothing was sent.';
     return;
   }
-  const apikey = config.publishableKey;
   const providers = Array.isArray(config.providers) ? config.providers.filter((p) => ['apple', 'google', 'github', 'microsoft'].includes(p)) : [];
 
   // --- session (memory only) -------------------------------------------------
@@ -84,9 +97,13 @@
   const show = (id, visible) => { const el = $(id); if (el) el.hidden = !visible; };
 
   async function call(path, { method = 'POST', body, token, query } = {}) {
-    const headers = { apikey, 'Content-Type': 'application/json', Accept: 'application/json' };
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    if (apikey) headers.apikey = apikey;
     if (token) headers.Authorization = `Bearer ${token}`;
-    const url = new URL(path, base);
+    if (typeof path !== 'string' || (!path.startsWith('/auth/v1/') && !path.startsWith('/rest/v1/rpc/'))) {
+      throw new Error('Unsupported command-center API path');
+    }
+    const url = new URL(apiPrefix + path, base);
     if (query) for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
     const response = await fetch(url.href, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'omit', redirect: 'error', cache: 'no-store' });
     let data = null;
@@ -491,7 +508,7 @@
     // GoTrue redirects back to this page with the session in the URL fragment; the
     // fragment is read once below and removed from the address bar.
     const redirect = `${location.origin}${location.pathname}`;
-    const url = new URL('/auth/v1/authorize', base);
+    const url = new URL(apiPrefix + '/auth/v1/authorize', base);
     url.searchParams.set('provider', provider);
     url.searchParams.set('redirect_to', redirect);
     location.assign(url.href);
