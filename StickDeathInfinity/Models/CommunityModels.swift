@@ -396,8 +396,76 @@ struct FeedPost: Codable, Identifiable, Equatable {
     var score: Int? = nil
     /// Worker-extracted JPEG frame of the hosted copy (#217); nil when none was produced.
     var poster_url: String? = nil
-    var safeURL: URL? { CommunityMediaURL.checked(url) }
+    var playbackSource: FeedPlaybackSource? { FeedPlaybackSource.resolve(url) }
+    var safeURL: URL? { playbackSource?.shareURL }
+    var downloadableURL: URL? { playbackSource?.renditionURL }
     var poster: FeedPoster { FeedPoster.resolve(poster_url) }
+}
+
+/// Playback routing only. A URL never proves approval, channel ownership or
+/// creator consent: those remain server decisions for this exact feed row.
+/// YouTube watch pages must use its embedded player, never AVPlayer or a file
+/// downloader. Only the canonical link emitted by the publishing worker is
+/// accepted; alternate YouTube/CDN URLs fail closed rather than becoming media.
+enum FeedPlaybackSource: Equatable {
+    case rendition(URL)
+    case youtube(YouTubeVideo)
+
+    static func resolve(_ raw: String) -> FeedPlaybackSource? {
+        guard raw.count <= 2048, raw == raw.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              let url = CommunityMediaURL.checked(raw), let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = parts.host?.lowercased() else { return nil }
+        let reservedHost = host.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let youtubeHosts = ["youtube.com", "youtu.be", "youtube-nocookie.com", "googlevideo.com", "ytimg.com"]
+        if youtubeHosts.contains(where: { reservedHost == $0 || reservedHost.hasSuffix("." + $0) }) {
+            guard host == "www.youtube.com", parts.port == nil || parts.port == 443,
+                  parts.percentEncodedPath == "/watch", parts.fragment == nil,
+                  let query = parts.queryItems, query.count == 1, query[0].name == "v",
+                  let id = query[0].value, let video = YouTubeVideo(id: id),
+                  parts.percentEncodedQuery == "v=" + id else { return nil }
+            return .youtube(video)
+        }
+        return .rendition(url)
+    }
+    var shareURL: URL {
+        switch self { case .rendition(let url): return url; case .youtube(let video): return video.watchURL }
+    }
+    var renditionURL: URL? { if case .rendition(let url) = self { return url }; return nil }
+}
+
+struct YouTubeVideo: Equatable {
+    let id: String
+    init?(id: String) {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+        guard id.utf8.count == 11, id.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        self.id = id
+    }
+    var watchURL: URL { URL(string: "https://www.youtube.com/watch?v=" + id)! }
+
+    /// YouTube requires the installed app's actual bundle ID as its HTTPS
+    /// Referer. Missing/invalid identity is unavailable, never a fabricated origin.
+    func embedConfiguration(bundleIdentifier: String?) -> YouTubeEmbedConfiguration? {
+        guard let bundleIdentifier, bundleIdentifier.utf8.count <= 253 else { return nil }
+        let host = bundleIdentifier.lowercased()
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
+        guard labels.count >= 2, labels.allSatisfy({ label in
+            !label.isEmpty && label.utf8.count <= 63 && label.first != "-" && label.last != "-" &&
+                label.unicodeScalars.allSatisfy { allowed.contains($0) }
+        }), let referer = URL(string: "https://" + host) else { return nil }
+        var parts = URLComponents()
+        parts.scheme = "https"; parts.host = "www.youtube.com"; parts.path = "/embed/" + id
+        parts.queryItems = [URLQueryItem(name: "autoplay", value: "0"), URLQueryItem(name: "playsinline", value: "1"),
+                            URLQueryItem(name: "controls", value: "1"), URLQueryItem(name: "origin", value: referer.absoluteString)]
+        guard let url = parts.url else { return nil }
+        return YouTubeEmbedConfiguration(url: url, referer: referer)
+    }
+}
+
+struct YouTubeEmbedConfiguration: Equatable {
+    let url: URL
+    let referer: URL
 }
 
 /// What a feed card shows above the title: the server-recorded poster frame of
@@ -498,11 +566,12 @@ struct FeedTimeline: Equatable {
 enum FeedExportPolicy {
     /// Maximum bytes the client will download for a creator-permitted export.
     static let maximumDownloadBytes: Int64 = 200 * 1024 * 1024
-    enum State: Equatable { case allowed, needsPaidPlan, notPermitted }
+    enum State: Equatable { case allowed, needsPaidPlan, notPermitted, providerDownloadUnavailable }
     /// The creator's permission is checked first; the plan gate is the server's
     /// `can_download` decision (the Free plan cannot download videos, #219).
     static func state(_ post: FeedPost) -> State {
-        guard post.allow_export, post.safeURL != nil else { return .notPermitted }
+        guard post.allow_export, let source = post.playbackSource else { return .notPermitted }
+        if case .youtube = source { return .providerDownloadUnavailable }
         return post.can_download == true ? .allowed : .needsPaidPlan
     }
     static func canExport(_ post: FeedPost) -> Bool { state(post) == .allowed }

@@ -2,11 +2,12 @@ import SwiftUI
 import AVKit
 import Combine
 import UIKit
+import WebKit
 
 /// Social video wall over `sdi_feed_page` (keyset pages) and `sdi_feed_action`
 /// (reactions): approved renditions only, server ranking for Trending/Recent/
 /// Following/Featured, bounded pages, idempotent likes/follows with rollback,
-/// HTTPS playback with loading/error states and sharing, and file export only
+/// Typed HTTPS rendition/YouTube playback with error states and sharing, and file export only
 /// where the creator permits it and the viewer's plan includes downloads.
 /// No text posts, comments or chat.
 struct HomeFeedView: View {
@@ -131,7 +132,7 @@ struct HomeFeedView: View {
             playback = nil; error = nil; notice = nil; offlineUpdatedAt = nil
             if phase == .active { await load(reset: true) }
         }
-        .sheet(item: $playback) { item in CommunityVideoPlayer(url: item.url, title: item.title) }
+        .sheet(item: $playback) { item in CommunityVideoPlayer(source: item.source, title: item.title) }
         .sheet(item: $exportFile) { file in
             FeedExportSharePresenter(file: file, isAllowed: {
                 file.generation == exportEpoch && file.account == auth.userId && auth.isAuthenticated && phase == .active
@@ -145,17 +146,18 @@ struct HomeFeedView: View {
         } message: { post in
             Text("You will no longer see \(post.creator_name)'s videos and they will not see yours. This does not report them.")
         }
-        .onChange(of: category) { _, _ in invalidateExportScope() }
+        .onChange(of: category) { _, _ in playback = nil; invalidateExportScope() }
         // Published identity/state events invalidate even a rapid A → B → A
         // account change that SwiftUI might coalesce into the same rendered ID.
         .onReceive(auth.$currentUser) { _ in revokeViewerListing() }
         .onReceive(auth.$state) { _ in revokeViewerListing() }
-        .onChange(of: phase) { _, value in if value != .active { invalidateExportScope() } }
+        .onChange(of: phase) { _, value in if value != .active { playback = nil; invalidateExportScope() } }
         .onDisappear { playback = nil; invalidateExportScope() }
     }
 
     private func card(_ post: FeedPost) -> some View {
         let exportTap = exportListing?.capture(for: post)
+        let playbackScope = identity
         return FeedWallWindow {
             FeedWallTitleBar(title: post.title) {
                 Menu {
@@ -185,8 +187,13 @@ struct HomeFeedView: View {
                     Spacer(minLength: 0)
                 }
                 Button {
-                    guard let url = post.safeURL else { error = "Video address is unavailable."; return }
-                    playback = FeedPlaybackItem(url: url, title: post.title)
+                    guard identity == playbackScope, auth.isAuthenticated, phase == .active,
+                          let current = timeline.posts.first(where: { $0.id == post.id }),
+                          current.creator == post.creator, current.url == post.url else { return }
+                    guard let source = current.playbackSource else {
+                        error = "This video address is unsupported or unavailable."; return
+                    }
+                    playback = FeedPlaybackItem(postID: current.id, creator: current.creator, source: source, title: current.title)
                 } label: {
                     FeedPosterView(post: post)
                         .overlay(Rectangle().strokeBorder(FeedWallPalette.ink, lineWidth: 2))
@@ -242,7 +249,9 @@ struct HomeFeedView: View {
                 case .allowed: EmptyView()
                 case .needsPaidPlan: Text("The creator permits saving this video; saving files needs a paid plan. Sharing the link is allowed.").feedWallCaption()
                         .accessibilityIdentifier("feed.card.export-plan")
-                case .notPermitted: Text("Export not permitted by the creator; sharing links is allowed.").feedWallCaption()
+                case .notPermitted: Text("Export not permitted by the creator; sharing available links is allowed.").feedWallCaption()
+                case .providerDownloadUnavailable: Text("YouTube videos play through YouTube. File downloads are unavailable; you can share the link.").feedWallCaption()
+                        .accessibilityIdentifier("feed.card.export-provider-unavailable")
                 }
             }.padding(14)
         }
@@ -268,6 +277,9 @@ struct HomeFeedView: View {
             guard let binding = FeedExportListing.commit(rows: result.posts, previous: page == 0 ? nil : exportListing,
                                                         captured: listingContext, current: exportContext) else { return }
             timeline = committed
+            if let active = playback, !committed.posts.contains(where: {
+                $0.id == active.postID && $0.creator == active.creator && $0.playbackSource == active.source
+            }) { playback = nil }
             cancelExport()
             // A completed file may still be waiting for the share host. Revoke
             // it before replacing the authorization revision; an already-offered
@@ -314,6 +326,7 @@ struct HomeFeedView: View {
         do {
             if try await CommunityServices.feed.block(post.creator) {
                 guard revision == epoch else { return }
+                if playback?.creator == post.creator { playback = nil }
                 timeline.removeCreator(post.creator); notice = "Blocked \(post.creator_name)."
             } else if revision == epoch { error = "The block was not confirmed." }
         } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
@@ -374,6 +387,7 @@ struct HomeFeedView: View {
         // render A → B → A as the same final account. It also schedules a fresh
         // listing through task(id:), including same-ID session replacement.
         viewerGeneration = UUID()
+        playback = nil
         invalidateExportScope()
     }
     @MainActor private func invalidateExportScope() {
@@ -385,14 +399,46 @@ struct HomeFeedView: View {
 
 }
 
-private struct FeedPlaybackItem: Identifiable { let id = UUID(); let url: URL; let title: String }
+private struct FeedPlaybackItem: Identifiable {
+    let id = UUID()
+    let postID: UUID
+    let creator: UUID
+    let source: FeedPlaybackSource
+    let title: String
+}
+
+/// Provider-aware entry point shared by Home and Profile. A watch-page URL is
+/// never passed to AVPlayer. Unsupported YouTube addresses fail visibly.
+struct CommunityVideoPlayer: View {
+    let source: FeedPlaybackSource?
+    let title: String
+    @Environment(\.scenePhase) private var phase
+    @Environment(\.dismiss) private var dismiss
+    init(source: FeedPlaybackSource, title: String) { self.source = source; self.title = title }
+    init(url: URL, title: String) { self.source = FeedPlaybackSource.resolve(url.absoluteString); self.title = title }
+    var body: some View {
+        Group {
+            if let source {
+                switch source {
+                case .rendition(let url): CommunityRenditionPlayer(url: url, title: title)
+                case .youtube(let video): CommunityYouTubePlayer(video: video, title: title)
+                }
+            } else {
+                Text("This video address is unsupported or unavailable.")
+                    .padding().accessibilityIdentifier("feed.player.unsupported")
+            }
+        }
+        .onChange(of: phase) { _, value in if value != .active { dismiss() } }
+    }
+}
+
 
 /// Plays one approved HTTPS rendition after an explicit tap. Shows loading,
 /// slow-start, buffering and failure states from the player itself, caps
 /// bit rate and resolution on expensive (cellular/hotspot) networks and keeps
 /// a short forward buffer. Retry builds a fresh item; closing stops playback.
 /// No account token is attached to the media request.
-struct CommunityVideoPlayer: View {
+private struct CommunityRenditionPlayer: View {
     let url: URL
     let title: String
     @StateObject private var model = CommunityVideoPlayerModel()
@@ -424,6 +470,139 @@ struct CommunityVideoPlayer: View {
         }
         .onAppear { model.load(url) }
         .onDisappear { model.stop() }
+    }
+}
+
+/// An OS WebView loads YouTube's own embedded player only after the feed tap.
+/// No SDI session/cookies are attached and WebKit data is nonpersistent. Player
+/// errors (removed/private/embedding disabled/age restrictions) remain YouTube's
+/// own UI; navigation finishing is never reported as successful video playback.
+@MainActor
+private struct CommunityYouTubePlayer: View {
+    let video: YouTubeVideo
+    let title: String
+    @State private var loading = true
+    @State private var failure: String?
+    @State private var retryID = UUID()
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+                    if let configuration = video.embedConfiguration(bundleIdentifier: Bundle.main.bundleIdentifier) {
+                        YouTubeEmbeddedWebView(configuration: configuration, loading: $loading, failure: $failure)
+                            .id(retryID)
+                            .frame(width: max(200, geometry.size.width - 32), height: max(200, (geometry.size.width - 32) * 9 / 16))
+                            .accessibilityLabel("YouTube video: \(title)")
+                            .accessibilityIdentifier("feed.player.youtube")
+                        if loading { ProgressView("Loading YouTube player…") }
+                        if let failure {
+                            Text(failure).accessibilityIdentifier("feed.player.youtube-error")
+                            Button("Retry player") { loading = true; self.failure = nil; retryID = UUID() }
+                                .accessibilityIdentifier("feed.player.youtube-retry")
+                        }
+                    } else {
+                        Text("The YouTube player is unavailable in this build. Open the video on YouTube.")
+                            .accessibilityIdentifier("feed.player.youtube-unconfigured")
+                    }
+                    Text("Use YouTube’s controls to play. If playback is unavailable here, open YouTube. YouTube may show ads and collect playback data. File downloads are unavailable.")
+                        .font(.callout)
+                    HStack(spacing: 20) {
+                        Button("Open on YouTube") { openURL(video.watchURL) }
+                            .accessibilityIdentifier("feed.player.youtube-open")
+                        Button("Close") { dismiss() }
+                    }
+                }.padding(16)
+            }
+        }
+    }
+}
+
+@MainActor
+private struct YouTubeEmbeddedWebView: UIViewRepresentable {
+    let configuration: YouTubeEmbedConfiguration
+    @Binding var loading: Bool
+    @Binding var failure: String?
+
+    func makeCoordinator() -> Coordinator { Coordinator(configuration: configuration, loading: $loading, failure: $failure) }
+    func makeUIView(context: Context) -> WKWebView {
+        let settings = WKWebViewConfiguration()
+        settings.websiteDataStore = .nonPersistent()
+        settings.allowsInlineMediaPlayback = true
+        settings.mediaTypesRequiringUserActionForPlayback = .all
+        settings.preferences.javaScriptCanOpenWindowsAutomatically = false
+        let view = WKWebView(frame: .zero, configuration: settings)
+        view.navigationDelegate = context.coordinator
+        view.uiDelegate = context.coordinator
+        var request = URLRequest(url: configuration.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        request.setValue(configuration.referer.absoluteString, forHTTPHeaderField: "Referer")
+        view.load(request)
+        return view
+    }
+    func updateUIView(_ view: WKWebView, context: Context) { }
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        // Removing the document destroys its media session. No background player,
+        // download task, account session, or persistent website store is retained.
+        view.stopLoading()
+        view.navigationDelegate = nil; view.uiDelegate = nil
+        view.loadHTMLString("", baseURL: nil)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        let configuration: YouTubeEmbedConfiguration
+        let loading: Binding<Bool>
+        let failure: Binding<String?>
+        init(configuration: YouTubeEmbedConfiguration, loading: Binding<Bool>, failure: Binding<String?>) {
+            self.configuration = configuration; self.loading = loading; self.failure = failure
+        }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading.wrappedValue = false }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            loading.wrappedValue = false; failure.wrappedValue = "The YouTube player stopped. Retry or open YouTube."
+        }
+        private func failed(_ error: Error) {
+            guard (error as NSError).code != NSURLErrorCancelled else { return }
+            loading.wrappedValue = false
+            failure.wrappedValue = "The YouTube player could not load. Check your connection, retry or open YouTube."
+        }
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            guard !navigationAction.shouldPerformDownload else { decisionHandler(.cancel); return }
+            if navigationAction.targetFrame?.isMainFrame == true {
+                let url = navigationAction.request.url
+                if url != configuration.url {
+                    // YouTube controls and branding may open links on a user tap;
+                    // they cannot navigate this app's player to arbitrary documents.
+                    if navigationAction.navigationType == .linkActivated { openExternal(url) }
+                    else {
+                        loading.wrappedValue = false
+                        failure.wrappedValue = "YouTube needs to open outside this player. Use Open on YouTube."
+                    }
+                    decisionHandler(.cancel); return
+                }
+            }
+            decisionHandler(.allow)
+        }
+        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            decisionHandler(navigationResponse.canShowMIMEType ? .allow : .cancel)
+        }
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            // Automatic windows are disabled above; HTTPS links from the player's
+            // user-initiated popups leave through the operating system.
+            if navigationAction.targetFrame == nil { openExternal(navigationAction.request.url) }
+            return nil
+        }
+        private func openExternal(_ url: URL?) {
+            guard let url, let checked = CommunityMediaURL.checked(url.absoluteString) else { return }
+            UIApplication.shared.open(checked)
+        }
     }
 }
 

@@ -963,3 +963,10 @@ studio.saved-brush.feedback,StickDeathInfinity/Views/Studio/Panels/StudioBrushLi
 studio.saved-brush.name,StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift,StudioBrushLibraryView,"text field 'Brush name' -> binds namingBrush, binds draftName",no,unmapped,deferred
 studio.saved-brush.name.save,StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift,StudioBrushLibraryView,button 'Save',no,unmapped,deferred
 studio.saved-brush.reset,StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift,StudioBrushLibraryView,button 'Reset saved brushes',no,unmapped,deferred
+feed.card.export-provider-unavailable,StickDeathInfinity/Views/Home/HomeFeedView.swift,HomeFeedView,text 'YouTube videos play through YouTube. File downlo',n-a,unmapped,deferred
+feed.player.unsupported,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityVideoPlayer,text 'This video address is unsupported or unavailable',n-a,unmapped,deferred
+feed.player.youtube,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityYouTubePlayer,"text -> binds loading, binds failure",n-a,unmapped,deferred
+feed.player.youtube-error,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityYouTubePlayer,text,n-a,unmapped,deferred
+feed.player.youtube-open,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityYouTubePlayer,button 'Open on YouTube',n-a,unmapped,deferred
+feed.player.youtube-retry,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityYouTubePlayer,button 'Retry player',n-a,unmapped,deferred
+feed.player.youtube-unconfigured,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityYouTubePlayer,text 'The YouTube player is unavailable in this build.',n-a,unmapped,deferred

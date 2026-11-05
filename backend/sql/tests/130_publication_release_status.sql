@@ -44,25 +44,31 @@ begin
  perform sdi_test.check(r->'reviews'->0->>'review_state'='approved' and r->'reviews'->0->>'server_copy'='retained','status shows approval and retained copy: '||r::text);
  perform sdi_test.check((select bool_and(j->>'stage'='queued') from jsonb_array_elements(r->'reviews'->0->'jobs') j),'both jobs queued');
 
- -- Feed publishes; YouTube completes only the private upload.
- claimed:=sdi_private.feed_publish_claim(); feed_job:=(claimed->>'job')::uuid;
- perform sdi_test.check(sdi_private.feed_publish_finish(feed_job,(claimed->>'lease')::uuid,'https://media.example.test/'||d1||'.mp4',12),'feed published');
+ -- Dual-destination feed waits; YouTube first completes its private upload.
+ claimed:=sdi_private.feed_publish_claim();
+ perform sdi_test.check((claimed->>'empty')::boolean,'feed waits for verified channel publication without creating a hosted copy');
+ feed_job:=(select id from sdi_private.publish_jobs where review_id=review and destination='feed');
  claimed:=sdi_private.publish_claim(); yt_job:=(claimed->>'job')::uuid; token:=(claimed->>'lease')::uuid;
  perform sdi_test.check(claimed->>'destination'='youtube','youtube claimed: '||claimed::text);
  perform sdi_test.check(sdi_private.publish_progress(yt_job,token,'abcdefghijk',true),'private upload recorded');
- perform sdi_test.check(not sdi_private.publication_releasable(upload),'processing upload keeps the server copy');
+ perform sdi_test.check(not sdi_private.publication_releasable(upload),'processing upload keeps the server staging copy');
  perform sdi_test.check(not sdi_private.release_published_upload(upload,review),'release refused while provider processing');
  r:=sdi_private.publish_status();
  perform sdi_test.check((select j->>'stage' from jsonb_array_elements(r->'reviews'->0->'jobs') j where j->>'destination'='youtube')='provider_processing','youtube shows provider processing');
  job:=(select j from jsonb_array_elements(r->'reviews'->0->'jobs') j where j->>'destination'='feed');
- perform sdi_test.check(job->>'stage'='published' and job->>'result_url' like 'https://media.example.test/%','feed shows confirmed link');
+ perform sdi_test.check(job->>'stage'='queued' and job->>'result_url' is null,'feed has no link before verified receipt');
 
- -- Provider confirms release; a fresh lease still blocks for the grace interval.
+ -- Provider confirms public/processed/embeddable owner-channel state.
  update sdi_private.publish_jobs set next_attempt=clock_timestamp() where id=yt_job;
  claimed:=sdi_private.publish_claim(); token:=(claimed->>'lease')::uuid;
  perform sdi_test.check((claimed->>'job')::uuid=yt_job and claimed->>'phase'='processing','processing job reclaimed');
- perform sdi_test.check(sdi_private.publish_finish(yt_job,token,'abcdefghijk','https://www.youtube.com/watch?v=abcdefghijk'),'youtube published');
- perform sdi_test.check(not sdi_private.publication_releasable(upload),'recent lease blocks release');
+ perform sdi_test.check(sdi_private.publish_finish_youtube(yt_job,token,jsonb_build_object(
+  'state','published','video_id','abcdefghijk','channel_id','UCownerchannel','digest',d1,
+  'url','https://www.youtube.com/watch?v=abcdefghijk','visibility','public','processing_verified',true,'embeddable',true)),'youtube receipt recorded');
+ claimed:=sdi_private.feed_publish_claim();
+ perform sdi_test.check(claimed->>'playback_provider'='youtube' and not (claimed ? 'object_key'),'feed claim is a reference, not media copying');
+ perform sdi_test.check(sdi_private.feed_publish_reference(feed_job,(claimed->>'lease')::uuid)->>'state'='published','feed reference published');
+ perform sdi_test.check(not sdi_private.publication_releasable(upload),'recent channel lease blocks staging release');
  update sdi_private.publish_jobs set lease_expires=clock_timestamp()-interval '5 minutes' where review_id=review;
 
  -- A pending appeal on the feed copy blocks release until it is decided.

@@ -88,9 +88,10 @@ final class FeedClient {
         switch FeedExportPolicy.state(post) {
         case .notPermitted: throw CommunityError.server(message: "The creator has not permitted export of this video.", code: nil)
         case .needsPaidPlan: throw CommunityError.server(message: "Saving video files needs a paid plan. Sharing the link is still available.", code: nil)
+        case .providerDownloadUnavailable: throw CommunityError.server(message: "YouTube videos cannot be downloaded from the feed. Watch or share the YouTube link instead.", code: nil)
         case .allowed: break
         }
-        guard let url = post.safeURL else { throw CommunityError.invalidResponse("Video address is unavailable.") }
+        guard let url = post.downloadableURL else { throw CommunityError.invalidResponse("Video address is unavailable.") }
         let (file, length) = try await download(url)
         do {
             try Task.checkCancellation()
@@ -214,7 +215,7 @@ final class FeedExportDownload: NSObject, URLSessionDataDelegate, @unchecked Sen
                       timeout: TimeInterval = 120, protocolClasses: [AnyClass] = [],
                       progress: @escaping @Sendable (Progress) -> Void = { _ in }) async throws -> (URL, Int64) {
         try Task.checkCancellation()
-        guard CommunityMediaURL.checked(url.absoluteString) != nil,
+        guard FeedPlaybackSource.resolve(url.absoluteString)?.renditionURL != nil,
               maximumBytes > 0, maximumBytes <= FeedExportPolicy.maximumDownloadBytes,
               timeout.isFinite, timeout > 0, timeout <= 120, directory.isFileURL else {
             throw CommunityError.invalidResponse("Video download settings are unavailable.")
@@ -281,7 +282,7 @@ final class FeedExportDownload: NSObject, URLSessionDataDelegate, @unchecked Sen
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         guard !finished, redirects < 5, let url = request.url,
-              CommunityMediaURL.checked(url.absoluteString) != nil else {
+              FeedPlaybackSource.resolve(url.absoluteString)?.renditionURL != nil else {
             completionHandler(nil)
             fail(CommunityError.invalidResponse("The video redirected to an unavailable address."))
             return
@@ -294,7 +295,7 @@ final class FeedExportDownload: NSObject, URLSessionDataDelegate, @unchecked Sen
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard !finished, let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let url = http.url, CommunityMediaURL.checked(url.absoluteString) != nil else {
+              let url = http.url, FeedPlaybackSource.resolve(url.absoluteString)?.renditionURL != nil else {
             completionHandler(.cancel)
             fail(CommunityError.invalidResponse("The video could not be downloaded."))
             return

@@ -9,9 +9,12 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 import uuid
+import urllib.error
 
 from backend.publishing.owner_oauth import OwnerAuthorizationRequired, OwnerGrant, OwnerTokenProvider
+from backend.publishing.feed_publisher import FeedPublisher
 from backend.publishing.worker import MAX_CONCURRENCY, JobAPI, PublishingWorker
 from backend.publishing.youtube_upload import ReconciliationRequired, UploadError, YouTubeUploader, google_url
 from backend.publishing.youtube_withdraw import withdraw
@@ -36,9 +39,9 @@ def channels():
     return (200, {}, json.dumps({"items": [{"id": CHANNEL}]}).encode())
 
 
-def video(privacy="private", processing="succeeded", upload_status="processed", channel=CHANNEL):
+def video(privacy="private", processing="succeeded", upload_status="processed", channel=CHANNEL, embeddable=True):
     return (200, {}, json.dumps({"items": [{"id": VIDEO, "snippet": {"channelId": channel},
-             "status": {"privacyStatus": privacy, "uploadStatus": upload_status, "selfDeclaredMadeForKids": False},
+             "status": {"privacyStatus": privacy, "uploadStatus": upload_status, "selfDeclaredMadeForKids": False, "embeddable": embeddable},
              "processingDetails": {"processingStatus": processing}}]}).encode())
 
 
@@ -326,6 +329,217 @@ class WorkerTests(unittest.TestCase):
         api = ScriptedJobAPI({"removal_claim": {"empty": True}, "renew": True, "finish": True, "claim": claim})
         worker = PublishingWorker(api, self.artifacts, self.checkpoints, lambda: "token", CHANNEL)
         self.assertEqual(worker.run_once()["state"], "failed")
+
+
+class YouTubeFeedReceiptTests(unittest.TestCase):
+    def setUp(self):
+        WorkerTests.setUp(self)
+
+    def processing_run(self, final=None, accepted=True):
+        job, lease = str(uuid.uuid4()), str(uuid.uuid4())
+        self.checkpoints.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (self.checkpoints / (job + ".json")).write_text(json.dumps({
+            "digest": self.digest, "channel": CHANNEL, "release_intent": True,
+            "result": {"video_id": VIDEO, "digest": self.digest, "visibility": "private"}}))
+        claim = {"job": job, "lease": lease, "destination": "youtube", "phase": "processing", "digest": self.digest,
+                 "object_key": "not-present.mp4", "byte_count": len(self.payload), "title": "T", "description": "", "made_for_kids": False}
+        api = ScriptedJobAPI({"removal_claim": {"empty": True}, "claim": claim, "renew": True,
+                              "finish_youtube": accepted, "uncertain": True})
+        transport = FakeTransport([video(privacy="public"), video(privacy="public"), final or video(privacy="public")])
+        worker = PublishingWorker(api, self.artifacts, self.checkpoints, lambda: "token", CHANNEL)
+        def uploader(root, access_token, renew, channel):
+            return YouTubeUploader(root, access_token, renew, channel, transport=transport)
+        with mock.patch("backend.publishing.worker.YouTubeUploader", side_effect=uploader):
+            result = worker.run_once()
+        return result, api, transport
+
+    def test_processing_worker_records_actual_public_owner_embeddable_receipt_without_reading_a_local_render(self):
+        result, api, transport = self.processing_run()
+        self.assertEqual(result["state"], "release_recorded")
+        receipt = [payload["receipt"] for op, payload in api.calls if op == "finish_youtube"][0]
+        self.assertEqual(receipt, {"state": "published", "video_id": VIDEO, "channel_id": CHANNEL, "digest": self.digest,
+                                 "url": "https://www.youtube.com/watch?v=" + VIDEO, "visibility": "public",
+                                 "processing_verified": True, "embeddable": True})
+        self.assertEqual(len(transport.calls), 3)
+        self.assertTrue(all(method == "GET" for method, _, _, _ in transport.calls))
+        self.assertGreaterEqual(sum(op == "renew" for op, _ in api.calls), 3)
+        self.assertFalse(any(op == "finish" for op, _ in api.calls))
+        self.assertFalse((self.artifacts / "not-present.mp4").exists())
+
+    def test_final_provider_changes_or_malformed_response_require_reconciliation_without_a_receipt(self):
+        for final in [video(privacy="private"), video(channel="UCother"), video(processing="processing"),
+                      video(upload_status="rejected"), (200, {}, b"not json"), (503, {}, b"{}")]:
+            with self.subTest(final=final):
+                result, api, _ = self.processing_run(final=final)
+                self.assertEqual(result["state"], "reconcile")
+                self.assertFalse(any(op == "finish_youtube" for op, _ in api.calls))
+                self.assertTrue(any(op == "uncertain" for op, _ in api.calls))
+
+    def test_nonembeddable_channel_receipt_is_explicitly_false_and_server_rejection_is_not_success(self):
+        result, api, _ = self.processing_run(final=video(privacy="public", embeddable=False))
+        self.assertEqual(result["state"], "release_recorded")
+        self.assertIs([payload["receipt"] for op, payload in api.calls if op == "finish_youtube"][0]["embeddable"], False)
+        result, api, _ = self.processing_run(accepted=False)
+        self.assertEqual(result["state"], "reconcile")
+        self.assertTrue(any(op == "uncertain" for op, _ in api.calls))
+
+    def test_unverified_local_result_cannot_trigger_provider_verification_or_receipt_recording(self):
+        worker = PublishingWorker(ScriptedJobAPI({}), self.artifacts, self.checkpoints, lambda: "token", CHANNEL)
+        transport = FakeTransport([])
+        uploader = YouTubeUploader(self.checkpoints, lambda: "token", lambda: True, CHANNEL, transport=transport)
+        valid = {"state": "published", "video_id": VIDEO, "digest": self.digest,
+                 "processing_verified": True, "visibility": "public", "url": "https://www.youtube.com/watch?v=" + VIDEO}
+        for changed in [{"digest": "0" * 64}, {"processing_verified": False}, {"visibility": "private"},
+                        {"url": "https://foreign.example/watch?v=" + VIDEO}, {"video_id": "not-a-video"}]:
+            with self.assertRaises(ReconciliationRequired):
+                worker._verified_public_receipt(uploader, dict(valid, **changed), self.digest)
+        self.assertEqual(transport.calls, [])
+
+
+class PostPublicationReadBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        WorkerTests.setUp(self)
+
+    def run_final_read_failure(self, origin, resume=False):
+        """Run real uploader/worker methods; fail only the third, post-public read.
+        A second run represents explicitly authorized reconciliation of the same
+        job/provider ID, not an automatic upload retry.
+        """
+        job, lease = str(uuid.uuid4()), str(uuid.uuid4())
+        self.checkpoints.mkdir(mode=0o700, parents=True)
+        checkpoint = self.checkpoints / (job + ".json")
+        checkpoint.write_text(json.dumps({"digest": self.digest, "channel": CHANNEL, "release_intent": True,
+            "result": {"video_id": VIDEO, "digest": self.digest, "visibility": "private"}}))
+        claim = {"job": job, "lease": lease, "destination": "youtube", "phase": "processing", "digest": self.digest,
+                 "object_key": "not-present.mp4", "byte_count": len(self.payload), "provider": VIDEO}
+        active = [True]
+        counts = {"renew": 0, "token": 0}
+        provider_calls = []
+
+        def renew(payload):
+            counts["renew"] += 1
+            if active[0] and counts["renew"] == 3:
+                if origin == "lease_loss": return False
+                if origin == "lease_read": raise RuntimeError("Scripted lease service unavailable")
+            return True
+
+        def token():
+            counts["token"] += 1
+            if active[0] and counts["token"] == 3:
+                if origin == "upload_error": return "invalid token\n"  # actual request() raises UploadError
+                if origin == "owner_auth": raise OwnerAuthorizationRequired("Scripted owner reconnection needed")
+            return "synthetic-token"
+
+        def transport(method, url, headers, body):
+            provider_calls.append((method, url))
+            if active[0] and len(provider_calls) == 3:
+                errors = {"transport": urllib.error.URLError("Scripted final read unavailable"),
+                          "timeout": TimeoutError("Scripted final read timeout"),
+                          "socket": OSError("Scripted final read socket failure")}
+                if origin in errors: raise errors[origin]
+            return video(privacy="public")
+
+        api = ScriptedJobAPI({"removal_claim": {"empty": True}, "claim": lambda payload: dict(claim),
+                              "renew": renew, "finish": True, "finish_youtube": True, "uncertain": True})
+        worker = PublishingWorker(api, self.artifacts, self.checkpoints, token, CHANNEL)
+        def uploader(root, access_token, renew_approval, channel):
+            return YouTubeUploader(root, access_token, renew_approval, channel, transport=transport)
+        original_open = Path.open
+        def reject_render_open(path, *args, **kwargs):
+            if path.suffix == ".mp4": raise AssertionError("A public-processing resume must not read a render")
+            return original_open(path, *args, **kwargs)
+        with mock.patch("backend.publishing.worker.YouTubeUploader", side_effect=uploader), \
+             mock.patch.object(YouTubeUploader, "upload", side_effect=AssertionError("No duplicate upload")), \
+             mock.patch.object(Path, "open", new=reject_render_open):
+            first = worker.run_once()
+            first_calls = list(api.calls)
+            published = json.loads(checkpoint.read_text())["published"]
+            second = None
+            if resume:
+                active[0] = False
+                counts.update(renew=0, token=0)
+                claim["lease"] = str(uuid.uuid4())  # new lease from authorized server reconciliation
+                second = worker.run_once()
+        return first, first_calls, published, second, api.calls, provider_calls
+
+    def test_final_known_public_read_auth_lease_and_transport_failures_only_reconcile(self):
+        for origin in ["upload_error", "owner_auth", "lease_loss", "lease_read", "transport", "timeout", "socket"]:
+            with self.subTest(origin=origin):
+                # Each scenario owns its independent checkpoint/lock directory.
+                self.checkpoints = Path(tempfile.mkdtemp()) / "state"
+                result, calls, published, _, _, provider_calls = self.run_final_read_failure(origin)
+                self.assertEqual(result["state"], "reconcile")
+                self.assertEqual([op for op, _ in calls if op in ("uncertain", "finish", "finish_youtube")], ["uncertain"])
+                self.assertEqual(published["state"], "published")
+                self.assertEqual(published["video_id"], VIDEO)
+                self.assertEqual(published["digest"], self.digest)
+                self.assertTrue(provider_calls)
+                self.assertTrue(all(method == "GET" and url.endswith("id=" + VIDEO) for method, url in provider_calls))
+
+    def test_authorized_resume_after_final_read_failure_retains_provider_id_without_upload_or_render_read(self):
+        result, first_calls, published, resumed, calls, provider_calls = self.run_final_read_failure("lease_loss", resume=True)
+        self.assertEqual(result["state"], "reconcile")
+        self.assertEqual(resumed["state"], "release_recorded")
+        self.assertFalse(any(op == "finish" for op, _ in calls))
+        self.assertEqual(sum(op == "uncertain" for op, _ in calls), 1)
+        receipts = [payload["receipt"] for op, payload in calls if op == "finish_youtube"]
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(receipts[0]["video_id"], published["video_id"])
+        self.assertEqual(receipts[0]["digest"], self.digest)
+        self.assertTrue(all(method == "GET" and url.endswith("id=" + VIDEO) for method, url in provider_calls))
+
+
+class FeedReferencePublisherTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.job, self.lease = str(uuid.uuid4()), str(uuid.uuid4())
+        self.calls = []
+        self.host_calls = []
+        self.url = "https://www.youtube.com/watch?v=" + VIDEO
+
+    def publisher(self, response):
+        parent = self
+        class API:
+            def call(self, operation, **payload):
+                parent.calls.append((operation, payload))
+                if operation == "removal_claim": return {"empty": True}
+                if operation == "publish_claim":
+                    return {"job": parent.job, "lease": parent.lease, "destination": "feed", "playback_provider": "youtube"}
+                if operation == "publish_reference": return response
+                raise AssertionError("Unexpected operation " + operation)
+        class Host:
+            def put(self, *args): parent.host_calls.append(("put", args)); raise AssertionError("No reference upload")
+            def delete(self, *args): parent.host_calls.append(("delete", args)); raise AssertionError("No provider deletion through host")
+        def no_probe(*args): raise AssertionError("No raw artifact probe")
+        return FeedPublisher(API(), self.root, Host(), no_probe)
+
+    def test_reference_uses_only_server_transaction_without_artifact_probe_host_or_poster(self):
+        result = self.publisher({"state": "published", "url": self.url}).run_once()
+        self.assertEqual(result, {"state": "published", "job": self.job, "url": self.url, "playback_provider": "youtube"})
+        self.assertEqual(self.calls, [("removal_claim", {}), ("publish_claim", {}),
+                                     ("publish_reference", {"job": self.job, "token": self.lease})])
+        self.assertEqual(self.host_calls, [])
+        self.assertNotIn("duration", result)
+
+    def test_cancel_unavailable_and_rejected_reference_never_report_publication(self):
+        for response, expected in [({"state": "cancelled"}, "cancelled"), ({"state": "unavailable"}, "unavailable"),
+                                   ({"state": "rejected"}, "reconcile"), (True, "reconcile"),
+                                   ({"state": "published", "url": "https://foreign.example/video"}, "reconcile")]:
+            with self.subTest(response=response):
+                self.assertEqual(self.publisher(response).run_once()["state"], expected)
+                self.assertEqual(self.host_calls, [])
+
+    def test_host_deletion_refuses_youtube_and_extracted_media_urls(self):
+        publisher = self.publisher({})
+        for url in [self.url, "https://youtu.be/" + VIDEO, "https://www.youtube-nocookie.com/embed/" + VIDEO,
+                    "https://r1.googlevideo.com/videoplayback", "https://www.youtube.com./watch?v=" + VIDEO,
+                    "https://user:password@cdn.example/file.mp4", "http://cdn.example/file.mp4"]:
+            self.assertFalse(publisher._delete(url))
+        self.assertEqual(self.host_calls, [])
+
+    def test_hosted_url_validation_keeps_existing_raw_https_renditions(self):
+        self.assertTrue(FeedPublisher._hosted_url("https://cdn.example/approved.mp4?signature=opaque"))
+        self.assertFalse(FeedPublisher._hosted_url(self.url))
 
 
 if __name__ == "__main__":

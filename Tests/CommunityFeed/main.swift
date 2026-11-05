@@ -257,6 +257,72 @@ private let cursorA = "0|2026-10-12T20:33:11.123456Z|11111111-1111-4111-8111-111
             try require(transport.calls.count == before, "no request without a session")
         }
 
+        await test("canonical YouTube watch links route to embedded playback; alternate provider URLs never become renditions") {
+            let id = "Abc_123-xyz"
+            let canonical = "https://www.youtube.com/watch?v=" + id
+            guard case .youtube(let video) = FeedPlaybackSource.resolve(canonical) else {
+                throw Failure(description: "canonical publishing URL did not select YouTube")
+            }
+            try require(video.id == id && video.watchURL.absoluteString == canonical, "provider identity and share URL")
+            try require(FeedPlaybackSource.resolve(canonical)?.renditionURL == nil, "YouTube is never a direct rendition")
+            let refused = [
+                "http://www.youtube.com/watch?v=" + id,
+                "https://user:password@www.youtube.com/watch?v=" + id,
+                canonical + "&v=" + id, canonical + "&list=other", canonical + "#fragment", canonical + "&autoplay=1",
+                "https://www.youtube.com:444/watch?v=" + id,
+                "https://www.youtube.com./watch?v=" + id,
+                "https://www.youtube.com/%77atch?v=" + id,
+                "https://www.youtube.com/watch?%76=" + id,
+                "https://www.youtube.com/watch?v=short",
+                "https://www.youtube.com/watch?v=Abc_123%2Dxyz",
+                "https://www.youtube.com/embed/" + id,
+                "https://www.youtube.com/shorts/" + id,
+                "https://youtube.com/watch?v=" + id,
+                "https://m.youtube.com/watch?v=" + id,
+                "https://youtu.be/" + id,
+                "https://www.youtube-nocookie.com/embed/" + id,
+                "https://r1.googlevideo.com/videoplayback?source=extracted",
+                "https://i.ytimg.com/vi/" + id + "/default.jpg",
+                " " + canonical, canonical + "\n"
+            ]
+            for raw in refused { try require(FeedPlaybackSource.resolve(raw) == nil, "unsupported provider URL accepted: " + raw) }
+            try require(YouTubeVideo(id: "abc<123-xyz") == nil && YouTubeVideo(id: "abc_123-xy💀") == nil, "HTML and Unicode cannot enter a video ID")
+            let rendition = "https://cdn.example/approved.mp4?token=opaque"
+            try require(FeedPlaybackSource.resolve(rendition) == .rendition(URL(string: rendition)!), "existing HTTPS rendition remains unchanged")
+        }
+
+        await test("YouTube embed configuration identifies the actual app and disables autoplay without suppressing controls") {
+            let video = YouTubeVideo(id: "Abc_123-xyz")!
+            guard let config = video.embedConfiguration(bundleIdentifier: "Com.StickDeath.Infinity"),
+                  let parts = URLComponents(url: config.url, resolvingAgainstBaseURL: false) else {
+                throw Failure(description: "app embed configuration missing")
+            }
+            try require(config.referer.absoluteString == "https://com.stickdeath.infinity", "bundle ID HTTPS referer")
+            try require(parts.scheme == "https" && parts.host == "www.youtube.com" && parts.path == "/embed/Abc_123-xyz", "official embedded player only")
+            let query = Dictionary(uniqueKeysWithValues: (parts.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+            try require(query["autoplay"] == "0" && query["playsinline"] == "1" && query["controls"] == "1" && query["origin"] == config.referer.absoluteString, "explicit user play, official controls and origin")
+            for bundle in [nil, "", "app", ".com.app", "com..app", "com.app.", "com.-app", "com.app-", "com.app/path", "com.app?token=secret", "com.app@foreign.example", "com.app\nheader", "com.💀"] as [String?] {
+                try require(video.embedConfiguration(bundleIdentifier: bundle) == nil, "invalid app identity accepted")
+            }
+        }
+
+        await test("YouTube playback and link sharing never authorize a video download, even with server export flags") {
+            let client = FeedClient(gateway: CommunityGateway(transport: FakeTransport()))
+            let canonical = "https://www.youtube.com/watch?v=Abc_123-xyz"
+            let post = try CommunityCoding.decoder().decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: true, url: canonical).utf8))
+            try require(post.safeURL?.absoluteString == canonical && post.downloadableURL == nil, "share URL available but no downloadable URL")
+            try require(FeedExportPolicy.state(post) == .providerDownloadUnavailable && !FeedExportPolicy.canExport(post), "provider download unavailable state")
+            do {
+                _ = try await client.exportFile(for: post) { _ in throw Failure(description: "YouTube transfer attempted") }
+                throw Failure(description: "YouTube export succeeded")
+            } catch CommunityError.server(let message, _) { try require(message.contains("YouTube"), "explicit provider denial") }
+            let context = FeedExportListing.Context(account: "viewer", generation: UUID())
+            guard let listing = FeedExportListing.commit(rows: [post], captured: context, current: context), let tap = listing.capture(for: post) else {
+                throw Failure(description: "listing fixture missing")
+            }
+            try require(listing.authorize(tap, rendered: post, current: context, visibleRows: [post]) == nil, "listing flags cannot override provider denial")
+        }
+
         await test("export is offered only with creator permission and refuses oversized downloads") {
             let decoder = CommunityCoding.decoder()
             let denied = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0).utf8))
@@ -333,7 +399,9 @@ private let cursorA = "0|2026-10-12T20:33:11.123456Z|11111111-1111-4111-8111-111
                 try require(try noExportFiles(directory), "a refused HTTP response left a file")
                 try require(ExportFixtureProtocol.snapshot().requests.count == 1, "a refused response opened another media request")
             }
-            for raw in ["http://cdn.example/video", "https://user:password@cdn.example/video"] {
+            for raw in ["http://cdn.example/video", "https://user:password@cdn.example/video",
+                        "https://www.youtube.com/watch?v=Abc_123-xyz", "https://youtu.be/Abc_123-xyz",
+                        "https://r1.googlevideo.com/videoplayback?source=extracted"] {
                 ExportFixtureProtocol.install([:])
                 do {
                     _ = try await FeedExportDownload.fetch(URL(string: raw)!, directory: directory,
@@ -357,7 +425,8 @@ private let cursorA = "0|2026-10-12T20:33:11.123456Z|11111111-1111-4111-8111-111
             try require(requests.count == 2 && requests[1].url == secure && requests[1].value(forHTTPHeaderField: "Authorization") == nil &&
                 requests[1].value(forHTTPHeaderField: "Cookie") == nil, "a cross-host HTTPS redirect must use a fresh credential-free request")
             try FileManager.default.removeItem(at: file)
-            for target in [URL(string: "http://second.example/target")!, URL(string: "https://user:password@second.example/target")!] {
+            for target in [URL(string: "http://second.example/target")!, URL(string: "https://user:password@second.example/target")!,
+                           URL(string: "https://www.youtube.com/watch?v=Abc_123-xyz")!, URL(string: "https://r1.googlevideo.com/videoplayback")!] {
                 ExportFixtureProtocol.install(["/start": .redirect(target)])
                 do {
                     _ = try await FeedExportDownload.fetch(URL(string: "https://cdn.example/start")!, directory: directory,

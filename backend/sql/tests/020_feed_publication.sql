@@ -1,10 +1,11 @@
--- Local assertions for feed-publication.sql: the release gate and the feed path.
+-- Local assertions for feed-publication.sql: the release gate and raw-only feed path.
+-- Dual feed/YouTube permission is covered by 200_youtube_feed_reference.sql.
 begin;
 create function sdi_test.review(creator uuid, digest text, spatter boolean default false) returns uuid language plpgsql as $$
 declare review uuid;
 begin
  insert into sdi_private.render_reviews(creator,title,source_revision,render_digest,preview_url,preview_expires_at,consent_version,rights_summary,rights_cleared,destinations,spatter_generated)
- values(creator,'Render '||left(digest,6),'rev1',digest,'https://intake.example.test/'||left(digest,6),clock_timestamp()+interval '1 day','terms-v1','Own work',true,array['feed','youtube'],spatter)
+ values(creator,'Render '||left(digest,6),'rev1',digest,'https://intake.example.test/'||left(digest,6),clock_timestamp()+interval '1 day','terms-v1','Own work',true,array['feed'],spatter)
  returning id into review;
  insert into sdi_private.render_artifacts(review_id,version,render_digest,object_key,byte_count,title,description,made_for_kids,expires_at)
  values(review,1,digest,left(digest,6)||'.mp4',1024,'Render '||left(digest,6),'A caption.',false,clock_timestamp()+interval '24 hours');
