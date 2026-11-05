@@ -867,3 +867,171 @@ extension AdminOperationsClient {
         return item.revision + 1
     }
 }
+
+// MARK: - Typed moderation preview contracts
+// Provider addresses only arrive in video_source. A legacy raw field cannot
+// authorize YouTube, and a mismatched typed provider never falls back to it.
+struct ModerationReport: Decodable, Identifiable, Equatable {
+    let id: UUID; let reason: String; let version: Int; let created_at: Date
+    let caption: String; let creator: UUID; let title: String; let url: String; let render_digest: String
+    var video_source: CommunityVideoSource? = nil
+    var playbackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(video_source, legacyURL: url) }
+}
+struct AdminWarReport: Decodable, Identifiable, Equatable {
+    let id: UUID; let match_id: UUID; let reason: String; let revision: Int; let created_at: Date; let status: String
+    let left_title: String; let right_title: String?; let left_url: String; let right_url: String?
+    var left_video_source: CommunityVideoSource? = nil; var right_video_source: CommunityVideoSource? = nil
+    var leftPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(left_video_source, legacyURL: left_url) }
+    var rightPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(right_video_source, legacyURL: right_url) }
+}
+struct AdminWarAppeal: Decodable, Identifiable, Equatable {
+    let id: UUID; let explanation: String; let revision: Int; let created_at: Date; let match_id: UUID
+    let decision_reason: String; let previous_status: String; let left_digest: String; let right_digest: String?
+    let left_title: String; let right_title: String?; let left_url: String; let right_url: String?
+    var left_video_source: CommunityVideoSource? = nil; var right_video_source: CommunityVideoSource? = nil
+    var leftPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(left_video_source, legacyURL: left_url) }
+    var rightPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(right_video_source, legacyURL: right_url) }
+}
+
+// MARK: - Fresh moderation preview admission
+// This is a local invalidation fence, never server authorization. A current
+// authorized queue reply is required for every grant, including raw previews.
+struct AdminPreviewTarget: Equatable {
+    enum Queue: String { case feedReports, feedAppeals, warReports, warAppeals }
+    enum Side: String { case single, left, right }
+    let queue: Queue
+    let record: UUID
+    let revision: Int
+    let side: Side
+    let video: CommunityVideoSource
+}
+struct AdminPreviewAdmission {
+    struct Context: Equatable {
+        let account: String
+        /// An in-memory SDK token equality marker. Never logged or sent as a
+        /// permission claim; any session/token change invalidates the grant.
+        let sessionMarker: String
+        let active: Bool
+        var usable: Bool { active && !account.isEmpty && !sessionMarker.isEmpty }
+        static let unavailable = Context(account: "", sessionMarker: "", active: false)
+    }
+    struct Ticket: Equatable {
+        fileprivate let generation: UUID
+        fileprivate let sequence: Int
+        fileprivate let target: AdminPreviewTarget
+        fileprivate let context: Context
+        fileprivate let started: TimeInterval
+    }
+    static let maximumLease: TimeInterval = 15
+    private var generation = UUID()
+    private var sequence = 0
+    private var binding: AdminPreviewTarget?
+    private var context: Context?
+    private var pending: Ticket?
+    private(set) var source: FeedPlaybackSource?
+    private(set) var deadline: TimeInterval?
+
+    mutating func begin(_ target: AdminPreviewTarget, context: Context, uptime: TimeInterval) -> Ticket? {
+        guard context.usable, uptime.isFinite, target.revision >= 0, target.video.playbackSource != nil else {
+            invalidate(); return nil
+        }
+        if binding != target || self.context != context { invalidate() }
+        binding = target; self.context = context; sequence += 1
+        let ticket = Ticket(generation: generation, sequence: sequence, target: target, context: context, started: uptime)
+        pending = ticket
+        return ticket
+    }
+    /// Request start bounds the lease, so a delayed reply cannot extend an old
+    /// authorization window. A separate UI watchdog expires a hung renewal.
+    mutating func accept(_ candidate: AdminPreviewTarget, ticket: Ticket, context: Context,
+                         serverNow: Date, uptime: TimeInterval) -> Bool {
+        guard pending == ticket, generation == ticket.generation else { return false }
+        guard context.usable, context == ticket.context, candidate == ticket.target,
+              uptime.isFinite, uptime >= ticket.started, uptime < ticket.started + Self.maximumLease,
+              source == nil || deadline.map({ uptime < $0 }) == true,
+              let source = candidate.video.playbackSource else { invalidate(); return false }
+        let remaining = candidate.video.expires_at.map { $0.timeIntervalSince(serverNow) } ?? Self.maximumLease
+        guard remaining.isFinite, remaining > 0 else { invalidate(); return false }
+        self.source = source
+        deadline = min(ticket.started + Self.maximumLease, uptime + remaining)
+        pending = nil
+        return true
+    }
+    func isValid(_ target: AdminPreviewTarget?, context: Context, uptime: TimeInterval) -> Bool {
+        guard context.usable, self.context == context, binding == target, source != nil,
+              let deadline, uptime.isFinite else { return false }
+        return uptime < deadline
+    }
+    mutating func refuse(_ ticket: Ticket) {
+        if pending == ticket { invalidate() }
+    }
+    mutating func invalidate() {
+        generation = UUID(); sequence = 0; binding = nil; context = nil
+        pending = nil; source = nil; deadline = nil
+    }
+}
+
+private struct AdminPreviewReportsResponse: CommunityCodedResponse {
+    let error: String?; let code: String?; let reports: [ModerationReport]?
+}
+private struct AdminPreviewWarReportsResponse: CommunityCodedResponse {
+    let error: String?; let code: String?; let reports: [AdminWarReport]?
+}
+private struct AdminPreviewWarAppealsResponse: CommunityCodedResponse {
+    let error: String?; let code: String?; let appeals: [AdminWarAppeal]?
+}
+extension AdminOperationsClient {
+    /// A queue snapshot is a selection only. Re-read the same authorized queue
+    /// and require the current record, revision, side, provider URL and expiry.
+    func refreshPreview(_ target: AdminPreviewTarget) async throws -> AdminPreviewTarget {
+        let candidate: AdminPreviewTarget?
+        switch target.queue {
+        case .feedReports:
+            let reply = try await gateway.call("sdi_moderation_action", params: ["action": "list"], as: AdminPreviewReportsResponse.self)
+            guard let items = reply.reports, items.count <= 50, Set(items.map(\.id)).count == items.count else { throw CommunityError.invalidResponse("Preview queue unavailable.") }
+            candidate = items.first(where: { $0.id == target.record })?.previewTarget
+        case .feedAppeals:
+            let items = try await appealQueue()
+            guard Set(items.map(\.id)).count == items.count else { throw CommunityError.invalidResponse("Preview queue unavailable.") }
+            candidate = items.first(where: { $0.id == target.record })?.previewTarget
+        case .warReports:
+            let reply = try await gateway.call("sdi_war_moderate", params: ["action": "list"], as: AdminPreviewWarReportsResponse.self)
+            guard let items = reply.reports, items.count <= 50, Set(items.map(\.id)).count == items.count else { throw CommunityError.invalidResponse("Preview queue unavailable.") }
+            candidate = items.first(where: { $0.id == target.record })?.previewTarget(right: target.side == .right)
+        case .warAppeals:
+            let reply = try await gateway.call("sdi_war_appeal_admin", params: ["action": "list"], as: AdminPreviewWarAppealsResponse.self)
+            guard let items = reply.appeals, items.count <= 50, Set(items.map(\.id)).count == items.count else { throw CommunityError.invalidResponse("Preview queue unavailable.") }
+            candidate = items.first(where: { $0.id == target.record })?.previewTarget(right: target.side == .right)
+        }
+        guard let candidate, candidate == target, candidate.video.playbackSource != nil,
+              candidate.video.expires_at.map({ $0 > previewServerNow }) ?? true else {
+            throw CommunityError.invalidResponse("Preview changed or is no longer authorized. Refresh the queue.")
+        }
+        return candidate
+    }
+    var previewServerNow: Date { gateway.clock.serverNow(deviceNow: Date()).addingTimeInterval(gateway.clock.uncertainty) }
+}
+extension ModerationReport {
+    var previewTarget: AdminPreviewTarget? {
+        guard let video_source, video_source.playbackSource != nil else { return nil }
+        return .init(queue: .feedReports, record: id, revision: version, side: .single, video: video_source)
+    }
+}
+extension ModerationAppeal {
+    var previewTarget: AdminPreviewTarget? {
+        guard let revision, let video_source, video_source.playbackSource != nil else { return nil }
+        return .init(queue: .feedAppeals, record: id, revision: revision, side: .single, video: video_source)
+    }
+}
+extension AdminWarReport {
+    func previewTarget(right: Bool) -> AdminPreviewTarget? {
+        guard let video = right ? right_video_source : left_video_source, video.playbackSource != nil else { return nil }
+        return .init(queue: .warReports, record: id, revision: revision, side: right ? .right : .left, video: video)
+    }
+}
+extension AdminWarAppeal {
+    func previewTarget(right: Bool) -> AdminPreviewTarget? {
+        guard let video = right ? right_video_source : left_video_source, video.playbackSource != nil else { return nil }
+        return .init(queue: .warAppeals, record: id, revision: revision, side: right ? .right : .left, video: video)
+    }
+}

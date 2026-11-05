@@ -731,13 +731,116 @@ private struct AdminDiagnosticsContent: View {
     }
 }
 
+// Queue rows are selections, never playback grants. Both providers use the
+// same fresh server admission, local session fence and bounded renewal lease.
+@MainActor
+private struct AdminModerationPreviewButton: View {
+    let target: AdminPreviewTarget?
+    let title: String
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var admission = AdminPreviewAdmission()
+    @State private var presentation: Presentation?
+    @State private var opening: Task<Void, Never>?
+    @State private var requestID = UUID()
+    @State private var error: String?
+    private struct Presentation: Identifiable {
+        let id = UUID()
+        let source: FeedPlaybackSource
+    }
+    private var context: AdminPreviewAdmission.Context {
+        guard auth.isAuthenticated, phase == .active, let account = auth.userId,
+              let session = try? SupabaseManager.shared.client.auth.currentSession,
+              !session.isExpired, session.user.id.uuidString == account else { return .unavailable }
+        return .init(account: account, sessionMarker: session.accessToken, active: true)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if target != nil {
+                Button(opening == nil ? "Play: \(title)" : "Checking preview…") {
+                    opening?.cancel()
+                    opening = Task { await open() }
+                }.disabled(opening != nil || !context.usable)
+            } else {
+                Text("Preview unavailable. Refresh the queue to check current access.").font(.caption)
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        }
+        .sheet(item: $presentation, onDismiss: { invalidate() }) { item in
+            CommunityVideoPlayer(source: item.source, title: title)
+                .task(id: item.id) { await renew(item) }
+                // Independent of network renewal: a hung request cannot keep
+                // playback open beyond the current monotonic grant deadline.
+                .task(id: item.id) { await watchLease(item) }
+        }
+        .onChange(of: context) { _, _ in invalidate() }
+        .onChange(of: target) { _, _ in invalidate() }
+        .onDisappear { invalidate() }
+    }
+    private func invalidate(_ message: String? = nil) {
+        requestID = UUID(); opening?.cancel(); opening = nil
+        admission.invalidate(); presentation = nil; error = message
+    }
+    private func open() async {
+        guard let target else { return }
+        let id = UUID(); requestID = id; error = nil
+        guard let ticket = admission.begin(target, context: context, uptime: ProcessInfo.processInfo.systemUptime) else { invalidate(); return }
+        defer { if requestID == id { opening = nil } }
+        do {
+            let fresh = try await CommunityServices.admin.refreshPreview(target)
+            guard !Task.isCancelled, requestID == id, self.target == target,
+                  admission.accept(fresh, ticket: ticket, context: context, serverNow: CommunityServices.admin.previewServerNow,
+                                   uptime: ProcessInfo.processInfo.systemUptime), let source = admission.source else {
+                if requestID == id { invalidate("Preview changed or is no longer authorized. Refresh the queue.") }
+                return
+            }
+            presentation = Presentation(source: source)
+        } catch {
+            admission.refuse(ticket)
+            if requestID == id { invalidate(CommunityServices.admin.noteRefusal(error).errorDescription) }
+        }
+    }
+    private func renew(_ item: Presentation) async {
+        while !Task.isCancelled, presentation?.id == item.id {
+            do { try await Task.sleep(for: .seconds(10)); try Task.checkCancellation() }
+            catch { if presentation?.id == item.id { invalidate() }; return }
+            guard presentation?.id == item.id, let target,
+                  admission.isValid(target, context: context, uptime: ProcessInfo.processInfo.systemUptime),
+                  let ticket = admission.begin(target, context: context, uptime: ProcessInfo.processInfo.systemUptime) else {
+                if presentation?.id == item.id { invalidate("Preview authorization expired. Refresh the queue.") }; return
+            }
+            do {
+                let fresh = try await CommunityServices.admin.refreshPreview(target)
+                guard !Task.isCancelled, presentation?.id == item.id, self.target == target,
+                      admission.accept(fresh, ticket: ticket, context: context, serverNow: CommunityServices.admin.previewServerNow,
+                                       uptime: ProcessInfo.processInfo.systemUptime) else {
+                    if presentation?.id == item.id { invalidate("Preview changed or is no longer authorized. Refresh the queue.") }; return
+                }
+            } catch {
+                admission.refuse(ticket)
+                if presentation?.id == item.id { invalidate(CommunityServices.admin.noteRefusal(error).errorDescription) }
+                return
+            }
+        }
+    }
+    private func watchLease(_ item: Presentation) async {
+        while !Task.isCancelled, presentation?.id == item.id {
+            let uptime = ProcessInfo.processInfo.systemUptime
+            guard admission.isValid(target, context: context, uptime: uptime), let deadline = admission.deadline else {
+                invalidate("Preview authorization expired. Refresh the queue."); return
+            }
+            do { try await Task.sleep(for: .seconds(min(1, max(0, deadline - uptime)))) }
+            catch { if presentation?.id == item.id { invalidate() }; return }
+        }
+    }
+}
+
 // MARK: - Moderation Tab
 struct AdminModerationContent: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
     @State private var reports: [ModerationReport] = []
     @State private var selected: ModerationReport?
-    @State private var player: AVPlayer?
     @State private var note = ""
     @State private var busy = false
     @State private var error: String?
@@ -754,14 +857,14 @@ struct AdminModerationContent: View {
             if busy { ProgressView() }
             if let selected {
                 Text(selected.title).font(.specialElite(18))
-                if let player { VideoPlayer(player: player).frame(minHeight: 220) }
+                AdminModerationPreviewButton(target: selected.previewTarget, title: selected.title).id(selected.id)
                 Text("Report: \(selected.reason)")
                 Text(selected.caption)
                 Text(selected.render_digest).font(.caption.monospaced()).textSelection(.enabled)
                 TextField("Required decision reason", text: $note, axis: .vertical).lineLimit(2...5)
                 HStack {
                     Button("Dismiss report") { Task { await decide("dismiss") } }
-                    Button("Remove rendition", role: .destructive) { Task { await decide("remove") } }
+                    Button("Remove video", role: .destructive) { Task { await decide("remove") } }
                 }.disabled(busy || note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || note.count > 2000)
             }
             ForEach(reports) { report in
@@ -779,22 +882,20 @@ struct AdminModerationContent: View {
         }
         .onDisappear { clear() }
     }
-    private func clear() { generation = UUID(); reports = []; selected = nil; player?.pause(); player = nil; note = "" }
+    private func clear() { generation = UUID(); reports = []; selected = nil; note = "" }
     private func select(_ report: ModerationReport) {
-        player?.pause(); player = nil; selected = report; note = ""
-        guard let parts = URLComponents(string: report.url), parts.scheme == "https", parts.host != nil,
-              parts.user == nil, parts.password == nil, let url = parts.url else { error = "Preview unavailable."; return }
-        player = AVPlayer(url: url)
+        selected = report; note = ""
+        error = nil
     }
     @MainActor private func load() async {
         guard !busy, auth.isAuthenticated else { return }
-        let epoch = generation; busy = true; defer { busy = false }
+        let epoch = generation; busy = true; selected = nil; defer { busy = false }
         do {
             let response: ModerationResponse = try await client.rpc("sdi_moderation_action", params: ModerationRequest(action: "list")).execute().value
             guard !Task.isCancelled, epoch == generation else { return }
-            player?.pause(); player = nil; selected = nil
+            selected = nil
             if let problem = response.error { reports = []; error = problem; return }
-            guard let items = response.reports else { reports = []; error = "Invalid moderation response."; return }
+            guard let items = response.reports, items.count <= 50 else { reports = []; error = "Invalid moderation response."; return }
             reports = items; error = nil
         } catch { if epoch == generation { reports = []; self.error = "Moderation queue unavailable. Check your admin session and MFA." } }
     }
@@ -814,10 +915,6 @@ struct AdminModerationContent: View {
 }
 private struct ModerationRequest: Encodable { let action: String; var report: UUID? = nil; var version: Int? = nil; var note = "" }
 private struct ModerationResponse: Decodable { let error: String?; let status: String?; let reports: [ModerationReport]? }
-private struct ModerationReport: Decodable, Identifiable {
-    let id: UUID; let reason: String; let version: Int; let created_at: Date
-    let caption: String; let creator: UUID; let title: String; let url: String; let render_digest: String
-}
 
 // MARK: - Reusable Info Card
 struct AdminInfoCard: View {
@@ -1260,7 +1357,6 @@ private struct AdminWarReportsContent: View {
     @Environment(\.scenePhase) private var phase
     @State private var reports: [AdminWarReport] = []
     @State private var selected: AdminWarReport?
-    @State private var player: AVPlayer?
     @State private var reason = ""
     @State private var busy = false
     @State private var requestID = UUID()
@@ -1276,9 +1372,8 @@ private struct AdminWarReportsContent: View {
             if let selected {
                 Text(selected.reason)
                 Text("Match state: \(selected.status)").font(.caption)
-                Button("Play: \(selected.left_title)") { play(selected.left_url) }
-                if let title = selected.right_title, let url = selected.right_url { Button("Play: \(title)") { play(url) } }
-                if let player { VideoPlayer(player: player).frame(minHeight: 220) }
+                AdminModerationPreviewButton(target: selected.previewTarget(right: false), title: selected.left_title).id("left-" + selected.id.uuidString)
+                if let title = selected.right_title { AdminModerationPreviewButton(target: selected.previewTarget(right: true), title: title).id("right-" + selected.id.uuidString) }
                 TextField("Required decision reason", text: $reason, axis: .vertical).lineLimit(2...5)
                 Text("Removing a matchup hides it and excludes its result from profile totals. Media remains intact; video takedown is a separate decision.").font(.caption)
                 HStack {
@@ -1288,7 +1383,7 @@ private struct AdminWarReportsContent: View {
             }
             ForEach(reports) { report in
                 Button {
-                    player?.pause(); player = nil; selected = report; reason = ""; error = nil
+                    selected = report; reason = ""; error = nil
                 } label: {
                     VStack(alignment: .leading) {
                         Text(report.left_title).font(.specialElite(16))
@@ -1303,16 +1398,12 @@ private struct AdminWarReportsContent: View {
         }
         .onDisappear { clear() }
     }
-    private func clear() { requestID = UUID(); busy = false; reports = []; selected = nil; player?.pause(); player = nil; reason = ""; error = nil }
-    private func play(_ raw: String) {
-        guard let parts = URLComponents(string: raw), parts.scheme == "https", parts.host != nil,
-              parts.user == nil, parts.password == nil, let url = parts.url else { error = "Preview unavailable."; return }
-        player?.pause(); player = AVPlayer(url: url)
-    }
+    private func clear() { requestID = UUID(); busy = false; reports = []; selected = nil; reason = ""; error = nil }
     private func request(_ action: String) async {
         guard !busy, auth.isAuthenticated, phase == .active else { return }
         if action == "remove", let prompt = CommunityServices.admin.stepUpPrompt(for: "war.remove") { stepUp = prompt; return }
         stepUp = nil
+        if action == "list" { selected = nil }
         let id = UUID(); requestID = id; busy = true
         defer { if requestID == id { busy = false } }
         do {
@@ -1321,18 +1412,14 @@ private struct AdminWarReportsContent: View {
             guard !Task.isCancelled, requestID == id else { return }
             if let issue = result.error { error = issue; return }
             if action == "list", let items = result.reports {
-                reports = items; selected = nil; player?.pause(); player = nil; error = nil
+                reports = items; selected = nil; error = nil
             } else if result.status == "confirmed" { busy = false; await request("list") }
             else { error = "Response incomplete. Refresh before retrying." }
-        } catch { if requestID == id { reports = []; selected = nil; player?.pause(); player = nil; self.error = "Moderation unavailable. Check admin session and MFA." } }
+        } catch { if requestID == id { reports = []; selected = nil; self.error = "Moderation unavailable. Check admin session and MFA." } }
     }
 }
 private struct AdminWarRequest: Encodable { let action: String; let report: UUID?; let revision: Int?; let reason: String }
 private struct AdminWarResponse: Decodable { let error: String?; let status: String?; let reports: [AdminWarReport]? }
-private struct AdminWarReport: Decodable, Identifiable {
-    let id: UUID; let match_id: UUID; let reason: String; let revision: Int; let created_at: Date; let status: String
-    let left_title: String; let right_title: String?; let left_url: String; let right_url: String?
-}
 
 @MainActor
 private struct AdminWarAppealsContent: View {
@@ -1340,31 +1427,31 @@ private struct AdminWarAppealsContent: View {
     @Environment(\.scenePhase) private var phase
     @State private var appeals: [AdminWarAppeal] = []
     @State private var selected: AdminWarAppeal?
-    @State private var player: AVPlayer?
     @State private var note = ""
     @State private var reviewed = false
     @State private var busy = false
     @State private var requestID = UUID()
     @State private var error: String?
+    @State private var stepUp: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("War Room appeals").font(.specialElite(22))
             Button("Refresh appeals") { Task { await request("list") } }.disabled(busy)
             if busy { ProgressView() }
             if let error { Text(error).foregroundStyle(.red) }
+            if let stepUp { AdminStepUpBanner(message: stepUp) }
             if let selected {
                 Text("Original decision").font(.specialElite(18))
                 Text(selected.decision_reason)
                 Text("Prior match state: \(selected.previous_status)").font(.caption)
                 Text("Participant appeal").font(.specialElite(18))
                 Text(selected.explanation)
-                Button("Play: \(selected.left_title)") { play(selected.left_url) }
+                AdminModerationPreviewButton(target: selected.previewTarget(right: false), title: selected.left_title).id("left-" + selected.id.uuidString)
                 Text(selected.left_digest).font(.caption.monospaced()).textSelection(.enabled)
-                if let url = selected.right_url {
-                    Button("Play: \(selected.right_title ?? "Second video")") { play(url) }
+                if let title = selected.right_title {
+                    AdminModerationPreviewButton(target: selected.previewTarget(right: true), title: title).id("right-" + selected.id.uuidString)
                     Text(selected.right_digest ?? "Digest unavailable").font(.caption.monospaced()).textSelection(.enabled)
                 }
-                if let player { VideoPlayer(player: player).frame(minHeight: 220) }
                 Toggle("I reviewed the decision, appeal and submitted videos.", isOn: $reviewed)
                 TextField("Required appeal decision reason", text: $note, axis: .vertical).lineLimit(2...6)
                 Text("Accepting restores the previous matchup state only if the server confirms that no newer restriction applies and the exact media remain approved. It does not change votes or create a reward.").font(.caption)
@@ -1375,7 +1462,7 @@ private struct AdminWarAppealsContent: View {
             }
             ForEach(appeals) { appeal in
                 Button {
-                    player?.pause(); player = nil; selected = appeal; note = ""; reviewed = false; error = nil
+                    selected = appeal; note = ""; reviewed = false; error = nil
                 } label: {
                     VStack(alignment: .leading) {
                         Text(appeal.left_title).font(.specialElite(16))
@@ -1390,35 +1477,31 @@ private struct AdminWarAppealsContent: View {
         }
         .onDisappear { clear() }
     }
-    private func clear() { requestID = UUID(); busy = false; appeals = []; selected = nil; player?.pause(); player = nil; note = ""; reviewed = false; error = nil }
-    private func play(_ value: String) {
-        guard let parts = URLComponents(string: value), parts.scheme == "https", parts.host != nil,
-              parts.user == nil, parts.password == nil, let url = parts.url else { error = "Video unavailable."; return }
-        player?.pause(); player = AVPlayer(url: url)
-    }
+    private func clear() { requestID = UUID(); busy = false; appeals = []; selected = nil; note = ""; reviewed = false; error = nil; stepUp = nil }
     private func request(_ action: String) async {
         guard !busy, auth.isAuthenticated, phase == .active else { return }
+        if action == "accept" || action == "reject", let prompt = CommunityServices.admin.stepUpPrompt(for: "appeal." + action) { stepUp = prompt; return }
+        stepUp = nil
+        if action == "list" { selected = nil }
         let id = UUID(); requestID = id; busy = true
         defer { if requestID == id { busy = false } }
         do {
             let client = try SupabaseManager.shared.client
             let response: AdminWarAppealResponse = try await client.rpc("sdi_war_appeal_admin", params: AdminWarAppealRequest(action: action, appeal: selected?.id, revision: selected?.revision, note: note)).execute().value
             guard !Task.isCancelled, requestID == id else { return }
-            if let problem = response.error { error = problem; return }
+            if let problem = response.error {
+                let refusal = CommunityServices.admin.noteRefusal(CommunityError.server(message: problem, code: response.code))
+                if refusal.isStepUpRequired { stepUp = refusal.errorDescription } else { error = refusal.errorDescription }; return
+            }
             if action == "list", let items = response.appeals {
-                appeals = items; selected = nil; player?.pause(); player = nil; error = nil; reviewed = false
+                appeals = items; selected = nil; error = nil; reviewed = false
             } else if response.status == "confirmed" { busy = false; await request("list") }
             else { error = "Decision not confirmed. Refresh before retrying." }
-        } catch { if requestID == id { appeals = []; selected = nil; player?.pause(); player = nil; self.error = "Appeals unavailable. Check admin session and MFA." } }
+        } catch { if requestID == id { appeals = []; selected = nil; self.error = "Appeals unavailable. Check admin session and MFA." } }
     }
 }
 private struct AdminWarAppealRequest: Encodable { let action: String; let appeal: UUID?; let revision: Int?; let note: String }
-private struct AdminWarAppealResponse: Decodable { let error: String?; let status: String?; let appeals: [AdminWarAppeal]? }
-private struct AdminWarAppeal: Decodable, Identifiable {
-    let id: UUID; let explanation: String; let revision: Int; let created_at: Date; let match_id: UUID
-    let decision_reason: String; let previous_status: String; let left_digest: String; let right_digest: String?
-    let left_title: String; let right_title: String?; let left_url: String; let right_url: String?
-}
+private struct AdminWarAppealResponse: Decodable { let error: String?; let code: String?; let status: String?; let appeals: [AdminWarAppeal]? }
 
 @MainActor
 private struct AdminPermissionsContent: View {
@@ -2241,7 +2324,6 @@ private struct AdminRemovalAppealsContent: View {
     @Environment(\.scenePhase) private var phase
     @State private var appeals: [ModerationAppeal] = []
     @State private var selected: ModerationAppeal?
-    @State private var player: AVPlayer?
     @State private var note = ""
     @State private var reviewed = false
     @State private var busy = false
@@ -2251,21 +2333,20 @@ private struct AdminRemovalAppealsContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Feed removal appeals").font(.specialElite(22))
-            Text("Acceptance restores the exact removed render only while its hosted copy still exists and no newer restriction applies; otherwise the creator resubmits for review. The decision reason is shown to the member.").font(.caption)
+            Text("Acceptance restores the exact removed video only while its hosted copy or verified channel publication remains eligible and no newer restriction applies. Rights or consent withdrawal requires a new approved publication. The decision reason is shown to the member.").font(.caption)
             Button("Refresh appeals") { Task { await load() } }.disabled(busy).accessibilityIdentifier("admin.appeals.refresh")
             if busy { ProgressView() }
             if let error { Text(error).foregroundStyle(.red) }
             if let stepUp { AdminStepUpBanner(message: stepUp) }
             if let selected {
                 Text(selected.title).font(.specialElite(18))
-                Text("Removal reason: \(selected.removal_reason ?? "unavailable") · hosted copy \(selected.removal_state ?? "unknown")").font(.caption)
+                Text("Removal reason: \(selected.removal_reason ?? "unavailable")").font(.caption)
+                if let state = selected.removal_state { Text("Hosted copy: \(state)").font(.caption) }
                 Text("Creator's appeal: \(selected.explanation)")
                 if let digest = selected.render_digest { Text(digest).font(.caption.monospaced()).textSelection(.enabled) }
-                if let url = selected.url.flatMap(CommunityMediaURL.checked(_:)) {
-                    Button("Play the removed rendition") { player?.pause(); player = AVPlayer(url: url) }.accessibilityIdentifier("admin.appeals.play")
-                }
-                if let player { VideoPlayer(player: player).frame(minHeight: 220) }
-                Toggle("I reviewed the removal, the appeal and the rendition.", isOn: $reviewed)
+                AdminModerationPreviewButton(target: selected.previewTarget, title: selected.title)
+                    .id(selected.id).accessibilityIdentifier("admin.appeals.play")
+                Toggle("I reviewed the removal, the appeal and the exact video.", isOn: $reviewed)
                 TextField("Member-visible decision reason", text: $note, axis: .vertical).lineLimit(2...6)
                     .accessibilityIdentifier("admin.appeals.note")
                 HStack {
@@ -2274,7 +2355,7 @@ private struct AdminRemovalAppealsContent: View {
                 }.disabled(busy || !reviewed || note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || note.count > 2000)
             }
             ForEach(appeals) { appeal in
-                Button { player?.pause(); player = nil; selected = appeal; note = ""; reviewed = false; error = nil } label: {
+                Button { selected = appeal; note = ""; reviewed = false; error = nil } label: {
                     VStack(alignment: .leading) {
                         Text(appeal.title).font(.specialElite(16))
                         Text(appeal.created_at.formatted()).font(.caption)
@@ -2288,16 +2369,16 @@ private struct AdminRemovalAppealsContent: View {
         }
         .onDisappear { clear() }
     }
-    private func clear() { requestID = UUID(); busy = false; appeals = []; selected = nil; player?.pause(); player = nil; note = ""; reviewed = false; error = nil; stepUp = nil }
+    private func clear() { requestID = UUID(); busy = false; appeals = []; selected = nil; note = ""; reviewed = false; error = nil; stepUp = nil }
     private func load() async {
         guard !busy, auth.isAuthenticated, phase == .active else { return }
-        let id = UUID(); requestID = id; busy = true
+        let id = UUID(); requestID = id; busy = true; selected = nil
         defer { if requestID == id { busy = false } }
         do {
             let items = try await CommunityServices.admin.appealQueue()
             guard !Task.isCancelled, requestID == id else { return }
-            appeals = items; selected = nil; player?.pause(); player = nil; error = nil
-        } catch { if requestID == id { appeals = []; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+            appeals = items; selected = nil; error = nil
+        } catch { if requestID == id { appeals = []; selected = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
     }
     private func decide(accept: Bool) async {
         guard !busy, let selected else { return }

@@ -92,6 +92,7 @@ struct FloatingToolSettingsPanel: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+                .allowsHitTesting(false)
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("studio.tool-settings")

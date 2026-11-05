@@ -878,6 +878,7 @@ struct CommunityVideoSource: Codable, Equatable {
     enum Provider: String, Codable { case rendition, youtube }
     let provider: Provider
     let url: String
+    var expires_at: Date? = nil
     var playbackSource: FeedPlaybackSource? {
         guard let source = FeedPlaybackSource.resolve(url) else { return nil }
         switch (provider, source) {
@@ -1529,9 +1530,12 @@ struct ModerationAppeal: Decodable, Identifiable, Equatable {
     var state: String? = nil; var reply: String? = nil; let created_at: Date; var decided_at: Date? = nil
     var creator: UUID? = nil; var render_digest: String? = nil; var revision: Int? = nil
     var url: String? = nil; var removal_reason: String? = nil; var removal_state: String? = nil
+    var video_source: CommunityVideoSource? = nil
+    var playbackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(video_source, legacyURL: url) }
 }
-struct ModerationAppealResponse: CommunityResponse {
+struct ModerationAppealResponse: CommunityCodedResponse {
     let error: String?; let status: String?; let appeals: [ModerationAppeal]?
+    var code: String? = nil
 }
 
 struct AdminReviewHistoryRequest: Encodable, Equatable { let page: Int }

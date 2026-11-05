@@ -435,7 +435,32 @@ begin
  return true;
 end $$;
 
--- Admin preview keeps an explicit unavailable raw URL for provider references.
+-- A typed admin preview is not raw-media approval or download authority.
+-- The helper has no client EXECUTE grant and repeats live admin authorization.
+-- A removed feed post may be inspected/restored while hidden, but hiding is not
+-- evidence that upstream consent, rights or a verified publication still exist.
+create function sdi_private.admin_video_source(media public.sdi_watch_media,expected_owner uuid,expected_digest text,require_visible boolean default true) returns jsonb
+language sql stable security definer set search_path='' as $$
+ select case
+  when not sdi_private.admin_can('moderation') or not sdi_private.account_active() then null
+  when media.playback_provider='rendition' and (media.expires_at is null or media.expires_at>clock_timestamp())
+   then jsonb_build_object('provider','rendition','url',media.url,'expires_at',media.expires_at)
+  when media.playback_provider='youtube' and media.owner_id=expected_owner and media.render_digest=expected_digest
+   and media.url is null and not media.approved
+   and (media.expires_at is null or media.expires_at>clock_timestamp())
+   and media.provider_url ~ '^https://www[.]youtube[.]com/watch[?]v=[A-Za-z0-9_-]{11}$'
+   and sdi_private.feed_media_available(media)
+   and exists(select 1 from sdi_private.publish_jobs y where y.id=media.youtube_job
+    and y.result_url='https://www.youtube.com/watch?v='||y.provider_id
+    and y.youtube_receipt->>'state'='published'
+    and y.youtube_receipt->>'channel_id' ~ '^UC[A-Za-z0-9_-]{1,126}$')
+   and exists(select 1 from sdi_private.feed_posts p where p.media_id=media.id and p.creator=expected_owner
+    and (not require_visible or p.visible))
+   then jsonb_build_object('provider','youtube','url',media.provider_url,'expires_at',media.expires_at)
+  else null end
+$$;
+revoke all on function sdi_private.admin_video_source(public.sdi_watch_media,uuid,text,boolean) from public,anon,authenticated,service_role;
+
 create or replace function sdi_private.moderation_action(action text,report uuid default null,version bigint default null,note text default '') returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare result jsonb; r sdi_private.feed_reports; p sdi_private.feed_posts; video public.sdi_watch_media; denial jsonb;
@@ -450,7 +475,7 @@ begin
  if action='list' then
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into result from (
    select r.id,r.reason,r.version,r.created_at,p.caption,p.creator,m.title,coalesce(m.url,'') as url,m.render_digest,m.playback_provider,
-    case when m.playback_provider='youtube' then 'YouTube playback is unavailable in this admin preview.' end as preview_unavailable
+    sdi_private.admin_video_source(m,p.creator,m.render_digest) as video_source
    from sdi_private.feed_reports r join sdi_private.feed_posts p on p.id=r.post
    join public.sdi_watch_media m on m.id=p.media_id where r.state='pending'
    order by r.created_at,r.id limit 50
@@ -525,11 +550,12 @@ begin
  return jsonb_build_object('status','confirmed');
 end $$;
 
--- Appeals remain reviewable; accepting a provider reference cannot invent an MP4.
+-- Appeals may restore only a currently eligible exact provider reference.
+-- The raw path retains its hosted-copy gate and never grants provider downloads.
 create or replace function sdi_private.moderation_appeal(action text,media uuid default null,explanation text default '',appeal uuid default null,
  revision bigint default null,note text default '') returns jsonb
 language plpgsql security definer set search_path='' as $$
-declare actor_id uuid:=auth.uid(); m public.sdi_watch_media; a sdi_private.moderation_appeals; removal sdi_private.moderation_audit; items jsonb;
+declare actor_id uuid:=auth.uid(); m public.sdi_watch_media; a sdi_private.moderation_appeals; removal sdi_private.moderation_audit; items jsonb; denial jsonb;
 begin
  if actor_id is null or not exists(select 1 from auth.users where id=actor_id and not is_anonymous)
  or not exists(select 1 from auth.sessions where user_id=actor_id and id::text=auth.jwt()->>'session_id') then
@@ -540,7 +566,9 @@ begin
     return jsonb_build_object('error','Select your removed video and explain your appeal.');end if;
    select * into m from public.sdi_watch_media where id=media and owner_id=actor_id for update;
    select d.* into removal from sdi_private.moderation_audit d where d.media_id=media and d.action='remove' order by d.created_at desc limit 1;
-   if not found or m.id is null or m.approved or removal.created_at<clock_timestamp()-interval '30 days' then
+   if not found or m.id is null or m.approved or removal.created_at<clock_timestamp()-interval '30 days'
+    or (m.playback_provider='youtube' and not exists(select 1 from sdi_private.feed_posts p
+     where p.media_id=m.id and p.creator=actor_id and not p.visible)) then
     return jsonb_build_object('error','No removal of your video is open for appeal.');end if;
    if exists(select 1 from sdi_private.moderation_appeals where media_id=media and state='pending') then return jsonb_build_object('status','recorded');end if;
    if (select count(*) from sdi_private.moderation_appeals where creator=actor_id and created_at>clock_timestamp()-interval '1 day')>=3 then
@@ -557,6 +585,7 @@ begin
  if action='queue' then
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
    select ap.id,ap.media_id,ap.creator,ap.explanation,ap.render_digest,ap.revision,ap.created_at,v.title,coalesce(v.url,'') as url,v.playback_provider,
+    sdi_private.admin_video_source(v,ap.creator,ap.render_digest,false) as video_source,
     (select d.reason from sdi_private.moderation_audit d where d.media_id=ap.media_id and d.action='remove' order by d.created_at desc limit 1) as removal_reason,
     (select j.state from sdi_private.removal_jobs j where j.media_id=ap.media_id and j.render_digest=ap.render_digest) as removal_state
    from sdi_private.moderation_appeals ap join public.sdi_watch_media v on v.id=ap.media_id where ap.state='pending' order by ap.created_at,ap.id limit 50
@@ -565,20 +594,33 @@ begin
  end if;
  if action is null or action not in('accept','reject') or appeal is null or revision is null or note is null or length(trim(note)) not between 1 and 2000 then
   return jsonb_build_object('error','Select an appeal and provide a member-visible decision reason.');end if;
+ denial:=sdi_private.admin_gate('moderation_appeal.'||action,'moderation',true,60);
+ if denial is not null then return denial;end if;
  select * into a from sdi_private.moderation_appeals where id=appeal for update;
  if not found or a.state<>'pending' or a.revision<>revision then return jsonb_build_object('error','Appeal changed. Refresh the queue.');end if;
  select * into m from public.sdi_watch_media where id=a.media_id for update;
  if actor_id=a.creator or exists(select 1 from sdi_private.moderation_audit d where d.media_id=a.media_id and d.actor=actor_id) then
   return jsonb_build_object('error','Another uninvolved administrator must review this appeal.');end if;
  if action='accept' then
-  if m.playback_provider='youtube' then
-   return jsonb_build_object('error','YouTube reference restoration requires a new approved, verified channel publication. No raw rendition is available to restore.');end if;
   if m.render_digest is distinct from a.render_digest or m.approved then return jsonb_build_object('error','The removed render changed; nothing to restore.');end if;
-  if not exists(select 1 from sdi_private.removal_jobs where media_id=m.id and render_digest=a.render_digest and state in('pending','failed')) then
-   return jsonb_build_object('error','The hosted copy is already removed. The creator can resubmit the render for review.');end if;
-  update sdi_private.removal_jobs set state='withdrawn' where media_id=m.id and render_digest=a.render_digest and state in('pending','failed');
-  update public.sdi_watch_media set approved=true where id=m.id;
-  update sdi_private.feed_posts set visible=true where media_id=m.id;
+  if m.playback_provider='youtube' then
+   -- Do not require the very visibility flag this appeal would restore. Never
+   -- reset a channel job or receipt: withdrawal/revoked rights remain terminal.
+   perform 1 from sdi_private.render_reviews where id=m.review_id for update;
+   perform 1 from sdi_private.publish_jobs where review_id=m.review_id order by id for update;
+   perform 1 from sdi_private.feed_posts where media_id=m.id for update;
+   if sdi_private.admin_video_source(m,a.creator,a.render_digest,false) is null
+    or not exists(select 1 from sdi_private.feed_posts p where p.media_id=m.id and p.creator=a.creator and not p.visible)
+    or exists(select 1 from sdi_private.moderation_audit d where d.media_id=m.id and d.action='remove' and d.created_at>a.created_at) then
+    return jsonb_build_object('error','The exact YouTube publication is no longer eligible. Current rights, consent and a verified public channel receipt are required.');end if;
+   update sdi_private.feed_posts set visible=true,featured=false where media_id=m.id and creator=a.creator;
+  else
+   if not exists(select 1 from sdi_private.removal_jobs where media_id=m.id and render_digest=a.render_digest and state in('pending','failed')) then
+    return jsonb_build_object('error','The hosted copy is already removed. The creator can resubmit the render for review.');end if;
+   update sdi_private.removal_jobs set state='withdrawn' where media_id=m.id and render_digest=a.render_digest and state in('pending','failed');
+   update public.sdi_watch_media set approved=true where id=m.id;
+   update sdi_private.feed_posts set visible=true where media_id=m.id;
+  end if;
  end if;
  update sdi_private.moderation_appeals set state=case action when 'accept' then 'accepted' else 'rejected' end,reviewer=actor_id,
   reply=trim(note),decided_at=clock_timestamp(),revision=moderation_appeals.revision+1 where id=a.id;
@@ -743,8 +785,8 @@ begin
  return jsonb_build_object('completed',completed,'removed',removed);
 end $$;
 
--- Raw-only administrator previews fail visibly; provider references cannot
--- bypass existing exact-media appeal restoration checks.
+-- Admin queues return a separate typed preview; raw URL fields retain their
+-- legacy meaning. Removed matches do not themselves revoke a feed publication.
 create or replace function sdi_private.war_moderate(action text,report uuid default null,revision bigint default null,reason text default '') returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.war_reports; m sdi_private.war_matches; items jsonb;
@@ -753,7 +795,9 @@ begin
  if action='list' then
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
    select report_row.id,report_row.match_id,report_row.reason,report_row.revision,report_row.created_at,w.status,
-    l.title as left_title,v.title as right_title,coalesce(l.url,'') as left_url,v.url as right_url
+    l.title as left_title,v.title as right_title,coalesce(l.url,'') as left_url,v.url as right_url,
+    sdi_private.admin_video_source(l,w.creator,w.left_digest) as left_video_source,
+    sdi_private.admin_video_source(v,w.opponent,w.right_digest) as right_video_source
    from sdi_private.war_reports report_row join sdi_private.war_matches w on w.id=report_row.match_id
    join public.sdi_watch_media l on l.id=w.left_media left join public.sdi_watch_media v on v.id=w.right_media
    where report_row.state='pending' order by report_row.created_at,report_row.id limit 50
@@ -780,13 +824,15 @@ end $$;
 
 create or replace function sdi_private.war_appeal_admin(action text,appeal uuid default null,revision bigint default null,note text default '') returns jsonb
 language plpgsql security definer set search_path='' as $$
-declare a sdi_private.war_appeals; d sdi_private.war_moderation_audit; m sdi_private.war_matches; items jsonb;
+declare a sdi_private.war_appeals; d sdi_private.war_moderation_audit; m sdi_private.war_matches; items jsonb; denial jsonb;
 begin
  if not sdi_private.admin_can('moderation') or not sdi_private.account_active() then return jsonb_build_object('error','Current admin MFA session required.');end if;
  if action='list' then
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
    select appeal_row.id,appeal_row.explanation,appeal_row.revision,appeal_row.created_at,decision_row.match_id,decision_row.reason as decision_reason,decision_row.previous_status,
-    w.left_digest,w.right_digest,l.title as left_title,r.title as right_title,coalesce(l.url,'') as left_url,r.url as right_url
+    w.left_digest,w.right_digest,l.title as left_title,r.title as right_title,coalesce(l.url,'') as left_url,r.url as right_url,
+    sdi_private.admin_video_source(l,w.creator,w.left_digest) as left_video_source,
+    sdi_private.admin_video_source(r,w.opponent,w.right_digest) as right_video_source
    from sdi_private.war_appeals appeal_row join sdi_private.war_moderation_audit decision_row on decision_row.id=appeal_row.decision_id
    join sdi_private.war_matches w on w.id=decision_row.match_id
    join public.sdi_watch_media l on l.id=w.left_media left join public.sdi_watch_media r on r.id=w.right_media
@@ -796,6 +842,8 @@ begin
  end if;
  if action is null or action not in('accept','reject') or revision is null or note is null or length(trim(note)) not between 1 and 2000 then
   return jsonb_build_object('error','A current appeal and reason are required.');end if;
+ denial:=sdi_private.admin_gate('war_appeal_admin.'||action,'moderation',true,60);
+ if denial is not null then return denial;end if;
  select * into a from sdi_private.war_appeals where id=appeal for update;
  if not found or a.state<>'pending' or a.revision<>revision then return jsonb_build_object('error','Appeal changed. Refresh.');end if;
  select * into d from sdi_private.war_moderation_audit where id=a.decision_id;
@@ -805,10 +853,14 @@ begin
  if action='accept' then
   if m.status<>'removed' or exists(select 1 from sdi_private.war_moderation_audit where match_id=m.id and created_at>d.created_at and decision='remove')
    or d.previous_status not in('pending','active','completed') then return jsonb_build_object('error','A newer restriction requires separate review.');end if;
-  if not exists(select 1 from public.sdi_watch_media where id=m.left_media and approved and render_digest=m.left_digest
-   and (expires_at is null or expires_at>clock_timestamp()))
-   or (d.previous_status<>'pending' and not exists(select 1 from public.sdi_watch_media where id=m.right_media and approved
-   and render_digest=m.right_digest and (expires_at is null or expires_at>clock_timestamp()))) then
+  if not exists(select 1 from public.sdi_watch_media v where v.id=m.left_media and v.render_digest=m.left_digest
+   and (v.expires_at is null or v.expires_at>clock_timestamp())
+   and case v.playback_provider when 'rendition' then v.approved
+    when 'youtube' then sdi_private.admin_video_source(v,m.creator,m.left_digest) is not null else false end)
+   or (d.previous_status<>'pending' and not exists(select 1 from public.sdi_watch_media v where v.id=m.right_media
+   and v.render_digest=m.right_digest and (v.expires_at is null or v.expires_at>clock_timestamp())
+   and case v.playback_provider when 'rendition' then v.approved
+    when 'youtube' then sdi_private.admin_video_source(v,m.opponent,m.right_digest) is not null else false end)) then
    return jsonb_build_object('error','The exact submitted media must remain approved and available.');end if;
   update sdi_private.war_matches set status=d.previous_status where id=m.id;
  end if;

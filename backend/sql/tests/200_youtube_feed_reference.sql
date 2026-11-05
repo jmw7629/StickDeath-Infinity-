@@ -31,7 +31,7 @@ begin
 end $$;
 do $$
 declare creator uuid; viewer uuid; reviewer uuid; owner uuid; review uuid; withdrawn uuid; nonembed uuid; race uuid; spatter uuid;
- y uuid; f uuid; token uuid; media uuid; upload uuid; claimed jsonb; result jsonb; receipt jsonb; before_time timestamptz; visible_count integer; opponent uuid; raw_media uuid; active_match uuid; final_match uuid; war_report uuid; watch_room uuid; watch_raw uuid;
+ y uuid; f uuid; token uuid; media uuid; upload uuid; claimed jsonb; result jsonb; receipt jsonb; before_time timestamptz; visible_count integer; opponent uuid; raw_media uuid; active_match uuid; final_match uuid; war_report uuid; watch_room uuid; watch_raw uuid; war_appeal uuid; feed_appeal uuid; removal_decision uuid; feed_report uuid;
  d1 text:=repeat('41',32); d2 text:=repeat('42',32); d3 text:=repeat('43',32); d4 text:=repeat('44',32); d5 text:=repeat('45',32);
 begin
  creator:=sdi_test.user('yt-ref-creator');viewer:=sdi_test.user('yt-ref-viewer');
@@ -226,9 +226,134 @@ begin
  select id into war_report from sdi_private.war_reports where match_id=final_match;
  perform sdi_test.login(reviewer,'aal2');
  result:=sdi_private.war_moderate('list');
- perform sdi_test.check(result->'reports'->0->>'left_url'='' and result->'reports'->0->>'right_url'='https://cdn.example.test/war.mp4','raw-only moderator queue stays decodable without handing watch URL to AVPlayer');
+ perform sdi_test.check(result->'reports'->0->>'left_url'='' and result->'reports'->0->>'right_url'='https://cdn.example.test/war.mp4','legacy raw moderator fields retain their meaning');
+ begin
+  update public.sdi_watch_media set expires_at=clock_timestamp()-interval '1 second' where id=raw_media;
+  perform sdi_test.check(sdi_private.admin_video_source((select m from public.sdi_watch_media m where id=raw_media),opponent,repeat('49',32)) is null,'expired raw preview cannot obtain a typed grant');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ perform sdi_test.check(result->'reports'->0->'left_video_source'->>'provider'='youtube'
+  and result->'reports'->0->'left_video_source'->>'url'=receipt->>'url'
+  and result->'reports'->0->'right_video_source'->>'provider'='rendition','typed moderator preview binds each side');
  result:=sdi_private.war_moderate('remove',war_report,1,'Matchup removed for review.');
  perform sdi_test.check(result->>'status'='confirmed' and (select status='removed' from sdi_private.war_matches where id=final_match),'moderator can still remove provider matchup');
+ -- Removing the match is not upstream consent withdrawal. An uninvolved admin
+ -- may restore it only while both exact submitted sources remain eligible.
+ select id into removal_decision from sdi_private.war_moderation_audit where match_id=final_match and decision='remove';
+ perform sdi_test.login(creator);
+ perform sdi_test.check(sdi_private.war_notices('appeal',removal_decision,'Please review the exact submissions.')->>'status'='recorded','participant appeals provider matchup removal');
+ select id into war_appeal from sdi_private.war_appeals where decision_id=removal_decision;
+ perform sdi_test.login(owner,'aal2',60);
+ result:=sdi_private.war_appeal_admin('list');
+ perform sdi_test.check(result->'appeals'->0->'left_video_source'->>'provider'='youtube','removed matchup appeal exposes current typed preview');
+ perform sdi_test.login(owner,'aal2',960);
+ execute 'set local role authenticated';
+ result:=public.sdi_war_appeal_admin('accept',war_appeal,1,'Stale MFA must not restore.');
+ reset role;
+ perform sdi_test.check(result->>'code'='step_up_required' and (select state='pending' from sdi_private.war_appeals where id=war_appeal),'public provider restoration requires recent MFA');
+ perform sdi_test.check(sdi_private.war_appeal_admin('reject',war_appeal,1,'Stale MFA must not reject.')->>'code'='step_up_required','provider appeal rejection has the same recent MFA gate');
+ perform sdi_test.login(owner,'aal2',60);
+ begin
+  insert into sdi_private.admin_budget values(owner,clock_timestamp(),60) on conflict(user_id) do update set window_start=clock_timestamp(),attempts=60;
+  execute 'set local role authenticated';
+  result:=public.sdi_war_appeal_admin('accept',war_appeal,1,'Budget exhausted.');
+  reset role;
+  perform sdi_test.check(result->>'code'='rate_limited' and (select state='pending' from sdi_private.war_appeals where id=war_appeal),'public provider restoration obeys admin rate budget');
+  perform sdi_test.check(exists(select 1 from sdi_private.admin_access_audit where actor=owner and operation='war_appeal_admin.accept' and detail='rate_limited'),'restoration rate denial audited');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ perform sdi_test.check(sdi_private.war_appeal_admin('accept',war_appeal,0,'Stale review.')->>'error' is not null,'stale provider appeal revision cannot restore');
+ begin
+  update sdi_private.publish_jobs set youtube_receipt=jsonb_set(youtube_receipt,'{visibility}','"private"') where id=y;
+  perform sdi_test.check(sdi_private.war_appeal_admin('accept',war_appeal,1,'Private publication.')->>'error' is not null,'private provider receipt blocks restoration');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ begin
+  update sdi_private.render_reviews set rights_cleared=false where id=review;
+  perform sdi_test.check(sdi_private.war_appeal_admin('accept',war_appeal,1,'Rights changed.')->>'error' is not null,'revoked rights block provider restoration');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ begin
+  update sdi_private.feed_posts set visible=false where media_id=media;
+  perform sdi_test.check(sdi_private.war_appeal_admin('accept',war_appeal,1,'Feed hidden.')->>'error' is not null,'hidden feed source blocks matchup restoration');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ begin
+  update public.sdi_watch_media set expires_at=clock_timestamp()-interval '1 second' where id=media;
+  perform sdi_test.check(sdi_private.war_appeal_admin('accept',war_appeal,1,'Expired.')->>'error' is not null,'expired provider source blocks restoration');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ result:=sdi_private.war_appeal_admin('accept',war_appeal,1,'Exact current submissions remain eligible.');
+ perform sdi_test.check(result->>'status'='confirmed' and (select status='completed' from sdi_private.war_matches where id=final_match)
+  and (select not approved and url is null from public.sdi_watch_media where id=media),'eligible matchup restores without raw approval or fake URL');
+ perform sdi_test.login(viewer);
+ perform sdi_test.check(sdi_private.admin_video_source((select m from public.sdi_watch_media m where id=media),creator,d1) is null,'ordinary member cannot use admin preview helper');
+ perform sdi_test.check(sdi_test.denied('authenticated',format('select sdi_private.admin_video_source(m,%L,%L) from public.sdi_watch_media m where id=%L',creator,d1,media)),'private preview helper has no authenticated execute privilege');
+ perform sdi_test.login(owner,'aal1');
+ perform sdi_test.check(sdi_private.war_appeal_admin('list')->>'error' is not null,'provider admin preview still requires MFA');
+ perform sdi_test.login(owner,'aal2',60);
+ begin
+  delete from auth.sessions where user_id=owner;
+  perform sdi_test.check(sdi_private.moderation_action('list')->>'error' is not null,'provider moderation preview still requires live session');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+
+ -- Visibility-only historical removal fixture: the flag being appealed must
+ -- not be mistaken for upstream withdrawal. No channel jobs are reset here.
+ begin
+  update sdi_private.feed_posts set visible=false where media_id=media;
+  insert into sdi_private.moderation_audit(report_id,actor,action,reason,media_id,render_digest)
+   values(gen_random_uuid(),reviewer,'remove','Visibility review fixture.',media,d1);
+  perform sdi_test.login(creator);
+  perform sdi_test.check(sdi_private.moderation_appeal('submit',media,'Restore exact reference.')->>'appeals' is not null,'hidden metadata removal can be appealed');
+  select id into feed_appeal from sdi_private.moderation_appeals where media_id=media and state='pending';
+  perform sdi_test.login(owner,'aal2',60);
+  result:=sdi_private.moderation_appeal('queue');
+  perform sdi_test.check(result->'appeals'->0->'video_source'->>'provider'='youtube' and result->'appeals'->0->>'url'='', 'hidden eligible feed appeal has typed preview without raw URL');
+  perform sdi_test.login(owner,'aal2',960);
+  execute 'set local role authenticated';
+  result:=public.sdi_moderation_appeal('accept',appeal=>feed_appeal,revision=>1,note=>'Stale MFA must not restore.');
+  reset role;
+  perform sdi_test.check(result->>'code'='step_up_required' and not (select visible from sdi_private.feed_posts where media_id=media),'public hidden-reference restoration requires recent MFA');
+  perform sdi_test.check(sdi_private.moderation_appeal('reject',appeal=>feed_appeal,revision=>1,note=>'Stale MFA must not reject.')->>'code'='step_up_required','feed appeal rejection requires recent MFA');
+  perform sdi_test.login(owner,'aal2',60);
+  begin
+   insert into sdi_private.admin_budget values(owner,clock_timestamp(),60) on conflict(user_id) do update set window_start=clock_timestamp(),attempts=60;
+   execute 'set local role authenticated';
+   result:=public.sdi_moderation_appeal('accept',appeal=>feed_appeal,revision=>1,note=>'Budget exhausted.');
+   reset role;
+   perform sdi_test.check(result->>'code'='rate_limited' and not (select visible from sdi_private.feed_posts where media_id=media),'public feed restoration obeys admin rate budget');
+   raise sqlstate 'Z0001';
+  exception when sqlstate 'Z0001' then null;end;
+  begin
+   update sdi_private.publish_jobs set youtube_receipt=jsonb_set(youtube_receipt,'{embeddable}','false') where id=y;
+   perform sdi_test.check(sdi_private.moderation_appeal('accept',appeal=>feed_appeal,revision=>1,note=>'Invalid receipt.')->>'error' is not null,'invalid receipt blocks feed reference restoration');
+   raise sqlstate 'Z0001';
+  exception when sqlstate 'Z0001' then null;end;
+  result:=sdi_private.moderation_appeal('accept',appeal=>feed_appeal,revision=>1,note=>'Current exact reference remains eligible.');
+  perform sdi_test.check(result->>'status'='confirmed' and (select visible from sdi_private.feed_posts where media_id=media)
+   and (select not approved and url is null from public.sdi_watch_media where id=media),'eligible hidden reference restores only its visibility');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+
+ -- The actual feed removal also revokes the review and requests upstream
+ -- withdrawal. Appeal acceptance must never reverse those provider operations.
+ begin
+  perform sdi_test.login(viewer);
+  perform sdi_private.feed_action('report',(select id from sdi_private.feed_posts where media_id=media),reason=>'rights');
+  select id into feed_report from sdi_private.feed_reports where post=(select id from sdi_private.feed_posts where media_id=media) and state='pending';
+  perform sdi_test.login(reviewer,'aal2');
+  result:=sdi_private.moderation_action('remove',feed_report,1,'Withdraw this exact publication.');
+  perform sdi_test.check(result->>'status'='confirmed','actual provider feed removal recorded');
+  perform sdi_test.login(creator);
+  perform sdi_private.moderation_appeal('submit',media,'Please review removal.');
+  select id into feed_appeal from sdi_private.moderation_appeals where media_id=media and state='pending';
+  perform sdi_test.login(owner,'aal2',60);
+  perform sdi_test.check(sdi_private.moderation_appeal('accept',appeal=>feed_appeal,revision=>1,note=>'Cannot reverse withdrawal.')->>'error' is not null,'withdrawn provider reference cannot be restored by appeal');
+  perform sdi_test.check((select state='removal_pending' from sdi_private.publish_jobs where id=y)
+   and not (select visible from sdi_private.feed_posts where media_id=media),'failed appeal does not restart channel job or expose post');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
  perform sdi_test.login(viewer);
 
  -- Staging retirement must not remove an otherwise authorized metadata reference.
