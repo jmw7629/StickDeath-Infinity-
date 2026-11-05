@@ -343,6 +343,30 @@ begin
   perform sdi_private.feed_action('report',(select id from sdi_private.feed_posts where media_id=media),reason=>'rights');
   select id into feed_report from sdi_private.feed_reports where post=(select id from sdi_private.feed_posts where media_id=media) and state='pending';
   perform sdi_test.login(reviewer,'aal2');
+  -- Positive authorized list must resolve SQL aliases independently of the
+  -- PL/pgSQL r/p row variables used by the decision branch below.
+  execute 'set local role authenticated';
+  result:=public.sdi_moderation_action('list');
+  reset role;
+  perform sdi_test.check(not (result ? 'error') and jsonb_array_length(result->'reports')=1,
+   'authorized MFA moderation list returns the pending provider report');
+  perform sdi_test.check(result->'reports'->0->>'id'=feed_report::text
+   and result->'reports'->0->>'creator'=creator::text and result->'reports'->0->>'render_digest'=d1
+   and result->'reports'->0->>'reason'='rights' and result->'reports'->0->>'url'=''
+   and result->'reports'->0->>'playback_provider'='youtube'
+   and result->'reports'->0->'video_source'->>'provider'='youtube'
+   and result->'reports'->0->'video_source'->>'url'=receipt->>'url',
+   'authorized provider moderation list retains exact identity and typed preview without raw URL');
+  begin
+   update sdi_private.render_reviews set rights_cleared=false where id=review;
+   execute 'set local role authenticated';
+   result:=public.sdi_moderation_action('list');
+   reset role;
+   perform sdi_test.check(jsonb_array_length(result->'reports')=1
+    and result->'reports'->0->'video_source'='null'::jsonb and result->'reports'->0->>'url'='',
+    'authorized moderation list preserves report but invalidates preview when rights are revoked');
+   raise sqlstate 'Z0001';
+  exception when sqlstate 'Z0001' then null;end;
   result:=sdi_private.moderation_action('remove',feed_report,1,'Withdraw this exact publication.');
   perform sdi_test.check(result->>'status'='confirmed','actual provider feed removal recorded');
   perform sdi_test.login(creator);

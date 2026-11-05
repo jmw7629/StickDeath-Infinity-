@@ -474,11 +474,11 @@ begin
  end if;
  if action='list' then
   select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into result from (
-   select r.id,r.reason,r.version,r.created_at,p.caption,p.creator,m.title,coalesce(m.url,'') as url,m.render_digest,m.playback_provider,
-    sdi_private.admin_video_source(m,p.creator,m.render_digest) as video_source
-   from sdi_private.feed_reports r join sdi_private.feed_posts p on p.id=r.post
-   join public.sdi_watch_media m on m.id=p.media_id where r.state='pending'
-   order by r.created_at,r.id limit 50
+   select report_row.id,report_row.reason,report_row.version,report_row.created_at,post_row.caption,post_row.creator,media_row.title,coalesce(media_row.url,'') as url,media_row.render_digest,media_row.playback_provider,
+    sdi_private.admin_video_source(media_row,post_row.creator,media_row.render_digest) as video_source
+   from sdi_private.feed_reports report_row join sdi_private.feed_posts post_row on post_row.id=report_row.post
+   join public.sdi_watch_media media_row on media_row.id=post_row.media_id where report_row.state='pending'
+   order by report_row.created_at,report_row.id limit 50
   ) item;
   return jsonb_build_object('reports',result);
  end if;

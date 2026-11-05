@@ -120,7 +120,8 @@ def create_application(environment=None):
     if not 1 <= concurrency <= 4 or not 1 <= account_quota <= quota <= 1024**4:
         raise ValueError("Invalid intake capacity limits.")
     links = PreviewLinks(origin, _secret_file(env, "SDI_PREVIEW_SIGNING_KEY_FILE", binary=True))
-    authorize = AccountAuthorizer(backend, _required(env, "SDI_BACKEND_PUBLISHABLE_KEY"))
+    publishable_key = _required(env, "SDI_BACKEND_PUBLISHABLE_KEY")
+    authorize = AccountAuthorizer(backend, publishable_key)
     service_key = _secret_file(env, "SDI_BACKEND_SERVICE_KEY_FILE")
     validate = MediaValidator(Path(_required(env, "SDI_FFPROBE")), Path(_required(env, "SDI_FFMPEG")))
     catalogues = env.get("SDI_ASSET_CATALOGUE_ROOT")
@@ -135,7 +136,8 @@ def create_application(environment=None):
         drafts = DraftPreviewStore(store.root, links, env["SDI_DRAFT_PREVIEW_OWNER_ID"].strip(),
                                    total_quota=quota, other_usage=store.charged_bytes)
         store.reserved_bytes = drafts.retained_bytes
-    registrar = ReviewRegistrar(backend, service_key, store.root, consent, drafts.signer(links) if drafts else links)
+    registrar = ReviewRegistrar(backend, service_key, store.root, consent, drafts.signer(links) if drafts else links,
+                                publishable_key=publishable_key)
     upload = UploadApplication(store, authorize, validate, registrar, registrar.renew_preview)
     authority = registrar.preview_authority
     if drafts is not None:

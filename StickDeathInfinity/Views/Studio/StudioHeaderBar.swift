@@ -15,7 +15,7 @@ struct StudioHeaderBar: View {
         switch status.level {
         case .synced: dot = .green
         case .syncing: dot = .white.opacity(0.6)
-        case .waiting, .paused: dot = .orange
+        case .waiting, .paused, .diverged: dot = .orange
         case .conflict: dot = .red
         }
         return Menu {

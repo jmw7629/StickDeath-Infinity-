@@ -253,7 +253,7 @@ class RegistrarTests(unittest.TestCase):
         self.links = PreviewLinks("https://intake.example.test", b"k" * 32)
 
     def registrar(self):
-        return ReviewRegistrar("https://backend.example.test", "service-key", self.root, "terms-v1", self.links)
+        return ReviewRegistrar("https://backend.example.test", "service-key", self.root, "terms-v1", self.links, publishable_key="publishable-key")
 
     def test_registration_posts_private_preview_and_returns_review(self):
         review = str(uuid.uuid4())

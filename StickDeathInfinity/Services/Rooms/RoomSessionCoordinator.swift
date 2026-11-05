@@ -180,7 +180,7 @@ final class RoomSessionCoordinator {
     /// The compact room status Studio shows in its top bar while the shared
     /// project is open. Nil when no room session is handed off to Studio.
     struct StudioSyncStatus: Equatable {
-        enum Level: Equatable { case synced, syncing, waiting, conflict, paused }
+        enum Level: Equatable { case synced, syncing, waiting, conflict, paused, diverged }
         let level: Level
         let label: String
         let detail: String
@@ -204,6 +204,12 @@ final class RoomSessionCoordinator {
         }
         let busy = sync.pending.count + sync.inbox.count
         if busy > 0 { return .init(level: .syncing, label: "Room: \(busy) to sync", detail: counts) }
+        if !skippedRemote.isEmpty {
+            return .init(level: .diverged, label: "Room: copies differ", detail: counts)
+        }
+        if unsharedLocalCount > 0 {
+            return .init(level: .diverged, label: "Room: local changes not shared", detail: counts)
+        }
         return .init(level: .synced, label: "Room: in sync", detail: counts)
     }
 

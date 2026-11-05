@@ -200,7 +200,7 @@ class DraftPreviewTests(unittest.TestCase):
         published = self.store.publish(self.movie, self.digest)
         upload = dp.draft_upload_id(self.digest)
         registrar = ReviewRegistrar("https://backend.example.test", "service-key", self.root, "terms-v1",
-                                    self.store.signer(self.links))
+                                    self.store.signer(self.links), publishable_key="publishable-key")
         permit = str(uuid.uuid4())
         sent = []
 

@@ -5,20 +5,20 @@ from pathlib import Path
 import urllib.error
 import urllib.parse
 import urllib.request
-from .auth import NoRedirect
+from .auth import NoRedirect, _backend_base
 from .store import IntakeError, identifier
 
 
 class ReviewRegistrar:
     def __init__(self, backend_url: str, service_key: str, artifact_root: Path,
-                 consent_version: str, create_private_preview):
-        parsed = urllib.parse.urlsplit(backend_url)
-        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or
-                parsed.query or parsed.fragment or parsed.path not in ("", "/") or parsed.port not in (None,443)):
-            raise ValueError("Configure the authorized HTTPS application backend.")
+                 consent_version: str, create_private_preview, *, publishable_key: str):
+        backend = _backend_base(backend_url)
         if not service_key or not all(32 < ord(c) < 127 for c in service_key) or not consent_version:
             raise ValueError("Server credential and current consent version required.")
-        self.base=backend_url.rstrip("/"); self.key=service_key
+        if (not isinstance(publishable_key, str) or not publishable_key or publishable_key == service_key or
+                not all(32 < ord(c) < 127 for c in publishable_key)):
+            raise ValueError("An explicit separate application API key is required.")
+        self.base=backend; self.key=service_key; self.api_key=publishable_key
         self.root=Path(artifact_root).resolve(strict=True)
         self.consent_version=consent_version
         self.preview=create_private_preview
@@ -44,7 +44,7 @@ class ReviewRegistrar:
                  "preview_url":url,"expires_at":expiry.isoformat(),
                  "artifact_expires_at":datetime.fromtimestamp(artifact_expires,timezone.utc).isoformat()}
         request=urllib.request.Request(self.base+"/rest/v1/rpc/sdi_register_upload",data=json.dumps(payload).encode(),method="POST",
-            headers={"apikey":self.key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
+            headers={"apikey":self.api_key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
         try:
             with urllib.request.build_opener(NoRedirect()).open(request,timeout=20) as response:
                 raw=response.read(4097)
@@ -69,7 +69,7 @@ class ReviewRegistrar:
             raise IntakeError("Invalid source project digest.",422)
         payload={"upload":upload,"review":review,"digest":digest}
         request=urllib.request.Request(self.base+"/rest/v1/rpc/sdi_review_bind_source_digest",data=json.dumps(payload).encode(),method="POST",
-            headers={"apikey":self.key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
+            headers={"apikey":self.api_key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
         try:
             with urllib.request.build_opener(NoRedirect()).open(request,timeout=10) as response:
                 raw=response.read(4097)
@@ -85,7 +85,7 @@ class ReviewRegistrar:
         content-policy consent (consent-versions.sql). Fail closed on any doubt."""
         payload={"subject":owner,"version":version}
         request=urllib.request.Request(self.base+"/rest/v1/rpc/sdi_consent_verify",data=json.dumps(payload).encode(),method="POST",
-            headers={"apikey":self.key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
+            headers={"apikey":self.api_key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
         try:
             with urllib.request.build_opener(NoRedirect()).open(request,timeout=10) as response:
                 raw=response.read(4097)
@@ -102,7 +102,7 @@ class ReviewRegistrar:
         payload = {"upload": identifier(upload), "review": identifier(review) if review else None}
         request = urllib.request.Request(self.base+"/rest/v1/rpc/sdi_retire_upload",
             data=json.dumps(payload).encode(), method="POST",
-            headers={"apikey": self.key, "Authorization": "Bearer "+self.key, "Content-Type": "application/json"})
+            headers={"apikey": self.api_key, "Authorization": "Bearer "+self.key, "Content-Type": "application/json"})
         try:
             with urllib.request.build_opener(NoRedirect()).open(request, timeout=10) as response:
                 raw = response.read(4097)
@@ -115,7 +115,7 @@ class ReviewRegistrar:
     def preview_authority(self, upload: str, owner: str, digest: str):
         payload={"upload":identifier(upload),"creator":identifier(owner),"digest":digest}
         request=urllib.request.Request(self.base+"/rest/v1/rpc/sdi_upload_preview",data=json.dumps(payload).encode(),method="POST",
-            headers={"apikey":self.key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
+            headers={"apikey":self.api_key,"Authorization":"Bearer "+self.key,"Content-Type":"application/json"})
         try:
             with urllib.request.build_opener(NoRedirect()).open(request,timeout=10) as response:
                 raw=response.read(4097)
@@ -139,7 +139,7 @@ class ReviewRegistrar:
             raise IntakeError("Current review authorization required.",401)
         def call(operation, payload, token):
             request=urllib.request.Request(self.base+"/rest/v1/rpc/"+operation,data=json.dumps(payload).encode(),method="POST",
-                headers={"apikey":self.key,"Authorization":token,"Content-Type":"application/json"})
+                headers={"apikey":self.api_key,"Authorization":token,"Content-Type":"application/json"})
             try:
                 with urllib.request.build_opener(NoRedirect()).open(request,timeout=10) as response:
                     raw=response.read(8193)

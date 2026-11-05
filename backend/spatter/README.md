@@ -271,3 +271,58 @@ switches and credential non-disclosure. No sockets, provider or database.
   server usage after a refusal instead.
 * Live integration runs (real provider failures, rate limits, token expiry
   against a deployed project) are deferred. Nothing here claims a deployment.
+
+
+## Explicit HTTP composition (source candidate)
+
+`application.create_application(environment, verify_jwt=..., provider=...)` now
+composes the existing advice handler as a WSGI application. Importing starts no
+listener and performs no network call. Mount it only in the approved private
+host behind the existing gateway. `SDI_SPATTER_URL` is the exact HTTPS endpoint
+also configured as native `SPATTER_BACKEND_URL`; only that host and path accept
+POST, and query strings, alternate routes and other methods are refused.
+The gateway must set the WSGI HTTPS scheme and Host itself; client forwarded
+headers are ignored. The factory requires a valid endpoint to start. Absent
+verifier, provider or required backend settings return 503 `not configured` on
+valid authenticated-shaped requests without authorization, metering or provider
+calls. A missing bearer token returns 401.
+
+The host injects a vetted `verify_jwt` satisfying the contract above and an
+explicitly configured provider. Before metering, the signed subject must match
+`ingestion.auth.AccountAuthorizer`'s live `sdi_upload_identity` result, preserving
+current-session/account restrictions and full non-anonymous identity. Signature,
+audience, issuer and expiry verification must remain enabled in that verifier.
+The existing server-only `SqlMeter` is wired through an allowlisted, size-bounded
+HTTPS POST adapter; it uses `SDI_BACKEND_URL`, `SDI_BACKEND_PUBLISHABLE_KEY` and
+`SDI_BACKEND_SERVICE_KEY_FILE` (absolute, worker-owned private file). Backend URL
+validation and the existing optional `/native-review-api` prefix follow the
+shared AccountAuthorizer. No service credential is accepted from a client.
+Meter requests carry the distinct publishable key as `apikey` and the service
+credential only in `Authorization: Bearer`; equal keys are refused.
+Missing secrets at a configured file or invalid configuration fail construction;
+errors never publish their contents. No provider/model/key is added here.
+
+HTTP requires JSON, an explicit Content-Length of 1..131072 bytes, no transfer
+encoding or content encoding, and the existing message/count/content bounds.
+Duplicate JSON keys, non-finite numbers, unknown fields (including commands),
+extra message fields, and out-of-bound `max_tokens` (1..500) or `temperature`
+(0..1) are refused before metering/provider calls. These generation fields
+remain advice-contract inputs; the existing handler/provider interface controls
+actual generation settings. The adapter returns bounded JSON with no-store and
+nosniff; it exposes no shell, admin, Studio executor, publication or message
+endpoint. Existing typed Studio commands and exact-render approval remain in
+their established paths. `SDI_SPATTER_CONCURRENCY` defaults to 2 (range 1..4),
+with immediate 503 when capacity is occupied and no application request queue.
+
+Runtime integration remains required: approved HTTPS/gateway route, WSGI host
+(e.g. the existing proposed Gunicorn runtime), trusted proxy scheme/host setup,
+request read/wall-clock limits and rate limits, log redaction, verifier and
+provider configuration, approved allowance/global ceiling and private secrets.
+The meter adapter has no retries or redirects and caps response bytes; its
+urllib timeout is an I/O timeout, not an absolute DNS/body wall deadline. The
+shared authorizer has its existing timeout behavior. WSGI provides no portable
+client-disconnect/cancellation signal: once a synchronous completion begins,
+a cancelled client may leave it running and metered. Existing provider-router
+thread timeouts do not kill an in-flight provider call. Deployment must account
+for these limits; this source change claims no cancellation, live integration,
+provider acceptance, training, publication or deployment verification.
