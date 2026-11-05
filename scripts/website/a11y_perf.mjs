@@ -578,24 +578,45 @@ async function main() {
     const adminStatic = await (async () => { await nojsPage.goto(base + 'admin.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The command center is not configured' }); })();
     record('admin shell states "not configured" without JavaScript', adminStatic, '', 'admin.html@390x844 no-js');
     await nojs.close();
-    // Admin shell with JavaScript and the repository's null configuration: sign-in stays hidden, nothing is requested.
+    // Check the actual shipped configuration. The same-origin gateway must refuse this HTTP-only test origin.
     const adminContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const adminPage = await adminContext.newPage();
     const adminRequests = [];
     adminPage.on('request', (request) => adminRequests.push(request.url()));
     await adminPage.goto(base + 'admin.html', { waitUntil: 'load' });
-    const adminState = await adminPage.evaluate(() => ({ configured: window.SDI_ADMIN_CONFIG !== null && window.SDI_ADMIN_CONFIG !== undefined, signinHidden: document.getElementById('admin-signin').hidden, consoleHidden: document.getElementById('admin-console').hidden, title: document.getElementById('admin-status-title').textContent }));
+    const adminState = await adminPage.evaluate(() => ({ configured: window.SDI_ADMIN_CONFIG !== null && window.SDI_ADMIN_CONFIG !== undefined, transport: window.SDI_ADMIN_CONFIG?.transport, secureOrigin: location.protocol === 'https:', signinHidden: document.getElementById('admin-signin').hidden, consoleHidden: document.getElementById('admin-console').hidden, title: document.getElementById('admin-status-title').textContent }));
     const sameOrigin = adminRequests.every((url) => url.startsWith(base));
     // Unconfigured: nothing dynamic. Configured (admin-config.js holds the public backend origin and
     // publishable key): the sign-in form shows, the console stays hidden until the server verifies a
     // session, and loading the page still sends nothing anywhere.
-    if (adminState.configured) {
+    if (adminState.configured && adminState.transport === 'same-origin-gateway' && !adminState.secureOrigin) {
+      record('admin shell refuses credential entry on an insecure same-origin gateway', adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('configuration is present but invalid'), JSON.stringify(adminState), 'admin.html@390x844 HTTP');
+    } else if (adminState.configured) {
       record('admin shell shows sign-in and keeps the console hidden before a verified session', !adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('not signed in'), JSON.stringify(adminState), 'admin.html@390x844');
     } else {
       record('admin shell keeps sign-in and console hidden with null configuration', adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('not configured'), JSON.stringify(adminState), 'admin.html@390x844');
     }
     record('admin shell requests only its own files on load', sameOrigin, `${adminRequests.length} requests`, 'admin.html@390x844');
     await adminContext.close();
+    // Retain the configured HTTPS sign-in contract independently of the HTTP
+    // refusal above. This public-key fixture never contacts its dummy backend.
+    const configuredAdmin = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const configuredPage = await configuredAdmin.newPage();
+    const configuredRequests = [];
+    configuredPage.on('request', (request) => configuredRequests.push(request.url()));
+    await configuredPage.route('**/admin-config.js', (route) => route.fulfill({
+      contentType: 'application/javascript',
+      body: 'window.SDI_ADMIN_CONFIG = { backendURL: "https://admin-auth.example.invalid", publishableKey: "sdi_public_fixture_no_server_privileges" };'
+    }));
+    await configuredPage.goto(base + 'admin.html', { waitUntil: 'load' });
+    const configuredState = await configuredPage.evaluate(() => ({
+      signinHidden: document.getElementById('admin-signin').hidden,
+      consoleHidden: document.getElementById('admin-console').hidden,
+      title: document.getElementById('admin-status-title').textContent
+    }));
+    record('admin configured HTTPS client shows sign-in and protects the console', !configuredState.signinHidden && configuredState.consoleHidden && configuredState.title.includes('not signed in'), JSON.stringify(configuredState), 'admin.html@390x844 HTTPS-config fixture');
+    record('admin HTTPS configuration sends no backend request before sign-in', configuredRequests.every((url) => url.startsWith(base)), `${configuredRequests.length} requests`, 'admin.html@390x844 HTTPS-config fixture');
+    await configuredAdmin.close();
     // file:// smoke: the help center must render from the embedded help-data.js without fetch().
     const local = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const localPage = await local.newPage();
