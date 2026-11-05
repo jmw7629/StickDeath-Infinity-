@@ -281,24 +281,67 @@ class Guard:
         now = time.monotonic()
         if now - self.last_size_check < 20:
             return
-        total = count = allocated = 0
+        total = count = allocated = charged = allocated_charge = 0
+        sparse_count = sparse_logical = sparse_allocated = 0
         self.observation.update(scratchScanComplete=False, scratchScanStartedSeconds=round(now - self.started, 6),
                                 scratchLogicalByteLimit=16 * GIB, scratchEntryLimit=250_000,
-                                scratchEntries=0, scratchLogicalBytes=0, scratchAllocatedBytes=0)
+                                scratchChargedByteLimit=16 * GIB, scratchAllocatedByteLimit=16 * GIB,
+                                scratchSparseSDKStatCacheLogicalByteLimit=64 * GIB,
+                                scratchSparseSDKStatCacheFileLimit=2,
+                                scratchEntries=0, scratchLogicalBytes=0, scratchAllocatedBytes=0,
+                                scratchChargedBytes=0, scratchAllocatedChargeBytes=0,
+                                scratchSparseSDKStatCacheCount=0, scratchSparseSDKStatCacheLogicalBytes=0,
+                                scratchSparseSDKStatCacheAllocatedBytes=0,
+                                scratchLastRelativeEntry=None, scratchOffendingRelativeEntry=None)
         for directory, folders, files in os.walk(self.scratch, followlinks=False):
             for name in folders + files:
+                entry = Path(directory) / name
                 try:
-                    s = (Path(directory) / name).lstat()
+                    s = entry.lstat()
                 except FileNotFoundError:
                     continue  # A compiler may remove its own transient output.
+                relative = entry.relative_to(self.scratch).as_posix()
                 count += 1
                 if stat.S_ISREG(s.st_mode):
                     total += s.st_size
                     blocks = getattr(s, "st_blocks", None)
-                    allocated = allocated + blocks * 512 if allocated is not None and blocks is not None else None
+                    file_allocated = blocks * 512 if type(blocks) is int and blocks >= 0 else None
+                    allocated = allocated + file_allocated if allocated is not None and file_allocated is not None else None
+                    allocated_charge += s.st_size if file_allocated is None else file_allocated
+                    # Only this owned, single-link Apple device SDK cache may
+                    # charge sparse allocation instead of its logical extent.
+                    sparse_sdk = (type(s.st_size) is int and s.st_size > 0
+                                  and file_allocated is not None and file_allocated < s.st_size
+                                  and getattr(s, "st_uid", None) == os.getuid()
+                                  and getattr(s, "st_nlink", None) == 1
+                                  and re.fullmatch(
+                                      r"DerivedData/SDKStatCaches\.noindex/iphoneos[0-9]+(?:\.[0-9]+){0,2}-"
+                                      r"[0-9]+[A-Za-z][0-9]+[a-z]?-[0-9a-f]{64}\.sdkstatcache", relative) is not None)
+                    if sparse_sdk:
+                        try:
+                            sparse_sdk = all(stat.S_ISDIR(parent.lstat().st_mode) for parent in
+                                             (self.scratch, entry.parent.parent, entry.parent))
+                        except FileNotFoundError:
+                            sparse_sdk = False
+                    if sparse_sdk:
+                        sparse_count += 1
+                        sparse_logical += s.st_size
+                        sparse_allocated += file_allocated
+                        charged += file_allocated
+                    else:
+                        charged += s.st_size
                 self.observation.update(scratchEntries=count, scratchLogicalBytes=total,
-                                        scratchAllocatedBytes=allocated)
-                if total > 16 * GIB or count > 250_000:
+                                        scratchAllocatedBytes=allocated, scratchChargedBytes=charged,
+                                        scratchAllocatedChargeBytes=allocated_charge,
+                                        scratchSparseSDKStatCacheCount=sparse_count,
+                                        scratchSparseSDKStatCacheLogicalBytes=sparse_logical,
+                                        scratchSparseSDKStatCacheAllocatedBytes=sparse_allocated,
+                                        scratchLastRelativeEntry=relative)
+                if sparse_count > 2 or sparse_logical > 64 * GIB:
+                    self.observation["scratchOffendingRelativeEntry"] = relative
+                    raise RuntimeError("Owned CI sparse SDK stat-cache exceeded its exception bound")
+                if charged > 16 * GIB or allocated_charge > 16 * GIB or count > 250_000:
+                    self.observation["scratchOffendingRelativeEntry"] = relative
                     raise RuntimeError("Owned CI build scratch exceeded its disk or entry bound")
         self.observation["scratchScanComplete"] = True
         self.last_size_check = now
