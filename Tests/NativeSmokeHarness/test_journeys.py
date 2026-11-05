@@ -11,6 +11,11 @@ import test_budget  # noqa: E402
 SHA = 'a' * 40
 BINDING = {'sourceCommit': SHA, 'runID': '7', 'runAttempt': '1'}
 INVENTORY = journey.suite_inventory()
+UI_SOURCE = (ROOT / journey.SUITES['ui'][0]).read_text()
+UI_COMMAND = ['xcodebuild', 'test-without-building', journey.selector('ui'),
+              '-test-timeouts-enabled', 'YES', '-default-test-execution-time-allowance', '180',
+              '-maximum-test-execution-time-allowance', '300', '-parallel-testing-enabled', 'NO',
+              '-maximum-concurrent-test-simulator-destinations', '1']
 
 
 def tree(cls, names, result='Passed', bundle='UI test bundle'):
@@ -48,6 +53,44 @@ class JourneyReceiptTests(unittest.TestCase):
         self.assertEqual(journey.selector('ui'), '-only-testing:StickDeathInfinityUITests/JourneyUITests')
         self.assertEqual(journey.selector('service'), '-only-testing:StickDeathInfinityAuthTests/ServiceJourneyTests')
 
+    def test_audio_only_budget_preserves_other_journeys_and_service_limits(self):
+        self.assertEqual(journey.ui_test_budget(UI_SOURCE, UI_COMMAND), 1320)
+        self.assertEqual(journey.PER_CASE_SECONDS, 180)
+        self.assertEqual(journey.EXTENDED_CASE_SECONDS,
+                         {'testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable': 300})
+        self.assertEqual(journey.service_timeout_seconds(len(INVENTORY['service'])), 660)
+        self.assertEqual(journey.SERVICE_CASE_SECONDS, 60)
+
+    def test_other_names_missing_or_unbounded_allowances_reject(self):
+        other = 'testAdaptiveStudioCanvasToolbarAndFrameTimelineInBothOrientations'
+        changed_sources = [
+            UI_SOURCE.replace(other + '() throws {\n        executionTimeAllowance = 180',
+                              other + '() throws {\n        executionTimeAllowance = 300'),
+            UI_SOURCE.replace('testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable', 'testDifferentAudioJourney'),
+            UI_SOURCE.replace('executionTimeAllowance = 180\n', '', 1),
+            UI_SOURCE.replace('executionTimeAllowance = 300', 'executionTimeAllowance = 300\n        executionTimeAllowance = 600'),
+        ]
+        for value in ('0', '301', '600', 'Double.infinity', '180 + 120', 'TimeInterval.greatestFiniteMagnitude'):
+            changed_sources.append(UI_SOURCE.replace('executionTimeAllowance = 300', 'executionTimeAllowance = ' + value))
+        for index, source in enumerate(changed_sources):
+            with self.subTest(case=index), self.assertRaises(ValueError):
+                journey.ui_test_budget(source, UI_COMMAND)
+
+    def test_ui_budget_rejects_case_filters_retries_or_changed_command_bounds(self):
+        for extra in ('-only-testing:StickDeathInfinityUITests/JourneyUITests/testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable',
+                      '-skip-testing:StickDeathInfinityUITests/JourneyUITests', '-test-iterations',
+                      '-retry-tests-on-failure', '-run-tests-until-failure', '-maximum-test-iterations=2',
+                      journey.selector('ui'), '-maximum-test-execution-time-allowance=0'):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                journey.ui_test_budget(UI_SOURCE, UI_COMMAND + [extra])
+        for flag, values in (('-test-timeouts-enabled', ('NO',)),
+                             ('-default-test-execution-time-allowance', ('0', '300')),
+                             ('-maximum-test-execution-time-allowance', ('0', '301', '600'))):
+            for value in values:
+                changed = UI_COMMAND.copy(); changed[changed.index(flag) + 1] = value
+                with self.subTest(flag=flag, value=value), self.assertRaises(ValueError):
+                    journey.ui_test_budget(UI_SOURCE, changed)
+
     def test_complete_passing_receipts_aggregate(self):
         result = journey.aggregate(receipts(), BINDING, INVENTORY, {'native-ios-journeys': 'success'})
         self.assertTrue(result['passed'])
@@ -59,6 +102,7 @@ class JourneyReceiptTests(unittest.TestCase):
         cases = [values[:1], values + [values[1]], []]
         failed = copy.deepcopy(values); failed[0]['passed'] = False; cases.append(failed)
         foreign = copy.deepcopy(values); foreign[1]['sourceCommit'] = 'b' * 40; cases.append(foreign)
+        retried = copy.deepcopy(values); retried[1]['runAttempt'] = '2'; cases.append(retried)
         stale = copy.deepcopy(values); stale[1]['suites'][0]['expected'] = INVENTORY['ui'][:-1]; cases.append(stale)
         missing = copy.deepcopy(values); missing[0]['suites'] = missing[0]['suites'][:1]; cases.append(missing)
         for index, value in enumerate(cases):
@@ -91,7 +135,7 @@ class JourneyReceiptTests(unittest.TestCase):
         self.assertIn('      max-parallel: 1', job)
         self.assertIn('journey_receipt.py aggregate', aggregate)
         self.assertIn('native-journey-receipt-$SDI_EXPECTED_HEAD-$GITHUB_RUN_ATTEMPT-*', aggregate)
-        ui = journey.ui_timeout_seconds(len(INVENTORY['ui']))
+        ui = journey.ui_timeout_seconds(INVENTORY['ui'])
         service = journey.service_timeout_seconds(len(INVENTORY['service']))
         for device, minutes in (('iphone', -(-(25 * 60 + ui + service) // 60)), ('ipad', -(-(25 * 60 + ui) // 60))):
             self.assertIn(f'          - device: {device}\n            timeout: {minutes}\n', job)

@@ -3135,13 +3135,13 @@ jobs:
       max-parallel: 1
       matrix:
         include:
-          # 25 min build + 5 UI journeys x 180 s + 300 s, plus 6 hosted
+          # 25 min build + 4 UI journeys x 180 s + audio 300 s + 300 s, plus 6 hosted
           # service journeys x 60 s + 300 s on the phone only.
           # Tests/NativeSmokeHarness/test_journeys.py derives these ceilings.
           - device: iphone
-            timeout: 56
+            timeout: 58
           - device: ipad
-            timeout: 45
+            timeout: 47
     timeout-minutes: ${{ matrix.timeout }}
     env:
       SDI_JOURNEY_DEVICE: ${{ matrix.device }}

@@ -29,6 +29,7 @@ final class JourneyUITests: XCTestCase {
 
     @MainActor
     func testAdaptiveStudioCanvasToolbarAndFrameTimelineInBothOrientations() throws {
+        executionTimeAllowance = 180
         let app = try launchGuestStudio(); defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         try createProject(app)
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
@@ -50,6 +51,9 @@ final class JourneyUITests: XCTestCase {
 
     @MainActor
     func testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable() throws {
+        // iOS 26.2 CI spent ~87s establishing automation and reached the
+        // landscape capture at 197s; retain both orientations within 300s.
+        executionTimeAllowance = 300
         let app = try launchGuestStudio(); defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         try createProject(app)
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
@@ -86,6 +90,7 @@ final class JourneyUITests: XCTestCase {
 
     @MainActor
     func testAdaptiveOptionsPopoverStaysInsideWindowAndDismisses() throws {
+        executionTimeAllowance = 180
         let app = try launchGuestStudio(); defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         try createProject(app)
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
@@ -110,6 +115,7 @@ final class JourneyUITests: XCTestCase {
 
     @MainActor
     func testGuestFeedRoomsAndWarRoomShowTruthfulUnconfiguredStates() throws {
+        executionTimeAllowance = 180
         let app = try launchAtWelcome(); defer { app.terminate() }
         try tapWelcomeAction("welcome.guest", in: app)
         try waitForButton("Skip Tutorial", in: app).tap()
@@ -137,6 +143,7 @@ final class JourneyUITests: XCTestCase {
 
     @MainActor
     func testGuidePolicyStepIsTruthfulWithoutServicesAndNeverBlocksStudio() throws {
+        executionTimeAllowance = 180
         let app = try launchAtWelcome(); defer { app.terminate() }
         try tapWelcomeAction("welcome.guide", in: app)
         XCTAssertTrue(app.staticTexts["onboarding.position"].waitForExistence(timeout: 5))

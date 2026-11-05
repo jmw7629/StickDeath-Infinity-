@@ -94,13 +94,14 @@ def main():
         prepared = profiles[0].with_name("SDI-Journey-" + evidence.name.replace(".", "-") + ".xctestrun")
         metadata = prepare(profiles[0], prepared, commit)
         (evidence / "source-and-config.json").write_text(json.dumps(metadata, indent=2) + "\n")
-        ui_exit = run(["xcodebuild", "test-without-building", "-xctestrun", str(prepared), "-destination", destination,
+        ui_command = ["xcodebuild", "test-without-building", "-xctestrun", str(prepared), "-destination", destination,
                        journey_receipt.selector("ui"), "-resultBundlePath", str(ui_result),
                        "-parallel-testing-enabled", "NO", "-maximum-concurrent-test-simulator-destinations", "1",
                        "-test-timeouts-enabled", "YES",
                        "-default-test-execution-time-allowance", str(journey_receipt.PER_CASE_SECONDS),
-                       "-maximum-test-execution-time-allowance", str(journey_receipt.MAXIMUM_CASE_SECONDS)],
-                      evidence / "journey-ui.log", journey_receipt.ui_timeout_seconds(len(inventory["ui"])))
+                       "-maximum-test-execution-time-allowance", str(journey_receipt.MAXIMUM_CASE_SECONDS)]
+        ui_timeout = journey_receipt.ui_test_budget((journey_receipt.ROOT / journey_receipt.SUITES["ui"][0]).read_text(), ui_command)
+        ui_exit = run(ui_command, evidence / "journey-ui.log", ui_timeout)
     tree, summary = export(ui_result, evidence, "journey-ui") if ui_result.exists() else ({}, {})
     if ui_result.exists():
         run(["xcrun", "xcresulttool", "export", "attachments", "--path", str(ui_result),
