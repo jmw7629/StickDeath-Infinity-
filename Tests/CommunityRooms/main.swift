@@ -41,6 +41,13 @@ private final class HeldRoomTransport: CommunityTransport, @unchecked Sendable {
     private var callCount = 0
     private var reply: CheckedContinuation<CommunityReply, Error>?
     private var requested = false
+    private let heldEvents: AsyncStream<Void>
+    private let heldEvent: AsyncStream<Void>.Continuation
+    init() {
+        var installed: AsyncStream<Void>.Continuation?
+        heldEvents = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { installed = $0 }
+        heldEvent = installed!
+    }
     var calls: Int {
         lock.lock(); defer { lock.unlock() }
         return callCount
@@ -59,14 +66,33 @@ private final class HeldRoomTransport: CommunityTransport, @unchecked Sendable {
         try beginRequest()
         return try await withCheckedThrowingContinuation { continuation in
             lock.lock(); reply = continuation; lock.unlock()
+            // Publish readiness only after the real RPC reply is suspended.
+            heldEvent.yield(())
+            heldEvent.finish()
         }
     }
     func rows(_ table: String, select: String, filters: [CommunityRowFilter], limit: Int) async throws -> CommunityReply {
         throw Failure(description: "Unexpected held transport row request")
     }
     func waitUntilHeld() async throws {
-        for _ in 0..<100 { if isHeld { return }; await Task.yield() }
-        throw Failure(description: "Production RoomsClient RPC did not suspend")
+        // Task.yield() does not promise that another executor has run. Wait for
+        // the actual RPC signal, bounded independently of scheduler iteration count.
+        let events = heldEvents
+        let signalled = try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                var iterator = events.makeAsyncIterator()
+                return await iterator.next() != nil
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                return false
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? false
+        }
+        guard signalled && isHeld else {
+            throw Failure(description: "Production RoomsClient RPC did not suspend")
+        }
     }
     func release(_ result: Result<String, Error>) {
         lock.lock(); let continuation = reply; reply = nil; lock.unlock()
