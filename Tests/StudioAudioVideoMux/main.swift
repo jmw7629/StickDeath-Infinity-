@@ -83,6 +83,7 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(silence < 0.0005, "real leading and trailing silence")
             let disk = try JSONDecoder().decode(StudioAudioVideoMuxService.Receipt.self, from: Data(contentsOf: urls[1]))
             try require(disk.sha256 == SHA256.hash(data: Data(contentsOf: urls[0])).map { String(format: "%02x", $0) }.joined(), "actual receipt hashes completed file")
+            retainGeneratedMediaFixture(movie: urls[0], manifest: urls[1], receipt: disk)
             try output.cleanup(); try output.cleanup(); try empty(p); try inputsIntact()
         }
         try await run("held cels preserve variable frame timing and full mixed audio duration") {
@@ -433,6 +434,89 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         }
         try inputsIntact(); try movie.cleanup(); try audio.cleanup(); try empty(videoParent); try empty(audioParent)
         print("STUDIO_AUDIO_VIDEO_MUX_TESTS=PASS \(passed)/\(passed)")
+    }
+
+    /// Opt-in evidence copy of this test's already decoded, original generated
+    /// media. Retention failure is diagnostic and never changes test acceptance.
+    static func retainGeneratedMediaFixture(movie: URL, manifest: URL, receipt: StudioAudioVideoMuxService.Receipt) {
+        let env = ProcessInfo.processInfo.environment
+        guard env["SDI_RETAIN_NATIVE_MEDIA_FIXTURE"] == "1" else { return }
+        enum RetentionError: Error { case invalidEnvironment, invalidFixture, sizeLimit }
+        do {
+            let fm = FileManager.default, maximumBytes = 1024 * 1024
+            func valid(_ value: String, alphabet: String) -> Bool {
+                !value.isEmpty && value.utf8.allSatisfy { alphabet.utf8.contains($0) }
+            }
+            guard env["GITHUB_ACTIONS"] == "true", let temporary = env["RUNNER_TEMP"],
+                  let runID = env["GITHUB_RUN_ID"], valid(runID, alphabet: "0123456789"),
+                  let attempt = env["GITHUB_RUN_ATTEMPT"], valid(attempt, alphabet: "0123456789"),
+                  let commit = env["SDI_NATIVE_MEDIA_SOURCE_COMMIT"], commit.count == 40,
+                  valid(commit, alphabet: "0123456789abcdef") else { throw RetentionError.invalidEnvironment }
+            let root = URL(fileURLWithPath: temporary, isDirectory: true).standardizedFileURL
+            let info = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard temporary.hasPrefix("/"), info.isDirectory == true, info.isSymbolicLink == false,
+                  root == root.resolvingSymlinksInPath() else { throw RetentionError.invalidEnvironment }
+            func boundedData(_ url: URL, maximum: Int) throws -> Data {
+                let info = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard info.isRegularFile == true, info.isSymbolicLink == false else { throw RetentionError.invalidFixture }
+                let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
+                let data = try handle.read(upToCount: maximum + 1) ?? Data()
+                guard !data.isEmpty, data.count <= maximum,
+                      (try handle.read(upToCount: 1) ?? Data()).isEmpty else { throw RetentionError.sizeLimit }
+                return data
+            }
+            func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+            let movieData = try boundedData(movie, maximum: maximumBytes)
+            let manifestData = try boundedData(manifest, maximum: 128 * 1024)
+            guard receipt.videoCodec == "H.264 passthrough", receipt.audioCodec == "AAC",
+                  receipt.width == 64, receipt.height == 32, receipt.videoFrames == 12,
+                  receipt.audioSampleRate == 48_000, receipt.audioChannels == 2, receipt.decodedAudioFrames == 48_000,
+                  receipt.durationNumerator == 12, receipt.durationDenominator == 12,
+                  receipt.encodedBytes == movieData.count, receipt.sha256 == digest(movieData),
+                  receipt.soundCredits == nil, receipt.imageCredits?.isEmpty != false else { throw RetentionError.invalidFixture }
+            let sourceRoot = URL(fileURLWithPath: fm.currentDirectoryPath, isDirectory: true)
+            let sourcePaths = ["Tests/StudioAudioVideoMux/main.swift",
+                "StickDeathInfinity/Services/StudioMovieExportService.swift",
+                "StickDeathInfinity/Services/StudioAudioVideoMuxService.swift",
+                "StickDeathInfinity/Services/StudioAudioMixService.swift",
+                "StickDeathInfinity/Services/StudioMuxCapture.swift",
+                "StickDeathInfinity/Services/StudioMuxOwnership.swift",
+                "StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift"]
+            var sourceHashes: [String: String] = [:]
+            for path in sourcePaths { sourceHashes[path] = digest(try boundedData(sourceRoot.appendingPathComponent(path), maximum: maximumBytes)) }
+            let provenance: [String: Any] = [
+                "version": 1, "sourceCommit": commit, "sourceSHA256": sourceHashes,
+                "githubRunID": runID, "githubRunAttempt": attempt,
+                "test": "same immutable capture actual H264 and AAC decode pixels stereo timing volume and silence",
+                "checksCompletedBeforeCopy": ["decoded video pixels and frame timing", "decoded stereo PCM count frequency phase gain and silence", "production manifest movie SHA256"],
+                "suiteAcceptance": "unchanged; artifact upload requires the existing mux test process to succeed",
+                "rights": "Original test-generated red/blue vector frames and synthesized 480/960 Hz stereo tones; no imported, user or historical assets",
+                "movie": ["filename": "h264-aac.mp4", "sha256": receipt.sha256, "bytes": movieData.count,
+                    "videoCodec": receipt.videoCodec, "audioCodec": receipt.audioCodec, "width": receipt.width, "height": receipt.height,
+                    "videoFrames": receipt.videoFrames, "audioSampleRate": receipt.audioSampleRate, "audioChannels": receipt.audioChannels,
+                    "decodedAudioFrames": receipt.decodedAudioFrames, "durationNumerator": receipt.durationNumerator, "durationDenominator": receipt.durationDenominator],
+                "exportManifest": ["filename": "export-manifest.json", "sha256": digest(manifestData), "bytes": manifestData.count],
+                "maximumTotalBytes": maximumBytes, "retentionDays": 1]
+            let provenanceData = try JSONSerialization.data(withJSONObject: provenance, options: [.prettyPrinted, .sortedKeys])
+            guard provenanceData.count <= 64 * 1024,
+                  movieData.count + manifestData.count + provenanceData.count <= maximumBytes else { throw RetentionError.sizeLimit }
+            let name = "sdi-native-media-fixture-\(runID)-\(attempt)"
+            let destination = root.appendingPathComponent(name, isDirectory: true)
+            let staging = root.appendingPathComponent(".\(name)-\(UUID().uuidString).partial", isDirectory: true)
+            // Exclusive creation and atomic publication prevent stale/partial
+            // folders from being mistaken for a complete positive fixture.
+            try fm.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            for (name, data) in [("h264-aac.mp4", movieData), ("export-manifest.json", manifestData), ("fixture-provenance.json", provenanceData)] {
+                let url = staging.appendingPathComponent(name)
+                try data.write(to: url, options: .withoutOverwriting)
+                try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
+            try fm.moveItem(at: staging, to: destination)
+            print("NATIVE_MEDIA_FIXTURE=RETAINED codec=H264+AAC bytes=\(movieData.count) sha256=\(receipt.sha256)")
+        } catch {
+            let reason = (error as? RetentionError).map { String(describing: $0) } ?? String(describing: type(of: error))
+            print("NATIVE_MEDIA_FIXTURE=UNAVAILABLE reason=\(reason); existing test acceptance and cleanup remain unchanged")
+        }
     }
 
     /// Test-owned control, never an application export path. Both tracks are

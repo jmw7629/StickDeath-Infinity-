@@ -9,8 +9,6 @@ struct WelcomeView: View {
     let onGuide: () -> Void
     let accountUnavailable: Bool
     let isAuthenticated: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var backgroundDrift = false
     @AppStorage("sdi.guide.completed.v1") private var guideCompleted = false
 
     private let features: [(icon: String, title: String, detail: String)] = [
@@ -24,12 +22,7 @@ struct WelcomeView: View {
         GeometryReader { geometry in
             ZStack {
                 Color.sdBackground.ignoresSafeArea()
-                Circle()
-                    .fill(Color.sdRed.opacity(0.07))
-                    .frame(width: 300, height: 300)
-                    .blur(radius: 50)
-                    .offset(x: backgroundDrift ? 35 : -35, y: -80)
-                    .accessibilityHidden(true)
+                WelcomeBackgroundGlow()
                 ScrollView {
                     VStack(spacing: 24) {
                         Spacer(minLength: 0)
@@ -123,13 +116,28 @@ struct WelcomeView: View {
             }
         }
         .buttonStyle(.plain)
-        .task(id: reduceMotion) {
-            backgroundDrift = false
-            guard !reduceMotion else { return }
-            // SwiftUI owns this animation. No repeating timer survives dismissal.
-            withAnimation(.easeInOut(duration: 12).repeatForever(autoreverses: true)) {
+    }
+}
+
+/// Owns the decorative drift without animating the foreground content.
+private struct WelcomeBackgroundGlow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var backgroundDrift = false
+
+    var body: some View {
+        Circle()
+            .fill(Color.sdRed.opacity(0.07))
+            .frame(width: 300, height: 300)
+            .blur(radius: 50)
+            .offset(x: backgroundDrift ? 35 : -35, y: -80)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 12).repeatForever(autoreverses: true),
+                       value: backgroundDrift)
+            .accessibilityHidden(true)
+            .task(id: reduceMotion) {
+                backgroundDrift = false
+                guard !reduceMotion else { return }
+                // SwiftUI owns this animation. No repeating timer survives dismissal.
                 backgroundDrift = true
             }
-        }
     }
 }

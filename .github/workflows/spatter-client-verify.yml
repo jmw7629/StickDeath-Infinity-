@@ -2355,6 +2355,10 @@ jobs:
           rm -rf "$work"
           python3 scripts/backend/verify_draft_renderer_cli.py "$RUNNER_TEMP/sdi-spatter-draft-renderer" "$work"
       - name: Verify same-capture H.264 AAC timing pixels and ownership
+        id: native-audio-video-mux
+        env:
+          SDI_RETAIN_NATIVE_MEDIA_FIXTURE: '1'
+          SDI_NATIVE_MEDIA_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2403,6 +2407,18 @@ jobs:
             StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
             -o "$RUNNER_TEMP/sdi-StudioAudioVideoMux-tests"
           "$RUNNER_TEMP/sdi-StudioAudioVideoMux-tests"
+      - name: Preserve original generated H.264 AAC decoder fixture
+        if: ${{ !cancelled() && steps.native-audio-video-mux.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-generated-media-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sdi-native-media-fixture-${{ github.run_id }}-${{ github.run_attempt }}/h264-aac.mp4
+            ${{ runner.temp }}/sdi-native-media-fixture-${{ github.run_id }}-${{ github.run_attempt }}/export-manifest.json
+            ${{ runner.temp }}/sdi-native-media-fixture-${{ github.run_id }}-${{ github.run_attempt }}/fixture-provenance.json
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Verify mixed MP4 phases cancellation source trim and final cleanup
         shell: bash
         run: |
