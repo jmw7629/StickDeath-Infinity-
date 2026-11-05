@@ -1544,3 +1544,97 @@ struct AdminRenderDecisionRecord: Decodable, Identifiable, Equatable {
 struct AdminReviewHistoryResponse: CommunityResponse {
     let error: String?; let decisions: [AdminRenderDecisionRecord]?
 }
+
+
+// MARK: - Provider-aware room viewing
+
+/// A server-approved room projection. YouTube has no SDI rendition or trusted
+/// duration: it opens the provider's controls independently, never fake shared seek.
+struct WatchRoomMedia: Decodable, Identifiable, Equatable {
+    let id: UUID
+    let title: String
+    let duration: Double?
+    let expires_at: Date?
+    let video_source: CommunityVideoSource
+    var playbackSource: FeedPlaybackSource? {
+        guard let source = video_source.playbackSource else { return nil }
+        switch source {
+        case .rendition: return synchronizedDuration == nil ? nil : source
+        case .youtube: return duration == nil ? source : nil
+        }
+    }
+    var synchronizedDuration: Double? {
+        guard video_source.provider == .rendition, let duration,
+              duration.isFinite, duration > 0, duration <= 3600 else { return nil }
+        return duration
+    }
+    var supportsSharedControls: Bool { synchronizedDuration != nil && video_source.playbackSource?.renditionURL != nil }
+}
+struct WatchRoomPlayback: Decodable, Identifiable, Equatable {
+    let id: UUID
+    let media_id: UUID
+    let position: Double
+    let playing: Bool
+    let revision: Int
+    let updated_at: Date
+    func isValid(for media: WatchRoomMedia) -> Bool {
+        guard media_id == media.id, revision >= 0, position.isFinite,
+              media.playbackSource != nil else { return false }
+        if let duration = media.synchronizedDuration { return position >= 0 && position <= duration }
+        return position == 0 && !playing
+    }
+}
+struct WatchRoomResponse: CommunityResponse {
+    let error: String?
+    let status: String?
+    let media: [WatchRoomMedia]?
+    let video: WatchRoomMedia?
+    let session: WatchRoomPlayback?
+}
+struct WatchRoomRequest: Encodable, Sendable {
+    let action: String
+    let room: UUID
+    var media: UUID? = nil
+    var revision: Int? = nil
+    var position: Double? = nil
+    var playing: Bool? = nil
+}
+
+/// Admits only the latest-issued room refresh. A failed/empty refresh or a
+/// mutation invalidates every outstanding grant; late replies cannot restore a
+/// player. Same-session revisions may advance, but never regress or change the
+/// selected media/state without a new revision. Foundation-only for held-reply
+/// tests; room/account/foreground fencing is also enforced by the view.
+struct WatchPlaybackAdmission {
+    struct Ticket: Equatable {
+        fileprivate let epoch: UUID
+        fileprivate let sequence: UInt64
+    }
+    private var epoch = UUID()
+    private var sequence: UInt64 = 0
+    private var accepted: WatchRoomPlayback?
+    private var source: FeedPlaybackSource?
+    mutating func beginRefresh() -> Ticket {
+        sequence &+= 1
+        return Ticket(epoch: epoch, sequence: sequence)
+    }
+    func isCurrent(_ ticket: Ticket) -> Bool { ticket.epoch == epoch && ticket.sequence == sequence }
+    mutating func invalidatePendingRequests() { sequence &+= 1 }
+    mutating func reset() { self = WatchPlaybackAdmission() }
+    mutating func admit(_ session: WatchRoomPlayback, media: WatchRoomMedia, ticket: Ticket) -> Bool {
+        guard isCurrent(ticket), session.isValid(for: media), let candidate = media.playbackSource else { return false }
+        if let accepted, session.id == accepted.id {
+            guard session.revision >= accepted.revision else { return false }
+            if session.revision == accepted.revision {
+                guard session == accepted && source == candidate else { return false }
+            }
+        }
+        accepted = session; source = candidate
+        return true
+    }
+}
+struct WatchPlaybackGrant {
+    let ticket: WatchPlaybackAdmission.Ticket
+    let session: WatchRoomPlayback
+    let media: WatchRoomMedia
+}

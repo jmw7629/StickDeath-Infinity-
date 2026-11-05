@@ -970,3 +970,6 @@ feed.player.youtube-error,StickDeathInfinity/Views/Home/HomeFeedView.swift,Commu
 feed.player.youtube-open,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityYouTubePlayer,button 'Open on YouTube',n-a,unmapped,deferred
 feed.player.youtube-retry,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityYouTubePlayer,button 'Retry player',n-a,unmapped,deferred
 feed.player.youtube-unconfigured,StickDeathInfinity/Views/Home/HomeFeedView.swift,CommunityYouTubePlayer,text 'The YouTube player is unavailable in this build.',n-a,unmapped,deferred
+watchTogether.open-provider,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button 'Open shared YouTube video',n-a,#296,deferred
+watchTogether.provider-independent,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,text 'The host selected a YouTube video. Each member s',n-a,#296,deferred
+watchTogether.refresh-media,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button 'Refresh approved videos',n-a,#296,deferred

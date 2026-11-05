@@ -67,6 +67,27 @@
 <p id="admin-identity" class="quiet"></p>
 <div class="actions"><button class="button" type="button" id="admin-signout">Sign out</button><button class="button" type="button" id="admin-refresh">Refresh permissions</button></div>
 <div id="admin-panels"></div>
+<h2>Exact-render approvals</h2>
+<p class="quiet">Watch the current private render with audio, then review its rights, consent and destinations. Spatter videos require the owner. Approval records a decision; it does not upload or schedule a video. Changed renders need a new decision.</p>
+<button class="button" type="button" id="admin-review-load">Load pending renders</button>
+<div id="admin-review-queue" class="actions" aria-label="Pending renders"></div>
+<form id="admin-review-form" class="support" novalidate>
+<fieldset id="admin-review-fields" disabled>
+<legend>Selected render</legend>
+<div id="admin-review-metadata"></div>
+<video id="admin-review-video" controls playsinline preload="none" hidden aria-label="Private rendered video"></video>
+<label><input id="admin-review-confirm" type="checkbox"> I watched this exact video with audio and reviewed its rights, consent and destinations.</label>
+<label for="admin-review-note">Decision notes / rights evidence</label>
+<textarea id="admin-review-note" maxlength="4000" rows="3"></textarea>
+<div class="actions">
+<button class="button" type="submit" id="admin-review-approve" data-decision="approved" disabled>Approve exact render</button>
+<button class="button" type="submit" data-decision="changes">Request changes</button>
+<button class="button" type="submit" data-decision="rejected">Reject</button>
+<button class="button" type="button" id="admin-review-rights" disabled>Record rights clearance</button>
+</div>
+</fieldset>
+<div id="admin-review-result" aria-live="polite"></div>
+</form>
 <h2>User directory</h2>
 <p class="quiet">Search by username or account id (users capability). Plan appears only for administrators with the finance capability; feed report counts only with moderation.</p>
 <form id="admin-users-form" class="support" novalidate>
@@ -270,7 +291,7 @@
 <h2>What this shell does and does not do</h2>
 <ul>
 <li>Reads: health and queues, approvals, users, moderation, publishing, support, finance records, agents, announcements, marketing, consent versions, through the existing RPC contracts. Each panel shows the server's answer, including <code>forbidden</code> or <code>step_up_required</code>, verbatim.</li>
-<li>Writes: the emergency stop, owner decisions on agent proposals, agent controls (pause, resume, caps, permissions, instructions and rollback), account actions (note, sign-out, suspend, ban, restore, reset flags), finance records (expense, import, correction, reconciliation), support triage (revision-checked status changes and private staff notes) and announcements (draft, schedule, cancel), each with a required reason and server-side audit. Render approvals, moderation decisions and publishing withdrawals stay in the native Admin, where the exact render is played before a decision.</li>
+<li>Writes: exact-render approval and rights decisions, emergency stop, owner decisions on agent proposals, agent controls, account actions, finance records, support triage and announcements. Decisions bind to the selected server version; sensitive changes require current MFA and server authorization. Moderation decisions and publishing withdrawals also remain available in native Admin.</li>
 <li>Backups, restore drills, releases and retention are shown as reported outcomes only; no control or terminal endpoint exists on this page.</li>
 <li>Sessions live in page memory only; reloading signs you out. Tokens are never written to storage.</li>
 <li>No secrets: the configuration holds the backend origin and the publishable key only. Service keys, provider credentials and host details never reach this page.</li>

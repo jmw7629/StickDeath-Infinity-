@@ -31,7 +31,7 @@ begin
 end $$;
 do $$
 declare creator uuid; viewer uuid; reviewer uuid; owner uuid; review uuid; withdrawn uuid; nonembed uuid; race uuid; spatter uuid;
- y uuid; f uuid; token uuid; media uuid; upload uuid; claimed jsonb; result jsonb; receipt jsonb; before_time timestamptz; visible_count integer; opponent uuid; raw_media uuid; active_match uuid; final_match uuid; war_report uuid;
+ y uuid; f uuid; token uuid; media uuid; upload uuid; claimed jsonb; result jsonb; receipt jsonb; before_time timestamptz; visible_count integer; opponent uuid; raw_media uuid; active_match uuid; final_match uuid; war_report uuid; watch_room uuid; watch_raw uuid;
  d1 text:=repeat('41',32); d2 text:=repeat('42',32); d3 text:=repeat('43',32); d4 text:=repeat('44',32); d5 text:=repeat('45',32);
 begin
  creator:=sdi_test.user('yt-ref-creator');viewer:=sdi_test.user('yt-ref-viewer');
@@ -78,6 +78,68 @@ begin
  result:=sdi_private.feed_page('recent');
  perform sdi_test.check(not (result->'posts'->0->>'allow_export')::boolean,'creator raw-export flag cannot enable provider downloads');
  perform sdi_test.check(sdi_private.feed_action('like',(select id from sdi_private.feed_posts where media_id=media))->>'status'='confirmed','normal authenticated reactions work on reference');
+
+ -- Provider-aware room viewing never widens raw RLS or claims shared YouTube
+ -- timing. These are transactional fixtures, not live provider playback proof.
+ insert into public.sdi_rooms(owner_id,title) values(creator,'Reference room') returning id into watch_room;
+ insert into public.sdi_room_members(room_id,user_id,owner_approved,member_accepted) values(watch_room,viewer,true,true);
+ insert into public.sdi_watch_media(title,url,duration,approved,owner_id,render_digest)
+ values('Watch raw','https://cdn.example.test/watch.mp4',4,true,creator,repeat('50',32)) returning id into watch_raw;
+ perform sdi_test.check(sdi_test.denied('anon',format('select public.sdi_watch_action(''catalog'',%L)',watch_room)), 'anonymous cannot call room projection');
+ execute 'set local role authenticated';
+ result:=public.sdi_watch_action('catalog',watch_room);
+ reset role;
+ perform sdi_test.check(jsonb_array_length(result->'media')=2,'accepted member sees eligible raw and provider choices');
+ perform sdi_test.login(reviewer,'aal2');
+ perform sdi_test.check(sdi_private.watch_action('catalog',watch_room)->>'error' is not null,'administrator cannot bypass room membership');
+ perform sdi_test.login(creator);
+ result:=sdi_private.watch_action('select',watch_room,media);
+ perform sdi_test.check(result->>'status'='confirmed' and result->'video'->'video_source'->>'provider'='youtube'
+  and result->'video'->>'duration' is null and (result->'session'->>'position')::double precision=0
+  and not (result->'session'->>'playing')::boolean,'host shares verified provider choice without invented timing');
+ result:=sdi_private.watch_action('control',watch_room,revision=>0,"position"=>1,playing=>true);
+ perform sdi_test.check(result->>'error' like 'YouTube playback uses independent%', 'provider shared playback is explicitly unavailable');
+ result:=sdi_private.watch_action('select',watch_room,watch_raw,0);
+ perform sdi_test.check(result->>'status'='confirmed' and (result->'session'->>'revision')::bigint=1,'raw selection preserves revision checks');
+ result:=sdi_private.watch_action('control',watch_room,revision=>1,"position"=>2,playing=>true);
+ perform sdi_test.check(result->>'status'='confirmed' and (result->'session'->>'revision')::bigint=2
+  and (result->'session'->>'position')::double precision=2 and (result->'session'->>'playing')::boolean,'raw synchronized controls remain real');
+ perform sdi_test.check(sdi_private.watch_action('control',watch_room,revision=>1,"position"=>0,playing=>false)->>'error' is not null,'stale host controls rejected');
+ perform sdi_test.check(sdi_private.watch_action('control',watch_room,revision=>2,"position"=>'NaN'::double precision,playing=>true)->>'error' is not null,'NaN position rejected');
+ perform sdi_test.check(sdi_private.watch_action('control',watch_room,revision=>2,"position"=>'Infinity'::double precision,playing=>true)->>'error' is not null,'infinite position rejected');
+ perform sdi_test.login(viewer);
+ perform sdi_test.check(sdi_private.watch_action('control',watch_room,revision=>2,"position"=>0,playing=>false)->>'error' is not null,'member cannot control host playback');
+ perform sdi_test.check(sdi_private.watch_action('select',watch_room,media,2)->>'error' is not null,'member cannot replace shared video');
+ perform sdi_test.login(creator);
+ perform sdi_test.check(sdi_private.watch_action('select',watch_room,media,2)->>'status'='confirmed','host returns to provider choice');
+ perform sdi_test.login(viewer);
+ result:=sdi_private.watch_action('status',watch_room);
+ perform sdi_test.check(result->'video'->'video_source'->>'url'=receipt->>'url','member receives only canonical checked provider reference');
+ begin
+  delete from auth.sessions where user_id=viewer;
+  perform sdi_test.check(sdi_private.watch_action('status',watch_room)->>'error' is not null,'room projection requires live session');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ update public.sdi_room_members set revoked=true where room_id=watch_room and user_id=viewer;
+ perform sdi_test.check(sdi_private.watch_action('status',watch_room)->>'error' is not null,'membership revocation ends provider access');
+ update public.sdi_room_members set revoked=false,member_accepted=false where room_id=watch_room and user_id=viewer;
+ perform sdi_test.check(sdi_private.watch_action('catalog',watch_room)->>'error' is not null,'pending member cannot read video catalog');
+ update public.sdi_room_members set member_accepted=true where room_id=watch_room and user_id=viewer;
+ insert into sdi_private.feed_blocks values(viewer,creator);
+ perform sdi_test.check(sdi_private.watch_action('status',watch_room)->>'error' is not null,'blocked creator stops current provider playback');
+ delete from sdi_private.feed_blocks b where b.actor=viewer;
+ begin
+  update public.sdi_watch_media set expires_at=clock_timestamp()-interval '1 second' where id=media;
+  perform sdi_test.check(sdi_private.watch_action('status',watch_room)->>'error' is not null,'provider expiry stops current room item');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ begin
+  update public.sdi_rooms set closed=true where id=watch_room;
+  perform sdi_test.check(sdi_private.watch_action('status',watch_room)->>'error' is not null,'closed room stops viewing');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+
+ update public.sdi_watch_media set approved=false where id=watch_raw;
 
  -- War Room accepts verified metadata through its own projection, while
  -- generic raw REST/Watch Together access and exports remain unchanged.
@@ -184,6 +246,7 @@ begin
  perform sdi_test.check(jsonb_array_length(result->'media')=0,'withdrawn reference leaves owned submission projection immediately');
  perform sdi_test.login(viewer);
  perform sdi_test.check(jsonb_array_length(sdi_private.war_action('list')->'matches')=0,'withdrawal hides matchup before external provider operation');
+ perform sdi_test.check(sdi_private.watch_action('status',watch_room)->>'error' is not null,'channel consent withdrawal stops room reference before external removal');
  perform sdi_test.check(sdi_private.war_action('vote',active_match,choice=>'right')->>'error' is not null,'withdrawal prevents later vote');
  update sdi_private.war_matches set ends_at=clock_timestamp()-interval '1 second' where id=active_match;
  result:=sdi_private.war_finalize();

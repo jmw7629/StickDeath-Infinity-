@@ -101,6 +101,93 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
             catch { failed += 1; print("FAIL \(name): \(error)") }
         }
 
+        await test("Watch Together routes approved renditions to shared controls and provider references to independent controls") {
+            let id = UUID()
+            let raw = WatchRoomMedia(id: id, title: "Approved", duration: 12, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .rendition, url: "https://cdn.example.test/render.mp4"))
+            let youtube = WatchRoomMedia(id: id, title: "Provider", duration: nil, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .youtube, url: "https://www.youtube.com/watch?v=abcdefghijk"))
+            try require(raw.supportsSharedControls && raw.playbackSource?.renditionURL != nil, "raw synchronization preserved")
+            try require(!youtube.supportsSharedControls && youtube.playbackSource?.renditionURL == nil && youtube.playbackSource != nil, "provider reference cannot be downloaded or sought as a raw video")
+            let session = WatchRoomPlayback(id: UUID(), media_id: id, position: 0, playing: false, revision: 1, updated_at: Date())
+            try require(session.isValid(for: raw) && session.isValid(for: youtube), "paused shared choice")
+            let playing = WatchRoomPlayback(id: session.id, media_id: id, position: 1, playing: true, revision: 2, updated_at: Date())
+            try require(playing.isValid(for: raw) && !playing.isValid(for: youtube), "provider cannot fabricate synchronized position")
+        }
+        await test("Watch Together rejects malformed providers, invented duration and nonfinite or mismatched sessions") {
+            let id = UUID()
+            for (provider, url, duration) in [
+                (CommunityVideoSource.Provider.youtube, "https://www.youtube.com/watch?v=abcdefghijk", 5.0),
+                (.rendition, "https://www.youtube.com/watch?v=abcdefghijk", 5.0),
+                (.youtube, "https://cdn.example.test/render.mp4", 5.0),
+                (.rendition, "https://cdn.example.test/render.mp4", Double.infinity),
+                (.rendition, "https://cdn.example.test/render.mp4", -1.0),
+                (.rendition, "https://cdn.example.test/render.mp4", 3601.0)] {
+                let media = WatchRoomMedia(id: id, title: "Invalid", duration: duration, expires_at: nil,
+                    video_source: CommunityVideoSource(provider: provider, url: url))
+                try require(media.playbackSource == nil, "invalid media accepted")
+            }
+            let raw = WatchRoomMedia(id: id, title: "Valid", duration: 4, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .rendition, url: "https://cdn.example.test/render.mp4"))
+            for position in [-1.0, 5, Double.nan, Double.infinity] {
+                try require(!WatchRoomPlayback(id: UUID(), media_id: id, position: position, playing: true, revision: 0, updated_at: Date()).isValid(for: raw), "invalid position")
+            }
+            try require(!WatchRoomPlayback(id: UUID(), media_id: UUID(), position: 0, playing: false, revision: 0, updated_at: Date()).isValid(for: raw), "media mismatch")
+            try require(!WatchRoomPlayback(id: UUID(), media_id: id, position: 0, playing: false, revision: -1, updated_at: Date()).isValid(for: raw), "negative revision")
+        }
+        await test("Watch Together room requests omit account identity and optional controls and surface server refusals") {
+            let request = WatchRoomRequest(action: "select", room: room, media: project, revision: 7)
+            let data = try CommunityCoding.encoder().encode(request)
+            let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            try require(Set(json.keys) == ["action", "room", "media", "revision"], "caller cannot choose account or fabricate unused playback controls")
+            let empty = try CommunityCoding.decode(WatchRoomResponse.self, from: Data(#"{"status":"empty"}"#.utf8))
+            try require(empty.status == "empty" && empty.session == nil, "no fabricated session")
+            do { _ = try CommunityCoding.decode(WatchRoomResponse.self, from: Data(#"{"error":"Room access ended."}"#.utf8)); throw Failure(description: "denial ignored") }
+            catch CommunityError.server(let message, _) { try require(message == "Room access ended.", "exact refusal") }
+        }
+
+        await test("Watch Together admission fences older grants after a newer failed or empty refresh and a room reset") {
+            let mediaID = UUID()
+            let video = WatchRoomMedia(id: mediaID, title: "Provider", duration: nil, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .youtube, url: "https://www.youtube.com/watch?v=abcdefghijk"))
+            let session = WatchRoomPlayback(id: UUID(), media_id: mediaID, position: 0, playing: false, revision: 4, updated_at: Date())
+            var admission = WatchPlaybackAdmission()
+            let older = admission.beginRefresh()
+            let later = admission.beginRefresh()
+            try require(!admission.admit(session, media: video, ticket: older), "older success cannot overtake a newer issued refresh")
+            admission.invalidatePendingRequests() // later refresh failed or returned empty
+            try require(!admission.admit(session, media: video, ticket: older) && !admission.admit(session, media: video, ticket: later), "failure cannot resurrect either held success")
+            let fresh = admission.beginRefresh()
+            try require(admission.admit(session, media: video, ticket: fresh), "new authoritative refresh may restore access")
+            admission.reset()
+            try require(!admission.isCurrent(fresh) && !admission.admit(session, media: video, ticket: fresh), "same-account same-room rejoin rejects prior epoch")
+        }
+        await test("Watch Together admission rejects backwards revisions and same-revision media changes after selection") {
+            let mediaID = UUID(); let nextID = UUID(); let sessionID = UUID(); let timestamp = Date()
+            let video = WatchRoomMedia(id: mediaID, title: "Provider", duration: nil, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .youtube, url: "https://www.youtube.com/watch?v=abcdefghijk"))
+            let nextVideo = WatchRoomMedia(id: nextID, title: "Raw", duration: 4, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .rendition, url: "https://cdn.example.test/render.mp4"))
+            let original = WatchRoomPlayback(id: sessionID, media_id: mediaID, position: 0, playing: false, revision: 7, updated_at: timestamp)
+            let newer = WatchRoomPlayback(id: sessionID, media_id: nextID, position: 0, playing: false, revision: 8, updated_at: timestamp.addingTimeInterval(1))
+            var admission = WatchPlaybackAdmission()
+            let first = admission.beginRefresh()
+            try require(admission.admit(original, media: video, ticket: first), "initial approved item")
+            let heldPoll = admission.beginRefresh()
+            let selection = admission.beginRefresh()
+            try require(admission.admit(newer, media: nextVideo, ticket: selection), "confirmed selection records revision floor before next poll")
+            try require(!admission.admit(original, media: video, ticket: heldPoll), "held pre-selection reply refused")
+            let stale = admission.beginRefresh()
+            try require(!admission.admit(original, media: video, ticket: stale), "newly delivered backwards session revision refused")
+            let sameRevisionOtherMedia = WatchRoomPlayback(id: sessionID, media_id: mediaID, position: 0, playing: false, revision: 8, updated_at: newer.updated_at)
+            let changed = admission.beginRefresh()
+            try require(!admission.admit(sameRevisionOtherMedia, media: video, ticket: changed), "same revision cannot replace selected media")
+            let latest = admission.beginRefresh()
+            try require(admission.admit(newer, media: nextVideo, ticket: latest), "unchanged current authoritative state remains valid")
+            admission.invalidatePendingRequests()
+            try require(!admission.isCurrent(latest), "provider opener must reject a grant superseded after await")
+        }
+
         await test("invitation codes are 64 hex characters, normalised, and the forward text explains owner approval") {
             try require(RoomInvitationPolicy.isWellFormed(code) && RoomInvitationPolicy.isWellFormed(" " + code.uppercased() + "\n"), "well-formed codes")
             try require(!RoomInvitationPolicy.isWellFormed(String(code.dropLast())) && !RoomInvitationPolicy.isWellFormed(code.replacingOccurrences(of: "a", with: "g")), "malformed codes")

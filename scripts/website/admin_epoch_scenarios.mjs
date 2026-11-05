@@ -10,15 +10,17 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const tick = async () => { for (let i = 0; i < 18; i += 1) await Promise.resolve(); };
 const deferred = () => { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 class Element {
-  constructor(id = '') { this.id = id; this.children = []; this.events = {}; this.value = ''; this.checked = false; this.hidden = false; this.disabled = false; this.dataset = {}; this.attributes = {}; this._text = ''; }
+  constructor(id = '') { this.id = id; this.children = []; this.events = {}; this.value = ''; this.checked = false; this.hidden = false; this.disabled = false; this.dataset = {}; this.attributes = {}; this._text = ''; this.paused = true; this.muted = false; this.volume = 1; this.currentSrc = ''; }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map((x) => typeof x === 'string' ? x : x.textContent).join(' '); }
   append(...items) { this.children.push(...items); }
   replaceChildren(...items) { this._text = ''; this.children = items; }
   addEventListener(name, handler) { (this.events[name] ||= []).push(handler); }
-  async fire(name, extra = {}) { for (const fn of this.events[name] || []) await fn({ preventDefault() {}, currentTarget: this, ...extra }); }
+  async fire(name, extra = {}) { if (name === 'playing') { this.currentSrc = this.src || ''; this.paused = false; } for (const fn of this.events[name] || []) await fn({ preventDefault() {}, currentTarget: this, ...extra }); }
   setAttribute(name, value) { this.attributes[name] = value; }
-  removeAttribute(name) { delete this.attributes[name]; }
+  removeAttribute(name) { delete this.attributes[name]; if (name === 'src') { this.src = ''; this.currentSrc = ''; } }
+  pause() { this.paused = true; }
+  load() {}
   focus() {}
   reset() { for (const element of this.formElements || []) { element.value = element.defaultValue; element.checked = element.defaultChecked; } }
   createTHead() { const e = new Element(); e.insertRow = () => { const row = new Element(); e.append(row); return row; }; this.append(e); return e; }
@@ -27,7 +29,7 @@ class Element {
   click() { return this.fire('click'); }
   remove() {}
 }
-function harness(source, { configured = true, hash = '' } = {}) {
+function harness(source, { configured = true, hash = '', previewOrigin } = {}) {
   const html = fs.readFileSync(path.join(repo, 'website/admin.html'), 'utf8');
   const elements = new Map();
   for (const match of html.matchAll(/\bid="([^"]+)"/g)) elements.set(match[1], new Element(match[1]));
@@ -62,8 +64,9 @@ function harness(source, { configured = true, hash = '' } = {}) {
     return response({});
   };
   const location = { hash, origin: 'https://admin.example.invalid', pathname: '/admin.html', search: '', assign() {} };
-  const context = vm.createContext({ document: { getElementById: get, createElement: () => new Element(), body: new Element(), querySelectorAll: (selector) => { assert.equal(selector, '#admin-console form'); return consoleForms; } },
-    window: { SDI_ADMIN_CONFIG: configured ? { backendURL: 'https://backend.example.invalid', publishableKey: 'synthetic-publishable-key-1234', providers: [] } : null },
+  const document = { getElementById: get, createElement: () => new Element(), body: new Element(), hidden: false, events: {}, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }, querySelectorAll: (selector) => { assert.equal(selector, '#admin-console form'); return consoleForms; } };
+  const context = vm.createContext({ document,
+    window: { SDI_ADMIN_CONFIG: configured ? { backendURL: 'https://backend.example.invalid', publishableKey: 'synthetic-publishable-key-1234', providers: [], renderPreviewOrigin: previewOrigin } : null },
     location, history: { replaceState() { location.hash = ''; } }, URL, URLSearchParams, Blob,
     setTimeout(fn) { timers.push(fn); return timers.length; }, clearTimeout() {}, fetch, confirm: () => true, console });
   vm.runInContext(source, context, { filename: 'website/admin.js' });
@@ -76,7 +79,7 @@ function harness(source, { configured = true, hash = '' } = {}) {
     assert.equal(get('admin-console').hidden, false, 'Normal password/MFA flow must still open console');
     assert.match(get('admin-identity').textContent, new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   };
-  return { get, requests, hold, rpc, signin, timers, response, signout: () => get('admin-signout').fire('click') };
+  return { get, requests, hold, rpc, signin, timers, response, signout: () => get('admin-signout').fire('click'), async hide() { document.hidden = true; for (const fn of document.events.visibilitychange || []) await fn(); } };
 }
 
 export async function runAdminEpochScenarios(sourcePath = path.join(repo, 'website/admin.js')) {
@@ -284,6 +287,121 @@ export async function runAdminEpochScenarios(sourcePath = path.join(repo, 'websi
       h.get('admin-support-note').value = note; const calls = h.requests.length;
       await h.get('admin-support-update-form').fire('submit'); assert.equal(h.requests.length, calls, 'An over-limit private note reached the server');
       assert.match(h.get('admin-support-result').textContent, /2,000 characters/); assert(!h.get('admin-support-fields').disabled);
+    }
+  });
+  const previewOrigin = 'https://previews.example.invalid';
+  const reviewRow = (extra = {}) => ({ id: '11111111-1111-4111-8111-111111111111', title: 'Private Spatter draft',
+    render_digest: 'a'.repeat(64), source_revision: 'source-1', version: 7, state: 'pending',
+    preview_url: previewOrigin + '/v1/render-previews/opaque-test-token', preview_expires_at: new Date(Date.now() + 600000).toISOString(),
+    consent_version: 'consent-v1', rights_summary: 'Creator permissions on file', rights_cleared: true,
+    destinations: ['feed', 'youtube'], spatter_generated: true, ...extra });
+  const loadReviews = async (h, rows = [reviewRow()], owner = true) => {
+    const response = h.rpc('sdi_review_action', 'list'); const pending = h.get('admin-review-load').fire('click'); await tick();
+    assert(response.used); response.release({ reviews: rows, owner }); await pending;
+  };
+  const chooseReview = async (h) => { const button = h.get('admin-review-queue').children[0]; assert(button); await button.fire('click'); };
+  const watchReview = async (h) => { await chooseReview(h); await h.get('admin-review-video').fire('playing'); h.get('admin-review-confirm').checked = true; await h.get('admin-review-confirm').fire('change'); };
+  const decideReview = (h, decision = 'approved') => h.get('admin-review-form').fire('submit', { submitter: { dataset: { decision } } });
+  const decisionCalls = (h) => h.requests.filter((r) => r.url.pathname.endsWith('/sdi_review_rights') || (r.url.pathname.endsWith('/sdi_review_action') && r.body.action === 'decide'));
+  await test('render metadata without verified preview origin cannot play or approve', async () => {
+    const h = harness(source); await h.signin('owner@example.invalid'); await loadReviews(h); await watchReview(h);
+    assert(h.get('admin-review-video').hidden); assert(!h.get('admin-review-video').src); assert(h.get('admin-review-approve').disabled);
+    await decideReview(h); assert.equal(decisionCalls(h).length, 0);
+  });
+  await test('owner approval binds exact selected digest and version without uploading', async () => {
+    const h = harness(source, { previewOrigin }); await h.signin('owner@example.invalid'); await loadReviews(h); await watchReview(h);
+    assert(!h.get('admin-review-approve').disabled); h.get('admin-review-note').value = 'Reviewed exact video'; await decideReview(h);
+    const calls = decisionCalls(h); assert.equal(calls.length, 1); assert.deepEqual(calls[0].body, { review: reviewRow().id, digest: 'a'.repeat(64), version: 7, note: 'Reviewed exact video', action: 'decide', decision: 'approved' });
+    assert(h.get('admin-review-video').hidden); assert(h.get('admin-review-fields').disabled); assert.match(h.get('admin-review-result').textContent, /confirmed by the server/);
+    assert(!h.requests.some((r) => /publish|upload/.test(r.url.pathname)));
+  });
+  await test('rights clearance discards old capture and requires reloading its changed version', async () => {
+    const h = harness(source, { previewOrigin }); await h.signin('owner@example.invalid'); await loadReviews(h, [reviewRow({ rights_cleared: false })]); await watchReview(h);
+    h.get('admin-review-note').value = 'Rights evidence'; await h.get('admin-review-note').fire('input'); await h.get('admin-review-rights').fire('click');
+    assert.equal(decisionCalls(h).length, 1); assert.equal(decisionCalls(h)[0].body.cleared, true);
+    await decideReview(h); assert.equal(decisionCalls(h).length, 1, 'Old cleared version must not be reused for approval');
+  });
+  await test('rights revocation stays available with an expired unplayed preview and a reason', async () => {
+    const h = harness(source); await h.signin('owner@example.invalid'); await loadReviews(h, [reviewRow({ preview_expires_at: new Date(0).toISOString() })]); await chooseReview(h);
+    h.get('admin-review-note').value = 'Creator withdrew permission'; await h.get('admin-review-note').fire('input');
+    assert(!h.get('admin-review-rights').disabled); await h.get('admin-review-rights').fire('click');
+    assert.equal(decisionCalls(h).length, 1); assert.equal(decisionCalls(h)[0].body.cleared, false);
+    assert(h.get('admin-review-fields').disabled);
+    const html = fs.readFileSync(path.join(repo, 'website/admin.html'), 'utf8');
+    assert(!/<video\b[^>]*id="admin-review-video"[^>]*crossorigin/i.test(html), 'Display-only private previews must not require unsupported CORS');
+  });
+  await test('nonowner and unacknowledged unplayed muted or expired renders cannot approve', async () => {
+    for (const mode of ['nonowner', 'unacknowledged', 'unplayed', 'muted', 'expired']) {
+      const h = harness(source, { previewOrigin }); await h.signin('reviewer@example.invalid');
+      await loadReviews(h, [reviewRow(mode === 'expired' ? { preview_expires_at: new Date(0).toISOString() } : {})], mode !== 'nonowner');
+      await chooseReview(h); if (mode === 'muted') h.get('admin-review-video').muted = true;
+      if (mode !== 'unplayed') await h.get('admin-review-video').fire('playing');
+      h.get('admin-review-confirm').checked = mode !== 'unacknowledged'; await h.get('admin-review-confirm').fire('change');
+      await decideReview(h); assert.equal(decisionCalls(h).length, 0, mode);
+    }
+  });
+  await test('private preview refuses foreign origin credentials query fragment and unsupported paths', async () => {
+    for (const url of ['https://elsewhere.example/v1/render-previews/token', previewOrigin + '/v1/render-previews/token?key=secret',
+      'https://user:password@previews.example.invalid/v1/render-previews/token', previewOrigin + '/v1/render-previews/token#fragment', previewOrigin + '/public/video.mp4']) {
+      const h = harness(source, { previewOrigin }); await h.signin('owner@example.invalid'); await loadReviews(h, [reviewRow({ preview_url: url })]); await chooseReview(h);
+      assert(h.get('admin-review-video').hidden); assert(!h.get('admin-review-video').src); await decideReview(h); assert.equal(decisionCalls(h).length, 0);
+    }
+  });
+  await test('malformed render rows never become actionable', async () => {
+    for (const invalid of [{ version: 1.5 }, { render_digest: 'wrong' }, { id: 'wrong' }, { state: 'approved' }, { destinations: ['unknown'] }]) {
+      const h = harness(source, { previewOrigin }); await h.signin('owner@example.invalid'); await loadReviews(h, [reviewRow(invalid)]);
+      assert.equal(h.get('admin-review-queue').children.length, 0); assert(h.get('admin-review-fields').disabled);
+    }
+  });
+  await test('render titles follow SQL Unicode character limits without hiding a valid queue', async () => {
+    for (const title of ['a'.repeat(200), '\u{1F4A5}'.repeat(200), 'a'.repeat(100) + '\u{1F4A5}'.repeat(100)]) {
+      const h = harness(source, { previewOrigin }); await h.signin('owner@example.invalid'); await loadReviews(h, [reviewRow(), reviewRow({ title })]);
+      assert.equal(h.get('admin-review-queue').children.length, 2); assert.equal(h.get('admin-review-queue').children[1].textContent, title);
+    }
+    for (const title of ['a'.repeat(201), '\u{1F4A5}'.repeat(201), 'a'.repeat(101) + '\u{1F4A5}'.repeat(100)]) {
+      const h = harness(source); await h.signin('owner@example.invalid'); await loadReviews(h, [reviewRow({ title })]);
+      assert.equal(h.get('admin-review-queue').children.length, 0);
+    }
+  });
+  await test('render decision notes accept 2000 Unicode code points and reject 2001 without mutation', async () => {
+    const h = harness(source, { previewOrigin }); await h.signin('owner@example.invalid'); await loadReviews(h); await watchReview(h);
+    for (const note of ['a'.repeat(2001), '\u{1F4A5}'.repeat(2001)]) {
+      h.get('admin-review-note').value = note; await decideReview(h); assert.equal(decisionCalls(h).length, 0);
+    }
+    const note = '\u{1F4A5}'.repeat(2000); h.get('admin-review-note').value = note; await decideReview(h);
+    assert.equal(decisionCalls(h).length, 1); assert.equal(decisionCalls(h)[0].body.note, note);
+  });
+  await test('private video playback error and page hiding revoke review acknowledgement', async () => {
+    const h = harness(source, { previewOrigin }); await h.signin('owner@example.invalid'); await loadReviews(h); await watchReview(h);
+    await h.get('admin-review-video').fire('error'); await decideReview(h); assert.equal(decisionCalls(h).length, 0);
+    await loadReviews(h); await watchReview(h); await h.hide(); assert(h.get('admin-review-video').paused); assert(!h.get('admin-review-video').src);
+    assert(h.get('admin-review-fields').disabled); assert(!h.get('admin-review-confirm').checked); await decideReview(h); assert.equal(decisionCalls(h).length, 0);
+  });
+  await test('late review queue cannot restore previous administrator private renders', async () => {
+    const h = harness(source, { previewOrigin }); await h.signin('a@example.invalid');
+    const old = h.rpc('sdi_review_action', 'list'); const pending = h.get('admin-review-load').fire('click'); await tick(); assert(old.used);
+    await h.signout(); await h.signin('b@example.invalid'); old.release({ owner: true, reviews: [reviewRow()] }); await pending;
+    assert.equal(h.get('admin-review-queue').children.length, 0); assert.equal(h.get('admin-review-metadata').textContent, ''); assert(h.get('admin-review-fields').disabled);
+  });
+  await test('late render decision cannot confirm in another session or replay', async () => {
+    const h = harness(source, { previewOrigin }); await h.signin('a@example.invalid'); await loadReviews(h); await watchReview(h);
+    const old = h.rpc('sdi_review_action', 'decide'); const pending = decideReview(h); await tick(); assert(old.used);
+    await h.signout(); await h.signin('b@example.invalid'); old.release({ status: 'confirmed' }); await pending;
+    assert.equal(h.get('admin-review-result').textContent, ''); assert.equal(decisionCalls(h).length, 1);
+  });
+  await test('uncertain render decision clears selection and never retries automatically', async () => {
+    const h = harness(source, { previewOrigin }); await h.signin('owner@example.invalid'); await loadReviews(h); await watchReview(h);
+    const old = h.rpc('sdi_review_action', 'decide'); const pending = decideReview(h); await tick(); old.fail(); await pending;
+    assert.match(h.get('admin-review-result').textContent, /outcome is unknown/); assert(h.get('admin-review-fields').disabled);
+    await decideReview(h); assert.equal(decisionCalls(h).length, 1);
+  });
+  await test('render version conflicts and unconfirmed answers require a fresh queue without claiming no change', async () => {
+    for (const answer of [{ error: 'Render changed' }, { code: 'step_up_required' }, null, { status: 'unknown' }]) {
+      const h = harness(source, { previewOrigin }); await h.signin('owner@example.invalid'); await loadReviews(h); await watchReview(h);
+      const old = h.rpc('sdi_review_action', 'decide'); const pending = decideReview(h); await tick(); old.release(answer); await pending;
+      assert(h.get('admin-review-fields').disabled); assert.match(h.get('admin-review-result').textContent, /Reload pending renders/);
+      assert(!/Nothing was changed|confirmed by the server/.test(h.get('admin-review-result').textContent));
+      await decideReview(h); assert.equal(decisionCalls(h).length, 1);
     }
   });
   return results;

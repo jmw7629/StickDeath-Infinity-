@@ -8081,7 +8081,7 @@ revoke all on function public.sdi_merch_retention() from public,anon,authenticat
 grant execute on function public.sdi_merch_retention() to service_role;
 commit;
 
--- ===== youtube-feed-reference.sql (sha256 f933b3451b307644) =====
+-- ===== youtube-feed-reference.sql (sha256 564741c37513ceba) =====
 -- Unapplied candidate. Install last, after feed-publication.sql, rooms-v2.sql,
 -- account-lifecycle.sql and consent-versions.sql. No provider requests run in SQL.
 -- A YouTube feed item is metadata, not an AVPlayer rendition. Only the service
@@ -8900,5 +8900,85 @@ begin
  reviewer=auth.uid(),review_note=trim(note),revision=war_appeals.revision+1,decided_at=clock_timestamp() where id=a.id;
  return jsonb_build_object('status','confirmed');
 end $$;
+
+
+-- Room viewing has a separate, membership-bound projection. Generic raw-media
+-- RLS, downloads and exports retain approved-only access. A YouTube reference
+-- shares a video choice, not a fabricated AVPlayer duration or synchronized clock.
+create function sdi_private.watch_media_available(media public.sdi_watch_media) returns boolean
+language sql stable security definer set search_path='' as $$
+ select coalesce((media.expires_at is null or media.expires_at>clock_timestamp())
+  and (media.owner_id is null or not sdi_private.creator_restricted(media.owner_id))
+  and not exists(select 1 from sdi_private.feed_blocks b where
+   (b.actor=auth.uid() and b.creator=media.owner_id) or (b.creator=auth.uid() and b.actor=media.owner_id))
+  and case media.playback_provider when 'rendition' then media.approved
+   when 'youtube' then sdi_private.war_media_available(media) else false end,false)
+$$;
+revoke all on function sdi_private.watch_media_available(public.sdi_watch_media) from public,anon,authenticated,service_role;
+create function sdi_private.watch_video(media public.sdi_watch_media) returns jsonb
+language sql stable set search_path='' as $$
+ select jsonb_build_object('id',media.id,'title',media.title,'duration',media.duration,
+  'expires_at',media.expires_at,'video_source',sdi_private.war_video_source(media))
+$$;
+revoke all on function sdi_private.watch_video(public.sdi_watch_media) from public,anon,authenticated,service_role;
+create function sdi_private.watch_action(action text,room uuid,media uuid default null,
+ revision bigint default null,"position" double precision default null,playing boolean default null) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare actor uuid:=auth.uid(); selected public.sdi_watch_media; current_session public.sdi_watch_sessions; items jsonb;
+begin
+ if actor is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor and not is_anonymous) then
+  return jsonb_build_object('error','Sign in with a full account.');end if;
+ if not sdi_private.room_access(room) then return jsonb_build_object('error','Room access ended.');end if;
+ if action='catalog' then
+  select coalesce(jsonb_agg(item.video),'[]'::jsonb) into items from (
+   select sdi_private.watch_video(m) as video from public.sdi_watch_media m
+   where sdi_private.watch_media_available(m) order by m.id limit 100
+  ) item;
+  return jsonb_build_object('media',items);
+ end if;
+ if action is null or action not in('status','select','control') then return jsonb_build_object('error','Unknown watch operation.');end if;
+ if action<>'status' then
+  if not sdi_private.room_owner(room) then return jsonb_build_object('error','Only the room host controls shared viewing.');end if;
+  -- Serialize the missing-session case and host changes against one room row.
+  perform 1 from public.sdi_rooms r where r.id=room and not r.closed for update;
+  if not sdi_private.room_owner(room) then return jsonb_build_object('error','Room access ended.');end if;
+  select w.* into current_session from public.sdi_watch_sessions w where w.room_id=room for update;
+ else
+  select w.* into current_session from public.sdi_watch_sessions w where w.room_id=room;
+ end if;
+ if action='status' and current_session.id is null then return jsonb_build_object('status','empty');end if;
+ if action='select' then
+  select m.* into selected from public.sdi_watch_media m where m.id=media and sdi_private.watch_media_available(m);
+ else
+  select m.* into selected from public.sdi_watch_media m where m.id=current_session.media_id and sdi_private.watch_media_available(m);
+ end if;
+ if selected.id is null then return jsonb_build_object('error','Shared video is no longer available.');end if;
+ if action<>'status' then
+  if current_session.id is not null and (revision is null or revision<>current_session.revision) then
+   return jsonb_build_object('error','Playback changed elsewhere. Refresh before controlling it.');end if;
+  if action='control' then
+   if selected.playback_provider<>'rendition' then return jsonb_build_object('error','YouTube playback uses independent provider controls. Shared seek and play are unavailable.');end if;
+   if watch_action."position" is null or watch_action."position" not between 0 and selected.duration or watch_action.playing is null then
+    return jsonb_build_object('error','A valid playback position and state are required.');end if;
+   update public.sdi_watch_sessions w set position=watch_action."position",playing=watch_action.playing
+    where w.id=current_session.id returning w.* into current_session;
+  elsif current_session.id is null then
+   if revision is not null then return jsonb_build_object('error','Session changed. Refresh before sharing.');end if;
+   insert into public.sdi_watch_sessions(room_id,media_id,position,playing) values(room,selected.id,0,false)
+    returning * into current_session;
+  else
+   update public.sdi_watch_sessions w set media_id=selected.id,position=0,playing=false
+    where w.id=current_session.id returning w.* into current_session;
+  end if;
+ end if;
+ return jsonb_build_object('status','confirmed','session',row_to_json(current_session),'video',sdi_private.watch_video(selected));
+end $$;
+revoke all on function sdi_private.watch_action(text,uuid,uuid,bigint,double precision,boolean) from public,anon,service_role;
+grant execute on function sdi_private.watch_action(text,uuid,uuid,bigint,double precision,boolean) to authenticated;
+create function public.sdi_watch_action(action text,room uuid,media uuid default null,
+ revision bigint default null,"position" double precision default null,playing boolean default null) returns jsonb
+language sql security invoker set search_path='' as $$select sdi_private.watch_action(action,room,media,revision,"position",playing)$$;
+revoke all on function public.sdi_watch_action(text,uuid,uuid,bigint,double precision,boolean) from public,anon,service_role;
+grant execute on function public.sdi_watch_action(text,uuid,uuid,bigint,double precision,boolean) to authenticated;
 
 commit;

@@ -176,6 +176,11 @@ details code{font-size:12px;color:#d8d5d0;word-break:break-all}
 .support form{display:grid;gap:8px}
 .support form .button{margin-top:12px}
 .support label{margin:8px 0 0}
+#admin-review-form{display:block}
+#admin-review-fields{display:grid;gap:12px;min-width:0}
+#admin-review-metadata{overflow-wrap:anywhere}
+#admin-review-video{display:block;width:100%;height:auto;max-height:65vh;background:#08080a}
+#admin-review-video[hidden]{display:none}
 #support-status{font-size:13px}
 .support button:not(.button){background:var(--surface-2);color:var(--text);border:1px solid #76767c;border-radius:4px;padding:11px 17px;min-height:44px}
 .support #support-review{display:grid;gap:12px;border-top:1px solid var(--line-strong);padding-top:20px;margin-top:12px}

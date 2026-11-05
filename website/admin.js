@@ -67,7 +67,6 @@
     { title: 'Provider configuration (presence only)', rpc: 'sdi_admin_configuration', params: {} },
     { title: 'Provider health (configured yes/no, last success/failure, error class)', rpc: 'sdi_admin_provider_health', params: {} },
     { title: 'My permissions', rpc: 'sdi_admin_permissions', params: { action: 'mine' } },
-    { title: 'Render approvals (pending)', rpc: 'sdi_review_action', params: { action: 'list' } },
     { title: 'Users (first page)', rpc: 'sdi_users_action', params: { action: 'list', page: 0 } },
     { title: 'Moderation queue', rpc: 'sdi_moderation_action', params: { action: 'list' } },
     { title: 'Publishing jobs', rpc: 'sdi_publishing_admin', params: { action: 'list' } },
@@ -118,6 +117,7 @@
     for (const id of ['admin-email', 'admin-password', 'admin-code', 'admin-enrol-code', 'admin-enrol-secret', 'admin-newpassword']) { const el = $(id); if (el) el.value = ''; }
     const qr = $('admin-enrol-qr'); if (qr) { qr.removeAttribute('src'); qr.hidden = true; }
     lastExport = null; capsLoaded = null; resetSupportView();
+    resetRenderReview();
     const download = $('admin-report-download'); if (download) download.disabled = true;
   }
 
@@ -142,6 +142,137 @@
     const adopted = sessionLease();
     expiryTimer = setTimeout(() => { if (adopted.current()) signOut('Session expired. Sign in again.'); }, Math.max(1000, data.expires_in * 1000 - 5000));
     return true;
+  }
+
+  // --- exact-render review (the same versioned RPCs as native Admin) ---------
+  let renderReview = null; let renderOwner = false; let renderBusy = false;
+  let renderPlayed = false; let renderExpiry = null; let renderButtons = [];
+  let previewOrigin = null;
+  try {
+    const u = new URL(config.renderPreviewOrigin);
+    if (u.protocol === 'https:' && u.hostname && !u.username && !u.password && !u.search && !u.hash && u.pathname === '/') previewOrigin = u.origin;
+  } catch (_) { /* Metadata remains usable without a verified preview origin. */ }
+  function stopRenderVideo() {
+    const video = $('admin-review-video');
+    video.pause(); video.removeAttribute('src'); video.load(); video.hidden = true;
+  }
+  function clearRenderSelection() {
+    renderReview = null; renderPlayed = false;
+    if (renderExpiry !== null) { clearTimeout(renderExpiry); renderExpiry = null; }
+    stopRenderVideo(); $('admin-review-metadata').replaceChildren();
+    $('admin-review-confirm').checked = false; $('admin-review-note').value = '';
+    updateRenderControls();
+  }
+  function resetRenderReview() {
+    renderBusy = false; renderOwner = false; renderButtons = [];
+    clearRenderSelection(); $('admin-review-queue').replaceChildren(); $('admin-review-result').textContent = '';
+  }
+  function renderPreviewURL(row) {
+    try {
+      const u = new URL(row.preview_url);
+      return previewOrigin && u.origin === previewOrigin && !u.username && !u.password && !u.search && !u.hash
+        && /^\/v1\/render-previews\/[A-Za-z0-9._~-]{1,2048}$/.test(u.pathname) ? u.href : null;
+    } catch (_) { return null; }
+  }
+  function validRenderReview(row) {
+    return row && UUID_RE.test(row.id) && /^[a-f0-9]{64}$/.test(row.render_digest)
+      && Number.isSafeInteger(row.version) && row.version > 0 && row.state === 'pending'
+      && supportTextWithin(row.title, 200, true)
+      && typeof row.source_revision === 'string' && typeof row.consent_version === 'string'
+      && typeof row.rights_summary === 'string' && typeof row.rights_cleared === 'boolean'
+      && typeof row.spatter_generated === 'boolean' && Number.isFinite(Date.parse(row.preview_expires_at))
+      && Array.isArray(row.destinations) && row.destinations.every((d) => ['feed', 'youtube', 'social'].includes(d));
+  }
+  function currentRenderPreview() {
+    return renderReview && renderPreviewURL(renderReview) && Date.parse(renderReview.preview_expires_at) > Date.now();
+  }
+  function updateRenderControls() {
+    $('admin-review-load').disabled = renderBusy;
+    for (const button of renderButtons) button.disabled = renderBusy;
+    $('admin-review-fields').disabled = renderBusy || !renderReview;
+    const allowed = renderReview && (!renderReview.spatter_generated || renderOwner);
+    const acknowledged = $('admin-review-confirm').checked && renderPlayed && currentRenderPreview();
+    $('admin-review-approve').disabled = renderBusy || !allowed || !acknowledged || !renderReview.rights_cleared || !renderReview.consent_version;
+    // Revocation remains available when a preview expires or cannot play.
+    $('admin-review-rights').disabled = renderBusy || !allowed || !$('admin-review-note').value.trim() || (!renderReview.rights_cleared && !acknowledged);
+    $('admin-review-rights').textContent = renderReview?.rights_cleared ? 'Revoke rights clearance' : 'Record rights clearance';
+  }
+  async function loadRenderReviews() {
+    if (!session || renderBusy) return;
+    const lease = beginWork('render-review');
+    clearRenderSelection(); renderOwner = false; renderButtons = []; $('admin-review-queue').replaceChildren();
+    renderBusy = true; updateRenderControls(); say($('admin-review-result'), 'Loading pending renders…');
+    try {
+      const result = await rpc('sdi_review_action', { action: 'list' }); lease.check();
+      if (!result || result.error || result.code) { say($('admin-review-result'), refusal(result)); return; }
+      if (typeof result.owner !== 'boolean' || !Array.isArray(result.reviews) || result.reviews.length > 50 || !result.reviews.every(validRenderReview)) {
+        say($('admin-review-result'), 'Invalid review queue. No render can be approved.'); return;
+      }
+      renderOwner = result.owner;
+      for (const row of result.reviews) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'button'; button.textContent = row.title;
+        button.addEventListener('click', () => { if (lease.current() && !renderBusy) selectRenderReview(row); });
+        renderButtons.push(button); $('admin-review-queue').append(button);
+      }
+      say($('admin-review-result'), result.reviews.length ? 'Select a render. Approval never schedules publication.' : 'No pending renders.');
+    } catch (_) { if (lease.current()) say($('admin-review-result'), 'Review queue unavailable. Check your administrator session and MFA.'); }
+    finally { if (lease.current()) { renderBusy = false; updateRenderControls(); } }
+  }
+  function selectRenderReview(row) {
+    clearRenderSelection(); renderReview = Object.freeze({ ...row });
+    const snapshot = renderReview; const lease = sessionLease();
+    const evidence = { title: row.title, source: row.source_revision, render: row.render_digest, version: row.version,
+      consent: row.consent_version, rights: row.rights_summary, rights_cleared: row.rights_cleared,
+      destinations: row.destinations.length ? row.destinations.join(', ') : 'None — approval does not schedule release',
+      spatter: row.spatter_generated ? 'Owner approval required' : 'Creator submission',
+      storyboard: row.storyboard ?? 'Not supplied', source_project_digest: row.source_project_digest ?? 'Not supplied', quality_report: row.quality_report ?? 'Not supplied' };
+    $('admin-review-metadata').append(renderValue(evidence));
+    const url = renderPreviewURL(row);
+    if (url && currentRenderPreview()) {
+      const video = $('admin-review-video'); video.src = url; video.hidden = false;
+      renderExpiry = setTimeout(() => {
+        if (!lease.current() || renderReview !== snapshot) return;
+        stopRenderVideo(); renderPlayed = false; $('admin-review-confirm').checked = false; updateRenderControls();
+        say($('admin-review-result'), 'This preview expired. Reload the queue or renew it in native Admin before approval.');
+      }, Math.min(2147483647, Math.max(0, Date.parse(row.preview_expires_at) - Date.now())));
+      say($('admin-review-result'), 'Play the private video with audio before confirming your review.');
+    } else say($('admin-review-result'), 'Private preview expired or its verified origin is not configured. Playback and approval are unavailable. Request changes or reject remain available.');
+    updateRenderControls();
+  }
+  async function renderReviewAction(event, rights = false) {
+    event.preventDefault();
+    if (!session || renderBusy || !renderReview) return;
+    const selected = renderReview; const decision = event.submitter?.dataset.decision;
+    const note = $('admin-review-note').value.trim(); const out = $('admin-review-result');
+    if (!supportTextWithin(note, 2000, rights) || (!rights && !['approved', 'changes', 'rejected'].includes(decision))) {
+      say(out, 'Choose a decision and keep notes within 2,000 characters. Rights decisions need evidence. Nothing was sent.'); return;
+    }
+    if (rights && selected.spatter_generated && !renderOwner) { say(out, 'Owner review is required for this Spatter render. Nothing was sent.'); return; }
+    if (((rights && !selected.rights_cleared) || decision === 'approved') && (!currentRenderPreview() || !renderPlayed || !$('admin-review-confirm').checked
+      || (selected.spatter_generated && !renderOwner) || (!rights && (!selected.rights_cleared || !selected.consent_version)))) {
+      say(out, 'Review the current playable render, rights and consent first. Spatter approval requires the owner. Nothing was sent.'); return;
+    }
+    const lease = beginWork('render-decision'); renderBusy = true; updateRenderControls();
+    $('admin-review-video').pause();
+    try {
+      const identity = { review: selected.id, digest: selected.render_digest, version: selected.version, note };
+      const result = await rpc(rights ? 'sdi_review_rights' : 'sdi_review_action', rights
+        ? { ...identity, cleared: !selected.rights_cleared } : { ...identity, action: 'decide', decision });
+      lease.check(); if (renderReview !== selected) return;
+      if (!result || result.error || result.code || result.status !== 'confirmed') {
+        const reason = result && (result.error || result.code);
+        resetRenderReview();
+        say(out, reason ? `Server answer: ${reason}. Reload pending renders before another decision.`
+          : 'Decision was not confirmed. Reload pending renders to check its outcome before retrying.');
+        return;
+      }
+      // A rights change increments the review version. Clear the old capture;
+      // never turn its old digest/version into a subsequent approval request.
+      resetRenderReview(); say(out, 'Decision confirmed by the server. Reload pending renders before another decision. No upload was requested.');
+    } catch (_) {
+      if (!lease.current()) return;
+      resetRenderReview(); say(out, 'Decision outcome is unknown. Reload the queue before retrying; no automatic retry was sent.');
+    } finally { if (lease.current()) { renderBusy = false; updateRenderControls(); } }
   }
 
   // --- rendering (text only; never HTML from data) --------------------------------
@@ -943,6 +1074,26 @@
   $('admin-recover').addEventListener('click', requestRecovery);
   $('admin-signout').addEventListener('click', () => signOut('Signed out.'));
   $('admin-refresh').addEventListener('click', () => enterConsole());
+  $('admin-review-load').addEventListener('click', loadRenderReviews);
+  $('admin-review-form').addEventListener('submit', renderReviewAction);
+  $('admin-review-rights').addEventListener('click', (event) => renderReviewAction(event, true));
+  $('admin-review-confirm').addEventListener('change', updateRenderControls);
+  $('admin-review-note').addEventListener('input', updateRenderControls);
+  $('admin-review-video').addEventListener('playing', () => {
+    const video = $('admin-review-video');
+    if (currentRenderPreview() && video.currentSrc === renderPreviewURL(renderReview) && !video.paused && !video.muted && video.volume > 0) renderPlayed = true;
+    updateRenderControls();
+  });
+  $('admin-review-video').addEventListener('error', () => {
+    if (!session || !renderReview) return;
+    renderPlayed = false; $('admin-review-confirm').checked = false; updateRenderControls();
+    say($('admin-review-result'), 'Private preview failed to play. Approval is unavailable.');
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) return;
+    beginWork('render-review'); beginWork('render-decision');
+    resetRenderReview();
+  });
   $('admin-stop-form').addEventListener('submit', emergencyStop);
   $('admin-proposal-form').addEventListener('submit', decideProposal);
   $('admin-users-form').addEventListener('submit', searchUsers);

@@ -11,7 +11,10 @@
 // window.SDI_ADMIN_CONFIG = {
 //   backendURL: 'https://<project>.supabase.co',   // https origin, no path
 //   publishableKey: '<anon key>',                  // publishable key only
-//   providers: ['apple', 'google', 'github', 'microsoft'] // optional sign-in buttons
+//   providers: ['apple', 'google', 'github', 'microsoft'], // optional sign-in buttons
+//   renderPreviewOrigin: 'https://<verified-private-preview-host>' // optional;
+//     only this exact origin's /v1/render-previews/ URLs may play in web Admin.
+//     Without it, review metadata loads but playback/approval are unavailable.
 // };
 // Connected 2026-10-13 to the owner's Supabase project (organization "PRFKT Ads",
 // project gwcqlbjdvxebkxizfxsx, ca-central-1). These two values are public by

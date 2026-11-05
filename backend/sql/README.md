@@ -490,3 +490,14 @@ Upgrades are not part of the apply order or the bundle.
 
 
 `youtube-feed-reference.sql` is an unapplied provider-reference candidate. It requires the provider-aware native feed patch before rollout. The channel worker verifies owner/public/processed/embeddable provider metadata through owner OAuth and records a service-only receipt. A separately authorized feed job creates a metadata-only YouTube reference without hosting video or poster bytes. Raw rendition constraints remain strict; reference rows have null raw URL/duration and `approved=false`, so raw-only media readers cannot select them. Provider-aware feed and War Room projections expose the canonical watch URL and explicitly deny file-download routing. War Room uses a separate auth-bound eligible-media projection and exact provider payloads; generic Watch Together/REST readers remain raw-only. War Room reuses the verified receipt, current consent/rights/approval and visible-post gates for proposals, acceptance, listing, votes and finalization. The native War Room opens provider videos one at a time with the existing shared player, revalidates before opening and every 15 seconds while open, and closes on revocation or failed revalidation. Withdrawal hides the reference immediately and leaves external privacy confirmation to the existing YouTube withdrawal job. Existing raw-hosted renditions require a separate verified retirement before migration; this candidate never discards or orphans that hosted copy. Admin previews and restoration of reference-only content remain explicitly unavailable until their provider-aware consumers exist; War Room moderator/appeal queues preserve their raw-only preview contract without sending watch pages to AVPlayer. Moderators can still remove provider matchups. This source change is not a database installation or proof of live playback.
+
+
+Provider-aware Watch Together uses `sdi_watch_action` after the YouTube reference
+candidate. Every catalog, status, selection and control rechecks a full live
+account and accepted room membership; only the host changes the shared choice,
+with a revision check. The raw-media REST policy and export paths are unchanged.
+Approved renditions retain synchronized AVPlayer controls. Verified public
+YouTube references use YouTube's own player after an explicit member tap;
+shared YouTube play/pause/seek are unavailable and the UI labels this clearly.
+Provider/consent/moderation withdrawal removes the shared item on the next room
+poll and dismisses its player. This is not a claim of synchronized YouTube playback.
