@@ -855,13 +855,45 @@ struct WarMatch: Decodable, Identifiable, Equatable {
     let status: String
     let ends_at: Date?
     let left_title: String
-    let left_url: String
+    let left_url: String?
     let right_title: String?
     let right_url: String?
     let left_votes: Int
     let right_votes: Int
     let my_vote: String?
     let outcome: String?
+    var left_video_source: CommunityVideoSource? = nil
+    var right_video_source: CommunityVideoSource? = nil
+    var leftPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(left_video_source, legacyURL: left_url) }
+    var rightPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(right_video_source, legacyURL: right_url) }
+    var hasProviderPlayback: Bool {
+        if case .youtube = leftPlaybackSource { return true }
+        if case .youtube = rightPlaybackSource { return true }
+        return false
+    }
+}
+/// The provider is part of the server contract. A watch link never acquires raw
+/// rendition privileges, and an older raw-only response cannot authorize YouTube.
+struct CommunityVideoSource: Codable, Equatable {
+    enum Provider: String, Codable { case rendition, youtube }
+    let provider: Provider
+    let url: String
+    var playbackSource: FeedPlaybackSource? {
+        guard let source = FeedPlaybackSource.resolve(url) else { return nil }
+        switch (provider, source) {
+        case (.rendition, .rendition), (.youtube, .youtube): return source
+        default: return nil
+        }
+    }
+    static func resolve(_ value: CommunityVideoSource?, legacyURL: String?) -> FeedPlaybackSource? {
+        if let value { return value.playbackSource }
+        guard let legacyURL, case .rendition(let url) = FeedPlaybackSource.resolve(legacyURL) else { return nil }
+        return .rendition(url)
+    }
+}
+struct WarMediaResponse: CommunityResponse {
+    let error: String?
+    let media: [ApprovedMedia]?
 }
 struct WarListResponse: CommunityResponse {
     let error: String?
@@ -877,7 +909,7 @@ struct WarNotice: Decodable, Identifiable, Equatable {
 struct WarNoticesResponse: CommunityResponse {
     let error: String?; let status: String?; let notices: [WarNotice]?
 }
-/// Own approved renditions (`public.sdi_watch_media` filtered by owner).
+/// Own currently eligible media from the authenticated War Room projection.
 struct ApprovedMedia: Decodable, Identifiable, Equatable {
     let id: UUID
     let title: String
@@ -885,6 +917,8 @@ struct ApprovedMedia: Decodable, Identifiable, Equatable {
     var duration: Double? = nil
     var expires_at: Date? = nil
     var approved: Bool? = nil
+    var video_source: CommunityVideoSource? = nil
+    var playbackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(video_source, legacyURL: url) }
 }
 
 enum WarVoteChoice: String { case left, right }

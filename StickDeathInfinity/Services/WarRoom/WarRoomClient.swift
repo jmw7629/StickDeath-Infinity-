@@ -16,13 +16,37 @@ final class WarRoomClient {
     func matches() async throws -> [WarMatch] {
         let response = try await gateway.call("sdi_war_action", params: WarRequest(action: "list"), as: WarListResponse.self)
         guard let matches = response.matches else { throw CommunityError.invalidResponse("Matchup list unavailable.") }
-        for match in matches where match.left_votes < 0 || match.right_votes < 0 { throw CommunityError.invalidResponse("The server reported a negative tally.") }
+        guard matches.count <= 100 else { throw CommunityError.invalidResponse("The server returned too many matchups.") }
+        for match in matches {
+            guard match.left_votes >= 0, match.right_votes >= 0 else { throw CommunityError.invalidResponse("The server reported a negative tally.") }
+            guard match.leftPlaybackSource != nil, match.status == "pending" || match.rightPlaybackSource != nil else {
+                throw CommunityError.invalidResponse("A matchup video address is unsupported or unavailable.")
+            }
+        }
         return matches
     }
-    /// The account's own approved renditions eligible for submission.
+    /// The server binds this projection to auth.uid(); no caller-selected owner
+    /// or generic raw-media RLS exception can expose another creator's references.
+    func ownedMedia() async throws -> [ApprovedMedia] {
+        let response = try await gateway.call("sdi_war_media", params: WarMediaRequest(), as: WarMediaResponse.self)
+        guard let media = response.media, media.count <= 100, media.allSatisfy({ $0.playbackSource != nil }) else {
+            throw CommunityError.invalidResponse("Eligible videos are unavailable.")
+        }
+        return media
+    }
+    /// Challenges still require raw approved renditions. Preserve their existing
+    /// call and RLS contract until that consumer has provider-aware playback.
     func ownedMedia(account: UUID) async throws -> [ApprovedMedia] {
         try await gateway.rows("sdi_watch_media", select: "id,title,url,duration,expires_at",
                                filters: [.eq("owner_id", account.uuidString.lowercased())], limit: 100, as: ApprovedMedia.self)
+    }
+    /// Never start from a stale screen row: listing rechecks exact media identity,
+    /// current consent, rights, moderation, provider receipt and account controls.
+    func matchForPlayback(_ id: UUID) async throws -> WarMatch {
+        guard let match = try await matches().first(where: { $0.id == id }) else {
+            throw CommunityError.server(message: "This matchup is no longer available.", code: nil)
+        }
+        return match
     }
     private func confirmed(_ request: WarRequest) async throws {
         let response = try await gateway.call("sdi_war_action", params: request, as: WarListResponse.self)
@@ -62,3 +86,5 @@ final class WarRoomClient {
         guard response.status == "recorded" else { throw CommunityError.invalidResponse("Appeal was not confirmed.") }
     }
 }
+
+private struct WarMediaRequest: Encodable, Sendable {}

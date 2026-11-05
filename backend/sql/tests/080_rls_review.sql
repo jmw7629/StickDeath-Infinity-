@@ -62,6 +62,14 @@ begin
  select count(*) into client_count from pg_proc p join pg_namespace n on n.oid=p.pronamespace
   where n.nspname='public' and p.proname like 'sdi\_%' and has_function_privilege('authenticated',p.oid,'execute');
  perform sdi_test.check(client_count>=40,'client surface present: '||client_count);
+ -- War Room's new owned-media projection is explicitly client-only. It binds
+ -- ownership/session in its private body; helpers are not a second RPC surface.
+ perform sdi_test.check(has_function_privilege('authenticated','public.sdi_war_media()','execute')
+  and not has_function_privilege('anon','public.sdi_war_media()','execute')
+  and not has_function_privilege('service_role','public.sdi_war_media()','execute')
+  and not has_function_privilege('public','public.sdi_war_media()','execute'),'War Room owned-media RPC is authenticated-only');
+ perform sdi_test.check(not has_function_privilege('authenticated','sdi_private.war_media_available(public.sdi_watch_media,timestamptz)','execute')
+  and not has_function_privilege('authenticated','sdi_private.war_video_source(public.sdi_watch_media)','execute'),'War Room source/eligibility helpers are not client-callable');
  select string_agg(table_schema||'.'||table_name||'.'||column_name,', ') into bad from information_schema.columns
   where table_schema in('sdi_private','public') and (column_name ~* 'password|secret|api_key|private_key' or (column_name ~* 'token' and column_name !~* '_hash$' and table_name<>'device_tokens'));
  perform sdi_test.check(bad is null,'secret-like columns: '||coalesce(bad,''));

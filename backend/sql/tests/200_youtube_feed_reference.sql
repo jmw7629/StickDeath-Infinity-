@@ -31,7 +31,7 @@ begin
 end $$;
 do $$
 declare creator uuid; viewer uuid; reviewer uuid; owner uuid; review uuid; withdrawn uuid; nonembed uuid; race uuid; spatter uuid;
- y uuid; f uuid; token uuid; media uuid; upload uuid; claimed jsonb; result jsonb; receipt jsonb; before_time timestamptz; visible_count integer;
+ y uuid; f uuid; token uuid; media uuid; upload uuid; claimed jsonb; result jsonb; receipt jsonb; before_time timestamptz; visible_count integer; opponent uuid; raw_media uuid; active_match uuid; final_match uuid; war_report uuid;
  d1 text:=repeat('41',32); d2 text:=repeat('42',32); d3 text:=repeat('43',32); d4 text:=repeat('44',32); d5 text:=repeat('45',32);
 begin
  creator:=sdi_test.user('yt-ref-creator');viewer:=sdi_test.user('yt-ref-viewer');
@@ -79,6 +79,96 @@ begin
  perform sdi_test.check(not (result->'posts'->0->>'allow_export')::boolean,'creator raw-export flag cannot enable provider downloads');
  perform sdi_test.check(sdi_private.feed_action('like',(select id from sdi_private.feed_posts where media_id=media))->>'status'='confirmed','normal authenticated reactions work on reference');
 
+ -- War Room accepts verified metadata through its own projection, while
+ -- generic raw REST/Watch Together access and exports remain unchanged.
+ opponent:=sdi_test.user('yt-war-opponent');
+ insert into public.sdi_watch_media(title,url,duration,approved,owner_id,render_digest)
+ values('Raw opponent','https://cdn.example.test/war.mp4',4,true,opponent,repeat('49',32)) returning id into raw_media;
+ perform sdi_test.check(sdi_test.denied('anon','select public.sdi_war_media()'),'anonymous cannot request War Room media');
+ perform sdi_test.login(creator);
+ execute 'set local role authenticated';
+ result:=public.sdi_war_media();
+ reset role;
+ perform sdi_test.check(jsonb_array_length(result->'media')=1 and (result->'media'->0->>'id')::uuid=media
+  and result->'media'->0->'video_source'->>'provider'='youtube'
+  and result->'media'->0->'video_source'->>'url'=receipt->>'url'
+  and result->'media'->0->>'url' is null and result->'media'->0->>'duration' is null,'owned projection returns typed source without fake raw identity');
+ begin
+  delete from auth.sessions where user_id=creator;
+  perform sdi_test.check(sdi_private.war_media()->>'error' is not null,'owned media requires a live session, not only JWT identity');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ result:=sdi_private.war_action('propose',media=>raw_media,opponent=>opponent);
+ perform sdi_test.check(result->>'error' is not null,'cannot submit another creator media');
+ result:=sdi_private.war_action('propose',media=>media,opponent=>opponent);
+ perform sdi_test.check(result->>'status'='confirmed','verified YouTube media can propose');
+ select id into active_match from sdi_private.war_matches where left_media=media order by created_at desc limit 1;
+ perform sdi_test.login(viewer);
+ perform sdi_test.check(jsonb_array_length(sdi_private.war_action('list')->'matches')=0,'pending matchup still requires participant consent');
+ perform sdi_test.login(opponent);
+ result:=sdi_private.war_action('accept',active_match,raw_media);
+ perform sdi_test.check(result->>'status'='confirmed','raw opponent accepts verified YouTube proposal');
+ result:=sdi_private.war_media();
+ perform sdi_test.check(jsonb_array_length(result->'media')=1 and (result->'media'->0->>'id')::uuid=raw_media,'projection cannot list another creator YouTube reference');
+ perform sdi_test.check(sdi_private.war_action('vote',active_match,choice=>'right')->>'error' is not null,'participants still cannot vote');
+ perform sdi_test.login(viewer);
+ result:=sdi_private.war_action('list');
+ perform sdi_test.check(result->'matches'->0->>'left_url' is null
+  and result->'matches'->0->'left_video_source'->>'provider'='youtube'
+  and result->'matches'->0->'left_video_source'->>'url'=receipt->>'url'
+  and result->'matches'->0->'right_video_source'->>'provider'='rendition','match projection binds each provider without watch page in raw field');
+ perform sdi_test.check(sdi_private.war_action('vote',active_match,choice=>'left')->>'status'='confirmed','authenticated viewer can vote on verified reference');
+ -- Each subtransaction restores its original data, never fabricating a new
+ -- provider receipt or relaxing the production conditions to recover a test.
+ begin
+  update sdi_private.publish_jobs set youtube_receipt=jsonb_set(youtube_receipt,'{embeddable}','false') where id=y;
+  perform sdi_test.check(jsonb_array_length(sdi_private.war_action('list')->'matches')=0,'changed embedding receipt hides matchup');
+  perform sdi_test.check(sdi_private.war_action('vote',active_match,choice=>'right')->>'error' is not null,'changed receipt prevents votes');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ begin
+  update sdi_private.feed_posts set visible=false where media_id=media;
+  perform sdi_test.check(not sdi_private.war_media_available((select m from public.sdi_watch_media m where id=media)),'moderation visibility gate hides metadata matchup');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ begin
+  update sdi_private.render_reviews set rights_cleared=false where id=review;
+  perform sdi_test.check(jsonb_array_length(sdi_private.war_action('list')->'matches')=0,'lost rights clearance hides matchup');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ begin
+  insert into sdi_private.account_controls(user_id,state,reason) values(creator,'suspended','test');
+  perform sdi_test.check(sdi_private.war_action('vote',active_match,choice=>'right')->>'error' is not null,'suspended creator reference cannot receive votes');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ begin
+  update public.sdi_watch_media set owner_id=null where id=media;
+  perform sdi_test.check((select provider_url is null and youtube_job is null and url is null from public.sdi_watch_media where id=media)
+   and jsonb_array_length(sdi_private.war_action('list')->'matches')=0,'anonymization clears locator and hides matchup');
+  raise sqlstate 'Z0001';
+ exception when sqlstate 'Z0001' then null;end;
+ begin
+  update public.sdi_watch_media set provider_url='https://youtu.be/abcdefghijk' where id=media;
+  raise exception 'noncanonical source accepted';
+ exception when check_violation then null;end;
+ -- Finalization must count an eligible YouTube rendition without setting raw
+ -- approval true. A separate active match remains for cancellation assertions.
+ perform sdi_test.login(creator);
+ perform sdi_private.war_action('propose',media=>media,opponent=>opponent);
+ select id into final_match from sdi_private.war_matches where left_media=media and status='pending' order by created_at desc limit 1;
+ perform sdi_test.login(opponent);perform sdi_private.war_action('accept',final_match,raw_media);
+ update sdi_private.war_matches set ends_at=clock_timestamp()-interval '1 second' where id=final_match;
+ result:=sdi_private.war_finalize();
+ perform sdi_test.check((result->>'completed')::integer=1 and (select status='completed' from sdi_private.war_matches where id=final_match),'eligible YouTube matchup finalizes without raw approval');
+ perform sdi_test.login(viewer);perform sdi_private.war_report(final_match,'Check this matchup.');
+ select id into war_report from sdi_private.war_reports where match_id=final_match;
+ perform sdi_test.login(reviewer,'aal2');
+ result:=sdi_private.war_moderate('list');
+ perform sdi_test.check(result->'reports'->0->>'left_url'='' and result->'reports'->0->>'right_url'='https://cdn.example.test/war.mp4','raw-only moderator queue stays decodable without handing watch URL to AVPlayer');
+ result:=sdi_private.war_moderate('remove',war_report,1,'Matchup removed for review.');
+ perform sdi_test.check(result->>'status'='confirmed' and (select status='removed' from sdi_private.war_matches where id=final_match),'moderator can still remove provider matchup');
+ perform sdi_test.login(viewer);
+
  -- Staging retirement must not remove an otherwise authorized metadata reference.
  update sdi_private.publish_jobs set lease_expires=clock_timestamp()-interval '5 minutes' where review_id=review;
  select upload_id into upload from sdi_private.upload_registrations where review_id=review;
@@ -90,6 +180,16 @@ begin
  perform sdi_test.check(not (select visible from sdi_private.feed_posts where media_id=media),'channel cancellation hides feed before provider withdrawal');
  perform sdi_test.check((select state from sdi_private.publish_jobs where id=f)='cancelled','feed reference cancellation is terminal without host deletion');
  perform sdi_test.check((select state from sdi_private.publish_jobs where id=y)='removal_pending','channel privacy operation is still pending');
+ result:=sdi_private.war_media();
+ perform sdi_test.check(jsonb_array_length(result->'media')=0,'withdrawn reference leaves owned submission projection immediately');
+ perform sdi_test.login(viewer);
+ perform sdi_test.check(jsonb_array_length(sdi_private.war_action('list')->'matches')=0,'withdrawal hides matchup before external provider operation');
+ perform sdi_test.check(sdi_private.war_action('vote',active_match,choice=>'right')->>'error' is not null,'withdrawal prevents later vote');
+ update sdi_private.war_matches set ends_at=clock_timestamp()-interval '1 second' where id=active_match;
+ result:=sdi_private.war_finalize();
+ perform sdi_test.check((result->>'removed')::integer=1 and (select status='removed' from sdi_private.war_matches where id=active_match),'revoked metadata cannot finalize a contest');
+ perform sdi_test.login(creator);
+
  perform sdi_test.check((sdi_private.feed_removal_claim()->>'empty')::boolean,'raw removal worker never receives YouTube watch URL');
  claimed:=sdi_private.publish_removal_claim();
  perform sdi_test.check((claimed->>'job')::uuid=y,'existing channel removal worker receives the real job');

@@ -57,7 +57,7 @@ struct HomeFeedView: View {
                     .accessibilityIdentifier("feed.home.refresh")
                 }
                 .padding(.horizontal, 16).padding(.vertical, 10)
-                .background(FeedWallPalette.paper)
+                .background(FeedWallPalette.paper, ignoresSafeAreaEdges: [.horizontal])
                 .overlay(alignment: .bottom) { FeedWallPalette.ink.frame(height: 2) }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
@@ -125,7 +125,7 @@ struct HomeFeedView: View {
             }
         }
         .foregroundStyle(FeedWallPalette.ink)
-        .background(FeedWallDesktop().ignoresSafeArea())
+        .background(FeedWallDesktop().ignoresSafeArea(edges: [.horizontal, .bottom]))
         .task(id: identity) {
             invalidateExportScope()
             epoch = UUID(); timeline.reset(); loading = false; loaded = false
@@ -808,9 +808,12 @@ private struct FeedWallButtonStyle: ButtonStyle {
             .foregroundStyle(FeedWallPalette.ink.opacity(isEnabled ? 1 : 0.6))
             .padding(.horizontal, 10)
             .frame(minWidth: 44, minHeight: 44)
-            .background(isEnabled && selected ? FeedWallPalette.red : isEnabled ? FeedWallPalette.paper : FeedWallPalette.grey)
-            .overlay(Rectangle().strokeBorder(FeedWallPalette.ink, lineWidth: 2))
-            .shadow(color: FeedWallPalette.ink, radius: 0, x: configuration.isPressed ? 0 : 2, y: configuration.isPressed ? 0 : 2)
+            .background {
+                Rectangle()
+                    .fill(isEnabled && selected ? FeedWallPalette.red : isEnabled ? FeedWallPalette.paper : FeedWallPalette.grey)
+                    .overlay(Rectangle().strokeBorder(FeedWallPalette.ink, lineWidth: 2))
+                    .shadow(color: FeedWallPalette.ink, radius: 0, x: configuration.isPressed ? 0 : 2, y: configuration.isPressed ? 0 : 2)
+            }
             .offset(x: configuration.isPressed ? 2 : 0, y: configuration.isPressed ? 2 : 0)
     }
 }

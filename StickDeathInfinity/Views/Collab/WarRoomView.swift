@@ -12,6 +12,7 @@ struct WarRoomView: View {
     @State private var videos: [ApprovedMedia] = []
     @State private var votes: [UUID: WarVoteMachine] = [:]
     @State private var players: [UUID: WarMatchPlayers] = [:]
+    @State private var providerPlayback: WarProviderPlayback?
     @State private var selection = ""
     @State private var opponent = ""
     @State private var agreed = false
@@ -87,6 +88,16 @@ struct WarRoomView: View {
             Button("Cancel", role: .cancel) { blocking = nil }
         } message: { _ in
             Text("Their matchups disappear from your War Room and open matchups between you are withdrawn. This does not report them.")
+        }
+        .sheet(item: $providerPlayback) { item in
+            CommunityVideoPlayer(source: item.source, title: item.title)
+                .task(id: item.id) {
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(for: .seconds(15)); try Task.checkCancellation() }
+                        catch { return }
+                        await revalidateProviderPlayback(item)
+                    }
+                }
         }
         .onDisappear { stopPlayers() }
         .accessibilityIdentifier("warRoom.screen")
@@ -180,7 +191,17 @@ struct WarRoomView: View {
     /// wide layouts, one at a time on phones. Sound is per device.
     @ViewBuilder private func playback(_ match: WarMatch) -> some View {
         let current = players[match.id]
-        if let current {
+        if match.hasProviderPlayback {
+            Button("Watch first: \(match.left_title)") { Task { await startPlayback(match, right: false) } }
+                .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                .accessibilityIdentifier("warRoom.match.play-left")
+            if let title = match.right_title, match.rightPlaybackSource != nil {
+                Button("Watch second: \(title)") { Task { await startPlayback(match, right: true) } }
+                    .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                    .accessibilityIdentifier("warRoom.match.play-right")
+            }
+            Text("YouTube videos open one at a time using YouTube’s player controls. File downloads are unavailable.").communityCaption()
+        } else if let current {
             if mode == .sideBySide, let right = current.right {
                 HStack(spacing: 8) {
                     VideoPlayer(player: current.left).frame(minHeight: 160).accessibilityLabel("First video: \(match.left_title)")
@@ -205,9 +226,9 @@ struct WarRoomView: View {
             }
         } else {
             Button {
-                startPlayers(match)
+                Task { await startPlayback(match, right: false) }
             } label: {
-                Label(match.right_url == nil ? "Watch: \(match.left_title)" : "Watch both videos", systemImage: "play.circle.fill").frame(minHeight: 44)
+                Label(match.rightPlaybackSource == nil ? "Watch: \(match.left_title)" : "Watch both videos", systemImage: "play.circle.fill").frame(minHeight: 44)
             }.buttonStyle(CommunitySecondaryButtonStyle()).accessibilityIdentifier("warRoom.match.watch")
             Text(match.right_title.map { "\(match.left_title) vs \($0)" } ?? "\(match.left_title) · opponent video pending").communityCaption()
         }
@@ -226,12 +247,41 @@ struct WarRoomView: View {
         .accessibilityIdentifier(choice == .left ? "warRoom.match.vote-left" : "warRoom.match.vote-right")
     }
 
-    private func startPlayers(_ match: WarMatch) {
-        guard let left = CommunityMediaURL.checked(match.left_url) else { error = "Video address is unavailable."; return }
-        let right = CommunityMediaURL.checked(match.right_url).map { AVPlayer(url: $0) }
-        var set = WarMatchPlayers(left: AVPlayer(url: left), right: right)
-        set.apply(mode: mode)
-        players[match.id] = set
+    @MainActor private func startPlayback(_ match: WarMatch, right: Bool) async {
+        guard !busy, auth.isAuthenticated, phase == .active else { return }
+        let revision = epoch; let account = viewer
+        busy = true; error = nil
+        defer { if revision == epoch { busy = false } }
+        do {
+            let current = try await CommunityServices.warRoom.matchForPlayback(match.id)
+            guard !Task.isCancelled, revision == epoch, account == viewer, phase == .active else { return }
+            guard let source = right ? current.rightPlaybackSource : current.leftPlaybackSource else {
+                throw CommunityError.invalidResponse("Video address is unavailable.")
+            }
+            stopPlayers()
+            if current.hasProviderPlayback {
+                providerPlayback = WarProviderPlayback(match: current.id, right: right, source: source,
+                    title: right ? (current.right_title ?? "Second video") : current.left_title)
+            } else {
+                guard case .rendition(let left) = current.leftPlaybackSource else { return }
+                let rightPlayer = current.rightPlaybackSource?.renditionURL.map { AVPlayer(url: $0) }
+                var set = WarMatchPlayers(left: AVPlayer(url: left), right: rightPlayer)
+                set.apply(mode: mode); players[current.id] = set
+            }
+        } catch {
+            if revision == epoch { stopPlayers(); self.error = CommunityGateway.normalize(error).errorDescription }
+        }
+    }
+    @MainActor private func revalidateProviderPlayback(_ item: WarProviderPlayback) async {
+        do {
+            let current = try await CommunityServices.warRoom.matchForPlayback(item.match)
+            guard !Task.isCancelled, providerPlayback?.id == item.id else { return }
+            let source = item.right ? current.rightPlaybackSource : current.leftPlaybackSource
+            if source != item.source { providerPlayback = nil; error = "This video is no longer available." }
+        } catch {
+            guard !Task.isCancelled, providerPlayback?.id == item.id else { return }
+            providerPlayback = nil; self.error = CommunityGateway.normalize(error).errorDescription
+        }
     }
     private func switchPlayer(_ match: WarMatch, right: Bool) {
         guard var set = players[match.id] else { return }
@@ -245,16 +295,17 @@ struct WarRoomView: View {
     }
     private func stopPlayers() {
         for set in players.values { set.left.pause(); set.right?.pause() }
-        players = [:]
+        players = [:]; providerPlayback = nil
     }
 
     @MainActor private func load() async {
         guard auth.isAuthenticated, let account = viewer else { return }
         let revision = epoch
+        stopPlayers()
         busy = true; defer { if revision == epoch { busy = false } }
         do {
             let list = try await CommunityServices.warRoom.matches()
-            let owned = try await CommunityServices.warRoom.ownedMedia(account: account)
+            let owned = try await CommunityServices.warRoom.ownedMedia()
             guard !Task.isCancelled, revision == epoch, account == viewer else { return }
             matches = list; videos = owned; loaded = true; error = nil
             votes = Dictionary(uniqueKeysWithValues: list.map { ($0.id, WarVoteMachine(serverVote: $0.my_vote)) })
@@ -306,6 +357,14 @@ struct WarRoomView: View {
             reporting = nil; reportReason = ""; notice = "Report received for administrator review."
         } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
     }
+}
+
+private struct WarProviderPlayback: Identifiable {
+    let id = UUID()
+    let match: UUID
+    let right: Bool
+    let source: FeedPlaybackSource
+    let title: String
 }
 
 /// Per-matchup players: created on demand, paused when the card leaves.

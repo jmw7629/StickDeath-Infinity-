@@ -111,8 +111,42 @@ private func decodeMatch(_ json: String) throws -> WarMatch { try CommunityCodin
             try await client.report(match: match, reason: "Vote brigading")
             transport.replies = [.success(#"{"notices":[{"id":"\#(media.uuidString)","match_id":"\#(match.uuidString)","message":"Matchup removed after administrator review.","created_at":"2026-10-01T00:00:00Z","appeal_state":null,"appeal_deadline":"2026-10-31T00:00:00Z"}]}"#)]
             try require(try await client.notices().first?.appeal_state == nil, "notice decoded")
+            transport.replies = [.success(#"{"media":[{"id":"\#(media.uuidString)","title":"Mine","url":"https://cdn.example/m.mp4","duration":4,"expires_at":null,"video_source":{"provider":"rendition","url":"https://cdn.example/m.mp4"}}]}"#)]
+            try require(try await client.ownedMedia().count == 1 && transport.calls.last?.name == "sdi_war_media" && transport.calls.last?.params.isEmpty == true, "server binds eligible media to current account; caller supplies no owner")
             transport.replies = [.success(#"[{"id":"\#(media.uuidString)","title":"Mine","url":"https://cdn.example/m.mp4","duration":4,"expires_at":null}]"#)]
-            try require(try await client.ownedMedia(account: creator).count == 1 && (transport.calls.last?.params["filters"] as? [String])?.first == "owner_id=\(creator.uuidString.lowercased())", "owned media filtered")
+            try require(try await client.ownedMedia(account: creator).count == 1 && transport.calls.last?.name == "rows:sdi_watch_media" && (transport.calls.last?.params["filters"] as? [String])?.first == "owner_id=\(creator.uuidString.lowercased())", "existing raw-only Challenge consumer retains owner-filtered RLS path")
+        }
+
+        await test("War Room sources require provider binding and canonical YouTube links without raw/download privileges") {
+            let canonical = "https://www.youtube.com/watch?v=abcdefghijk"
+            let source = CommunityVideoSource(provider: .youtube, url: canonical)
+            try require(source.playbackSource == .youtube(YouTubeVideo(id: "abcdefghijk")!), "canonical provider source routes to embedded player")
+            try require(source.playbackSource?.renditionURL == nil, "watch pages never receive download or AVPlayer URL")
+            try require(CommunityVideoSource(provider: .rendition, url: canonical).playbackSource == nil, "raw provider label cannot smuggle watch pages")
+            try require(CommunityVideoSource(provider: .youtube, url: "https://cdn.example/m.mp4").playbackSource == nil, "YouTube label cannot authorize arbitrary hosts")
+            try require(CommunityVideoSource.resolve(nil, legacyURL: canonical) == nil, "legacy raw-only payload cannot authorize YouTube")
+            for raw in ["https://youtu.be/abcdefghijk", "https://www.youtube.com/watch?v=abcdefghijk&list=x", "https://www.youtube.com/watch?v=abcdefghijk#x", "https://www.youtube.com/watch?v=%61bcdefghijk", "https://www.youtube.com/embed/abcdefghijk", "https://www.youtube.com.evil.test/watch?v=abcdefghijk", "https://www.youtube.com@evil.test/watch?v=abcdefghijk", "https://www.youtube.com:444/watch?v=abcdefghijk", "https://www.googlevideo.com/videoplayback", "https://www.youtube.com/watch?v=short"] {
+                try require(CommunityVideoSource(provider: .youtube, url: raw).playbackSource == nil, "unsupported provider URL rejected: \(raw)")
+            }
+            let legacy = matchJSON(status: "active", endsAt: now)
+            let typed = legacy.replacingOccurrences(of: #""left_url":"https://cdn.example/l.mp4""#, with: #""left_url":null,"left_video_source":{"provider":"youtube","url":"https://www.youtube.com/watch?v=abcdefghijk"}"#)
+            let decoded = try decodeMatch(typed)
+            try require(decoded.left_url == nil && decoded.leftPlaybackSource == source.playbackSource && decoded.hasProviderPlayback, "typed YouTube and legacy raw opponent coexist without fake raw URL")
+            try require(decoded.rightPlaybackSource?.renditionURL != nil, "raw opponent retains raw playback")
+            let transport = FakeTransport(); let client = WarRoomClient(gateway: CommunityGateway(transport: transport))
+            transport.replies = [.success(#"{"matches":[\#(typed)]}"#)]
+            try require(try await client.matchForPlayback(match).leftPlaybackSource == source.playbackSource, "play tap revalidates current server list")
+            transport.replies = [.success(#"{"matches":[]}"#)]
+            do { _ = try await client.matchForPlayback(match); throw Failure(description: "revoked match kept playing") } catch CommunityError.server {}
+            transport.replies = [.success(#"{"matches":[\#(typed.replacingOccurrences(of: #""provider":"youtube""#, with: #""provider":"rendition""#))]}"#)]
+            do { _ = try await client.matches(); throw Failure(description: "provider mismatch accepted") } catch CommunityError.invalidResponse {}
+            transport.replies = [.success(#"{"media":[{"id":"\#(media.uuidString)","title":"Mine","url":null,"duration":null,"video_source":{"provider":"youtube","url":"https://www.youtube.com/watch?v=abcdefghijk"}}]}"#)]
+            try require(try await client.ownedMedia().first?.playbackSource == source.playbackSource, "eligible owned YouTube metadata has no duration or raw URL")
+            transport.replies = [.success(#"{"media":[{"id":"\#(media.uuidString)","title":"Mine","url":null,"video_source":{"provider":"unknown","url":"https://www.youtube.com/watch?v=abcdefghijk"}}]}"#)]
+            do { _ = try await client.ownedMedia(); throw Failure(description: "unknown provider accepted") } catch CommunityError.invalidResponse {}
+            transport.hasSession = false; let calls = transport.calls.count
+            do { _ = try await client.ownedMedia(); throw Failure(description: "signed-out metadata requested") } catch CommunityError.signedOut {}
+            try require(calls == transport.calls.count, "signed-out request blocked before transport")
         }
 
         await test("challenge phases use the server clock, one entry per creator and schedule rules hold before any request") {

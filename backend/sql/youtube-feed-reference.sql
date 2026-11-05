@@ -586,4 +586,235 @@ begin
  values(a.id,actor_id,'appeal_'||action,trim(note),m.id,coalesce(a.render_digest,m.render_digest,''));
  return jsonb_build_object('status','confirmed');
 end $$;
+
+-- War Room is provider-aware; generic Watch Together/export readers deliberately
+-- retain approved-only RLS. A typed projection is not permission to download.
+-- Reuse the exact verified feed reference gate and require its visible post, so
+-- consent withdrawal, moderation, deletion and provider revocation win every read.
+create function sdi_private.war_media_available(media public.sdi_watch_media,available_at timestamptz default null) returns boolean
+language sql stable security definer set search_path='' as $$
+ select coalesce(media.owner_id is not null and media.render_digest is not null
+  and not sdi_private.creator_restricted(media.owner_id)
+  and (media.expires_at is null or media.expires_at>coalesce(available_at,clock_timestamp()))
+  and case media.playback_provider when 'rendition' then media.approved
+   when 'youtube' then media.url is null and not media.approved
+    and media.provider_url ~ '^https://www[.]youtube[.]com/watch[?]v=[A-Za-z0-9_-]{11}$'
+    and sdi_private.feed_media_available(media)
+    and exists(select 1 from sdi_private.feed_posts p where p.media_id=media.id and p.creator=media.owner_id and p.visible)
+   else false end,false)
+$$;
+revoke all on function sdi_private.war_media_available(public.sdi_watch_media,timestamptz) from public,anon,authenticated,service_role;
+create function sdi_private.war_video_source(media public.sdi_watch_media) returns jsonb
+language sql stable set search_path='' as $$
+ select jsonb_build_object('provider',media.playback_provider,'url',
+  case media.playback_provider when 'youtube' then media.provider_url else media.url end)
+$$;
+revoke all on function sdi_private.war_video_source(public.sdi_watch_media) from public,anon,authenticated,service_role;
+
+-- Caller cannot supply an owner. This endpoint never widens watch_media RLS.
+create function sdi_private.war_media() returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare actor uuid:=auth.uid(); items jsonb;
+begin
+ if actor is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor and not is_anonymous) then
+  return jsonb_build_object('error','Sign in with a full account.');end if;
+ select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
+  select m.id,m.title,m.url,m.duration,m.expires_at,sdi_private.war_video_source(m) as video_source
+  from public.sdi_watch_media m where m.owner_id=actor and sdi_private.war_media_available(m)
+  order by m.id limit 100
+ ) item;
+ return jsonb_build_object('media',items);
+end $$;
+revoke all on function sdi_private.war_media() from public,anon,service_role;
+grant execute on function sdi_private.war_media() to authenticated;
+create function public.sdi_war_media() returns jsonb language sql stable security invoker set search_path='' as $$select sdi_private.war_media()$$;
+revoke all on function public.sdi_war_media() from public,anon,service_role;
+grant execute on function public.sdi_war_media() to authenticated;
+
+create or replace function sdi_private.war_action(action text, match uuid default null, media uuid default null,
+ opponent uuid default null, choice text default null) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare actor uuid:=auth.uid(); n integer; m sdi_private.war_matches; video public.sdi_watch_media; result jsonb;
+begin
+ if actor is null or not sdi_private.account_active() or not exists(select 1 from auth.users where id=actor and not is_anonymous) then
+  return jsonb_build_object('error','Sign in with a full account.'); end if;
+ insert into sdi_private.war_budget values(actor,clock_timestamp(),1)
+ on conflict(user_id) do update set
+ attempts=case when sdi_private.war_budget.starts_at<clock_timestamp()-interval '1 minute' then 1 else sdi_private.war_budget.attempts+1 end,
+ starts_at=case when sdi_private.war_budget.starts_at<clock_timestamp()-interval '1 minute' then clock_timestamp() else sdi_private.war_budget.starts_at end
+ returning attempts into n;
+ if n>60 then return jsonb_build_object('error','Too many requests. Wait a minute.'); end if;
+ if action='list' then
+  select coalesce(jsonb_agg(row_to_json(items)),'[]'::jsonb) into result from (
+   select w.id,w.creator,w.opponent,w.status,w.ends_at,l.title as left_title,l.url as left_url,
+    r.title as right_title,r.url as right_url,final.outcome,
+    sdi_private.war_video_source(l) as left_video_source,
+    case when r.id is not null then sdi_private.war_video_source(r) end as right_video_source,
+    coalesce(final.left_votes,(select count(*) from sdi_private.war_votes where match_id=w.id and war_votes.choice='left')) as left_votes,
+    coalesce(final.right_votes,(select count(*) from sdi_private.war_votes where match_id=w.id and war_votes.choice='right')) as right_votes,
+    (select war_votes.choice from sdi_private.war_votes where match_id=w.id and voter=actor) as my_vote
+   from sdi_private.war_matches w join public.sdi_watch_media l on l.id=w.left_media
+   left join public.sdi_watch_media r on r.id=w.right_media
+   left join sdi_private.war_results final on final.match_id=w.id
+   where (w.status in('active','completed') or (sdi_private.war_proposal_live(w) and actor in(w.creator,w.opponent)))
+   and sdi_private.war_media_available(l) and l.owner_id=w.creator and l.render_digest=w.left_digest
+   and (w.status='pending' or (sdi_private.war_media_available(r) and r.owner_id=w.opponent and r.render_digest=w.right_digest))
+   and not sdi_private.creator_restricted(w.creator) and not sdi_private.creator_restricted(w.opponent)
+   and not exists(select 1 from sdi_private.war_blocks b where
+     (b.blocker=actor and b.blocked in(w.creator,w.opponent)) or (b.blocked=actor and b.blocker in(w.creator,w.opponent)))
+   order by w.created_at desc limit 100
+  ) items;
+  return jsonb_build_object('matches',result);
+ elsif action='propose' then
+  if opponent is null or opponent=actor or not exists(select 1 from auth.users where id=opponent and not is_anonymous)
+   or sdi_private.creator_restricted(opponent) then
+   return jsonb_build_object('error','Choose another eligible creator.'); end if;
+  if exists(select 1 from sdi_private.war_blocks b where (b.blocker=actor and b.blocked=opponent) or (b.blocker=opponent and b.blocked=actor)) then
+   return jsonb_build_object('error','Matchup unavailable.'); end if;
+  if (select count(*) from sdi_private.war_matches w where w.creator=actor and
+   (sdi_private.war_proposal_live(w) or (w.status='active' and (w.ends_at is null or w.ends_at>clock_timestamp()))))>=5 then
+   return jsonb_build_object('error','Finish or withdraw an existing matchup first.'); end if;
+  select v.* into video from public.sdi_watch_media v where v.id=media and v.owner_id=actor and sdi_private.war_media_available(v);
+  if not found then return jsonb_build_object('error','Select your approved rendered video.'); end if;
+  insert into sdi_private.war_matches(creator,opponent,left_media,left_digest) values(actor,opponent,media,video.render_digest);
+ elsif action='block' then
+  if opponent is null or opponent=actor then return jsonb_build_object('error','Invalid creator.'); end if;
+  insert into sdi_private.war_blocks values(actor,opponent) on conflict do nothing;
+  update sdi_private.war_matches set status='withdrawn' where status in('pending','active') and
+   ((creator=actor and war_matches.opponent=war_action.opponent) or (creator=war_action.opponent and war_matches.opponent=actor));
+ else
+  select * into m from sdi_private.war_matches where id=match for update;
+  if not found then return jsonb_build_object('error','Matchup unavailable.'); end if;
+  if m.status='pending' and not sdi_private.war_proposal_live(m) then
+   update sdi_private.war_matches set status='expired' where id=m.id;
+   return jsonb_build_object('error','This proposal expired after seven days.'); end if;
+  if action='withdraw' then
+   if actor not in(m.creator,m.opponent) then return jsonb_build_object('error','Only participants can withdraw.'); end if;
+   if m.ends_at is not null and m.ends_at<=clock_timestamp() then return jsonb_build_object('error','Voting has ended; contact moderation for an appeal.'); end if;
+   update sdi_private.war_matches set status='withdrawn' where id=match;
+  elsif action='accept' then
+   if m.opponent<>actor or m.status<>'pending' then return jsonb_build_object('error','No pending invitation.'); end if;
+   if sdi_private.creator_restricted(m.creator) or exists(select 1 from sdi_private.war_blocks b where (b.blocker=actor and b.blocked=m.creator) or (b.blocker=m.creator and b.blocked=actor)) then
+    return jsonb_build_object('error','Matchup unavailable.'); end if;
+   select v.* into video from public.sdi_watch_media v where v.id=media and v.owner_id=actor
+    and sdi_private.war_media_available(v,clock_timestamp()+interval '24 hours');
+   if not found then return jsonb_build_object('error','Select an approved video available for the voting period.'); end if;
+   if not exists(select 1 from public.sdi_watch_media v where v.id=m.left_media and v.owner_id=m.creator and v.render_digest=m.left_digest
+    and sdi_private.war_media_available(v,clock_timestamp()+interval '24 hours')) then
+    return jsonb_build_object('error','The other video is unavailable.'); end if;
+   update sdi_private.war_matches set right_media=media,right_digest=video.render_digest,status='active',starts_at=clock_timestamp(),ends_at=clock_timestamp()+interval '24 hours' where id=match;
+  elsif action='vote' then
+   if choice is null or choice not in('left','right') or actor in(m.creator,m.opponent) or m.status<>'active' or m.ends_at<=clock_timestamp() then
+    return jsonb_build_object('error','Voting is not available to this account.'); end if;
+   if sdi_private.creator_restricted(m.creator) or sdi_private.creator_restricted(m.opponent)
+    or exists(select 1 from sdi_private.war_blocks b where (b.blocker=actor and b.blocked in(m.creator,m.opponent)) or (b.blocked=actor and b.blocker in(m.creator,m.opponent))) then
+    return jsonb_build_object('error','Voting is unavailable.'); end if;
+   if (select count(*) from public.sdi_watch_media v where sdi_private.war_media_available(v)
+     and ((v.id=m.left_media and v.owner_id=m.creator and v.render_digest=m.left_digest)
+       or (v.id=m.right_media and v.owner_id=m.opponent and v.render_digest=m.right_digest)))<>2 then
+    return jsonb_build_object('error','A submitted video is no longer approved.'); end if;
+   insert into sdi_private.war_votes values(match,actor,choice) on conflict(match_id,voter) do update set choice=excluded.choice;
+  else return jsonb_build_object('error','Unsupported operation.'); end if;
+ end if;
+ return jsonb_build_object('status','confirmed');
+end $$;
+
+create or replace function sdi_private.war_finalize() returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare m sdi_private.war_matches; left_count bigint; right_count bigint; completed integer:=0; removed integer:=0;
+begin
+ -- Same match lock as the vote endpoint serializes the terminal snapshot.
+ for m in select * from sdi_private.war_matches where status='active' and ends_at<=clock_timestamp()
+  order by ends_at,id for update skip locked limit 100 loop
+  if (select count(*) from public.sdi_watch_media v where sdi_private.war_media_available(v,m.ends_at)
+   and ((v.id=m.left_media and v.owner_id=m.creator and v.render_digest=m.left_digest)
+     or (v.id=m.right_media and v.owner_id=m.opponent and v.render_digest=m.right_digest)))<>2 then
+   update sdi_private.war_matches set status='removed' where id=m.id;
+   removed:=removed+1;continue;
+  end if;
+  select count(*) filter(where choice='left'),count(*) filter(where choice='right')
+   into left_count,right_count from sdi_private.war_votes where match_id=m.id;
+  insert into sdi_private.war_results(match_id,left_votes,right_votes,outcome,left_digest,right_digest)
+   values(m.id,left_count,right_count,case when left_count=right_count then 'tie' when left_count>right_count then 'left' else 'right' end,m.left_digest,m.right_digest)
+   on conflict(match_id) do nothing;
+  update sdi_private.war_matches set status='completed' where id=m.id;
+  completed:=completed+1;
+ end loop;
+ return jsonb_build_object('completed',completed,'removed',removed);
+end $$;
+
+-- Raw-only administrator previews fail visibly; provider references cannot
+-- bypass existing exact-media appeal restoration checks.
+create or replace function sdi_private.war_moderate(action text,report uuid default null,revision bigint default null,reason text default '') returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare r sdi_private.war_reports; m sdi_private.war_matches; items jsonb;
+begin
+ if not sdi_private.admin_can('moderation') or not sdi_private.account_active() then return jsonb_build_object('error','Current admin MFA session required.');end if;
+ if action='list' then
+  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
+   select report_row.id,report_row.match_id,report_row.reason,report_row.revision,report_row.created_at,w.status,
+    l.title as left_title,v.title as right_title,coalesce(l.url,'') as left_url,v.url as right_url
+   from sdi_private.war_reports report_row join sdi_private.war_matches w on w.id=report_row.match_id
+   join public.sdi_watch_media l on l.id=w.left_media left join public.sdi_watch_media v on v.id=w.right_media
+   where report_row.state='pending' order by report_row.created_at,report_row.id limit 50
+  ) item;
+  return jsonb_build_object('reports',items);
+ end if;
+ if action is null or action not in('dismiss','remove') or revision is null or reason is null or length(trim(reason)) not between 1 and 2000 then
+  return jsonb_build_object('error','A current report and decision reason are required.');end if;
+ select * into r from sdi_private.war_reports where id=report for update;
+ if not found or r.state<>'pending' or r.revision<>revision then return jsonb_build_object('error','Report changed. Refresh.');end if;
+ select * into m from sdi_private.war_matches where id=r.match_id for update;
+ if auth.uid() in(m.creator,m.opponent,r.reporter) then return jsonb_build_object('error','An uninvolved administrator must decide.');end if;
+ if action='remove' then
+  update sdi_private.war_matches set status='removed' where id=m.id;
+  -- Keep votes and final snapshot for audit, but removed matches do not count
+  -- toward profile records. This does not delete a creator's media or original.
+ end if;
+ update sdi_private.war_reports set state=case action when 'remove' then 'removed' else 'dismissed' end,
+  revision=war_reports.revision+1 where id=r.id;
+ insert into sdi_private.war_moderation_audit(report_id,match_id,actor,decision,previous_status,reason)
+ values(r.id,m.id,auth.uid(),action,m.status,trim(reason));
+ return jsonb_build_object('status','confirmed');
+end $$;
+
+create or replace function sdi_private.war_appeal_admin(action text,appeal uuid default null,revision bigint default null,note text default '') returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare a sdi_private.war_appeals; d sdi_private.war_moderation_audit; m sdi_private.war_matches; items jsonb;
+begin
+ if not sdi_private.admin_can('moderation') or not sdi_private.account_active() then return jsonb_build_object('error','Current admin MFA session required.');end if;
+ if action='list' then
+  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into items from (
+   select appeal_row.id,appeal_row.explanation,appeal_row.revision,appeal_row.created_at,decision_row.match_id,decision_row.reason as decision_reason,decision_row.previous_status,
+    w.left_digest,w.right_digest,l.title as left_title,r.title as right_title,coalesce(l.url,'') as left_url,r.url as right_url
+   from sdi_private.war_appeals appeal_row join sdi_private.war_moderation_audit decision_row on decision_row.id=appeal_row.decision_id
+   join sdi_private.war_matches w on w.id=decision_row.match_id
+   join public.sdi_watch_media l on l.id=w.left_media left join public.sdi_watch_media r on r.id=w.right_media
+   where appeal_row.state='pending' order by appeal_row.created_at,appeal_row.id limit 50
+  ) item;
+  return jsonb_build_object('appeals',items);
+ end if;
+ if action is null or action not in('accept','reject') or revision is null or note is null or length(trim(note)) not between 1 and 2000 then
+  return jsonb_build_object('error','A current appeal and reason are required.');end if;
+ select * into a from sdi_private.war_appeals where id=appeal for update;
+ if not found or a.state<>'pending' or a.revision<>revision then return jsonb_build_object('error','Appeal changed. Refresh.');end if;
+ select * into d from sdi_private.war_moderation_audit where id=a.decision_id;
+ select * into m from sdi_private.war_matches where id=d.match_id for update;
+ if auth.uid() in(a.appellant,d.actor,m.creator,m.opponent) or exists(select 1 from sdi_private.war_reports where id=d.report_id and reporter=auth.uid()) then
+  return jsonb_build_object('error','Another uninvolved administrator must review this appeal.');end if;
+ if action='accept' then
+  if m.status<>'removed' or exists(select 1 from sdi_private.war_moderation_audit where match_id=m.id and created_at>d.created_at and decision='remove')
+   or d.previous_status not in('pending','active','completed') then return jsonb_build_object('error','A newer restriction requires separate review.');end if;
+  if not exists(select 1 from public.sdi_watch_media where id=m.left_media and approved and render_digest=m.left_digest
+   and (expires_at is null or expires_at>clock_timestamp()))
+   or (d.previous_status<>'pending' and not exists(select 1 from public.sdi_watch_media where id=m.right_media and approved
+   and render_digest=m.right_digest and (expires_at is null or expires_at>clock_timestamp()))) then
+   return jsonb_build_object('error','The exact submitted media must remain approved and available.');end if;
+  update sdi_private.war_matches set status=d.previous_status where id=m.id;
+ end if;
+ update sdi_private.war_appeals set state=case action when 'accept' then 'accepted' else 'rejected' end,
+ reviewer=auth.uid(),review_note=trim(note),revision=war_appeals.revision+1,decided_at=clock_timestamp() where id=a.id;
+ return jsonb_build_object('status','confirmed');
+end $$;
+
 commit;
