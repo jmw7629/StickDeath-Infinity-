@@ -1123,7 +1123,7 @@ final class StudioSmokeUITests: XCTestCase {
         let app = try launchGuestStudio()
         defer { app.terminate() }
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8))
-        try waitForButton("Profile", in: app).tap()
+        try openDesktopSubject("profile", in: app)
         XCTAssertTrue(app.staticTexts["Guest"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["On-device guest"].exists)
         // XCUIElementQuery string subscripts reject identifiers over 128 characters.
@@ -1134,11 +1134,16 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "owner-guest-profile-reference")
         let projects = app.buttons["profile.projects.open"]
         XCTAssertTrue(projects.waitForExistence(timeout: 5)); XCTAssertTrue(projects.isHittable)
+        let projectsNavigationDeadline = ProcessInfo.processInfo.systemUptime + 8
         projects.tap()
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8),
             "Profile Projects did not open the actual project library")
         XCTAssertTrue(app.scrollViews["studio.library.scroll"].exists)
-        try waitForButton("Profile", in: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "hittable == true"),
+            evaluatedWith: app.buttons["studio.new-project"])
+            .waitUntilFulfilled(timeout: max(0, projectsNavigationDeadline - ProcessInfo.processInfo.systemUptime)),
+            "Profile Projects did not bring the actual Studio library forward")
+        try openDesktopSubject("profile", in: app)
         // The actual guest row combines its title and subtitle. It appears
         // below the device inventory, outside the initial profile viewport.
         let settings = app.buttons.matching(NSPredicate(format: "label == %@",
@@ -2107,6 +2112,7 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForButton("Skip Tutorial", in: app).tap()
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 5),
                       "Open Studio routed to a different tab")
+        try maximizeDesktopSubject("studio", in: app)
         let name = try createProjectIfLibraryIsShown(app)
         XCTAssertTrue(app.buttons["studio.back"].waitForExistence(timeout: 8))
         app.buttons["studio.back"].tap()
@@ -2119,7 +2125,7 @@ final class StudioSmokeUITests: XCTestCase {
         try tapWelcomeAction("welcome.guide", in: reopened)
         reopened.buttons["onboarding.skip"].tap()
         try waitForButton("Skip Tutorial", in: reopened).tap()
-        try waitForButton("Studio", in: reopened).tap()
+        try openDesktopSubject("studio", in: reopened)
         XCTAssertTrue(reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch.waitForExistence(timeout: 8), "Guide navigation lost the local project")
         capture(reopened, name: "guide-completed-local-project-preserved")
     }
@@ -2613,7 +2619,7 @@ final class StudioSmokeUITests: XCTestCase {
         let app = try launchGuestStudio()
         defer { app.terminate() }
         XCTAssertFalse(button("Messages", in: app).exists)
-        try waitForButton("Rooms", in: app).tap()
+        try openDesktopSubject("rooms", in: app)
         let guestRooms = app.staticTexts["Sign in to create or join rooms"]
         XCTAssertTrue(guestRooms.waitForExistence(timeout: 5))
         XCTAssertFalse(button("Create room", in: app).exists)
@@ -2625,11 +2631,11 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(button("Find Match", in: app).exists)
         // War Room uses native stack navigation rather than the retired
         // placeholder's custom Back to Rooms button.
-        let back = app.navigationBars.buttons.firstMatch
+        let back = app.descendants(matching: .any)["desktop.window.rooms"].firstMatch.navigationBars.buttons.firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5) && back.isHittable)
         back.tap()
         XCTAssertTrue(guestRooms.waitForExistence(timeout: 5))
-        try waitForButton("Studio", in: app).tap()
+        try openDesktopSubject("studio", in: app)
         XCTAssertTrue(app.buttons["studio.new-project"].waitForExistence(timeout: 5))
         capture(app, name: "rooms-back-to-studio")
     }
@@ -3521,7 +3527,9 @@ final class StudioSmokeUITests: XCTestCase {
         for (key, value) in adjustments {
             let slider = try sharpenSetting(key, in: app)
             defaults[key] = try XCTUnwrap(slider.value as? String)
-            slider.adjust(toNormalizedSliderPosition: value)
+            XCTAssertTrue(dragNativeSliderThumb(slider, toNormalizedSliderPosition: Double(value),
+                                               range: key == "size" ? 1...256 : 0...100),
+                          "The actual native slider value or bounds are unavailable")
             saved[key] = try XCTUnwrap(slider.value as? String)
             XCTAssertNotEqual(saved[key], defaults[key], "Setting did not change: " + key)
         }
@@ -8891,6 +8899,32 @@ final class StudioSmokeUITests: XCTestCase {
             .waitUntilFulfilled(timeout: 8), "The actual native movie share presentation did not dismiss")
     }
 
+    /// Start on the native thumb using its displayed value and actual bounds.
+    /// XCTest's normalized adjustment dropped the visible Burn drag and made
+    /// UIKit opacity oscillate between 40% and 65%. Use the same genuine control
+    /// with a brief press and a slower drag; callers still verify actual readback.
+    @MainActor
+    private func dragNativeSliderThumb(_ slider: XCUIElement, toNormalizedSliderPosition position: Double,
+                                       range: ClosedRange<Double>, valueControl: XCUIElement? = nil) -> Bool {
+        let bounds = slider.frame
+        let span = range.upperBound - range.lowerBound
+        guard let displayed = (valueControl ?? slider).value as? String,
+              let current = Double(displayed.filter { "0123456789.-".contains($0) }),
+              current.isFinite, range.contains(current), span > 0, position.isFinite,
+              bounds.width > bounds.height, bounds.height > 0 else { return false }
+        // The thumb stays inside the control at both endpoints. Height-based
+        // insets keep the press within that thumb; existing readback feedback
+        // corrects residual native geometry and integer-percentage rounding.
+        let inset = bounds.height / 2
+        let travel = bounds.width - inset * 2
+        let currentPosition = (current - range.lowerBound) / span
+        let origin = slider.coordinate(withNormalizedOffset: .zero)
+        let start = origin.withOffset(CGVector(dx: inset + CGFloat(currentPosition) * travel, dy: bounds.height / 2))
+        let end = origin.withOffset(CGVector(dx: inset + CGFloat(min(1, max(0, position))) * travel, dy: bounds.height / 2))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.10)
+        return true
+    }
+
     /// Read each actual native value while the draft is uncommitted. Preserve
     /// both sides of the measured bracket instead of losing it after an overshoot.
     @MainActor
@@ -8907,7 +8941,8 @@ final class StudioSmokeUITests: XCTestCase {
             guard slider.exists, slider.isHittable, slider.isEnabled, scroll.exists else { break }
             let viewport = scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 12)
             guard viewport.contains(slider.frame) else { break }
-            slider.adjust(toNormalizedSliderPosition: CGFloat(aim))
+            guard dragNativeSliderThumb(slider, toNormalizedSliderPosition: aim,
+                                        range: range, valueControl: valueControl) else { break }
             let displayed = (valueControl ?? slider).value as? String ?? ""
             observed.append(displayed)
             guard let actual = Double(displayed.filter { "0123456789.-".contains($0) }),
@@ -8974,8 +9009,47 @@ final class StudioSmokeUITests: XCTestCase {
         let app = try launchAtWelcome(extraLaunchArguments: extraLaunchArguments)
         try tapWelcomeAction("welcome.guest", in: app)
         try waitForButton("Skip Tutorial", in: app).tap()
-        try waitForButton("Studio", in: app).tap()
+        try openDesktopSubject("studio", in: app)
         return app
+    }
+
+    /// Exercise the primary native navigation without relying on the optional dock.
+    /// These existing full-page journeys use real maximize controls so persisted
+    /// desktop placements cannot change their editor and sheet geometry.
+    @MainActor
+    private func openDesktopSubject(_ subject: String, in app: XCUIApplication) throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        try desktopButton("desktop.menu.subjects", in: app, deadline: deadline).tap()
+        try desktopButton("desktop.open." + subject, in: app, deadline: deadline).tap()
+        try maximizeDesktopSubject(subject, in: app, deadline: deadline)
+    }
+
+    @MainActor
+    private func maximizeDesktopSubject(_ subject: String, in app: XCUIApplication,
+                                        deadline: TimeInterval = ProcessInfo.processInfo.systemUptime + 10) throws {
+        let prefix = "desktop.window." + subject
+        let maximize = app.buttons[prefix + ".maximize"]
+        let restored = app.buttons[prefix + ".restore-size"]
+        let available = NSPredicate { _, _ in maximize.exists || restored.exists }
+        XCTAssertTrue(expectation(for: available, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Missing native subject size control: " + subject)
+        if maximize.exists {
+            try desktopButton(prefix + ".maximize", in: app, deadline: deadline).tap()
+        }
+        _ = try desktopButton(prefix + ".restore-size", in: app, deadline: deadline)
+    }
+
+    @MainActor
+    private func desktopButton(_ identifier: String, in app: XCUIApplication,
+                               deadline: TimeInterval) throws -> XCUIElement {
+        let element = app.buttons[identifier]
+        XCTAssertTrue(element.waitUntilPresent(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Missing native button: " + identifier)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
+            .waitUntilFulfilled(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Native button is not reachable: " + identifier)
+        return element
     }
 
     @MainActor

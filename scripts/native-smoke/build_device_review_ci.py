@@ -263,17 +263,28 @@ class Guard:
         self.runner, self.scratch = runner, scratch
         self.minimum = None
         self.last_size_check = 0.0
+        self.started = time.monotonic()
+        self.observation = {}
 
     def check(self, *, initial=False):
+        now = time.monotonic()
+        self.observation.update(
+            elapsedSeconds=round(now - self.started, 6),
+            overallSecondsRemaining=None if WORK_DEADLINE is None else round(WORK_DEADLINE - now, 6),
+            freeFloorBytes=8 * GIB if initial else 4 * GIB)
         check_time()
         free = shutil.disk_usage(self.runner).free
         self.minimum = free if self.minimum is None else min(self.minimum, free)
+        self.observation.update(freeBytes=free, minimumFreeBytes=self.minimum)
         if free < (8 * GIB if initial else 4 * GIB):
             raise RuntimeError("Hosted runner scratch free-space floor reached")
         now = time.monotonic()
         if now - self.last_size_check < 20:
             return
-        total = count = 0
+        total = count = allocated = 0
+        self.observation.update(scratchScanComplete=False, scratchScanStartedSeconds=round(now - self.started, 6),
+                                scratchLogicalByteLimit=16 * GIB, scratchEntryLimit=250_000,
+                                scratchEntries=0, scratchLogicalBytes=0, scratchAllocatedBytes=0)
         for directory, folders, files in os.walk(self.scratch, followlinks=False):
             for name in folders + files:
                 try:
@@ -283,8 +294,13 @@ class Guard:
                 count += 1
                 if stat.S_ISREG(s.st_mode):
                     total += s.st_size
+                    blocks = getattr(s, "st_blocks", None)
+                    allocated = allocated + blocks * 512 if allocated is not None and blocks is not None else None
+                self.observation.update(scratchEntries=count, scratchLogicalBytes=total,
+                                        scratchAllocatedBytes=allocated)
                 if total > 16 * GIB or count > 250_000:
                     raise RuntimeError("Owned CI build scratch exceeded its disk or entry bound")
+        self.observation["scratchScanComplete"] = True
         self.last_size_check = now
 
 
@@ -339,8 +355,10 @@ def compile_once(argv, root, env, log_path, guard):
                 if now >= next_guard:
                     try:
                         guard.check()
-                    except (RuntimeError, TimeoutError):
+                    except (RuntimeError, TimeoutError) as error:
                         result["stopReason"] = "scratch-or-overall-budget"
+                        result["guardFailure"] = {"type": type(error).__name__, "message": str(error)[:2048],
+                                                  "observation": dict(guard.observation)}
                         break
                     next_guard = now + 2
                 if now >= next_progress:

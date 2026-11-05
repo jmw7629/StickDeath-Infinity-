@@ -7,7 +7,11 @@ import Supabase
 struct WatchTogetherView: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
     @Environment(\.requestSignIn) private var requestSignIn
+    /// State also invalidates async closures that captured an earlier visible
+    /// environment value before the retained Rooms window was hidden.
+    @State private var resourcesSuspended = false
     @State private var rooms: [WatchRoom] = []
     @State private var media: [WatchRoomMedia] = []
     /// Read-only membership rows (account identifiers only). RLS returns the
@@ -36,6 +40,8 @@ struct WatchTogetherView: View {
     @State private var clock = ServerClockEstimator()
 
     private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(phase == .active):\(refresh)" }
+    private var playbackIdentity: String { "\(selected?.id.uuidString ?? "none"):\(subjectWindowVisible):\(identity)" }
+    private var resourcesAllowed: Bool { subjectWindowVisible && !resourcesSuspended && auth.isAuthenticated && phase == .active }
     private var isHost: Bool { selected?.owner_id.uuidString.lowercased() == auth.userId?.lowercased() }
     private var currentMedia: WatchRoomMedia? { statusVideo?.id == state?.media_id ? statusVideo : nil }
     private var client: SupabaseClient { get throws { try SupabaseManager.shared.client } }
@@ -129,16 +135,27 @@ struct WatchTogetherView: View {
         .navigationTitle("Watch Together").navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .task(id: identity) { await load() }
-        .task(id: selected?.id) {
-            guard let room = selected else { return }
+        .task(id: playbackIdentity) {
+            guard !Task.isCancelled, resourcesAllowed, let room = selected else { return }
             await loadMedia(room)
-            while !Task.isCancelled && selected?.id == room.id {
+            while !Task.isCancelled && resourcesAllowed && selected?.id == room.id {
                 _ = await synchronize(room)
                 do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
             }
         }
         .sheet(item: $providerPlayback) { item in CommunityVideoPlayer(source: item.source, title: item.title) }
-        .onDisappear { leave() }
+        .onAppear {
+            resourcesSuspended = !subjectWindowVisible
+            if !subjectWindowVisible { suspendResources() }
+        }
+        .onChange(of: subjectWindowVisible) { visible in
+            resourcesSuspended = !visible
+            if !visible { suspendResources() }
+            // A selected room resumes through the visibility-keyed task, which
+            // rechecks membership and media before creating another player.
+            else if selected == nil { refresh += 1 }
+        }
+        .onDisappear { resourcesSuspended = true; leave() }
         .accessibilityIdentifier("watchTogether.screen")
     }
 
@@ -201,25 +218,33 @@ struct WatchTogetherView: View {
     @MainActor private func leave() {
         generation = UUID(); clearPlayback(); playbackAdmission.reset(); catalogRequest = UUID(); selected = nil; selectedMedia = ""; media = []; busy = false; participants = []; clock = ServerClockEstimator()
     }
+    @MainActor private func suspendResources() {
+        resourcesSuspended = true
+        generation = UUID(); catalogRequest = UUID()
+        clearPlayback(); busy = false
+        // Keep the selected room, picker selection, catalogue and navigation.
+        // Account/scene changes still run load()/leave() with their old policy.
+    }
     @MainActor private func isCurrent(_ room: WatchRoom, account: String?, epoch: UUID) -> Bool {
         !Task.isCancelled && generation == epoch && selected?.id == room.id &&
-            auth.isAuthenticated && auth.userId == account && phase == .active
+            resourcesAllowed && auth.userId == account
     }
     @MainActor private func load() async {
         leave(); rooms = []; media = []; error = nil
-        guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return }
+        guard resourcesAllowed, let account = auth.userId else { return }
         let epoch = generation
         busy = true; defer { if generation == epoch { busy = false } }
         do {
             let values: [WatchRoom] = try await client.from("sdi_rooms").select().eq("closed", value: false).limit(100).execute().value
-            guard !Task.isCancelled, generation == epoch, phase == .active, account == auth.userId, auth.isAuthenticated else { return }
+            guard !Task.isCancelled, generation == epoch, resourcesAllowed, account == auth.userId else { return }
             rooms = values
         } catch {
-            guard !Task.isCancelled, generation == epoch, phase == .active, account == auth.userId else { return }
+            guard !Task.isCancelled, generation == epoch, resourcesAllowed, account == auth.userId else { return }
             self.error = "Watch Together is unavailable. Check your connection and room service configuration."
         }
     }
     @MainActor private func synchronize(_ room: WatchRoom, allowingBusy: Bool = false) async -> WatchPlaybackGrant? {
+        guard !Task.isCancelled, subjectWindowVisible, !resourcesSuspended else { return nil }
         guard auth.isAuthenticated, phase == .active else { leave(); return nil }
         guard !busy || allowingBusy else { return nil }
         let account = auth.userId; let epoch = generation
@@ -286,7 +311,7 @@ struct WatchTogetherView: View {
         return position.isFinite ? max(0, position) : 0
     }
     @MainActor private func control(position: Double, playing: Bool) async {
-        guard !busy, isHost, let current = state, let room = selected, position.isFinite else { return }
+        guard resourcesAllowed, !busy, isHost, let current = state, let room = selected, position.isFinite else { return }
         let epoch = generation; let account = auth.userId
         busy = true; let ticket = playbackAdmission.beginRefresh()
         defer { if generation == epoch { busy = false } }
@@ -310,7 +335,7 @@ struct WatchTogetherView: View {
         }
     }
     @MainActor private func share() async {
-        guard !busy, isHost, let room = selected, let mediaID = UUID(uuidString: selectedMedia), media.contains(where: {$0.id == mediaID}) else { return }
+        guard resourcesAllowed, !busy, isHost, let room = selected, let mediaID = UUID(uuidString: selectedMedia), media.contains(where: {$0.id == mediaID}) else { return }
         let epoch = generation; let account = auth.userId; let previous = state
         busy = true; let ticket = playbackAdmission.beginRefresh()
         defer { if generation == epoch { busy = false } }
@@ -336,7 +361,7 @@ struct WatchTogetherView: View {
         return try CommunityCoding.decode(WatchRoomResponse.self, from: response.data)
     }
     @MainActor private func loadMedia(_ room: WatchRoom) async {
-        guard auth.isAuthenticated, phase == .active else { return }
+        guard resourcesAllowed else { return }
         let account = auth.userId; let epoch = generation
         let request = UUID(); catalogRequest = request
         do {
@@ -355,7 +380,7 @@ struct WatchTogetherView: View {
         }
     }
     @MainActor private func openProviderVideo() async {
-        guard !busy, let room = selected, let expected = state, let expectedVideo = currentMedia,
+        guard resourcesAllowed, !busy, let room = selected, let expected = state, let expectedVideo = currentMedia,
               case .youtube = expectedVideo.playbackSource, let expectedSource = expectedVideo.playbackSource else { return }
         let account = auth.userId; let epoch = generation
         busy = true; playbackAdmission.invalidatePendingRequests()

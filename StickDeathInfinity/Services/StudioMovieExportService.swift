@@ -13,6 +13,10 @@ import OSLog
 @MainActor
 final class StudioMovieExportService {
     private static let encoderLog = Logger(subsystem: "com.willisbmb.StickDeathInfinity", category: "StudioMovieEncoder")
+    /// The same redacted record sent to Unified Logging. Component callers can
+    /// retain the actual failure facts when a simulator log query is incomplete.
+    /// No error descriptions, arbitrary userInfo, source paths or media are exposed.
+    private(set) var lastEncoderFailureDiagnostic: String?
     private enum EncodingStage: String {
         case staging, configuration, start, fileOwnership, session, frames, finalization, verification, publication
     }
@@ -41,8 +45,8 @@ final class StudioMovieExportService {
         }
     }
 
-    private static func logEncoderFailure(_ writer: AVAssetWriter, stage: EncodingStage, codec: Codec,
-                                          publication: PublicationDiagnostics) {
+    private func logEncoderFailure(_ writer: AVAssetWriter, stage: EncodingStage, codec: Codec,
+                                   publication: PublicationDiagnostics) {
         let error = writer.error.map { $0 as NSError }
         let underlying = error?.userInfo[NSUnderlyingErrorKey] as? NSError
         let code = error?.code ?? 0
@@ -60,7 +64,9 @@ final class StudioMovieExportService {
             default: return "other"
             }
         }
-        encoderLog.error("MP4 encoding failed stage=\(stage.rawValue, privacy: .public) codec=\(codec.rawValue, privacy: .public) writerStatus=\(status, privacy: .public) domain=\(category(error), privacy: .public) code=\(code, privacy: .public) underlyingDomain=\(category(underlying), privacy: .public) underlyingCode=\(underlyingCode, privacy: .public) publicationSubstage=\(publication.substage, privacy: .public) fileRole=\(publication.fileRole, privacy: .public) systemError=\(publication.systemError, privacy: .public) identityMatch=\(publication.identityMatch, privacy: .public)")
+        let record = "MP4 encoding failed stage=\(stage.rawValue) codec=\(codec.rawValue) writerStatus=\(status) domain=\(category(error)) code=\(code) underlyingDomain=\(category(underlying)) underlyingCode=\(underlyingCode) publicationSubstage=\(publication.substage) fileRole=\(publication.fileRole) systemError=\(publication.systemError) identityMatch=\(publication.identityMatch)"
+        lastEncoderFailureDiagnostic = record
+        Self.encoderLog.error("\(record, privacy: .public)")
     }
 
     enum Background: String, Codable { case white, transparent }
@@ -789,6 +795,7 @@ final class StudioMovieExportService {
         guard !Self.movieInProgress else { throw ExportError.alreadyExporting }
         Self.movieInProgress = true
         defer { Self.movieInProgress = false }
+        lastEncoderFailureDiagnostic = nil
         let started = ProcessInfo.processInfo.systemUptime
         if let filenameBase { guard StudioExportFilename.isValid(filenameBase) else { throw ExportError.unsafeDestination } }
         let movieFilename = (filenameBase ?? StudioExportFilename.fallback) + ".mp4"
@@ -989,7 +996,7 @@ final class StudioMovieExportService {
                 manifestURL: destination.appendingPathComponent("manifest.json"), manifest: manifest, ownership: ownership)
         } catch {
             if let writer, !(error is CancellationError) {
-                Self.logEncoderFailure(writer, stage: encodingStage, codec: codec, publication: publicationDiagnostics)
+                logEncoderFailure(writer, stage: encodingStage, codec: codec, publication: publicationDiagnostics)
             }
             if capturingOutputOwnership {
                 // A failed ownership capture may have found a foreign entry.

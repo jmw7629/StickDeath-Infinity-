@@ -184,6 +184,12 @@ private struct StudioAudioWorkspace: View {
     @State private var showingSoundPacks = false
     @AppStorage("studio.audio.audible-scrub") private var audibleScrub = true
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @State private var resourcesSuspended = false
+    @State private var resourceAccountID: String?
+    private var resourcesAllowed: Bool {
+        subjectWindowVisible && !resourcesSuspended && scenePhase == .active && resourceAccountID == soundPackAuth.userId
+    }
     @State private var showingLibrary = false
     private var canOpenLibrary: Bool { vm.planLimits.soundLibrary || vm.planLimits.audioImport }
     private func openLibrary() { if vm.requirePlan(canOpenLibrary) { showingLibrary = true } }
@@ -218,7 +224,7 @@ private struct StudioAudioWorkspace: View {
     private let background = Color(hex: "0D0D12")
     private var soundPackScope: StudioSoundPackPanelScope {
         .init(accountID: soundPackAuth.userId, projectID: vm.document.id, revision: vm.document.revision,
-              frameID: vm.document.activeFrameID, visible: showingLibrary && vm.isEditing && scenePhase == .active)
+              frameID: vm.document.activeFrameID, visible: showingLibrary && vm.isEditing && resourcesAllowed)
     }
 
     var body: some View {
@@ -278,6 +284,8 @@ private struct StudioAudioWorkspace: View {
             // The library holds the sound catalogue and audio import; a plan
             // that locks both shows the upgrade note instead of opening it.
             showingLibrary = opensLibrary && vm.requirePlan(canOpenLibrary)
+            resourceAccountID = soundPackAuth.userId
+            resourcesSuspended = !subjectWindowVisible || scenePhase != .active
             restoreProjectAudioState()
         }
         .task(id: StudioSoundLibraryLoadRequest(id: catalogueLoadID, scope: soundPackScope, mutating: soundPacks.isMutating)) {
@@ -299,13 +307,24 @@ private struct StudioAudioWorkspace: View {
         .task(id: StudioSoundPackPanelLoadRequest(scope: soundPackScope, expanded: showingSoundPacks)) {
             let target = soundPackScope
             if showingSoundPacks && target.visible {
-                soundPacks.activate(scope: target, stillCurrent: { showingSoundPacks && target == soundPackScope }, libraryChanged: {
+                soundPacks.activate(scope: target, stillCurrent: { resourcesAllowed && showingSoundPacks && target == soundPackScope }, libraryChanged: {
                     catalogue = nil; catalogueError = nil; catalogueLoadID = UUID()
                 })
             } else { soundPacks.close() }
         }
         .onChange(of: search) { if search.count > 256 { search = String(search.prefix(256)) } }
-        .onDisappear { soundPacks.close(); audio.close(); timeline.close(); scrubAudio.close(); vm.stopPlayback(); fadeCapture = nil }
+        .onDisappear { resourcesSuspended = true; closeAudioResources(); fadeCapture = nil }
+        .onChange(of: subjectWindowVisible) { _, visible in
+            resourcesSuspended = !visible || scenePhase != .active
+            if resourcesSuspended { closeAudioResources() }
+            else { restoreProjectAudioState() }
+        }
+        .onChange(of: soundPackAuth.userId) { _, _ in
+            resourcesSuspended = true; closeAudioResources()
+            resourceAccountID = soundPackAuth.userId
+            resourcesSuspended = !subjectWindowVisible || scenePhase != .active
+            if resourcesAllowed { restoreProjectAudioState() }
+        }
         .onChange(of: vm.document.id) { _, _ in
             audio.close(); timeline.close(); scrubAudio.close(); trimCapture = nil; fadeCapture = nil; pendingDeleteClipID = nil; mixerTrack = nil
             restoreProjectAudioState()
@@ -322,8 +341,13 @@ private struct StudioAudioWorkspace: View {
             if let id { selectionMemory.remember(id, for: vm.document.id) }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { audio.close(); timeline.close(); scrubAudio.close(); vm.stopPlayback(); fadeCapture = nil }
+            resourcesSuspended = phase != .active || !subjectWindowVisible
+            if resourcesSuspended { closeAudioResources(); fadeCapture = nil }
+            else { restoreProjectAudioState() }
         }
+    }
+    private func closeAudioResources() {
+        soundPacks.close(); audio.close(); timeline.close(); scrubAudio.close(); vm.stopPlayback()
     }
     /// Reopen state for the current project: the remembered clip selection and
     /// every measured waveform (from the persistent cache first) (#177, #192, #193).
@@ -337,7 +361,7 @@ private struct StudioAudioWorkspace: View {
     }
     private func restoreWaveforms() {
         let project = vm.document.id
-        _ = audio.restoreMeasurements(for: vm.projectAudioTracks, stillCurrent: { vm.isEditing && vm.document.id == project })
+        _ = audio.restoreMeasurements(for: vm.projectAudioTracks, stillCurrent: { resourcesAllowed && vm.isEditing && vm.document.id == project })
     }
     private var overlappingClipIDs: Set<String> {
         StudioAudioClipOverlap.overlappingIDs(vm.audioClips.map {
@@ -453,8 +477,10 @@ private struct StudioAudioWorkspace: View {
                 .contextMenu {
                     Toggle("Loop playback", isOn: $vm.playbackLoops)
                         .accessibilityIdentifier("studio.audio.loop")
+                        .menuActionDismissBehavior(.enabled)
                     Toggle("Audible scrubbing", isOn: $audibleScrub)
                         .accessibilityIdentifier("studio.audio.audible-scrub")
+                        .menuActionDismissBehavior(.enabled)
                 }
             Button { seek(vm.audioDuration) } label: { Image(systemName: "forward.end.fill").frame(width: 44, height: 44) }
                 .accessibilityLabel("Audio end")
@@ -475,27 +501,28 @@ private struct StudioAudioWorkspace: View {
     /// real-mix grain at the new playhead when audible scrubbing is on (#180).
     private func scrub(_ time: Double) {
         seek(time)
-        guard audibleScrub, !audio.isBusy else { return }
+        guard resourcesAllowed, audibleScrub, !audio.isBusy else { return }
         let id = vm.document.id
         scrubAudio.scrub(document: vm.document, tracks: vm.projectAudioTracks, timelineDuration: vm.audioDuration,
-            at: vm.audioPlayheadTime, stillCurrent: { vm.isEditing && vm.document.id == id })
+            at: vm.audioPlayheadTime, stillCurrent: { resourcesAllowed && vm.isEditing && vm.document.id == id })
     }
     private func togglePlayback() {
+        guard resourcesAllowed else { return }
         if timeline.isPlaying { timeline.stop(); return }
         audio.stop(); vm.stopPlayback()
         // A scrub grain may still hold the shared offline mixer; play once it is free.
         scrubAudio.stop { startTimelinePlayback() }
     }
     private func startTimelinePlayback() {
-        guard !timeline.isPlaying, !timeline.isPreparing else { return }
+        guard resourcesAllowed, !timeline.isPlaying, !timeline.isPreparing else { return }
         let id = vm.document.id, revision = vm.document.revision
         let start = vm.audioPlayheadTime < vm.audioDuration ? vm.audioPlayheadTime : 0
         _ = timeline.play(document: vm.document, tracks: vm.projectAudioTracks,
             duration: vm.audioDuration, from: start, loop: vm.playbackLoops,
             frameClock: StudioAudioTransport.FrameClock(fps: vm.fps, frameTicks: vm.document.frames.map(\.durationTicks)),
-            stillCurrent: { vm.isEditing && vm.document.id == id && vm.document.revision == revision },
+            stillCurrent: { resourcesAllowed && vm.isEditing && vm.document.id == id && vm.document.revision == revision },
             onTime: { time, playing in
-                guard vm.document.id == id, vm.document.revision == revision else { return }
+                guard resourcesAllowed, vm.document.id == id, vm.document.revision == revision else { return }
                 vm.displayAudioPlaybackTime(min(vm.audioDuration, StudioAudioTransport.floorSafeSeconds(time, fps: vm.fps)), playing: playing)
             })
     }
@@ -716,8 +743,8 @@ private struct StudioAudioWorkspace: View {
     }
     private var projectAudioSources: some View {
         VStack(spacing: 10) {
-            AudioFilesImportControls(vm: vm, audio: audio, stopPlayback: { timeline.stop(); audio.stop(); vm.stopPlayback() })
-            AudioProjectClips(vm: vm, audio: audio, timeline: timeline)
+            AudioFilesImportControls(vm: vm, audio: audio, isResourceCurrent: { resourcesAllowed }, stopPlayback: { timeline.stop(); audio.stop(); vm.stopPlayback() })
+            AudioProjectClips(vm: vm, audio: audio, timeline: timeline, isResourceCurrent: { resourcesAllowed })
         }
     }
     /// Result lists up to this size lay out eagerly. A LazyVStack whose few rows
@@ -761,7 +788,7 @@ private struct StudioAudioWorkspace: View {
                         if audio.playingClipID == sound.id { audio.stop(); return }
                         let project = vm.document.id, revision = vm.document.revision
                         _ = audio.useCatalogueSound(sound, catalogue: catalogue,
-                            stillCurrent: { vm.isEditing && vm.document.id == project && vm.document.revision == revision })
+                            stillCurrent: { resourcesAllowed && vm.isEditing && vm.document.id == project && vm.document.revision == revision })
                     } label: {
                         Image(systemName: audio.playingClipID == sound.id ? "stop.fill" : "play.fill")
                             .frame(width: 44, height: 44).background(Color.white.opacity(0.06)).clipShape(Circle())
@@ -812,7 +839,7 @@ private struct StudioAudioWorkspace: View {
                         let target = AudioImportLease(projectID: vm.document.id, revision: vm.document.revision,
                             frameID: vm.document.activeFrameID, track: libraryTrack, playhead: vm.audioPlayheadTime)
                         _ = audio.useCatalogueSound(sound, catalogue: catalogue,
-                            stillCurrent: { target.isCurrent(vm) }, attach: { imported in
+                            stillCurrent: { resourcesAllowed && target.isCurrent(vm) }, attach: { imported in
                                 try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
                                     expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track, atPlayhead: target.playhead)
                             })
@@ -987,14 +1014,11 @@ private struct StudioAudioWorkspace: View {
             }
             HStack {
                 Text(clip.soundName).font(.specialElite(12)).lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Button { apply(.mute(!clip.isMuted), clip: clip) } label: {
                     Image(systemName: clip.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 44, height: 44)
                 }.accessibilityLabel(clip.isMuted ? "Unmute selected clip" : "Mute selected clip")
                     .accessibilityIdentifier("studio.audio.clip-mute")
-                StudioAudioClipVolumeControl(vm: vm, clip: clip) {
-                    timeline.stop(); audio.stop(); vm.stopPlayback()
-                }
-                .id("\(vm.document.id):\(vm.document.revision):\(clip.id)")
                 // Deleting a clip is reversible through Undo but still asks first
                 // (#178): the sheet names the clip and nothing changes on Cancel.
                 Button("Delete") { timeline.stop(); audio.stop(); vm.stopPlayback(); pendingDeleteClipID = clip.id }
@@ -1016,6 +1040,12 @@ private struct StudioAudioWorkspace: View {
                         Text("The saved sound stays in the project library; only this placement is removed. Undo restores it.")
                     }
             }
+            // Give the native slider its own row so a long sound title and the
+            // mute/delete buttons cannot squeeze its usable adjustment range.
+            StudioAudioClipVolumeControl(vm: vm, clip: clip) {
+                timeline.stop(); audio.stop(); vm.stopPlayback()
+            }
+            .id("\(vm.document.id):\(vm.document.revision):\(clip.id)")
             if let id = clip.assetID, let measurement = audio.measurements[id] {
                 MeasuredAudioWaveform(peaks: measurement.peaks, rms: measurement.rms, sourceDuration: measurement.duration,
                     sourceOffset: clip.sourceOffset, duration: clip.duration).frame(height: 28)
@@ -1028,7 +1058,7 @@ private struct StudioAudioWorkspace: View {
                     timeline.stop(); audio.stop(); vm.stopPlayback()
                     let project = vm.document.id
                     _ = audio.analyze(track, stillCurrent: {
-                        vm.isEditing && vm.document.id == project && vm.audioTrack(forAssetID: id)?.audioData == track.audioData
+                        resourcesAllowed && vm.isEditing && vm.document.id == project && vm.audioTrack(forAssetID: id)?.audioData == track.audioData
                     })
                 }.disabled(audio.isBusy || timeline.isPreparing)
                     .font(.specialElite(11)).frame(minHeight: 44)
@@ -1160,7 +1190,9 @@ private struct StudioAudioClipVolumeControl: View {
         volume = vm.document.audioClips.first(where: { $0.id == clip.id })?.volume ?? clip.volume
     }
     var body: some View {
-        HStack {
+        HStack(spacing: 10) {
+            Text("Clip volume").font(.specialElite(10))
+                .foregroundColor(.sdStudioSecondaryText)
             Slider(value: $volume, in: 0...1, onEditingChanged: { editing in
                 if editing {
                     stopPlayback()
@@ -1181,9 +1213,9 @@ private struct StudioAudioClipVolumeControl: View {
                 .accessibilityLabel("Selected clip volume")
                 .accessibilityValue("\(Int((volume * 100).rounded())) percent")
             Text("\(Int((volume * 100).rounded()))%")
-                .font(.specialElite(11)).frame(width: 30)
+                .font(.specialElite(11)).frame(width: 38, alignment: .trailing)
                 .accessibilityIdentifier("studio.audio.clip-volume-value")
-        }
+        }.frame(minHeight: 44)
         .onDisappear { discardDraft() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { discardDraft() } }
     }
@@ -1689,7 +1721,10 @@ private struct AudioImportLease {
 private struct AudioFilesImportControls: View {
     @ObservedObject var vm: StudioViewModel
     @ObservedObject var audio: StudioAudioPreviewSession
+    let isResourceCurrent: () -> Bool
     let stopPlayback: () -> Void
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @ObservedObject private var auth = AuthService.shared
     @State private var showingFiles = false
     @State private var lease: AudioImportLease?
     @State private var track = 1
@@ -1703,7 +1738,7 @@ private struct AudioFilesImportControls: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Button {
-                    guard vm.requirePlan(vm.planLimits.audioImport) else { return }
+                    guard isResourceCurrent(), vm.requirePlan(vm.planLimits.audioImport) else { return }
                     stopPlayback()
                     lease = .init(projectID: vm.document.id, revision: vm.document.revision,
                                   frameID: vm.document.activeFrameID, track: track, playhead: vm.audioPlayheadTime)
@@ -1755,11 +1790,15 @@ private struct AudioFilesImportControls: View {
 
         }
         .padding(.horizontal, 14)
+        .onChange(of: subjectWindowVisible) { _, visible in
+            if !visible { showingFiles = false; lease = nil; capturedMovieMapping = nil }
+        }
+        .onChange(of: auth.userId) { _, _ in showingFiles = false; lease = nil; capturedMovieMapping = nil }
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: movieAudio ? [.mpeg4Movie, .quickTimeMovie] : [.audio], allowsMultipleSelection: false) { result in
             switch result {
             case .failure(let error): audio.pickerFailed(error)
             case .success(let urls):
-                guard let url = urls.first, let target = lease else { return }
+                guard isResourceCurrent(), let url = urls.first, let target = lease else { return }
                 let mapping = capturedMovieMapping
                 let prepare: StudioAudioPreviewSession.AudioPreparation? = mapping.map { captured in
                     { progress in try await StudioVideoAudioImportService.shared.extract(from: url, mapping: captured, progress: progress).audio }
@@ -1767,7 +1806,7 @@ private struct AudioFilesImportControls: View {
                 // The clip persists the exact trim/speed mapping it was cut with (#201).
                 let persisted = mapping.map { StudioVideoSourceMapping(sourceStartSeconds: $0.sourceStartSeconds,
                     sourceEndSeconds: $0.sourceEndSeconds, projectStartSeconds: $0.projectStartSeconds, speed: $0.speed) }
-                _ = audio.importFile(url, prepare: prepare, stillCurrent: { target.isCurrent(vm) }, attach: { imported in
+                _ = audio.importFile(url, prepare: prepare, stillCurrent: { isResourceCurrent() && target.isCurrent(vm) }, attach: { imported in
                     try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
                         expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track, atPlayhead: target.playhead,
                         videoMapping: persisted)
@@ -1782,12 +1821,14 @@ private struct AudioProjectClips: View {
     @ObservedObject var vm: StudioViewModel
     @ObservedObject var audio: StudioAudioPreviewSession
     @ObservedObject var timeline: StudioAudioTimelineSession
+    let isResourceCurrent: () -> Bool
     @State private var auditionID: String?
     var body: some View {
         LazyVStack(spacing: 8) {
             ForEach(vm.audioClips) { clip in
                 HStack {
                     Button {
+                        guard isResourceCurrent() else { return }
                         let wasAuditioning = auditionID == clip.id && (timeline.isPlaying || timeline.isPreparing)
                         audio.stop(); timeline.stop(); vm.stopPlayback(); vm.selectedAudioClip = clip
                         auditionID = nil
@@ -1798,7 +1839,7 @@ private struct AudioProjectClips: View {
                         auditionID = clip.id
                         let accepted = timeline.play(document: solo, tracks: [track], duration: clip.duration, from: 0,
                             purpose: .libraryPreview,
-                            stillCurrent: { vm.isEditing && vm.document.id == project && vm.document.revision == revision },
+                            stillCurrent: { isResourceCurrent() && vm.isEditing && vm.document.id == project && vm.document.revision == revision },
                             onTime: { _, playing in if !playing { auditionID = nil } })
                         if !accepted { auditionID = nil }
                     } label: {

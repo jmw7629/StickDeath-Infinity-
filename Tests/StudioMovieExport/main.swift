@@ -316,6 +316,43 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                         "Held final duration changed")
             try output.cleanup()
         }
+        await test("original 1080x1920 H.264 one-frame portrait encodes and decodes at 12 FPS") {
+            let folder = try parent(root, "portrait-original-single-frame")
+            let doc = try document(colors: ["#FF0000"], width: 1080, height: 1920, fps: 12)
+            let captured = doc
+            // Exercise the exact size/codec/timing that failed before either UI
+            // test reached sharing. One frame bounds retained RGBA to 8 MiB;
+            // keep the production encoder's own time and file limits active.
+            let service = Service(limits: Service.Limits(maximumFrames: 1,
+                maximumFramePixels: 1080 * 1920, maximumTotalPixels: 1080 * 1920,
+                maximumOutputBytes: 16 * 1024 * 1024, operationTimeout: 30))
+            let output: Service.Output
+            do {
+                output = try await service.export(snapshot: snapshot(doc), outputParent: folder, background: .white)
+            } catch {
+                // Reuse the exact allowlisted Unified Log schema. Never print
+                // NSError descriptions/userInfo or substitute a fixture movie.
+                if let diagnostic = service.lastEncoderFailureDiagnostic { print(diagnostic) }
+                throw error
+            }
+            defer { try? output.cleanup() }
+            try require(output.manifest.width == 1080 && output.manifest.height == 1920
+                && output.manifest.codec == "H.264" && output.manifest.fps == 12
+                && output.manifest.frameIDs.count == 1 && output.manifest.encodedBytes > 0,
+                "Portrait export did not retain the original size, H.264 and single frame")
+            let decoded = try await decode(output.movieURL)
+            try require(decoded.frames.count == 1 && decoded.frames[0].width == 1080
+                && decoded.frames[0].height == 1920, "Actual portrait MP4 decoded a different size or frame count")
+            try require(decoded.pts.count == 1 && CMTimeCompare(decoded.pts[0], .zero) == 0
+                && decoded.durations.count == 1
+                && CMTimeCompare(decoded.durations[0], CMTime(value: 1, timescale: 12)) == 0
+                && CMTimeCompare(decoded.duration, CMTime(value: 1, timescale: 12)) == 0,
+                "Actual portrait MP4 changed its first timestamp or complete one-frame duration")
+            try pixel(decoded.frames[0].pixel(540, 960), [255, 0, 0, 255])
+            try require(doc == captured, "Portrait export changed its editable source")
+            try output.cleanup()
+            try require(output.isCleaned && contents(folder).isEmpty, "Portrait export retained owned output files")
+        }
         await test("one frame and nondivisor FPS retain exact complete duration without duplicate frames") {
             let folder = try parent(root, "timing")
             for fps in [1, 7, 30, 60] {

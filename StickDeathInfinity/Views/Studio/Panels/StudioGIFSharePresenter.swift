@@ -7,11 +7,12 @@ import UIKit
 struct StudioGIFSharePresenter: UIViewControllerRepresentable {
     let request: StudioGIFExportSession.ShareRequest
     let session: StudioGIFExportSession
+    var onOfferedToUIKit: @MainActor () -> Void = {}
     let isAllowed: @MainActor () -> Bool
     let onTerminal: (UUID) -> Void
 
     func makeUIViewController(context: Context) -> Host {
-        Host(request: request, session: session, isAllowed: isAllowed, onTerminal: onTerminal)
+        Host(request: request, session: session, onOfferedToUIKit: onOfferedToUIKit, isAllowed: isAllowed, onTerminal: onTerminal)
     }
     func updateUIViewController(_ controller: Host, context: Context) { controller.updateAuthorization(isAllowed) }
     static func dismantleUIViewController(_ controller: Host, coordinator: ()) { controller.detachFromPanel() }
@@ -20,6 +21,7 @@ struct StudioGIFSharePresenter: UIViewControllerRepresentable {
         private let request: StudioGIFExportSession.ShareRequest
         private let session: StudioGIFExportSession
         private var onTerminal: ((UUID) -> Void)?
+        private let onOfferedToUIKit: @MainActor () -> Void
         private var isAllowed: @MainActor () -> Bool
         private var activity: Activity?
         private var lease: StudioGIFShareLifetime.Lease?
@@ -28,8 +30,10 @@ struct StudioGIFSharePresenter: UIViewControllerRepresentable {
         private var finished = false
 
         init(request: StudioGIFExportSession.ShareRequest, session: StudioGIFExportSession,
+             onOfferedToUIKit: @escaping @MainActor () -> Void = {},
              isAllowed: @escaping @MainActor () -> Bool, onTerminal: @escaping (UUID) -> Void) {
-            self.request = request; self.session = session; self.isAllowed = isAllowed; self.onTerminal = onTerminal
+            self.request = request; self.session = session; self.onOfferedToUIKit = onOfferedToUIKit
+            self.isAllowed = isAllowed; self.onTerminal = onTerminal
             super.init(nibName: nil, bundle: nil)
         }
         required init?(coder: NSCoder) { fatalError("Programmatic gif sharing only") }
@@ -63,6 +67,7 @@ struct StudioGIFSharePresenter: UIViewControllerRepresentable {
                 // The initializer receives the URL; ownership must already be
                 // reserved even if presentation subsequently fails or times out.
                 reservation.offeredToUIKit()
+                onOfferedToUIKit()
                 let controller = Activity(gifURL: gif)
                 controller.appeared = { [weak self] in
                     guard let self else { return }

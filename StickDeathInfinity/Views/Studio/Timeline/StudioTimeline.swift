@@ -11,6 +11,8 @@ struct StudioTimeline: View {
     @StateObject private var audioPlayback = StudioAudioTimelineSession()
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @State private var isSubjectSuspended = false
     @State private var timingCapture: StudioFrameTimingCapture?
     @State private var tweenCapture: StudioViewModel.TweenCapture?
     @State private var actionsCapture: StudioFrameActionsCapture?
@@ -20,7 +22,8 @@ struct StudioTimeline: View {
     @State private var hoverAfter = false
 
     private var frameActionsAvailable: Bool {
-        vm.isEditing && !vm.isManagingProjects && !vm.isSaving && !vm.isPlaying &&
+        subjectWindowVisible && !isSubjectSuspended && vm.isEditing &&
+        !vm.isManagingProjects && !vm.isSaving && !vm.isPlaying &&
         vm.activePanel == .none && vm.activeStrokeID == nil && vm.pendingBrushStroke == nil &&
         vm.textDraft == nil && !audioPlayback.isPreparing && !audioPlayback.isPlaying &&
         scenePhase == .active && timingCapture == nil && tweenCapture == nil
@@ -335,7 +338,14 @@ struct StudioTimeline: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color(hex: "0A0A10"))
-        .onDisappear { clearFrameDrag(); clearFrameActions(); audioPlayback.close() }
+        .onAppear { isSubjectSuspended = !subjectWindowVisible }
+        .onDisappear { isSubjectSuspended = true; clearFrameDrag(); clearFrameActions(); audioPlayback.close() }
+        .onChange(of: subjectWindowVisible) { _, visible in
+            isSubjectSuspended = !visible
+            if !visible {
+                clearFrameDrag(); clearFrameActions(); audioPlayback.close(); vm.stopPlayback()
+            }
+        }
         .onChange(of: vm.document.id) { _, _ in clearFrameDrag(); clearFrameActions(); audioPlayback.close() }
         .onChange(of: vm.document.revision) { _, _ in clearFrameDrag(); audioPlayback.stop() }
         .onChange(of: vm.document.activeFrameID) { _, _ in clearFrameDrag() }
@@ -371,7 +381,8 @@ struct StudioTimeline: View {
             audioPlayback.stop(); vm.stopPlayback(); return
         }
         if vm.isPlaying { vm.stopPlayback(); return }
-        guard vm.isEditing, scenePhase == .active, vm.activePanel == .none,
+        guard subjectWindowVisible, !isSubjectSuspended, vm.isEditing,
+              scenePhase == .active, vm.activePanel == .none,
               !vm.isSaving, vm.activeStrokeID == nil, vm.pendingBrushStroke == nil, vm.textDraft == nil else {
             vm.message = "Finish the active edit or save before playing the timeline."
             return
@@ -385,10 +396,11 @@ struct StudioTimeline: View {
             duration: duration, from: start, loop: vm.playbackLoops,
             frameClock: StudioAudioTransport.FrameClock(fps: fps, frameTicks: vm.document.frames.map(\.durationTicks)),
             stillCurrent: {
-                vm.isEditing && scenePhase == .active && vm.activePanel == .none &&
+                !isSubjectSuspended && vm.isEditing && scenePhase == .active && vm.activePanel == .none &&
                 vm.document.id == id && vm.document.revision == revision
             }, onTime: { time, playing in
-                guard vm.document.id == id, vm.document.revision == revision else { return }
+                guard !isSubjectSuspended, scenePhase == .active,
+                      vm.document.id == id, vm.document.revision == revision else { return }
                 // Floor-safe: an exact frame-start time must not display the previous frame (#180).
                 vm.displayAudioPlaybackTime(min(duration, StudioAudioTransport.floorSafeSeconds(max(0, time), fps: fps)), playing: playing)
             })

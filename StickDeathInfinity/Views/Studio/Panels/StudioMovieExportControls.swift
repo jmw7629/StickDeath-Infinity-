@@ -15,6 +15,7 @@ struct StudioMovieExportControls: View {
     var onQuickShareHandled: (UUID, String?) -> Void = { _, _ in }
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
     @ObservedObject private var stripe = StripeService.shared
     @ObservedObject private var shareLifetime = StudioMovieShareLifetime.shared
     @StateObject private var presentationScope = StudioMoviePresentationScope()
@@ -35,12 +36,13 @@ struct StudioMovieExportControls: View {
     @State private var reviewExport: SDIRenderUploadExport?
 
     private var scope: StudioMovieExportSession.Scope {
-        .init(isStudioVisible: isVisible && vm.isEditing && vm.activePanel == .export,
+        .init(isStudioVisible: isVisible && subjectWindowVisible && vm.isEditing && vm.activePanel == .export,
               isForeground: scenePhase == .active, accountID: authVM.userId)
     }
     private var session: StudioMovieExportSession { movie.session }
     private func refreshScope() {
         presentationScope.value = scope
+        presentationScope.subjectWindowVisible = subjectWindowVisible
         session.refreshScope(scope)
     }
 
@@ -300,10 +302,12 @@ struct StudioMovieExportControls: View {
                 let accountID = shareAccountID
                 let capturedSession = session
                 let handoff = shareHandoff
-                StudioMovieSharePresenter(request: request, session: capturedSession, isAllowed: { [weak vm, weak authVM, weak capturedSession] in
+                StudioMovieSharePresenter(request: request, session: capturedSession,
+                    onOfferedToUIKit: { holder.offeredRequestIDs.insert(request.id) }, isAllowed: { [weak vm, weak authVM, weak capturedSession] in
                     guard let vm, let authVM, let capturedSession else { return false }
                     return !capturedSession.isClosed && capturedSession.hasCurrentPlanAuthorization
                         && holder.value.isStudioVisible && holder.value.isForeground
+                        && (holder.subjectWindowVisible || holder.offeredRequestIDs.contains(request.id))
                         && vm.isEditing && vm.activePanel == .export && vm.document.id == projectID
                         && authVM.userId == accountID
                         && (handoff.map { expected in
@@ -313,6 +317,7 @@ struct StudioMovieExportControls: View {
                                 && capturedSession.output?.movieURL == expected.outputURL
                         } ?? true)
                 }) { id in
+                    holder.offeredRequestIDs.remove(id)
                     if binding.wrappedValue?.id == id { binding.wrappedValue = nil }
                 }
                 .id(request.id)
@@ -322,20 +327,23 @@ struct StudioMovieExportControls: View {
                 let holder = presentationScope
                 let projectID = session.source?.projectID
                 let capturedSession = session
-                StudioFilesSavePresenter(request: request, isAllowed: { [weak vm, weak capturedSession] in
+                StudioFilesSavePresenter(request: request,
+                    onOfferedToUIKit: { holder.offeredRequestIDs.insert(request.id) }, isAllowed: { [weak vm, weak capturedSession] in
                     guard let vm, let capturedSession else { return false }
                     // The request checks the plan just before handing over URLs.
                     // A later plan change must not release a picker already copying them.
                     return !capturedSession.isClosed && holder.value.isStudioVisible && holder.value.isForeground
+                        && (holder.subjectWindowVisible || holder.offeredRequestIDs.contains(request.id))
                         && vm.isEditing && vm.activePanel == .export && vm.document.id == projectID
                 }) { id in
+                    holder.offeredRequestIDs.remove(id)
                     if binding.wrappedValue?.id == id { binding.wrappedValue = nil }
                 }
                 .id(request.id)
             }
         }
         .onAppear {
-            isVisible = true; refreshScope()
+            isVisible = subjectWindowVisible; refreshScope()
             if let plan, plan.fitLongEdge == nil { preset = plan.preset }
             if let request = directRequest {
                 _ = movie.start(request, from: vm, scope: scope)
@@ -345,12 +353,10 @@ struct StudioMovieExportControls: View {
             consumeQuickShare()
         }
         .onChange(of: quickShareRequest?.id) { _, _ in consumeQuickShare() }
-        .onDisappear {
-            preview.stop()
-            // A full-screen native activity may cover this section without
-            // removing it. Actual removal invokes the presenter's dismantle,
-            // which closes the owner but keeps files until the actual share callback.
-            if !session.isSharing { isVisible = false; refreshScope(); session.close() }
+        .onDisappear { suspendPresentation() }
+        .onChange(of: subjectWindowVisible) { _, visible in
+            if !visible { suspendPresentation() }
+            else { isVisible = true; refreshScope(); refreshPreview() }
         }
         .onChange(of: scenePhase) { _, _ in refreshScope(); refreshPreview() }
         .onChange(of: gate) { _, _ in refreshScope(); refreshPreview() }
@@ -367,7 +373,10 @@ struct StudioMovieExportControls: View {
             refreshPreview()
         }
         .onChange(of: session.isRunning) { _, _ in refreshPreview() }
-        .onChange(of: session.isSharing) { _, _ in refreshPreview() }
+        .onChange(of: session.isSharing) { _, sharing in
+            if !sharing && !subjectWindowVisible { suspendPresentation() }
+            else { refreshPreview() }
+        }
     }
 
     /// Both the Share button and a ready-file shortcut enter this same owned
@@ -409,6 +418,13 @@ struct StudioMovieExportControls: View {
         shareStartError = failure
         onQuickShareHandled(request.id, failure)
     }
+    private func suspendPresentation() {
+        // Match disappearance: stop the decoder immediately, but retain a
+        // genuine consumer's file lease until its existing completion callback.
+        preview.stop()
+        presentationScope.subjectWindowVisible = false
+        if !session.isSharing { isVisible = false; refreshScope(); session.close() }
+    }
     private func refreshPreview() {
         guard scope.isStudioVisible, scope.isForeground, !session.isClosed,
               !session.isRunning, !session.isSharing, !session.isRecovering,
@@ -429,6 +445,10 @@ struct StudioMovieExportControls: View {
 
 @MainActor
 private final class StudioMoviePresentationScope: ObservableObject {
+    // A queued request is not yet a consumer. Once UIKit receives its URLs,
+    // hiding the retained Studio keeps that existing lease until completion.
+    var subjectWindowVisible = false
+    var offeredRequestIDs: Set<UUID> = []
     var value = StudioMovieExportSession.Scope(isStudioVisible: false, isForeground: false, accountID: nil)
 }
 

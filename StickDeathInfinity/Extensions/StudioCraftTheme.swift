@@ -3,42 +3,41 @@ import SwiftUI
 /// Studio chrome tokens. Layout metrics follow the ArtCraft PhotoCraft
 /// "Studio (Dark)" theme (github.com/storytold/photocraft
 /// crates/ui-egui/src/theme.rs, MIT OR Apache-2.0; see
-/// Resources/Licenses/ArtCraft-NOTICE.txt); colours follow the SD∞ reference
-/// design so every Studio panel shares the app's dark-navy chrome and red accent.
+/// Resources/Licenses/ArtCraft-NOTICE.txt). Ink, paper and punchy red extend
+/// the SDI desktop into native panels without changing the editor workspace,
+/// its single snapping toolbar or contextual settings behavior.
 enum StudioCraftTheme {
-    // Surfaces: the SD∞ reference design's dark-navy chrome (Studio chrome
-    // #12121A, dock #14141E, cards #1A1A28, fields #1A1A24, canvas backdrop
-    // #0D0D14) instead of PhotoCraft's neutral greys, so the layer and audio
-    // panels match the rest of the app.
-    static let chrome = Color(hex: "12121A")
+    // Charcoal surfaces keep existing white text legible. Strong edges and
+    // square corners echo the desktop's 1990s window chrome.
+    static let chrome = Color(hex: "202021")
     static let canvas = Color(hex: "0D0D14")
     static let canvasDot = Color(hex: "2A2A3A")
-    static let dock = Color(hex: "14141E")
-    static let card = Color(hex: "1A1A28")
-    static let cardBorder = Color.white.opacity(0.08)
-    static let field = Color(hex: "1A1A24")
-    static let fieldBorder = Color.white.opacity(0.15)
-    static let hover = Color(hex: "22222F")
-    static let pressed = Color(hex: "2A2A3A")
-    static let separator = Color.white.opacity(0.08)
+    static let dock = Color(hex: "252526")
+    static let card = Color(hex: "2D2C2B")
+    static let cardBorder = Color(hex: "BDB9B3").opacity(0.55)
+    static let field = Color(hex: "171718")
+    static let fieldBorder = Color(hex: "BDB9B3").opacity(0.7)
+    static let hover = Color(hex: "41403C")
+    static let pressed = Color(hex: "393833")
+    static let separator = Color(hex: "BDB9B3").opacity(0.35)
     // Text and icons (reference greys: white, #9CA3AF, #6B7280)
-    static let text = Color.white
-    static let textDim = Color(hex: "9CA3AF")
-    static let textFaint = Color(hex: "6B7280")
-    static let icon = Color(hex: "D4D4D8")
-    // Accent: the reference Studio red (#E03030) and states
-    static let accent = Color(hex: "E03030")
-    static let accentSoft = Color(hex: "E03030").opacity(0.18)
-    static let accentText = Color.sdStudioActionText
+    static let text = Color(hex: "EFEAE0")
+    static let textDim = Color(hex: "C8C3BA")
+    static let textFaint = Color(hex: "A5A098")
+    static let icon = Color(hex: "EFEAE0")
+    // Filled controls retain white text; use the lighter red for text actions.
+    static let accent = Color(hex: "B91F30")
+    static let accentSoft = Color(hex: "FF6971").opacity(0.18)
+    static let accentText = Color(hex: "FF9097")
     static let danger = Color(hex: "DC2626")
     static let warning = Color(hex: "EAB308")
     // SoundCraft mixer states
     static let solo = Color(hex: "DEC434")
     static let mute = Color(hex: "E89428")
     // PhotoCraft Studio radii and spacing
-    static let radiusSmall: CGFloat = 6
-    static let radius: CGFloat = 8
-    static let radiusLarge: CGFloat = 12
+    static let radiusSmall: CGFloat = 1
+    static let radius: CGFloat = 2
+    static let radiusLarge: CGFloat = 3
     static let rowGap: CGFloat = 4
     static let itemSpacing: CGFloat = 8
     /// PhotoCraft Studio layer row metrics.
