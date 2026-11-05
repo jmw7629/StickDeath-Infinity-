@@ -111,6 +111,79 @@ final class JourneyUITests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testMirrorMenuChoicesAccessibilityAndOlderSystemFallback() throws {
+        executionTimeAllowance = 420
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        try createProject(app)
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            try rotate(app, to: orientation)
+            _ = try settledCanvas(app)
+            try railControl("studio.tool.pencil", app: app).tap()
+            let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+            XCTAssertTrue(popup.waitForExistence(timeout: 10))
+            let mirror = app.buttons["studio.drawing.mirror"]
+            let options = popup.scrollViews.firstMatch
+            for _ in 0..<12 where !mirror.isHittable { options.swipeUp(velocity: .slow) }
+            XCTAssertTrue(mirror.isHittable, "Mirror trigger must be reachable in Pencil options")
+            XCTAssertEqual(mirror.label, "Mirror")
+            XCTAssertEqual(mirror.value as? String, "Off", "New project must default to Mirror Off")
+            XCTAssertGreaterThanOrEqual(min(mirror.frame.width, mirror.frame.height), 44)
+            XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(popup.frame))
+            let side = orientation == .portrait ? "portrait" : "landscape"
+            capture(app, name: "native-font-pencil-mirror-\(side)", entireScreen: true)
+            var measured = ["orientation=\(side)", "os=\(ProcessInfo.processInfo.operatingSystemVersionString)",
+                            "window=\(app.frame)", "popup=\(popup.frame)", "mirror=\(mirror.frame)",
+                            "label=\(mirror.label)", "value=\(mirror.value as? String ?? "nil")"]
+            if let cg = XCUIScreen.main.screenshot().image.cgImage {
+                measured.append("screenshotPixels=\(cg.width)x\(cg.height)")
+            }
+            for selected in ["Vertical", "Horizontal", "Both", "Off"] {
+                mirror.tap()
+                for title in ["Off", "Vertical", "Horizontal", "Both"] {
+                    let choice = app.buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch
+                    XCTAssertTrue(choice.waitForExistence(timeout: 5) && choice.isHittable, "Missing native Mirror choice: \(title)")
+                }
+                capture(app, name: "native-mirror-menu-\(side)-select-\(selected)", entireScreen: true)
+                app.buttons.matching(NSPredicate(format: "label == %@", selected)).firstMatch.tap()
+                XCTAssertEqual(mirror.value as? String, selected, "Mirror selection did not update its AX value")
+                XCTAssertTrue(popup.exists, "Choosing a Mirror mode dismissed its options context")
+                measured.append("selected=\(selected);value=\(mirror.value as? String ?? "nil")")
+            }
+            let attachment = XCTAttachment(string: measured.joined(separator: "\n"))
+            attachment.name = "native-mirror-measurements-\(side)"; attachment.lifetime = .keepAlways; add(attachment)
+            app.buttons["studio.tool-settings.close"].tap()
+            XCTAssertTrue(waitUntilGone(popup), "Pencil options did not dismiss after changing Mirror")
+            _ = try settledCanvas(app)
+        }
+        // On iOS 18.6 the actual production availability branch must stay disabled.
+        // This route only checks the truthful fallback and leaves generation uninvoked.
+        try rotate(app, to: .portrait)
+        app.buttons["studio.menu.open"].tap()
+        let spatter = app.buttons["studio.spatter.open"]
+        for _ in 0..<6 where !spatter.isHittable { app.scrollViews["studio.menu.scroll"].swipeUp(velocity: .slow) }
+        XCTAssertTrue(spatter.isHittable); spatter.tap()
+        let local = app.buttons["spatter.studio.local-motion"]
+        XCTAssertTrue(local.waitForExistence(timeout: 8) && local.isHittable); local.tap()
+        let generate = app.buttons["spatter.ondevice.generate"]
+        let scroll = app.scrollViews["spatter.motion.scroll"]
+        for _ in 0..<24 {
+            if generate.exists && scroll.frame.intersects(generate.frame) { break }
+            scroll.swipeUp(velocity: .slow)
+        }
+        XCTAssertTrue(generate.exists, "Actual on-device composer is missing")
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 26 {
+            XCTAssertFalse(generate.isEnabled, "Older systems must not attempt model generation")
+            let unavailable = app.staticTexts["On-device generation requires iOS 26 and an available Apple Intelligence model. Local instructions still work."]
+            XCTAssertTrue(unavailable.exists, "Older systems must explain that local instructions remain available")
+        }
+        let availability = XCTAttachment(string: "os=\(ProcessInfo.processInfo.operatingSystemVersionString)\ngenerateEnabled=\(generate.isEnabled)\n" + app.staticTexts.allElementsBoundByIndex.map(\.label).filter { $0.contains("on-device") || $0.contains("Apple Intelligence") }.joined(separator: "\n"))
+        availability.name = "native-ondevice-availability"; availability.lifetime = .keepAlways; add(availability)
+        XCTAssertTrue(app.textViews["spatter.motion.input"].exists, "The existing editable local instruction route must remain present")
+        capture(app, name: "native-ios18-ondevice-unavailable-local-fallback", entireScreen: true)
+    }
+
     // MARK: #265 guest journeys and #273 onboarding
 
     @MainActor

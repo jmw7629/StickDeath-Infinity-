@@ -1072,9 +1072,29 @@ struct FloatingToolSettingsPanel: View {
 
     private var mirrorSettings: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Picker("Mirror", selection: $vm.mirrorMode) {
-                ForEach(StudioMirrorMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
-            }.accessibilityIdentifier("studio.drawing.mirror")
+            // A native menu Picker ignores the inherited font on its selected-value
+            // trigger. Keep the system choices/checkmark, but draw that trigger here.
+            Menu {
+                Picker("Mirror", selection: $vm.mirrorMode) {
+                    ForEach(StudioMirrorMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                HStack(spacing: 4) {
+                    Text(vm.mirrorMode.title).font(.specialElite(11))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .accessibilityHidden(true)
+                }
+                .foregroundStyle(.tint)
+                .padding(.horizontal, 12)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Mirror")
+            .accessibilityValue(vm.mirrorMode.title)
+            .accessibilityIdentifier("studio.drawing.mirror")
             if vm.mirrorMode != .off {
                 if vm.mirrorMode != .horizontal {
                     mirrorAxisSlider("Vertical line", value: $vm.mirrorAxisX, identifier: "studio.drawing.mirror.axis-x",

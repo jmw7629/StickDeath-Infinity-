@@ -269,6 +269,14 @@ struct SpatterMotionRecipePanel: View {
             isPlaying: screen.isPlaying, isDirty: screen.isDirty, isSaving: screen.isSaving,
             canUndo: screen.canUndo, canRedo: screen.canRedo))
     }
+    private var onDeviceCapture: SpatterOnDeviceComposer.Capture? {
+        guard let snapshot = contextSnapshot else { return nil }
+        let screen = vm.commandScreenContext
+        return .init(accountID: authVM.userId, existingDraft: draft, snapshot: snapshot,
+            selectedElementIDs: screen.selectedElementIDs, selectedAudioClipID: screen.selectedAudioClipID,
+            playhead: screen.audioPlayheadTime, image: vm.currentImageMoveCapture(), artwork: vm.beginSelectionHandle(),
+            wand: screen.wand, canApply: screen.canApplyCommands, visible: scope.isStudioVisible)
+    }
     /// Exhaustive on purpose: a new Studio panel does not compile until the
     /// control registry (#204) says whether Spatter can reach it.
     static func registryKey(_ panel: StudioPanelType) -> String {
@@ -627,6 +635,15 @@ struct SpatterMotionRecipePanel: View {
                     .disabled(session.isWorking || session.isClosed)
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("spatter.motion.stick-examples")
+                    if let capture = onDeviceCapture, let document = vm.commandScreenContext.document {
+                        SpatterOnDeviceComposer(capture: capture, context: document,
+                            disabled: session.isWorking || session.isClosed || packActions.isWorking || packActions.isClosed,
+                            stillCurrent: { expected in onDeviceCapture == expected }, onPrepared: { proposal in
+                                draft = proposal
+                                planPreview = SpatterInstructionPreview.plan(proposal, context: vm.commandScreenContext.document)
+                                previewSnapshot = contextSnapshot
+                            })
+                    }
                     TextEditor(text: $draft)
                         .font(.specialElite(17, relativeTo: .body))
                         .scrollContentBackground(.hidden)

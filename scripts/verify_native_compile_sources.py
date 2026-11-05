@@ -35,6 +35,15 @@ DEPENDENCIES = {
         # Brief-scope quality report and its draft-submission record (#213).
         "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
     },
+    # Local model proposals enter the existing production planner and executor.
+    "Tests/SpatterOnDevice/main.swift": {
+        "StickDeathInfinity/Models/SpatterOnDevicePlan.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift",
+        "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
+        "StickDeathInfinity/Models/StudioCommands.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
+    },
     # Both-client .sdi interchange harness (#286): production portable bundle and editable archive.
     "Tests/SDIInterchange/main.swift": {
         "StickDeathInfinity/Storage/DeviceStorageManager.swift",

@@ -1962,6 +1962,38 @@ jobs:
             Tests/SpatterPlanner/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-planner-tests"
           "$RUNNER_TEMP/sdi-spatter-planner-tests"
+      - name: Verify on-device proposal grammar production transactions cancellation and Undo
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioVideoFraming.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioCraftAudio.swift \
+            StickDeathInfinity/Models/StudioCraftLayers.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
+            StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift \
+            StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
+            StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift \
+            StickDeathInfinity/Models/SpatterOnDevicePlan.swift \
+            Tests/SpatterOnDevice/main.swift \
+            -o "$RUNNER_TEMP/sdi-spatter-ondevice-tests"
+          "$RUNNER_TEMP/sdi-spatter-ondevice-tests"
       - name: Verify six quick-share destinations and format choices
         shell: bash
         timeout-minutes: 2
