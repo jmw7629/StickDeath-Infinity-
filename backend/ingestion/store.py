@@ -224,7 +224,7 @@ class UploadStore:
                 db.execute("UPDATE uploads SET offset=? WHERE id=?", (offset+len(chunk), upload))
                 return self._response(self._owned(db, actor, upload))
 
-    def complete(self, actor: str, upload: str, *, validate_media: Callable[[Path], None],
+    def complete(self, actor: str, upload: str, *, validate_media: Callable[[Path], object],
                  register_review: Callable[[str, str, Path, dict, float], str]):
         """Callbacks are trusted server adapters. Registration MUST be idempotent by
         upload ID and require owner review; client metadata never grants approval.
@@ -248,7 +248,13 @@ class UploadStore:
                     digest.update(block)
             if digest.hexdigest() != row["digest"]:
                 raise IntakeError("Full render checksum mismatch. Cancel and upload the correct file.", 422)
-            validate_media(path)
+            receipt = validate_media(path)
+            # Production MediaValidator returns the digest of the SAME private
+            # immutable snapshot used by both tools, binding decode to registration.
+            # Existing explicit trusted callbacks returning None remain supported.
+            if receipt is not None and (getattr(receipt, "size", None) != row["size"] or
+                                        getattr(receipt, "sha256", None) != row["digest"]):
+                raise IntakeError("Validated render checksum mismatch.", 422)
             # Fence cancellation before an external registration can commit. If the
             # response is lost, retries reconcile by the same immutable upload ID.
             db.execute("UPDATE uploads SET state='registering' WHERE id=?", (upload,))

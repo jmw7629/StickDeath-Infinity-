@@ -14,7 +14,7 @@ INVENTORY = journey.suite_inventory()
 UI_SOURCE = (ROOT / journey.SUITES['ui'][0]).read_text()
 UI_COMMAND = ['xcodebuild', 'test-without-building', journey.selector('ui'),
               '-test-timeouts-enabled', 'YES', '-default-test-execution-time-allowance', '180',
-              '-maximum-test-execution-time-allowance', '300', '-parallel-testing-enabled', 'NO',
+              '-maximum-test-execution-time-allowance', '420', '-parallel-testing-enabled', 'NO',
               '-maximum-concurrent-test-simulator-destinations', '1']
 
 
@@ -54,12 +54,29 @@ class JourneyReceiptTests(unittest.TestCase):
         self.assertEqual(journey.selector('service'), '-only-testing:StickDeathInfinityAuthTests/ServiceJourneyTests')
 
     def test_audio_only_budget_preserves_other_journeys_and_service_limits(self):
-        self.assertEqual(journey.ui_test_budget(UI_SOURCE, UI_COMMAND), 1320)
+        self.assertEqual(journey.ui_test_budget(UI_SOURCE, UI_COMMAND), 1740)
         self.assertEqual(journey.PER_CASE_SECONDS, 180)
         self.assertEqual(journey.EXTENDED_CASE_SECONDS,
-                         {'testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable': 300})
+                         {'testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable': 300,
+                          'testMirrorMenuChoicesAccessibilityAndOlderSystemFallback': 420})
         self.assertEqual(journey.service_timeout_seconds(len(INVENTORY['service'])), 660)
         self.assertEqual(journey.SERVICE_CASE_SECONDS, 60)
+
+    def test_mirror_allowance_is_exact_and_cannot_extend_another_journey(self):
+        mirror = 'testMirrorMenuChoicesAccessibilityAndOlderSystemFallback'
+        self.assertEqual(journey.MAXIMUM_CASE_SECONDS, 420)
+        changed_sources = [
+            UI_SOURCE.replace(mirror, 'testDifferentMirrorJourney'),
+            UI_SOURCE.replace('executionTimeAllowance = 180', 'executionTimeAllowance = 420', 1),
+            UI_SOURCE.replace('executionTimeAllowance = 420',
+                              'executionTimeAllowance = 420\n        executionTimeAllowance = 420'),
+        ]
+        for value in ('0', '180', '300', '419', '421', '600', 'Double.infinity', '420 + 1',
+                      'TimeInterval.greatestFiniteMagnitude'):
+            changed_sources.append(UI_SOURCE.replace('executionTimeAllowance = 420', 'executionTimeAllowance = ' + value))
+        for index, source in enumerate(changed_sources):
+            with self.subTest(case=index), self.assertRaises(ValueError):
+                journey.ui_test_budget(source, UI_COMMAND)
 
     def test_other_names_missing_or_unbounded_allowances_reject(self):
         other = 'testAdaptiveStudioCanvasToolbarAndFrameTimelineInBothOrientations'
@@ -85,7 +102,7 @@ class JourneyReceiptTests(unittest.TestCase):
                 journey.ui_test_budget(UI_SOURCE, UI_COMMAND + [extra])
         for flag, values in (('-test-timeouts-enabled', ('NO',)),
                              ('-default-test-execution-time-allowance', ('0', '300')),
-                             ('-maximum-test-execution-time-allowance', ('0', '301', '600'))):
+                             ('-maximum-test-execution-time-allowance', ('0', '300', '301', '419', '421', '600'))):
             for value in values:
                 changed = UI_COMMAND.copy(); changed[changed.index(flag) + 1] = value
                 with self.subTest(flag=flag, value=value), self.assertRaises(ValueError):

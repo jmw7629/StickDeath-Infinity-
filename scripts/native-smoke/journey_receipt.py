@@ -30,8 +30,12 @@ SUITES = {
 # depend on screen size, so they run once, on the phone.
 DEVICE_SUITES = {"iphone": ("ui", "service"), "ipad": ("ui",)}
 PER_CASE_SECONDS = 180
-MAXIMUM_CASE_SECONDS = 300
-EXTENDED_CASE_SECONDS = {"testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable": 300}
+MAXIMUM_CASE_SECONDS = 420
+# Preserve the literal allowances already reviewed in JourneyUITests.swift.
+EXTENDED_CASE_SECONDS = {
+    "testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable": 300,
+    "testMirrorMenuChoicesAccessibilityAndOlderSystemFallback": 420,
+}
 SERVICE_CASE_SECONDS = 60
 SUITE_OVERHEAD_SECONDS = 300
 MAXIMUM_CASES = 20
@@ -54,10 +58,10 @@ def ui_timeout_seconds(names):
 
 
 def ui_test_budget(source, command):
-    """Only the reviewed audio journey may exceed the unchanged 180s default."""
+    """Only the two named, reviewed journeys may exceed the unchanged 180s default."""
     names = expected_names(source, SUITES["ui"][1])
     if not set(EXTENDED_CASE_SECONDS).issubset(names):
-        raise ValueError("The reviewed audio journey must remain in the complete UI suite")
+        raise ValueError("The reviewed extended journeys must remain in the complete UI suite")
     # A literal first statement in every case prevents the higher CLI ceiling
     # from silently extending another journey, or hiding an unbounded override.
     if source.count("executionTimeAllowance") != len(names):

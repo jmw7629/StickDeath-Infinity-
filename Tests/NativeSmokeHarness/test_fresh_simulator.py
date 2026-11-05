@@ -384,7 +384,9 @@ class FreshSimulator(unittest.TestCase):
              patch.object(auth.subprocess, 'check_output', return_value=SHA + '\n'), \
              patch.object(auth, 'run', side_effect=bounded):
             self.assertEqual(auth.main(), 23)
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 3)
+        self.assertEqual([c[4] for c in commands[1:]], ['summary', 'tests'])
+        self.assertTrue(all(c[:4] == ['xcrun', 'xcresulttool', 'get', 'test-results'] for c in commands[1:]))
         self.assertEqual(commands[0][:2], ['xcodebuild', 'test'])
         self.assertIn('StickDeathInfinityAuthTests', commands[0])
         self.assertIn('platform=iOS Simulator,id=' + self.new_id, commands[0])
@@ -399,20 +401,42 @@ class FreshSimulator(unittest.TestCase):
         self.assert_one_create()
 
     def test_auth_runner_requires_all_twenty_two_real_auth_results(self):
+        # Retain this original guard name while requiring the current source's
+        # exact 25 IDs and both fresh exports; the former 22-count pass is red.
         self.run_selector()
         (self.root / 'sdi-native-build/SourcePackages/checkouts').mkdir(parents=True)
+        source = (ROOT.parents[1] / 'Tests/AuthState/AuthStateTests.swift').read_text()
+        expected_names = auth.auth_test_names(source)
+        self.assertEqual(len(expected_names), 25)
+        cases = [dict(nodeType='Test Case', nodeIdentifier='AuthStateTests/' + name + '()',
+                      nodeIdentifierURL='test://com.apple.xcode/StickDeathInfinity/StickDeathInfinityAuthTests/AuthStateTests/' + name,
+                      result='Passed', children=[]) for name in expected_names]
+        tree = dict(devices=[{}], testPlanConfigurations=[{}], testNodes=[dict(nodeType='Test Plan', children=[
+            dict(nodeType='Unit test bundle', children=[dict(nodeType='Test Suite', children=cases)])])])
         def subprocess_run(argv, **kwargs):
             if argv[:2] != ['git', 'diff']:
                 select.copy_marker(pathlib.Path(argv[3]), self.new_id, SHA)
         for passed, failed, skipped, expected in [
-                (22, 0, 0, 0), (5, 0, 0, 3), (12, 0, 0, 3), (19, 0, 0, 3),
-                (20, 0, 0, 3), (21, 0, 0, 3), (23, 0, 0, 3), (None, 0, 0, 3),
-                (20, 1, 0, 3), (20, 0, 1, 3), (22, 1, 0, 3), (22, 0, 1, 3)]:
+                (25, 0, 0, 0), (5, 0, 0, 3), (12, 0, 0, 3), (19, 0, 0, 3),
+                (20, 0, 0, 3), (21, 0, 0, 3), (22, 0, 0, 3), (23, 0, 0, 3),
+                (24, 0, 0, 3), (26, 0, 0, 3), (None, 0, 0, 3),
+                (20, 1, 0, 3), (20, 0, 1, 3), (22, 1, 0, 3), (22, 0, 1, 3),
+                (25, 1, 0, 3), (25, 0, 1, 3)]:
             def bounded(command, log, timeout):
-                # Exercise the real runner's terminal receipt gate only. These
-                # fixture summaries do not claim any native test execution.
-                log.write_text(json.dumps({**({'passedTests': passed} if passed is not None else {}), 'failedTests': failed, 'skippedTests': skipped})
-                               if command[0] == 'xcrun' else 'native command fixture\n')
+                # Mocked actual-tree fixtures exercise only the runner's gate;
+                # they do not claim native execution or fabricate its evidence.
+                if command[:4] == ['xcrun', 'xcresulttool', 'get', 'test-results']:
+                    self.assertEqual(timeout, 60)
+                    if command[4] == 'tests':
+                        log.write_text(json.dumps(tree))
+                    else:
+                        self.assertEqual(command[4], 'summary')
+                        log.write_text(json.dumps(dict(result='Passed', expectedFailures=0,
+                            totalTestCount=len(expected_names), failedTests=failed, skippedTests=skipped,
+                            **({'passedTests': passed} if passed is not None else {}))))
+                else:
+                    self.assertEqual(command[:2], ['xcodebuild', 'test'])
+                    log.write_text('native command fixture\n')
                 return 0
             with self.subTest(passed=passed, failed=failed, skipped=skipped), \
                  patch.dict(os.environ, {'SDI_SMOKE_SIMULATOR_UDID': self.new_id}), \

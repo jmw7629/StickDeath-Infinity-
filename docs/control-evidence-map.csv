@@ -607,11 +607,11 @@ studio.fill.contiguous,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.
 studio.fill.progress,StickDeathInfinity/Views/Studio/StudioCanvasView.swift,StudioCanvasView,progress indicator 'studio.fill.progress' (identifier-derived; review source),no,#140,deferred
 studio.fill.sample-all,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,-> binds vm.fillSampleAll,no,#140,testFillPreferencesSwitchDrawResetAndColdReopen
 studio.fill.selection-coverage,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text 'Fill paints on the active layer within the selec',no,#140,testSelectedCoverageFillUndoAndColdReopen
-studio.frame-actions.duplicate,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioFrameActionsSheet,button 'Duplicate frame' -> perform,no,#161,deferred
+studio.frame-actions.duplicate,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioFrameActionsSheet,button 'Duplicate frame' -> perform,no,#161,helper:verifyFrameContext
 studio.frame-actions.exposure,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioFrameActionsSheet,button 'Frame exposure',no,#161,deferred
 studio.frame-actions.open,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioTimeline,image 'Frame actions',no,#161,helper:openFrameActions
 studio.frame-actions.repeat,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioFrameActionsSheet,button 'Repeat frame',no,#161,testFrameExposureRepeatUndoAndColdReopen
-studio.frame-actions.target,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioFrameActionsSheet,stepper -> binds targetIndex,no,#161,helper:openFrameActions
+studio.frame-actions.target,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioFrameActionsSheet,stepper -> binds targetIndex,no,#161,helper:openFrameActions helper:verifyFrameContext
 studio.frame-actions.tween,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioFrameActionsSheet,button 'Tween to next frame…' -> perform,no,#161,deferred
 studio.frame-menu.copy,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioTimeline,button 'Copy frame' -> vm.copyFrame,no,#161,testNonActiveFrameCopyPasteUndoAndColdReopen
 studio.frame-menu.cut,StickDeathInfinity/Views/Studio/Timeline/StudioTimeline.swift,StudioTimeline,button 'Cut frame' -> vm.cutFrame,yes,#161,deferred
@@ -973,3 +973,7 @@ feed.player.youtube-unconfigured,StickDeathInfinity/Views/Home/HomeFeedView.swif
 watchTogether.open-provider,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button 'Open shared YouTube video',n-a,#296,deferred
 watchTogether.provider-independent,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,text 'The host selected a YouTube video. Each member s',n-a,#296,deferred
 watchTogether.refresh-media,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button 'Refresh approved videos',n-a,#296,deferred
+spatter.ondevice.brief,StickDeathInfinity/Views/SpatterAI/SpatterOnDeviceComposer.swift,SpatterOnDeviceComposer,text field 'Describe your scene or edit…' -> binds brief,no,#203,deferred
+spatter.ondevice.cancel,StickDeathInfinity/Views/SpatterAI/SpatterOnDeviceComposer.swift,SpatterOnDeviceComposer,button 'Cancel on-device draft' -> cancel,no,#203,deferred
+spatter.ondevice.generate,StickDeathInfinity/Views/SpatterAI/SpatterOnDeviceComposer.swift,SpatterOnDeviceComposer,button 'Draft on this device' -> start (availability and current context gated),no,#203,deferred
+spatter.ondevice.result,StickDeathInfinity/Views/SpatterAI/SpatterOnDeviceComposer.swift,SpatterOnDeviceComposer,text: selectable on-device status or error notice,no,#203,deferred

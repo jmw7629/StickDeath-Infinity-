@@ -111,9 +111,9 @@ class TransportRevisionTests(unittest.TestCase):
                'SDI_INTAKE_TOTAL_BYTES': str(4 * 1024**3),
                'SDI_BACKEND_PUBLISHABLE_KEY': 'publishable-test',
                'SDI_BACKEND_SERVICE_KEY_FILE': '/test/service', 'SDI_PREVIEW_SIGNING_KEY_FILE': '/test/signing',
-               'SDI_FFPROBE': '/test/ffprobe', 'SDI_FFMPEG': '/test/ffmpeg'}
+               'SDI_DECODER_ROOT': '/test/decoder', 'SDI_DECODER_SNAPSHOT_DIRECTORY': '/test/snapshots'}
         with patch.object(application, '_secret_file', side_effect=lambda _e, name, binary=False: b'k'*32 if binary else 'service-test'), \
-             patch.object(application, 'MediaValidator'), patch.object(application, 'LicensedAssetRegistry'), \
+             patch.object(application, 'DecoderSandbox'), patch.object(application, 'MediaValidator'), patch.object(application, 'LicensedAssetRegistry'), \
              patch.object(application, 'UploadStore') as store, patch.object(application, 'ReviewRegistrar') as registrar:
             store.return_value.root = self.root
             application.create_application(env)

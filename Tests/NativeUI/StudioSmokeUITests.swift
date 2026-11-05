@@ -1985,7 +1985,19 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(app.buttons[blankID].value as? String, "Selected")
         let blank = try pixels(canvas.screenshot().image)
         XCTAssertGreaterThan(try changedPixelCount(drawn, blank), 50)
-        try contextAction(originalID, "duplicate")
+        if duplicateHistoryOnly {
+            try contextAction(originalID, "duplicate")
+        } else {
+            // Keep native-menu Duplicate coverage in its independent history
+            // case. Prepare this longer journey through the existing real sheet.
+            try openFrameActions(originalID, in: app)
+            let duplicate = app.buttons["studio.frame-actions.duplicate"]
+            XCTAssertTrue(duplicate.waitForExistence(timeout: 5) && duplicate.isHittable && duplicate.isEnabled)
+            duplicate.tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"),
+                evaluatedWith: app.steppers["studio.frame-actions.target"]).waitUntilFulfilled(timeout: 5))
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+        }
         XCTAssertEqual(thumbnails(app).count, 3)
         let copyID = thumbnails(app).allElementsBoundByIndex.first {
             $0.identifier != originalID && $0.identifier != blankID
@@ -2005,7 +2017,19 @@ final class StudioSmokeUITests: XCTestCase {
             XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
             return
         }
-        try contextAction(copyID, "earlier")
+        // Exercise the actual frame-strip drag command for reorder. The native
+        // menu's Move earlier action is not established by this journey. Menu
+        // opening and item selection each incurred 60s XCTest animation waits;
+        // retain native-menu Delete below and the same 300s case allowance.
+        let copy = app.buttons[copyID], original = app.buttons[originalID]
+        XCTAssertTrue(copy.isHittable && original.isHittable)
+        copy.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.7,
+            thenDragTo: original.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)),
+            withVelocity: .slow, thenHoldForDuration: 0.5)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Frame 1"),
+            evaluatedWith: app.buttons[copyID]).waitUntilFulfilled(timeout: 5),
+            "The real frame-strip drop did not move the copied frame before the original")
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
         XCTAssertEqual(app.buttons[copyID].label, "Frame 1")
         XCTAssertEqual(app.buttons[originalID].label, "Frame 2")
         XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
@@ -3745,7 +3769,7 @@ final class StudioSmokeUITests: XCTestCase {
             let alphaCandidates = [
                 (track: systemPicker.sliders["sliderAlpha"].firstMatch,
                  percentage: systemPicker.textFields["sliderAlpha"].firstMatch),
-                (track: systemPicker.otherElements.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch,
+                (track: systemPicker.sliders.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch,
                  percentage: systemPicker.textFields.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch)
             ]
             func actionableAlphaControls() -> (track: XCUIElement, percentage: XCUIElement)? {
@@ -3762,9 +3786,11 @@ final class StudioSmokeUITests: XCTestCase {
             let alpha = alphaControls.track, alphaValue = alphaControls.percentage
             XCTAssertTrue(alphaValue.exists && alphaValue.isEnabled)
             let priorAlpha = try XCTUnwrap(alphaValue.value as? String)
-            // Actual captured UIKit hierarchy identifies the track and its
-            // bounds. Tap its midpoint, then verify the native percentage.
-            alpha.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            // A track tap left the captured UIKit picker at 100%. Exercise its
+            // native slider adjustment and read the actual percentage field.
+            try adjustNativeDraftSlider(alpha, target: 50, range: 0...100, tolerance: 5,
+                                        app: app, name: "native-text-opacity",
+                                        viewport: systemPicker, valueControl: alphaValue)
             let halfOpacity = expectation(for: NSPredicate { _, _ in
                 guard let value = alphaValue.value as? String,
                       let percent = Double(value.replacingOccurrences(of: "%", with: "")) else { return false }
@@ -7764,9 +7790,7 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "mp4-native-share-sheet")
         captureHierarchy(app, name: "mp4-native-share-sheet-hierarchy")
         XCTAssertTrue(presented); XCTAssertTrue(saveToFiles.isHittable)
-        let dismiss = nativeShare.buttons["header.closeButton"]
-        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
-        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        try dismissNativeMovieShare(nativeShare, app: app, name: "mp4-native-share")
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The MP4 remains available."),
             evaluatedWith: status).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled,
@@ -7851,7 +7875,12 @@ final class StudioSmokeUITests: XCTestCase {
             try waitForProvider(NSPredicate { _, _ in localRootReady() },
                 failure: "Actual On My iPhone root unavailable")
             for name in ["SDI Export Test Files", "Exports"] {
-                let folder = app.collectionViews["File View"].cells[name]
+                // The captured local-provider cell appends ", Container" to
+                // its identifier and an item count to its label. Match the
+                // exact folder title within that cell, not a partial row label.
+                let folder = app.collectionViews["File View"].cells.matching(
+                    NSPredicate(format: "identifier == %@ OR identifier == %@", name, name + ", Container"))
+                    .containing(.staticText, identifier: name).firstMatch
                 try waitForProvider(NSPredicate { _, _ in folder.exists && folder.isHittable },
                     failure: "The real local Files fixture folder is unavailable: " + name)
                 // The observed icon grid exposes a non-actionable title child;
@@ -8134,26 +8163,18 @@ final class StudioSmokeUITests: XCTestCase {
         try exportControl("studio.export.share", app: app).tap()
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
         let files = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
-        let dismiss = nativeShare.buttons["header.closeButton"]
-        // CI37718624465 captured real Close and Save to Files at about 16s
-        // after Share; initial remote snapshots consumed the old 10s window.
-        // Both actual controls share one 40s deadline (hosted runners overran
-        // 20s populating the remote sheet). Never retap Share.
-        let shareDeadline = Date().addingTimeInterval(40)
-        let nativeCloseReady = expectation(for: NSPredicate { _, _ in
-            dismiss.exists && dismiss.isEnabled && dismiss.isHittable
-        }, evaluatedWith: dismiss).waitUntilFulfilled(timeout: max(0, shareDeadline.timeIntervalSinceNow))
-        let shareReady = nativeCloseReady && expectation(for: NSPredicate { _, _ in
-            files.exists && files.isEnabled && files.isHittable && dismiss.isHittable
-        }, evaluatedWith: files).waitUntilFulfilled(timeout: max(0, shareDeadline.timeIntervalSinceNow))
+        // The captured iOS 26 popover exposes Save to Files without a Close
+        // button. Require the real action, then dismiss that actual presentation.
+        let shareReady = expectation(for: NSPredicate { _, _ in
+            files.exists && files.isEnabled && files.isHittable
+        }, evaluatedWith: files).waitUntilFulfilled(timeout: 40)
         if !shareReady {
             capture(app, name: "mp4-native-share-readiness-failure")
             captureHierarchy(app, name: "mp4-native-share-readiness-failure-hierarchy")
         }
         XCTAssertTrue(shareReady, "Native MP4 share actions did not become accessible")
         capture(app, name: "mp4-bundled-audio-native-share")
-        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
-        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        try dismissNativeMovieShare(nativeShare, app: app, name: "mp4-bundled-audio-share")
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The MP4 remains available."), evaluatedWith: status).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled)
         capture(app, name: "mp4-bundled-audio-retained-after-share-cancel")
@@ -8845,45 +8866,68 @@ final class StudioSmokeUITests: XCTestCase {
             + unmatched(foregroundA, foregroundB) + unmatched(foregroundB, foregroundA)
     }
 
-    /// Native slider adjustment is approximate. Correct from its actual displayed
-    /// value while this remains an uncommitted draft; Apply is still tapped once.
+    @MainActor
+    private func dismissNativeMovieShare(_ nativeShare: XCUIElement, app: XCUIApplication, name: String) throws {
+        let close = nativeShare.buttons["header.closeButton"].firstMatch
+        if close.exists && close.isEnabled && close.isHittable {
+            close.tap()
+        } else {
+            // The same native popover dismissal is exercised by the GIF journey.
+            // Derive an outside point from the observed presentation, and fail
+            // if UIKit has not left an actual visible backdrop to tap.
+            let visibleSheet = nativeShare.frame.intersection(app.frame)
+            let outside = CGPoint(x: visibleSheet.midX, y: (visibleSheet.maxY + app.frame.maxY) / 2)
+            guard !visibleSheet.isNull, !visibleSheet.isEmpty,
+                  app.frame.maxY - visibleSheet.maxY > 20,
+                  app.frame.contains(outside), !nativeShare.frame.contains(outside) else {
+                captureHierarchy(app, name: name + "-dismissal-unavailable")
+                XCTFail("The actual native share presentation has no reachable dismissal control or backdrop")
+                throw NSError(domain: "NativeMovieShareDismissal", code: 1)
+            }
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: outside.x - app.frame.minX, dy: outside.y - app.frame.minY)).tap()
+        }
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: nativeShare)
+            .waitUntilFulfilled(timeout: 8), "The actual native movie share presentation did not dismiss")
+    }
+
+    /// Read each actual native value while the draft is uncommitted. Preserve
+    /// both sides of the measured bracket instead of losing it after an overshoot.
     @MainActor
     private func adjustNativeDraftSlider(_ slider: XCUIElement, target: Double, range: ClosedRange<Double>,
-                                         tolerance: Double, app: XCUIApplication, name: String) throws {
+                                         tolerance: Double, app: XCUIApplication, name: String,
+                                         viewport: XCUIElement? = nil, valueControl: XCUIElement? = nil) throws {
         let span = range.upperBound - range.lowerBound
         var aim = (target - range.lowerBound) / span
         var observed = [String]()
-        var previousSample: (aim: Double, value: Double)? = nil
-        let scroll = app.scrollViews["studio.tool-settings.scroll"]
-        for _ in 0..<3 {
+        var lowerSample: (aim: Double, value: Double)?
+        var upperSample: (aim: Double, value: Double)?
+        let scroll = viewport ?? app.scrollViews["studio.tool-settings.scroll"]
+        for _ in 0..<5 {
             guard slider.exists, slider.isHittable, slider.isEnabled, scroll.exists else { break }
             let viewport = scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 12)
             guard viewport.contains(slider.frame) else { break }
             slider.adjust(toNormalizedSliderPosition: CGFloat(aim))
-            let displayed = slider.value as? String ?? ""
+            let displayed = (valueControl ?? slider).value as? String ?? ""
             observed.append(displayed)
             guard let actual = Double(displayed.filter { "0123456789.-".contains($0) }),
                   actual.isFinite, range.contains(actual) else { break }
             if abs(actual - target) < tolerance { return }
+            if actual < target { lowerSample = (aim, actual) }
+            else { upperSample = (aim, actual) }
             var nextAim = aim + (target - actual) / span
-            if let previousSample, (previousSample.value - target) * (actual - target) < 0 {
-                // Two actual native values bracket the target. Interpolate
-                // within that measured bracket instead of oscillating past it.
-                let interpolated = previousSample.aim + (target - previousSample.value)
-                    * (aim - previousSample.aim) / (actual - previousSample.value)
-                if interpolated.isFinite,
-                   (min(previousSample.aim, aim)...max(previousSample.aim, aim)).contains(interpolated) {
-                    nextAim = interpolated
-                }
+            if let lowerSample, let upperSample, lowerSample.aim < upperSample.aim {
+                let interpolated = lowerSample.aim + (target - lowerSample.value)
+                    * (upperSample.aim - lowerSample.aim) / (upperSample.value - lowerSample.value)
+                if interpolated.isFinite { nextAim = interpolated }
             }
-            previousSample = (aim: aim, value: actual)
             aim = min(1, max(0, nextAim))
         }
         capture(app, name: name + "-slider-target-not-reached")
         captureHierarchy(app, name: name + "-slider-target-not-reached-hierarchy")
         let values = XCTAttachment(string: "target=\(target); range=\(range); values=\(observed)")
         values.name = name + "-slider-observed-values"; values.lifetime = .keepAlways; add(values)
-        XCTFail("The actual native slider did not reach its existing target band after at most three adjustments")
+        XCTFail("The actual native slider did not reach its existing target band after five bounded native adjustments")
         throw NSError(domain: "NativeDraftSlider", code: 1)
     }
 
