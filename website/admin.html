@@ -53,6 +53,11 @@
 <section id="admin-signin" hidden>
 <h2>Sign in</h2>
 <p class="quiet">Administrator accounts are provisioned server-side with MFA. A matching email or handle grants nothing.</p>
+<form id="admin-invite-form" class="support" novalidate hidden>
+<h3>Activate your invitation</h3>
+<p class="quiet">Confirm this invitation to choose your password and enrol an authenticator. Administrator access still requires a verified server role; this page cannot grant it.</p>
+<div class="actions"><button class="button" type="submit" id="admin-invite-activate">Activate invitation</button><button class="button" type="button" id="admin-invite-cancel">Cancel</button></div>
+</form>
 <form id="admin-password-form" class="support" novalidate>
 <label for="admin-email">Email</label>
 <input id="admin-email" name="email" type="email" autocomplete="username" maxlength="320" required>

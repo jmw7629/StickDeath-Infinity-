@@ -5,6 +5,24 @@
 // this script only shows what the server answers. With SDI_ADMIN_CONFIG === null it
 // renders nothing dynamic and makes no request.
 (() => {
+  // Capture auth material before configuration gates or the desktop script run.
+  // Fragments never become request queries, redirects, storage or log messages.
+  let capturedFragment = null;
+  if (location.hash && location.hash.length > 1) {
+    const raw = location.hash.slice(1);
+    const params = raw.length <= 65536 ? new URLSearchParams(raw) : null;
+    if (!params || ['token_hash', 'access_token', 'refresh_token', 'type', 'code', 'error'].some((key) => params.has(key))) {
+      history.replaceState(null, '', `${location.pathname}${location.search}`);
+      const invitation = params && (params.has('token_hash') || params.get('type') === 'invite');
+      const validInvite = invitation && [...params.keys()].length === 2 && params.getAll('type').length === 1
+        && params.getAll('token_hash').length === 1 && params.get('type') === 'invite'
+        && /^[0-9a-f]{56}$/.test(params.get('token_hash') || '');
+      const duplicated = params && ['access_token', 'refresh_token', 'expires_in', 'type', 'token_type']
+        .some((key) => params.getAll(key).length > 1);
+      capturedFragment = !params || duplicated || (invitation && !validInvite)
+        ? { invalid: true } : { params, invitation: !!invitation };
+    }
+  }
   const $ = (id) => document.getElementById(id);
   const statusTitle = $('admin-status-title');
   const statusDetail = $('admin-status-detail');
@@ -46,6 +64,8 @@
   let session = null;      // { access_token, refresh_token, expires_at, email, aal }
   let expiryTimer = null;
   let pendingFactor = null;
+  let pendingInvitation = null;
+  let invitationInFlight = false;
   let authEpoch = 0;
   const latestWork = new Map();
   class StaleWork extends Error {}
@@ -64,6 +84,9 @@
   }
   function invalidateSession() {
     authEpoch += 1; latestWork.clear(); session = null; pendingFactor = null;
+    pendingInvitation = null; invitationInFlight = false;
+    show('admin-invite-form', false);
+    const activate = $('admin-invite-activate'); if (activate) activate.disabled = false;
     if (expiryTimer) { clearTimeout(expiryTimer); expiryTimer = null; }
     clearPrivateView();
   }
@@ -415,6 +438,53 @@
     } catch (_) { if (!lease.current()) return; setStatus('Backend unreachable.', 'The second-factor request did not complete.'); }
   }
 
+  // An invitation proves email control; it never grants an administrator role.
+  // GoTrue v2.197.0 hashes invitations with SHA-224 (56 lowercase hex digits).
+  async function activateInvitation(event) {
+    event.preventDefault();
+    if (!pendingInvitation || invitationInFlight) return;
+    const tokenHash = pendingInvitation;
+    const lease = beginAuthentication(); // removes the pending hash before sending
+    invitationInFlight = true;
+    $('admin-invite-activate').disabled = true;
+    show('admin-password-form', false); show('admin-invite-form', true);
+    setStatus('Verifying your invitation…', 'A password and verified authenticator are still required.');
+    let issuedToken = null; let adopted = false;
+    try {
+      const result = await call('/auth/v1/verify', { body: { type: 'invite', token_hash: tokenHash } });
+      if (result.ok && result.data && typeof result.data.access_token === 'string'
+        && /^[\x21-\x7e]{1,16384}$/.test(result.data.access_token)) issuedToken = result.data.access_token;
+      lease.check();
+      if (!issuedToken) {
+        show('admin-invite-form', false); show('admin-password-form', true);
+        setStatus('Invitation refused.', 'The link may have expired or already been used. Request a fresh invitation.');
+        return;
+      }
+      const user = await call('/auth/v1/user', { method: 'GET', token: issuedToken });
+      lease.check();
+      const verifiedUser = user.ok && user.data && result.data.user
+        && typeof user.data.id === 'string' && user.data.id === result.data.user.id
+        && typeof user.data.email === 'string' && user.data.email.length <= 320
+        && typeof user.data.email_confirmed_at === 'string' && user.data.email_confirmed_at.length > 0;
+      if (!verifiedUser || !adoptSession({ ...result.data, user: user.data }, lease)) {
+        show('admin-invite-form', false); show('admin-password-form', true);
+        setStatus('Invitation could not be confirmed.', 'No session was adopted. Request a fresh invitation.');
+        return;
+      }
+      adopted = true;
+      show('admin-signin', true); show('admin-password-form', false); show('admin-newpassword-form', true);
+      setStatus('Set your command-center password.', `Email confirmed for ${session.email}. After saving your password, enrol your authenticator. Owner access is provisioned separately on the server.`);
+      $('admin-newpassword').focus();
+    } catch (_) {
+      if (!lease.current()) return;
+      show('admin-invite-form', false); show('admin-password-form', true);
+      setStatus('Invitation setup did not complete.', 'No session is held. Reopen the email link if unused, or request a fresh invitation.');
+    } finally {
+      if (!adopted && issuedToken) call('/auth/v1/logout', { token: issuedToken, query: { scope: 'local' } }).catch(() => {});
+      if (lease.current()) { invitationInFlight = false; $('admin-invite-activate').disabled = false; }
+    }
+  }
+
   // --- authenticator enrolment (first administrator sign-in) --------------------------
   // GoTrue enrols a TOTP factor for the signed-in account and returns the otpauth
   // secret and a QR image; the factor becomes verified only when a code from the
@@ -515,11 +585,22 @@
   }
 
   async function adoptFragment() {
-    if (!location.hash || location.hash.length < 2) return false;
-    const params = new URLSearchParams(location.hash.slice(1));
+    const fragment = capturedFragment; capturedFragment = null;
+    if (!fragment) return false;
+    if (fragment.invalid) {
+      setStatus('Invalid sign-in link.', 'The link was removed from the address bar. Nothing was sent; request a fresh invitation or sign in.');
+      return false;
+    }
+    const params = fragment.params;
+    if (fragment.invitation) {
+      pendingInvitation = params.get('token_hash');
+      show('admin-signin', true); show('admin-password-form', false); show('admin-invite-form', true);
+      setStatus('Activate your invitation.', 'Continue only if you requested this account. Your password and authenticator will be set on this page; the invitation alone grants no administrator access.');
+      $('admin-invite-activate').focus();
+      return true;
+    }
     const accessToken = params.get('access_token');
     const expiresIn = Number(params.get('expires_in'));
-    history.replaceState(null, '', `${location.pathname}${location.search}`);
     if (!accessToken || !Number.isFinite(expiresIn)) return false;
     const lease = beginAuthentication();
     try {
@@ -1081,6 +1162,8 @@
     }
     providerHost.hidden = false;
   }
+  $('admin-invite-form').addEventListener('submit', activateInvitation);
+  $('admin-invite-cancel').addEventListener('click', () => signOut('Invitation setup cancelled. No session is held.'));
   $('admin-password-form').addEventListener('submit', passwordSignIn);
   $('admin-mfa-form').addEventListener('submit', verifyCode);
   $('admin-mfa-cancel').addEventListener('click', () => signOut('Sign-in cancelled before the second factor.'));

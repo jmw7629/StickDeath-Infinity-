@@ -39,11 +39,15 @@ function harness(source, { configured = true, hash = '', previewOrigin } = {}) {
     element.value = /\bvalue="([^"]*)"/.exec(tag)?.[1] || (match[1] === 'select' ? /<option[^>]*value="([^"]*)"/.exec(match[3])?.[1] || '' : '');
     element.checked = /\bchecked\b/.test(tag);
   }
+  // Match the shipped HTML's initial hidden states, including the public invite form.
+  for (const match of html.matchAll(/<[^>]+\bid="([^"]+)"[^>]*>/g)) {
+    const element = elements.get(match[1]); if (element) element.hidden = /\bhidden\b/.test(match[0]);
+  }
   const consoleForms = [];
   for (const match of html.matchAll(/<form\b[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)) {
     const form = elements.get(match[1]); form.formElements = [...match[2].matchAll(/\bid="([^"]+)"/g)].map((m) => elements.get(m[1]));
     for (const field of form.formElements) { field.defaultValue = field.value; field.defaultChecked = field.checked; }
-    if (!['admin-password-form', 'admin-mfa-form', 'admin-enrol-form', 'admin-newpassword-form'].includes(form.id)) consoleForms.push(form);
+    if (!['admin-password-form', 'admin-mfa-form', 'admin-enrol-form', 'admin-newpassword-form', 'admin-invite-form'].includes(form.id)) consoleForms.push(form);
   }
   const get = (id) => { const e = elements.get(id); assert(e, 'Unknown real DOM id: ' + id); return e; };
   get('admin-password-form').email = get('admin-email'); get('admin-password-form').password = get('admin-password');
@@ -56,7 +60,13 @@ function harness(source, { configured = true, hash = '', previewOrigin } = {}) {
     if (hold) { hold.used = true; hold.request = request; return hold.gate.promise; }
     const p = request.url.pathname;
     if (p === '/auth/v1/token') return response({ access_token: 'password:' + request.body.email, expires_in: 3600, user: { email: request.body.email } });
-    if (p === '/auth/v1/user') return response({ email: request.token.slice(7).split(':').slice(1).join(':'), factors: [{ id: 'totp', factor_type: 'totp', status: 'verified' }] });
+    if (p === '/auth/v1/verify') return response({ access_token: 'invite:owner@example.invalid', expires_in: 3600,
+      user: { id: '11111111-1111-4111-8111-111111111111', email: 'owner@example.invalid' } });
+    if (p === '/auth/v1/user') return response({ id: '11111111-1111-4111-8111-111111111111',
+      email: request.token.slice(7).split(':').slice(1).join(':'), email_confirmed_at: '2026-11-05T00:00:00Z',
+      factors: request.token.startsWith('Bearer invite:') ? [] : [{ id: 'totp', factor_type: 'totp', status: 'verified' }] });
+    if (p === '/auth/v1/factors') return response({ id: '22222222-2222-4222-8222-222222222222',
+      totp: { secret: 'SYNTHETIC-INVITE-ENROLMENT', qr_code: 'data:image/svg+xml;base64,PHN2Zy8+' } });
     if (p.endsWith('/challenge')) return response({ id: 'challenge' });
     if (p.endsWith('/verify')) return response({ access_token: request.token.slice(7).replace('password:', 'mfa:'), expires_in: 3600, user: { email: request.token.slice(7).split(':').slice(1).join(':') } });
     if (p === '/rest/v1/rpc/sdi_admin_permissions') return response({ capabilities: ['users'], owner: false, step_up_current: true });
@@ -79,13 +89,87 @@ function harness(source, { configured = true, hash = '', previewOrigin } = {}) {
     assert.equal(get('admin-console').hidden, false, 'Normal password/MFA flow must still open console');
     assert.match(get('admin-identity').textContent, new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   };
-  return { get, requests, hold, rpc, signin, timers, response, signout: () => get('admin-signout').fire('click'), async hide() { document.hidden = true; for (const fn of document.events.visibilitychange || []) await fn(); } };
+  return { get, requests, hold, rpc, signin, timers, response, location, signout: () => get('admin-signout').fire('click'), async hide() { document.hidden = true; for (const fn of document.events.visibilitychange || []) await fn(); } };
 }
 
 export async function runAdminEpochScenarios(sourcePath = path.join(repo, 'website/admin.js')) {
   const source = fs.readFileSync(sourcePath, 'utf8'); const results = [];
   const test = async (name, body) => { try { await body(); results.push({ name, ok: true }); } catch (error) { results.push({ name, ok: false, detail: error.message }); } };
   await test('null admin configuration sends nothing', async () => { const h = harness(source, { configured: false }); await tick(); assert.equal(h.requests.length, 0); });
+  const inviteHash = 'a'.repeat(56);
+  const inviteFragment = '#type=invite&token_hash=' + inviteHash;
+  await test('invite fragment is cleared and waits for a deliberate activation without network', async () => {
+    const h = harness(source, { hash: inviteFragment }); await tick();
+    assert.equal(h.location.hash, ''); assert.equal(h.requests.length, 0);
+    assert.equal(h.get('admin-invite-form').hidden, false); assert.equal(h.get('admin-password-form').hidden, true);
+    assert.equal(h.get('admin-console').hidden, true);
+  });
+  await test('unconfigured invite is cleared without adopting a session or making a request', async () => {
+    const h = harness(source, { configured: false, hash: inviteFragment }); await tick();
+    assert.equal(h.location.hash, ''); assert.equal(h.requests.length, 0);
+    assert.equal(h.get('admin-console').hidden, true);
+  });
+  await test('malformed duplicate mixed or redirected invitations never contact the backend', async () => {
+    for (const hash of ['#type=invite&token_hash=' + 'a'.repeat(64), '#type=invite&token_hash=' + 'A'.repeat(56),
+      '#type=invite&token_hash=', inviteFragment + '&type=invite', inviteFragment + '&token_hash=' + inviteHash,
+      inviteFragment + '&access_token=synthetic', inviteFragment + '&refresh_token=synthetic',
+      inviteFragment + '&redirect_to=https://elsewhere.example.invalid', '#token_hash=' + inviteHash,
+      '#type=recovery&token_hash=' + inviteHash]) {
+      const h = harness(source, { hash }); await tick();
+      assert.equal(h.location.hash, '', hash); assert.equal(h.requests.length, 0, hash);
+      assert.equal(h.get('admin-invite-form').hidden, true, hash);
+      await h.get('admin-invite-form').fire('submit'); assert.equal(h.requests.length, 0, hash);
+    }
+  });
+  await test('invite calls exact POST verify then confirms its account before showing password and real MFA', async () => {
+    const h = harness(source, { hash: inviteFragment }); await tick();
+    await h.get('admin-invite-form').fire('submit');
+    assert.equal(h.requests[0].url.pathname, '/auth/v1/verify'); assert.equal(h.requests[0].url.search, '');
+    assert.equal(h.requests[0].method, 'POST'); assert.deepEqual(h.requests[0].body, { type: 'invite', token_hash: inviteHash });
+    assert.equal(h.requests[1].url.pathname, '/auth/v1/user'); assert.equal(h.requests[1].method, 'GET');
+    assert.equal(h.get('admin-newpassword-form').hidden, false); assert.equal(h.get('admin-console').hidden, true);
+    h.get('admin-newpassword').value = 'synthetic owner-selected password';
+    await h.get('admin-newpassword-form').fire('submit');
+    assert(h.requests.some((r) => r.url.pathname === '/auth/v1/user' && r.method === 'PUT'));
+    assert(h.requests.some((r) => r.url.pathname === '/auth/v1/factors' && r.body.factor_type === 'totp'));
+    assert.equal(h.get('admin-enrol-form').hidden, false); assert.equal(h.get('admin-console').hidden, true);
+    assert(!h.requests.some((r) => r.url.pathname.startsWith('/rest/v1/rpc/')));
+  });
+  await test('unconfirmed invitation account is refused and its unused session revoked locally', async () => {
+    const h = harness(source, { hash: inviteFragment });
+    const user = h.hold((r) => r.url.pathname === '/auth/v1/user');
+    const pending = h.get('admin-invite-form').fire('submit'); await tick(); assert(user.used);
+    user.release({ id: '11111111-1111-4111-8111-111111111111', email: 'owner@example.invalid' }); await pending; await tick();
+    assert.equal(h.get('admin-newpassword-form').hidden, true); assert.equal(h.get('admin-console').hidden, true);
+    assert(h.requests.some((r) => r.url.pathname === '/auth/v1/logout' && r.url.searchParams.get('scope') === 'local'));
+  });
+  await test('expired or used invite is not retried and never opens password or console', async () => {
+    const h = harness(source, { hash: inviteFragment });
+    const verify = h.hold((r) => r.url.pathname === '/auth/v1/verify');
+    const pending = h.get('admin-invite-form').fire('submit'); await tick(); assert(verify.used);
+    verify.release({ error_code: 'otp_expired' }, 403); await pending;
+    await h.get('admin-invite-form').fire('submit');
+    assert.equal(h.requests.length, 1); assert.equal(h.get('admin-newpassword-form').hidden, true);
+    assert.equal(h.get('admin-console').hidden, true); assert.match(h.get('admin-status-title').textContent, /Invitation refused/);
+  });
+  await test('cancelled invite hash cannot be submitted later', async () => {
+    const h = harness(source, { hash: inviteFragment }); await h.get('admin-invite-cancel').fire('click');
+    await h.get('admin-invite-form').fire('submit'); assert.equal(h.requests.length, 0);
+    assert.equal(h.get('admin-invite-form').hidden, true); assert.equal(h.get('admin-newpassword-form').hidden, true);
+  });
+  await test('duplicate invite click sends once and late reply cannot replace a newer administrator', async () => {
+    const h = harness(source, { hash: inviteFragment }); const verify = h.hold((r) => r.url.pathname === '/auth/v1/verify');
+    const pending = h.get('admin-invite-form').fire('submit'); await tick(); assert(verify.used);
+    await h.get('admin-invite-form').fire('submit'); assert.equal(h.requests.length, 1);
+    await h.get('admin-invite-cancel').fire('click'); await h.signin('b@example.invalid');
+    verify.release({ access_token: 'invite:old@example.invalid', expires_in: 3600,
+      user: { id: '11111111-1111-4111-8111-111111111111', email: 'old@example.invalid' } }); await pending; await tick();
+    assert.match(h.get('admin-identity').textContent, /b@example/); assert.equal(h.get('admin-newpassword-form').hidden, true);
+    assert.equal(h.get('admin-console').hidden, false);
+    assert.equal(h.requests.filter((r) => r.url.pathname === '/auth/v1/verify').length, 1);
+    assert(h.requests.some((r) => r.url.pathname === '/auth/v1/logout' && r.token === 'Bearer invite:old@example.invalid' && r.url.searchParams.get('scope') === 'local'));
+  });
+
   await test('old directory success cannot refill signed-out or replacement session', async () => {
     const h = harness(source); await h.signin('a@example.invalid'); const old = h.rpc('sdi_users_action', 'list');
     h.get('admin-users-page').value = '1'; const pending = h.get('admin-users-form').fire('submit'); await tick(); assert(old.used);

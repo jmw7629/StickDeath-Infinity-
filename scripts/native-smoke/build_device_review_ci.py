@@ -252,6 +252,7 @@ def build_arguments(scratch, metadata):
             "-derivedDataPath", str(scratch / "DerivedData"),
             "-clonedSourcePackagesDirPath", str(scratch / "Packages"),
             "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile", "-skipPackageUpdates",
+            "COMPILATION_CACHE_ENABLE_CACHING=NO", "SWIFT_ENABLE_COMPILE_CACHE=NO", "CLANG_ENABLE_COMPILE_CACHE=NO",
             "-jobs", "2", "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO", "IPHONEOS_DEPLOYMENT_TARGET=17.0",
             "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "CODE_SIGN_IDENTITY=", "DEVELOPMENT_TEAM=",
             "PRODUCT_BUNDLE_IDENTIFIER=" + BUNDLE, "INFOPLIST_FILE=" + str(metadata),
