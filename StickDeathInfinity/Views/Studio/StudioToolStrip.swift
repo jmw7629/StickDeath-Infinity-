@@ -3,8 +3,8 @@ import SwiftUI
 // ═══════════════════════════════════════════════════════════════════
 // Tool Strip — Floating white rail from the SD∞ reference design
 // ⋮⋮ drag | [color] | selection | drawing | shapes | colour | retouch | text | navigation
-// Each tool: unique topColor/bottomColor/glowColor; the selected tile wears
-// its own gradient and glow, unselected tiles are light grey with a tinted glyph.
+// Large, dark glyphs and readable labels sit on the white rail. Selection uses
+// the reference red action state with white lettering and a tool-coloured glow.
 // ═══════════════════════════════════════════════════════════════════
 
 struct ToolDef {
@@ -141,20 +141,20 @@ struct StudioToolStrip: View {
                     }) {
                         VStack(spacing: 2) {
                             Image(systemName: def.icon)
-                                .font(.system(size: 16))
-                                .foregroundColor(isSelected ? .white : Color(hex: def.bottomColor))
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(isSelected ? .white : Color(hex: "202028"))
                             Text(def.label)
-                                .font(.specialElite(7))
-                                .lineLimit(1).minimumScaleFactor(0.7)
+                                .font(.specialElite(9.5))
+                                .lineLimit(1).minimumScaleFactor(0.95)
                                 .fontWeight(.bold)
-                                .foregroundColor(isSelected ? .white.opacity(0.85) : Color(hex: "888888"))
+                                .foregroundColor(isSelected ? .white : Color(hex: "202028"))
                         }
                         .frame(width: 52, height: 52)
                         .overlay(alignment: .topTrailing) {
                             if !vm.planAllowsTool(def.tool) {
                                 Image(systemName: "lock.fill")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(Color(hex: "888888"))
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(isSelected ? .white : Color(hex: "202028"))
                                     .padding(4)
                                     .accessibilityHidden(true)
                             }
@@ -164,7 +164,7 @@ struct StudioToolStrip: View {
                                 .fill(
                                     isSelected
                                         ? LinearGradient(
-                                            colors: [Color(hex: def.topColor), Color(hex: def.bottomColor)],
+                                            colors: [Color(hex: "D62626"), Color(hex: "A31313")],
                                             startPoint: .top, endPoint: .bottom
                                           )
                                         : LinearGradient(

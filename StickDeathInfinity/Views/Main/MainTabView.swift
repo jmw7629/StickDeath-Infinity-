@@ -581,10 +581,13 @@ private struct SDIMovableDesktopIcon: View {
         Button(action: action) {
             VStack(spacing: 6) {
                 Image(systemName: icon.symbol).font(.system(size: 28, weight: .bold))
-                    .frame(width: 50, height: 46).background(icon.color)
+                    .frame(width: 50, height: 46)
+                    .background {
+                        Rectangle().fill(icon.color)
+                            .shadow(color: .black, radius: 0, x: 3, y: 3)
+                    }
                     .overlay(Rectangle().strokeBorder(SDIDesktopPalette.ink, lineWidth: 2))
-                    .shadow(color: .black, radius: 0, x: 3, y: 3)
-                Text(icon.label).font(.system(size: 10, weight: .bold, design: .monospaced))
+                Text(icon.label).font(.system(size: 12, weight: .bold, design: .monospaced))
                     .padding(.horizontal, 4).padding(.vertical, 3)
                     .background(SDIDesktopPalette.paper)
             }.frame(width: 92, height: 92)

@@ -394,14 +394,14 @@ struct StudioBottomBar: View {
                 ZStack(alignment: .topTrailing) {
                     VStack(spacing: 2) {
                         Image(systemName: "square.3.layers.3d")
-                            .font(.system(size: 14))
+                            .font(.system(size: 19, weight: .semibold))
                         Text("LAYER")
-                            .font(.specialElite(7)).fontWeight(.bold)
+                            .font(.specialElite(9.5)).fontWeight(.bold)
                     }
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(.white.opacity(0.95))
                     
                     Text("\(vm.studioLayers.count)")
-                        .font(.specialElite(7)).fontWeight(.bold)
+                        .font(.specialElite(9.5)).fontWeight(.bold)
                         .foregroundColor(.white)
                         .padding(2)
                         .background(Color.red)
@@ -430,11 +430,11 @@ struct BottomBarButton: View {
         Button(action: action) {
             VStack(spacing: 2) {
                 Image(systemName: icon)
-                    .font(.system(size: 14))
+                    .font(.system(size: 19, weight: .semibold))
                 Text(label)
-                    .font(.specialElite(7)).fontWeight(.bold)
+                    .font(.specialElite(9.5)).fontWeight(.bold)
             }
-            .foregroundColor(enabled ? .white.opacity(0.5) : .white.opacity(0.2))
+            .foregroundColor(enabled ? .white.opacity(0.95) : .white.opacity(0.45))
             .frame(maxWidth: .infinity, minHeight: 44)
             .contentShape(Rectangle())
         }

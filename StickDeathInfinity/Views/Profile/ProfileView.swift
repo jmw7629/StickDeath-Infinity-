@@ -428,7 +428,9 @@ private struct ProfileDesktopWindow<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: icon).accessibilityHidden(true)
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .accessibilityHidden(true)
                 Text(title.uppercased()).accessibilityAddTraits(.isHeader)
             }
             .font(.specialElite(13, relativeTo: .headline))
@@ -450,9 +452,12 @@ private struct ProfileDesktopWindow<Content: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(ProfileDesktopPalette.ink)
-        .background(ProfileDesktopPalette.paper)
+        .background {
+            // Shadow the opaque window, never its text and controls.
+            Rectangle().fill(ProfileDesktopPalette.paper)
+                .shadow(color: ProfileDesktopPalette.ink, radius: 0, x: 4, y: 4)
+        }
         .overlay(Rectangle().stroke(ProfileDesktopPalette.ink, lineWidth: 2))
-        .shadow(color: ProfileDesktopPalette.ink, radius: 0, x: 4, y: 4)
     }
 }
 private struct ProfileDesktopButtonStyle: ButtonStyle {
@@ -464,9 +469,12 @@ private struct ProfileDesktopButtonStyle: ButtonStyle {
             .foregroundStyle(ProfileDesktopPalette.ink)
             .padding(.horizontal, 12).padding(.vertical, 10)
             .frame(minWidth: 44, minHeight: 44)
-            .background(configuration.isPressed ? ProfileDesktopPalette.grey : (prominent ? ProfileDesktopPalette.red : ProfileDesktopPalette.paper))
+            .background {
+                Rectangle()
+                    .fill(configuration.isPressed ? ProfileDesktopPalette.grey : (prominent ? ProfileDesktopPalette.red : ProfileDesktopPalette.paper))
+                    .shadow(color: ProfileDesktopPalette.ink.opacity(isEnabled ? 1 : 0.3), radius: 0, x: 2, y: 2)
+            }
             .overlay(Rectangle().stroke(ProfileDesktopPalette.ink, lineWidth: 2))
-            .shadow(color: ProfileDesktopPalette.ink.opacity(isEnabled ? 1 : 0.3), radius: 0, x: 2, y: 2)
             .opacity(isEnabled ? 1 : 0.55)
             .contentShape(Rectangle())
     }
