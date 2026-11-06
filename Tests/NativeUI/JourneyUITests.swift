@@ -266,10 +266,14 @@ final class JourneyUITests: XCTestCase {
     /// desktop placements cannot change their editor and sheet geometry.
     @MainActor
     private func openDesktopSubject(_ subject: String, in app: XCUIApplication) throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 10
-        try desktopButton("desktop.menu.subjects", in: app, deadline: deadline).tap()
-        try desktopButton("desktop.open." + subject, in: app, deadline: deadline).tap()
-        try maximizeDesktopSubject(subject, in: app, deadline: deadline)
+        // Each native menu transition retains a bounded ten-second readiness
+        // allowance. Hosted iOS 26 automation consumed the former shared budget
+        // before an existing size button received its first hittability poll.
+        try desktopButton("desktop.menu.subjects", in: app,
+                          deadline: ProcessInfo.processInfo.systemUptime + 10).tap()
+        try desktopButton("desktop.open." + subject, in: app,
+                          deadline: ProcessInfo.processInfo.systemUptime + 10).tap()
+        try maximizeDesktopSubject(subject, in: app)
     }
 
     @MainActor

@@ -181,14 +181,21 @@ struct StudioEditorWorkspace: View {
     var body: some View {
         GeometryReader { geometry in
             let compact = geometry.size.width > geometry.size.height && geometry.size.height < 500
+            // Keep the same timeline/audio owner and action row while reclaiming
+            // one row of height inside short landscape desktop windows.
+            let footerLayout = compact
+                ? AnyLayout(HStackLayout(spacing: 0))
+                : AnyLayout(VStackLayout(spacing: 0))
             VStack(spacing: 0) {
                 if vm.showToolbar {
                     StudioHeaderBar(vm: vm, onDismiss: onDismiss)
                 }
                 canvasStage(compactHeight: compact)
                 if vm.showToolbar {
-                    StudioTimeline(vm: vm)
-                    StudioBottomBar(vm: vm, onImageDelete: onImageDelete)
+                    footerLayout {
+                        StudioTimeline(vm: vm)
+                        StudioBottomBar(vm: vm, onImageDelete: onImageDelete)
+                    }
                 }
             }
             // The status banner floats over the stage so showing or clearing a

@@ -319,6 +319,8 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         await test("original 1080x1920 H.264 one-frame portrait encodes and decodes at 12 FPS") {
             let folder = try parent(root, "portrait-original-single-frame")
             var doc = try document(colors: ["#FF0000"], width: 1080, height: 1920, fps: 12)
+            // Typed shape descriptors require schema 5; new() starts at schema 1.
+            doc.schemaVersion = 5
             // The small-fixture helper's height * 2 brush is wider than the
             // production 1,024-point limit here. Fill the same portrait canvas
             // with one valid editable rectangle instead of an oversized stroke.

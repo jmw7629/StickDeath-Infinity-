@@ -135,7 +135,8 @@ struct MainTabView: View {
             .accessibilityHidden(true)
         }
         .foregroundStyle(SDIDesktopPalette.ink)
-        .background(SDIDesktopPalette.paper)
+        // Keep the dark status-bar backdrop; the app uses white status text.
+        .background(SDIDesktopPalette.paper, ignoresSafeAreaEdges: [])
         .overlay(alignment: .bottom) { SDIDesktopPalette.ink.frame(height: 2) }
         .buttonStyle(.plain)
     }
@@ -452,10 +453,13 @@ private struct SDISubjectWindow<Content: View>: View {
             }
         }
         .frame(width: rect.width, height: rect.height)
-        .background(SDIDesktopPalette.paper)
+        .background {
+            // Shadow the backing rectangle, never the title, controls or artwork.
+            Rectangle().fill(SDIDesktopPalette.paper)
+                .shadow(color: .black.opacity(0.65), radius: 0, x: focused ? 5 : 3, y: focused ? 5 : 3)
+        }
         .overlay(Rectangle().strokeBorder(SDIDesktopPalette.ink, lineWidth: 2))
         .overlay(alignment: .top) { Color.white.opacity(0.7).frame(height: 1).padding(.horizontal, 2) }
-        .shadow(color: .black.opacity(0.65), radius: 0, x: focused ? 5 : 3, y: focused ? 5 : 3)
         .offset(x: rect.minX, y: rect.minY)
         .simultaneousGesture(TapGesture().onEnded { onFocus() })
         .accessibilityElement(children: .contain)
@@ -466,6 +470,7 @@ private struct SDISubjectWindow<Content: View>: View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 12, weight: .heavy))
                 .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title + " " + subject.label)
