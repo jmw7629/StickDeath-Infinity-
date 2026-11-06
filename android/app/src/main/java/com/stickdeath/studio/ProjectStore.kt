@@ -132,11 +132,12 @@ class ProjectStore(context: Context) {
             roomImportCheckpoint?.invoke("stage-reopened")
             check()
             syncRoomDirectory(directory.parentFile!!)
-            // API26 Files.createLink is a no-replace hard link: an existing final name is an error.
-            // No ATOMIC_MOVE/rename target-replacement assumption, empty final reservation, or
-            // copy-overwrite fallback. Unsupported filesystems fail with the private stage retained.
-            java.nio.file.Files.createLink(target.toPath(), ownedStage.toPath())
+            // Android forbids app hard links. A kernel no-replace rename preserves the exact
+            // journal-bound inode, and cannot replace an existing file, directory or symlink.
+            // No ordinary rename/ATOMIC_MOVE/copy fallback or empty final reservation is used.
+            RoomAtomicPublish.commit(ownedStage, target)
             syncRoomDirectory(directory)
+            syncRoomDirectory(receipts)
             roomImportCheckpoint?.invoke("project-published")
         }
         // A crash after publication can only be recovered when this final inode is the one whose

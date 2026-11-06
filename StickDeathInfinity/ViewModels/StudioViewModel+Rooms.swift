@@ -11,6 +11,7 @@
 
 import Foundation
 import Combine
+import UIKit
 
 @MainActor
 final class StudioRoomBridge: ObservableObject {
@@ -26,6 +27,15 @@ final class StudioRoomBridge: ObservableObject {
     private weak var studio: StudioViewModel?
     private var loop: Task<Void, Never>?
     private var loopToken: UUID?
+    private var foreground = false
+    private var subjectVisible = false
+    private var lifecycleRevision = UUID()
+    private var identityRevision: UUID?
+    private var ownedSession: (id: UUID, room: UUID, account: UUID, project: UUID)?
+    private var validatedRevision: UUID?
+    private var validatingRevision: UUID?
+    private var validationProblem: String?
+    private var interval: Duration = .seconds(3)
     /// Document revision after the last change the bridge accounted for
     /// (shared, replayed or view-only). Any other revision change was made by
     /// a path with no shared command (for example Undo) and is reported.
@@ -42,7 +52,14 @@ final class StudioRoomBridge: ObservableObject {
     /// Starts synchronising while this room's handoff lasts. Pull and push run
     /// every `interval`; local edits are also pushed as soon as they commit.
     func start(studio: StudioViewModel, interval: Duration = .seconds(3)) {
+        lifecycleRevision = UUID()
         self.studio = studio
+        self.interval = interval
+        identityRevision = AuthService.shared.communityIdentityRevision
+        if let session = coordinator.session, let id = coordinator.sessionID {
+            ownedSession = (id, session.room, session.account, studio.document.id)
+        } else { ownedSession = nil }
+        validatedRevision = nil; validationProblem = nil
         accountedRevision = studio.document.revision
         coordinator.applyRemote = { [weak self] record in self?.applyRemote(record) ?? false }
         coordinator.revertLocalEdit = { [weak self] op in
@@ -53,21 +70,67 @@ final class StudioRoomBridge: ObservableObject {
         localEditRevisions = [:]; localEditOrder = []
         StudioEditObservers.commandsCommitted = { [weak self] request, receipt in self?.committed(request, receipt) }
         StudioEditObservers.elementsCommitted = { [weak self] before, after, frameID in self?.committed(before: before, after: after, frameID: frameID) }
-        loop?.cancel()
+        pauseLoop()
+        resumeLoop()
+        refreshStatus()
+    }
+
+    /// Visibility is independent from view mounting. A pause retains the handoff, cursor and
+    /// conflict queues; a changed authentication lifetime ends only the old owned session.
+    func updateAvailability(foreground: Bool, visible: Bool) {
+        if self.foreground != foreground || subjectVisible != visible {
+            lifecycleRevision = UUID()
+            validatedRevision = nil; validatingRevision = nil; validationProblem = nil
+            self.foreground = foreground; subjectVisible = visible
+        }
+        if let identityRevision, identityRevision != AuthService.shared.communityIdentityRevision ||
+            !AuthService.shared.isAuthenticated || coordinator.session?.account.uuidString.lowercased() != AuthService.shared.userId?.lowercased() {
+            if let ownedSession {
+                coordinator.end(room: ownedSession.room, account: ownedSession.account, sessionID: ownedSession.id,
+                    reason: "The account changed. Room synchronisation stopped; the device project is unchanged.")
+            }
+            stop()
+            return
+        }
+        if operationScope()?.isCurrent == true { resumeLoop() } else { pauseLoop() }
+        refreshStatus()
+    }
+    private func operationScope() -> CommunityOperationScope? {
+        guard let studio, let session = coordinator.session, let sessionID = coordinator.sessionID,
+              let identityRevision, let ownedSession, ownedSession.id == sessionID,
+              ownedSession.room == session.room, ownedSession.account == session.account,
+              ownedSession.project == studio.document.id else { return nil }
+        let revision = lifecycleRevision, projectID = studio.document.id
+        return CommunityOperationScope(account: session.account) { [weak self, weak studio] in
+            guard let self, let studio else { return false }
+            return self.foreground && self.subjectVisible && UIApplication.shared.applicationState == .active && AuthService.shared.isAuthenticated &&
+                identityRevision == AuthService.shared.communityIdentityRevision &&
+                AuthService.shared.userId?.lowercased() == session.account.uuidString.lowercased() &&
+                CommunityServices.rooms.gateway.transport.sessionAccountID == session.account &&
+                self.lifecycleRevision == revision && self.coordinator.sessionID == sessionID &&
+                studio.isEditing && studio.document.id == projectID && self.coordinator.isSharing(projectID: projectID)
+        }
+    }
+    private func pauseLoop() {
+        loopToken = nil
+        loop?.cancel(); loop = nil
+    }
+    private func resumeLoop() {
+        guard loop == nil, operationScope()?.isCurrent == true else { return }
         // A replaced loop must not detach the hooks this start installed when it
         // finally observes its cancellation, so each loop carries its own token.
         let token = UUID()
         loopToken = token
         loop = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, self.coordinator.handoff != nil else { break }
+                guard let self, self.operationScope()?.isCurrent == true else { break }
                 await self.synchronise()
-                try? await Task.sleep(for: interval)
+                try? await Task.sleep(for: self.interval)
             }
             guard let self, self.loopToken == token else { return }
-            self.detach()
+            if self.coordinator.handoff == nil || self.studio?.isEditing != true { self.detach() }
+            else { self.pauseLoop(); self.refreshStatus() }
         }
-        refreshStatus()
     }
 
     func stop() {
@@ -76,8 +139,12 @@ final class StudioRoomBridge: ObservableObject {
     }
 
     private func detach() {
+        lifecycleRevision = UUID()
         loop = nil
         loopToken = nil
+        identityRevision = nil
+        ownedSession = nil
+        validatedRevision = nil; validatingRevision = nil; validationProblem = nil
         coordinator.applyRemote = nil
         coordinator.revertLocalEdit = nil
         localEditRevisions = [:]; localEditOrder = []
@@ -88,17 +155,51 @@ final class StudioRoomBridge: ObservableObject {
 
     /// The open document is this room's shared project.
     private var sharingStudio: StudioViewModel? {
-        guard let studio, studio.isEditing, coordinator.isSharing(projectID: studio.document.id) else { return nil }
+        guard let studio, validatedRevision == lifecycleRevision, operationScope()?.isCurrent == true else { return nil }
         return studio
+    }
+
+    /// A retained cursor is not current membership proof. Resume only after the server confirms
+    /// this same account/project; a failed validation never falls through to old queued replay.
+    private func validateMembership(_ scope: CommunityOperationScope) async -> Bool {
+        guard scope.isCurrent, let session = coordinator.session else { return false }
+        if validatedRevision == lifecycleRevision { return true }
+        let revision = lifecycleRevision
+        guard validatingRevision != revision else { return false }
+        validatingRevision = revision
+        defer { if validatingRevision == revision { validatingRevision = nil } }
+        do {
+            let summary = try await CommunityOperationContext.run(scope) { try await CommunityServices.rooms.summary(of: session.room) }
+            guard scope.isCurrent else { return false }
+            guard summary.room_id == session.room, RoomProjectShare.projectID(from: summary.project_ref) == session.projectID,
+                  let canEdit = summary.can_edit, summary.my_role != nil else {
+                if let id = coordinator.sessionID {
+                    coordinator.end(room: session.room, account: session.account, sessionID: id,
+                        reason: "The room's project or access changed. Reopen the room before synchronising; the device project is unchanged.")
+                }
+                stop(); return false
+            }
+            coordinator.begin(room: session.room, head: summary.command_revision ?? coordinator.head,
+                projectID: session.projectID, canEdit: canEdit, account: session.account)
+            validatedRevision = revision; validationProblem = nil
+            return true
+        } catch {
+            if scope.isCurrent { validationProblem = "Live room access could not be confirmed. Your device copy and queued edits are retained; replay and sending stay paused."; refreshStatus() }
+            return false
+        }
     }
 
     /// One pass: report unaccounted local changes, apply newer remote commands,
     /// then send queued local edits fenced on the resulting head.
     func synchronise() async {
-        guard let studio = sharingStudio else { refreshStatus(); return }
+        guard let scope = operationScope(), scope.isCurrent else { refreshStatus(); return }
+        guard await validateMembership(scope), let studio = sharingStudio else { refreshStatus(); return }
         noteUnaccountedChanges(upTo: studio.document.revision)
         let previousHeld = coordinator.heldConflict
-        let report = await coordinator.synchronise()
+        let report: (catchUp: RoomCommandSync.CatchUpOutcome, drain: RoomSessionCoordinator.DrainOutcome)
+        do { report = try await CommunityOperationContext.run(scope) { await coordinator.synchronise() } }
+        catch { return }
+        guard scope.isCurrent else { return }
         lastSync = Date()
         refreshStatus()
         if coordinator.session == nil, let reason = coordinator.endReason {
@@ -144,6 +245,7 @@ final class StudioRoomBridge: ObservableObject {
     }
 
     private func publish(_ payload: StudioSharedEdit.Payload) {
+        guard operationScope()?.isCurrent == true else { return }
         guard coordinator.session?.canEdit == true else {
             unshared("You can view this room's project but not edit it.")
             return
@@ -197,6 +299,7 @@ final class StudioRoomBridge: ObservableObject {
 
     /// The top-bar decision on a held conflict. The outcome is shown in Studio.
     func resolveConflict(keepMine: Bool) {
+        guard operationScope()?.isCurrent == true else { refreshStatus(); return }
         if keepMine {
             guard coordinator.resolveHeldConflict(keepMine: true) else { refreshStatus(); return }
             studio?.message = "Keeping your edit: it is sent again on top of the other creator's edit."
@@ -212,14 +315,24 @@ final class StudioRoomBridge: ObservableObject {
     }
 
     func refreshStatus() {
-        let next = loop == nil ? nil : coordinator.studioSyncStatus
+        let next: RoomSessionCoordinator.StudioSyncStatus?
+        if identityRevision != nil, coordinator.handoff != nil, operationScope()?.isCurrent != true {
+            next = .init(level: .paused, label: "Room: paused", detail: "Room sync is paused while Studio is hidden, inactive or its account is unavailable. The device project, handoff and edit cursor are retained; no requests or remote edits run while paused.")
+        } else if identityRevision != nil, coordinator.handoff != nil, validatedRevision != lifecycleRevision {
+            next = .init(level: .paused, label: "Room: checking access", detail: validationProblem ?? "Checking current room access before resuming replay or sending. The device project, handoff and edit cursor are retained.")
+        } else { next = identityRevision == nil ? nil : coordinator.studioSyncStatus }
         if next != status { status = next }
     }
 
     /// Sends queued local edits without waiting for the next pull.
     private func push() async {
-        guard coordinator.session != nil else { return }
-        if case .stopped(let reason) = await coordinator.drain() { studio?.message = "Room synchronisation paused: \(reason)" }
+        guard let scope = operationScope(), scope.isCurrent else { return }
+        guard await validateMembership(scope) else { return }
+        let outcome: RoomSessionCoordinator.DrainOutcome
+        do { outcome = try await CommunityOperationContext.run(scope) { await coordinator.drain() } }
+        catch { return }
+        guard scope.isCurrent else { return }
+        if case .stopped(let reason) = outcome { studio?.message = "Room synchronisation paused: \(reason)" }
         refreshStatus()
     }
 
@@ -240,7 +353,7 @@ final class StudioRoomBridge: ObservableObject {
     // MARK: Replaying
 
     private func applyRemote(_ record: RoomCommandRecord) -> Bool {
-        guard let studio = sharingStudio else {
+        guard let studio = sharingStudio, let scope = operationScope() else {
             coordinator.noteRemoteBlocked(record, reason: "Open the shared project in Studio to apply edits from other creators.")
             return false
         }
@@ -265,10 +378,14 @@ final class StudioRoomBridge: ObservableObject {
             let request = try StudioSharedEdit.request(from: payload, projectID: studio.document.id, revision: studio.document.revision)
             isApplyingRemote = true
             defer { isApplyingRemote = false }
-            _ = try studio.applyStudioCommands(request, checkCancellation: {})
+            _ = try studio.applyStudioCommands(request, checkCancellation: {
+                try CommunityOperationContext.check()
+                try scope.check()
+            })
             accountedRevision = studio.document.revision
             return true
         } catch {
+            guard scope.isCurrent, CommunityOperationContext.isCurrent else { return false }
             let reason = (error as? LocalizedError)?.errorDescription ?? "The edit is malformed."
             coordinator.noteRemoteBlocked(record, reason: "Shared edit #\(record.revision) could not be applied: \(reason) It is retried automatically; skip it only if your copy has diverged.")
             return false

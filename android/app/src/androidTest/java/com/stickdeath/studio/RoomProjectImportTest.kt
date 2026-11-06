@@ -198,7 +198,7 @@ class RoomProjectImportTest {
     }
 
     @Test fun stagedRetryNeverOverwritesUnknownFinalOrAtomicFileRecoveryEntries() {
-        for (collision in listOf("valid-final", "empty-final", ".bak", ".new")) {
+        for (collision in listOf("valid-final", "empty-final", ".bak", ".new", "late-final", "late-symlink")) {
             val store = ProjectStore(context); val source = Document.create("Preserved original", 64, 64, 12)
             val account = newID(); val snapshot = newID(); val receipts = File(context.filesDir, "room-project-imports/$account")
             var localID: String? = null
@@ -211,11 +211,26 @@ class RoomProjectImportTest {
                 localID = org.json.JSONObject(File(receipts, "$snapshot.json").readText()).getString("localID")
                 val occupied = File(context.filesDir, "studio-projects/$localID.json${if (collision.startsWith('.')) collision else ""}")
                 val unrelated = if (collision == "empty-final") byteArrayOf() else store.encode(source.copy(id = localID!!, name = "Unrelated existing project"))
-                occupied.writeBytes(unrelated)
-                store.roomImportCheckpoint = null
+                val late = collision.startsWith("late-")
+                val sentinel = File(receipts, "unrelated-collision-target")
+                if (late) {
+                    store.roomImportCheckpoint = { phase ->
+                        if (phase == "stage-reopened") {
+                            if (collision == "late-symlink") {
+                                sentinel.writeBytes(unrelated)
+                                java.nio.file.Files.createSymbolicLink(occupied.toPath(), sentinel.toPath())
+                            } else occupied.writeBytes(unrelated)
+                        }
+                    }
+                } else { occupied.writeBytes(unrelated); store.roomImportCheckpoint = null }
                 try { store.importRoomProject(bytes, account, snapshot, "device-project:${source.id}", hash) {}; fail("Existing $collision was overwritten") }
                 catch (_: IllegalArgumentException) { }
+                catch (_: java.nio.file.FileAlreadyExistsException) { }
                 assertArrayEquals(unrelated, occupied.readBytes())
+                if (collision == "late-symlink") {
+                    assertTrue(java.nio.file.Files.isSymbolicLink(occupied.toPath()))
+                    assertArrayEquals(unrelated, sentinel.readBytes())
+                }
                 assertArrayEquals(original, File(context.filesDir, "studio-projects/${source.id}.json").readBytes())
                 assertFalse(org.json.JSONObject(File(receipts, "$snapshot.json").readText()).getBoolean("verified"))
             } finally {

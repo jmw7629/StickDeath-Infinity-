@@ -13,6 +13,8 @@ final class FakeTransport: CommunityTransport {
     var replies: [Result<String, Error>] = []
     var calls: [Call] = []
     var hasSession = true
+    var sessionAccountID: UUID?
+    var beforeReply: (() -> Void)?
     func rpc<P: Encodable & Sendable>(_ name: String, params: P) async throws -> CommunityReply {
         let data = try CommunityCoding.encoder().encode(params)
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
@@ -24,6 +26,7 @@ final class FakeTransport: CommunityTransport {
         return try next()
     }
     private func next() throws -> CommunityReply {
+        beforeReply?()
         guard !replies.isEmpty else { throw CommunityError.transport("No scripted reply.") }
         switch replies.removeFirst() {
         case .success(let json): return CommunityReply(data: Data(json.utf8), serverDate: nil, sentAt: Date(), receivedAt: Date())
@@ -696,6 +699,78 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
                     && coordinator.endReason == nil && applied == 0 && transport.calls == 1,
                     entry + ": cancelled public pass left real current state intact")
             }
+        }
+
+        await test("scoped gateway refuses queued work and real account replacements before or after transport") {
+            let transport = FakeTransport()
+            transport.sessionAccountID = member
+            let client = RoomsClient(gateway: CommunityGateway(transport: transport))
+            var visible = false
+            let scope = CommunityOperationScope(account: member) { visible }
+            do {
+                _ = try await CommunityOperationContext.run(scope) { try await client.myRooms() }
+                throw Failure(description: "hidden operation was accepted")
+            } catch CommunityError.stale { }
+            try require(transport.calls.isEmpty, "hidden queued read made no RPC")
+            visible = true
+            transport.sessionAccountID = owner
+            do {
+                _ = try await CommunityOperationContext.run(scope) { try await client.myRooms() }
+                throw Failure(description: "wrong SDK account was accepted")
+            } catch CommunityError.stale { }
+            try require(transport.calls.isEmpty, "old-account work did not use replacement credentials")
+            transport.sessionAccountID = member
+            transport.replies = [.success("[]")]
+            transport.beforeReply = { transport.sessionAccountID = owner }
+            do {
+                _ = try await CommunityOperationContext.run(scope) { try await client.myRooms() }
+                throw Failure(description: "old-account reply was adopted")
+            } catch CommunityError.stale { }
+            try require(transport.calls.count == 1, "already-issued read was not repeated or followed up")
+        }
+
+        await test("hidden or background held scope cannot apply or drain and fresh same-session scope resumes its cursor") {
+            for reason in ["window hidden", "scene background", "identity replaced"] {
+                let transport = HeldRoomTransport()
+                let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+                coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: member)
+                coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+                _ = coordinator.publishLocalEdit(kind: "frame.add", payload: .object([:]))
+                let identity = coordinator.sessionID, sync = coordinator.sync
+                var epoch = UUID(); let captured = epoch
+                var applied = 0
+                coordinator.applyRemote = { _ in applied += 1; return true }
+                let scope = CommunityOperationScope { epoch == captured }
+                let held = Task { @MainActor in
+                    do { _ = try await CommunityOperationContext.run(scope) { await coordinator.synchronise() } }
+                    catch { }
+                }
+                try await transport.waitUntilHeld()
+                epoch = UUID()
+                transport.release(.success(#"{"commands":[\#(record(1))],"head":1}"#))
+                await held.value
+                try require(coordinator.sessionID == identity && coordinator.sync === sync && coordinator.head == 0 &&
+                    coordinator.pendingLocalCount == 1 && coordinator.pendingRemoteCount == 0 && applied == 0 &&
+                    transport.calls == 1 && coordinator.lastStopReason == nil && coordinator.isHandedOff(room: room), reason + ": stale pass retained queues and handoff without applying/draining")
+                // Returning to visibility creates a new lease, not a new sync/cursor/session.
+                let fresh = FakeTransport(); fresh.replies = [.success(#"{"commands":[\#(record(1))],"head":1}"#)]
+                coordinator.attachClient(RoomsClient(gateway: CommunityGateway(transport: fresh)))
+                let current = epoch
+                _ = try await CommunityOperationContext.run(CommunityOperationScope { epoch == current }) { await coordinator.catchUp() }
+                try require(coordinator.sessionID == identity && coordinator.sync === sync && coordinator.head == 1 && applied == 1 &&
+                    coordinator.pendingLocalCount == 1 && fresh.calls.count == 1, reason + ": fresh scope continued the retained cursor once")
+            }
+        }
+
+        await test("changing a room project replaces its old session instead of silently keeping the earlier project") {
+            let coordinator = RoomSessionCoordinator(client: nil)
+            coordinator.begin(room: room, head: 3, projectID: project, canEdit: true, account: member)
+            coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+            let original = coordinator.sessionID
+            let otherProject = UUID()
+            coordinator.begin(room: room, head: 7, projectID: otherProject, canEdit: true, account: member)
+            try require(coordinator.sessionID != original && coordinator.session?.projectID == otherProject &&
+                coordinator.handoff == nil && coordinator.head == 7, "new share cannot replay onto the earlier open project")
         }
 
         await test("active-project handoff survives leaving Rooms for Studio and ends with the session") {

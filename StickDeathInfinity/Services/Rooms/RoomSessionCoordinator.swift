@@ -68,7 +68,7 @@ final class RoomSessionCoordinator {
     func attachClient(_ client: RoomsClient) { self.client = client }
 
     func begin(room: UUID, head: Int, projectID: UUID?, canEdit: Bool, account: UUID) {
-        if let session, session.room == room, session.account == account {
+        if let session, session.room == room, session.account == account, session.projectID == projectID {
             // Same session: only a permission change is applied.
             if session.canEdit != canEdit { self.session = Session(room: room, projectID: projectID, canEdit: canEdit, account: account) }
             return
@@ -216,7 +216,7 @@ final class RoomSessionCoordinator {
     /// Exact ownership of a synchronisation pass, including a same-room/account
     /// rejoin. A stale or cancelled continuation must not mutate either queue.
     private func owns(_ identity: UUID, sync expected: RoomCommandSync) -> Bool {
-        !Task.isCancelled && sessionID == identity && self.sync === expected && session != nil
+        CommunityOperationContext.isCurrent && sessionID == identity && self.sync === expected && session != nil
     }
 
     /// Send queued edits in order; stop at the first conflict so the editor
@@ -284,6 +284,7 @@ final class RoomSessionCoordinator {
     func applyQueued() {
         guard let sync, let identity = sessionID, owns(identity, sync: sync) else { return }
         while let record = sync.nextRemoteToApply() {
+            guard owns(identity, sync: sync) else { return }
             guard let apply = applyRemote, apply(record) else { break }
             // The synchronous editor hook may end or replace the session.
             guard owns(identity, sync: sync) else { return }

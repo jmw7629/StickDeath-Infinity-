@@ -35,6 +35,11 @@ val stageStudioImages by tasks.registering(Sync::class) {
 android {
     namespace = "com.stickdeath.studio"
     compileSdk = 35
+    // Tiny libc-only no-replace file commit. No bundled C++ runtime or downloaded code.
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
+    }
     defaultConfig {
         applicationId = "com.stickdeath.studio"
         minSdk = 26

@@ -91,6 +91,8 @@ final class AuthService: ObservableObject {
     }
 
     var userId: String? { currentUser?.id.uuidString }
+    /// Read-only identity lifetime for private community work, including same-account reauthentication.
+    var communityIdentityRevision: UUID { identityRevision }
     var isAuthenticated: Bool { state == .authenticated }
     var isSuperAdmin: Bool {
         // Display hint only: server app metadata, never editable profile/email data.

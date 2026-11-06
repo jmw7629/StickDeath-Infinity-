@@ -34,17 +34,22 @@ final class FeedClient {
     /// Page 0 of each category is cached per account for the offline label;
     /// later pages are never served from cache.
     func page(_ category: FeedCategory, page: Int, account: String, asOf: String? = nil, cursor: String? = nil) async throws -> Page {
+        try CommunityOperationContext.check()
+        if let caller = CommunityOperationContext.scope?.account, UUID(uuidString: account) != caller { throw CommunityError.stale }
         guard (0..<FeedTimeline.maximumPages).contains(page) else { throw CommunityError.invalidResponse("Feed page out of range.") }
         if page > 0, cursor == nil || asOf == nil { throw CommunityError.stale }
         do {
             let request = FeedPageRequest(category: category.rawValue, page_cursor: page == 0 ? nil : cursor, as_of: page == 0 ? nil : asOf)
             let response = try await gateway.call("sdi_feed_page", params: request, as: FeedListResponse.self)
+            try CommunityOperationContext.check()
             guard let posts = response.posts, let more = response.has_more else { throw CommunityError.invalidResponse("The feed returned an incomplete response.") }
             guard !more || response.next_cursor != nil else { throw CommunityError.invalidResponse("The feed did not return the next page position.") }
             if page == 0 { try? cache.store(posts, account: account, key: category.rawValue) }
+            try CommunityOperationContext.check()
             return Page(posts: posts, hasMore: more, source: .server, asOf: response.as_of, cursor: response.next_cursor,
                         downloadRequiresPlan: response.download_requires_plan ?? true)
         } catch let error as CommunityError {
+            try CommunityOperationContext.check()
             if page == 0, case .transport = error, let cached = cache.entry(account: account, key: category.rawValue) {
                 return Page(posts: cached.value, hasMore: false, source: .cache(updatedAt: cached.updatedAt))
             }
@@ -54,8 +59,10 @@ final class FeedClient {
 
     /// `like`/`follow`/`block`/`report`; true only when the server says confirmed.
     func mutate(_ request: FeedRequest) async throws -> Bool {
+        try CommunityOperationContext.check()
         guard request.action != "list" else { throw CommunityError.invalidResponse("Use page(_:page:account:asOf:cursor:) for listing.") }
         let response = try await gateway.call("sdi_feed_action", params: request, as: FeedListResponse.self)
+        try CommunityOperationContext.check()
         return response.status == "confirmed"
     }
     func like(_ post: UUID, enabled: Bool) async throws -> Bool { try await mutate(FeedRequest(action: "like", post_id: post, enabled: enabled)) }
@@ -188,6 +195,9 @@ final class FeedExportDownload: NSObject, URLSessionDataDelegate, @unchecked Sen
         let expectedBytes: Int64?
     }
     private let queue = DispatchQueue(label: "sdi.feed-export.download")
+    private let cancellationGate = NSLock()
+    private var cancellationRequested = false
+    private var isCancelled: Bool { cancellationGate.lock(); defer { cancellationGate.unlock() }; return cancellationRequested }
     private let delegateQueue = OperationQueue()
     private let maximumBytes: Int64
     private let timeout: TimeInterval
@@ -253,7 +263,7 @@ final class FeedExportDownload: NSObject, URLSessionDataDelegate, @unchecked Sen
     }
     private func start(_ url: URL, continuation: CheckedContinuation<(URL, Int64), Error>) {
         queue.async {
-            guard !self.finished else { continuation.resume(throwing: self.terminalError ?? CancellationError()); return }
+            guard !self.finished, !self.isCancelled else { continuation.resume(throwing: self.terminalError ?? CancellationError()); return }
             self.continuation = continuation
             do {
                 try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
@@ -273,15 +283,25 @@ final class FeedExportDownload: NSObject, URLSessionDataDelegate, @unchecked Sen
                 }
                 self.deadline = deadline
                 self.queue.asyncAfter(deadline: .now() + self.timeout, execute: deadline)
-                session.dataTask(with: Self.request(url, timeout: self.timeout)).resume()
+                let task = session.dataTask(with: Self.request(url, timeout: self.timeout))
+                self.cancellationGate.lock()
+                if self.cancellationRequested {
+                    self.cancellationGate.unlock(); task.cancel(); self.fail(CancellationError()); return
+                }
+                task.resume()
+                self.cancellationGate.unlock()
             } catch { self.fail(CommunityError.transport("The temporary video file could not be created.")) }
         }
     }
-    private func cancel() { queue.async { self.fail(CancellationError()) } }
+    private func cancel() {
+        // Remember cancellation immediately, including before queued start reaches resume.
+        cancellationGate.lock(); cancellationRequested = true; cancellationGate.unlock()
+        queue.async { self.fail(CancellationError()) }
+    }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        guard !finished, redirects < 5, let url = request.url,
+        guard !finished, !isCancelled, redirects < 5, let url = request.url,
               FeedPlaybackSource.resolve(url.absoluteString)?.renditionURL != nil else {
             completionHandler(nil)
             fail(CommunityError.invalidResponse("The video redirected to an unavailable address."))
@@ -290,11 +310,16 @@ final class FeedExportDownload: NSObject, URLSessionDataDelegate, @unchecked Sen
         redirects += 1
         // Build a fresh request: never forward credentials, cookies or headers
         // supplied by another host, URLSession, or the account RPC session.
+        cancellationGate.lock()
+        guard !cancellationRequested else {
+            cancellationGate.unlock(); completionHandler(nil); fail(CancellationError()); return
+        }
         completionHandler(Self.request(url, timeout: timeout))
+        cancellationGate.unlock()
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard !finished, let http = response as? HTTPURLResponse, http.statusCode == 200,
+        guard !finished, !isCancelled, let http = response as? HTTPURLResponse, http.statusCode == 200,
               let url = http.url, FeedPlaybackSource.resolve(url.absoluteString)?.renditionURL != nil else {
             completionHandler(.cancel)
             fail(CommunityError.invalidResponse("The video could not be downloaded."))

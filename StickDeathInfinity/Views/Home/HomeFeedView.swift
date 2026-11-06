@@ -13,6 +13,16 @@ import WebKit
 struct HomeFeedView: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @StateObject private var activity = FeedWindowActivity()
+    @State private var listingIdentity: String?
+    @State private var scrollViewport = CGRect.zero
+    @State private var loadTask: Task<Void, Never>?
+    @State private var loadRun: UUID?
+    @State private var actionTask: Task<Void, Never>?
+    @State private var actionRun: UUID?
+    @State private var pendingReaction: FeedPendingReaction?
+    @State private var linkShare: FeedLinkShareOffer?
     @State private var timeline = FeedTimeline()
     @State private var category = FeedCategory.recent
     @State private var loading = false
@@ -31,9 +41,10 @@ struct HomeFeedView: View {
     @State private var exportProgress: FeedExportDownload.Progress?
     @State private var exportFile: FeedExportFile?
     @State private var blocking: FeedPost?
-    private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(phase == .active):\(category.rawValue):\(viewerGeneration)" }
+    private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(auth.communityIdentityRevision):\(category.rawValue):\(viewerGeneration)" }
     private var exportContext: FeedExportListing.Context? {
-        guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return nil }
+        guard activity.canInteract, phase == .active, subjectWindowVisible, listingIdentity == identity,
+              auth.isAuthenticated, let account = auth.userId else { return nil }
         return .init(account: account, generation: exportEpoch)
     }
 
@@ -49,11 +60,11 @@ struct HomeFeedView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityAddTraits(.isHeader)
                     Spacer(minLength: 8)
-                    Button { Task { await load(reset: true) } } label: {
+                    Button { requestLoad(reset: true) } label: {
                         Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
                     }
                     .buttonStyle(FeedWallButtonStyle())
-                    .accessibilityLabel("Refresh feed").disabled(loading)
+                    .accessibilityLabel("Refresh feed").disabled(loading || actionRun != nil || !activity.canInteract)
                     .accessibilityIdentifier("feed.home.refresh")
                 }
                 .padding(.horizontal, 16).padding(.vertical, 10)
@@ -91,7 +102,7 @@ struct HomeFeedView: View {
                                 .accessibilityIdentifier("feed.home.offline")
                         }
                         FeedWallGrid(width: geometry.size.width) {
-                            ForEach(timeline.posts) { post in card(post) }
+                            if listingIdentity == identity { ForEach(timeline.posts) { post in card(post) } }
                         }
                         if loading {
                             ProgressView("Loading approved videos…").tint(FeedWallPalette.ink)
@@ -109,9 +120,10 @@ struct HomeFeedView: View {
                             }
                         }
                         if auth.isAuthenticated && timeline.canLoadMore && !loading && offlineUpdatedAt == nil {
-                            Button(error == nil ? "Load more" : "Retry") { Task { await load(reset: false) } }
+                            Button(error == nil ? "Load more" : "Retry") { requestLoad(reset: false) }
                                 .buttonStyle(FeedWallButtonStyle())
                                 .frame(maxWidth: .infinity)
+                                .disabled(actionRun != nil || !activity.canInteract)
                                 .accessibilityIdentifier("feed.home.load-more")
                         }
                         if auth.isAuthenticated && !timeline.canLoadMore && timeline.nextPage >= FeedTimeline.maximumPages {
@@ -121,38 +133,61 @@ struct HomeFeedView: View {
                     }
                     .padding(16).padding(.bottom, 60)
                     .frame(maxWidth: 1180).frame(maxWidth: .infinity)
-                }.refreshable { await load(reset: true) }
+                }
+                .coordinateSpace(name: "feed.home.viewport")
+                .background {
+                    GeometryReader { viewport in
+                        Color.clear.preference(key: FeedViewportBoundsKey.self,
+                                               value: CGRect(origin: .zero, size: viewport.size))
+                    }
+                }
+                .onPreferenceChange(FeedViewportBoundsKey.self) { scrollViewport = $0 }
+                .refreshable { if let task = requestLoad(reset: true) { await task.value } }
             }
         }
         .foregroundStyle(FeedWallPalette.ink)
         .background(FeedWallDesktop().ignoresSafeArea(edges: [.horizontal, .bottom]))
+        // Only account/category lifetimes reset the listing. Visibility and scene
+        // pauses revoke work independently, keeping rows, cursor, filter and scroll.
         .task(id: identity) {
-            invalidateExportScope()
-            epoch = UUID(); timeline.reset(); loading = false; loaded = false
-            playback = nil; error = nil; notice = nil; offlineUpdatedAt = nil
-            if phase == .active { await load(reset: true) }
+            pauseWork()
+            timeline.reset(); loaded = false
+            error = nil; notice = nil; offlineUpdatedAt = nil
+            listingIdentity = identity
+            updateAvailability()
         }
-        .sheet(item: $playback) { item in CommunityVideoPlayer(source: item.source, title: item.title) }
+        .onAppear { updateAvailability() }
+        .sheet(item: $playback) { item in
+            if item.scope.isCurrent {
+                CommunityVideoPlayer(source: item.source, title: item.title, isAllowed: { item.scope.isCurrent })
+            }
+        }
+        .sheet(item: $linkShare) { offer in
+            FeedLinkSharePresenter(offer: offer, onTerminal: {
+                if linkShare?.id == offer.id { linkShare = nil }
+            })
+        }
         .sheet(item: $exportFile) { file in
             FeedExportSharePresenter(file: file, isAllowed: {
-                file.generation == exportEpoch && file.account == auth.userId && auth.isAuthenticated && phase == .active
+                file.generation == exportEpoch && file.account == auth.userId && auth.isAuthenticated && phase == .active && activity.canInteract && subjectWindowVisible
             }, onTerminal: {
                 if exportFile?.id == file.id { exportFile = nil }
             })
         }
         .confirmationDialog("Block this creator?", isPresented: Binding(get: { blocking != nil }, set: { if !$0 { blocking = nil } }), titleVisibility: .visible, presenting: blocking) { post in
-            Button("Block \(post.creator_name)", role: .destructive) { Task { await block(post) } }
+            Button("Block \(post.creator_name)", role: .destructive) { beginAction(.block, post: post) }
             Button("Cancel", role: .cancel) { blocking = nil }
         } message: { post in
             Text("You will no longer see \(post.creator_name)'s videos and they will not see yours. This does not report them.")
         }
-        .onChange(of: category) { _, _ in playback = nil; invalidateExportScope() }
+        .onChange(of: category) { _, _ in pauseWork() }
         // Published identity/state events invalidate even a rapid A → B → A
         // account change that SwiftUI might coalesce into the same rendered ID.
         .onReceive(auth.$currentUser) { _ in revokeViewerListing() }
         .onReceive(auth.$state) { _ in revokeViewerListing() }
-        .onChange(of: phase) { _, value in if value != .active { playback = nil; invalidateExportScope() } }
-        .onDisappear { playback = nil; invalidateExportScope() }
+        .onChange(of: phase) { _, _ in updateAvailability() }
+        .onChange(of: subjectWindowVisible) { _, _ in updateAvailability() }
+        .onDisappear { pauseWork() }
     }
 
     private func card(_ post: FeedPost) -> some View {
@@ -162,17 +197,17 @@ struct HomeFeedView: View {
             FeedWallTitleBar(title: post.title) {
                 Menu {
                     if post.creator.uuidString.lowercased() != auth.userId?.lowercased() {
-                        Button(post.following ? "Unfollow creator" : "Follow creator") { Task { await follow(post) } }
-                        Button("Block creator", role: .destructive) { blocking = post }
+                        Button(post.following ? "Unfollow creator" : "Follow creator") { beginAction(.follow, post: post) }
+                        Button("Block creator", role: .destructive) { if captureScope(post: post) != nil { blocking = post } }
                     }
                     Menu("Report video") {
                         ForEach(FeedReportReason.allCases, id: \.self) { reason in
-                            Button(reason.title) { Task { await report(post, reason) } }
+                            Button(reason.title) { beginAction(.report(reason), post: post) }
                         }
                     }
                 } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                     .tint(FeedWallPalette.ink)
-                    .disabled(offlineUpdatedAt != nil)
+                    .disabled(offlineUpdatedAt != nil || loading || actionRun != nil || !activity.canInteract)
                     .accessibilityLabel("More actions for \(post.title)")
                     .accessibilityIdentifier("feed.card.menu")
             }
@@ -187,32 +222,40 @@ struct HomeFeedView: View {
                     Spacer(minLength: 0)
                 }
                 Button {
-                    guard identity == playbackScope, auth.isAuthenticated, phase == .active,
+                    guard identity == playbackScope, let scope = captureScope(post: post), scope.isCurrent,
+                          auth.isAuthenticated, phase == .active,
                           let current = timeline.posts.first(where: { $0.id == post.id }),
                           current.creator == post.creator, current.url == post.url else { return }
                     guard let source = current.playbackSource else {
                         error = "This video address is unsupported or unavailable."; return
                     }
-                    playback = FeedPlaybackItem(postID: current.id, creator: current.creator, source: source, title: current.title)
+                    playback = FeedPlaybackItem(postID: current.id, creator: current.creator, source: source, title: current.title, scope: scope)
                 } label: {
-                    FeedPosterView(post: post)
+                    FeedPosterView(post: post, generation: activity.revision, viewport: scrollViewport, isAllowed: {
+                        activity.canInteract && listingIdentity == identity && offlineUpdatedAt == nil &&
+                            timeline.posts.contains(where: { $0.id == post.id && $0.poster.url == post.poster.url && $0.creator == post.creator })
+                    })
                         .overlay(Rectangle().strokeBorder(FeedWallPalette.ink, lineWidth: 2))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Play \(post.title)").accessibilityIdentifier("feed.card.play")
                 if !post.caption.isEmpty { Text(post.caption).font(.specialElite(14, relativeTo: .callout)) }
                 FeedWallActionGrid {
-                    Button { Task { await like(post) } } label: {
+                    Button { beginAction(.like, post: post) } label: {
                         Label(String(post.likes), systemImage: post.liked ? "heart.fill" : "heart")
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(FeedWallButtonStyle(selected: post.liked))
-                    .disabled(timeline.inFlight.contains(post.id) || offlineUpdatedAt != nil)
+                    .disabled(actionRun != nil || loading || offlineUpdatedAt != nil || !activity.canInteract)
                     .accessibilityLabel("\(post.liked ? "Unlike" : "Like") video, \(post.likes) likes")
                     .accessibilityIdentifier("feed.card.like")
                     if let url = post.safeURL {
-                        ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity, minHeight: 44) }
+                        Button {
+                            guard let scope = captureScope(post: post), scope.isCurrent else { return }
+                            linkShare = FeedLinkShareOffer(url: url, scope: scope)
+                        } label: { Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity, minHeight: 44) }
                             .buttonStyle(FeedWallButtonStyle())
+                            .disabled(!activity.canInteract)
                             .accessibilityIdentifier("feed.card.share")
                     }
                     if FeedExportPolicy.canExport(post) {
@@ -258,88 +301,147 @@ struct HomeFeedView: View {
         .accessibilityIdentifier("feed.card")
     }
 
-    @MainActor private func load(reset: Bool) async {
-        guard !loading, auth.isAuthenticated, let account = auth.userId else { return }
-        if reset { epoch = UUID(); invalidateExportScope(); timeline.reset(); offlineUpdatedAt = nil }
-        guard timeline.canLoadMore, let listingContext = exportContext else { return }
-        let revision = epoch, page = timeline.nextPage, scope = identity
-        // An old account's retained cursor/rows cannot be extended under a new
-        // viewer while the identity-reset task is still waiting to execute.
-        guard page == 0 || exportListing?.matches(listingContext) == true else { return }
-        loading = true
-        defer { if revision == epoch { loading = false } }
-        do {
-            let result = try await CommunityServices.feed.page(category, page: page, account: account, asOf: timeline.asOf, cursor: timeline.nextCursor)
-            guard !Task.isCancelled, revision == epoch, account == auth.userId, scope == identity,
-                  exportContext == listingContext else { return }
-            var committed = timeline
-            try committed.merge(page: page, posts: result.posts, hasMore: result.hasMore, asOf: result.asOf, cursor: result.cursor)
-            guard let binding = FeedExportListing.commit(rows: result.posts, previous: page == 0 ? nil : exportListing,
-                                                        captured: listingContext, current: exportContext) else { return }
-            timeline = committed
-            if let active = playback, !committed.posts.contains(where: {
-                $0.id == active.postID && $0.creator == active.creator && $0.playbackSource == active.source
-            }) { playback = nil }
-            cancelExport()
-            // A completed file may still be waiting for the share host. Revoke
-            // it before replacing the authorization revision; an already-offered
-            // consumer retains its input until UIKit completes.
-            if exportFile?.revokePendingShare() == true { exportFile = nil }
-            if case .cache(let updatedAt) = result.source {
-                offlineUpdatedAt = updatedAt
-                exportListing = nil // Cached per-viewer decisions are not fresh authorization.
-            } else {
-                offlineUpdatedAt = nil
-                exportListing = binding
+    /// Capture before Task creation; no delayed button can acquire a replacement
+    /// account/window/category lease. Only immutable row identity is compared so an
+    /// owned optimistic count change does not invalidate its own request.
+    @MainActor private func captureScope(post: FeedPost? = nil) -> CommunityOperationScope? {
+        guard activity.canInteract, phase == .active, subjectWindowVisible,
+              listingIdentity == identity, let account = auth.currentUser?.id else { return nil }
+        if let post, !timeline.posts.contains(post) { return nil }
+        let revision = epoch, window = activity.revision
+        let viewer = identity, category = category
+        let authRevision = auth.communityIdentityRevision
+        return CommunityOperationScope(account: account) {
+            activity.canInteract && activity.revision == window && epoch == revision &&
+                listingIdentity == viewer && identity == viewer && self.category == category &&
+                auth.currentUser?.id == account && auth.communityIdentityRevision == authRevision &&
+                (post.map { expected in timeline.posts.contains(where: {
+                    $0.id == expected.id && $0.creator == expected.creator && $0.url == expected.url &&
+                        $0.published_at == expected.published_at && $0.title == expected.title
+                }) } ?? true)
+        }
+    }
+
+    @discardableResult
+    @MainActor private func requestLoad(reset: Bool) -> Task<Void, Never>? {
+        guard actionRun == nil, !loading, activity.canInteract, listingIdentity == identity else { return nil }
+        if reset {
+            epoch = UUID(); invalidateExportScope()
+            playback = nil; linkShare = nil
+            timeline.reset(); loaded = false; offlineUpdatedAt = nil
+        }
+        guard timeline.canLoadMore, let scope = captureScope(), let context = exportContext,
+              let account = auth.userId else { return nil }
+        let run = UUID(), page = timeline.nextPage, category = category
+        let asOf = timeline.asOf, cursor = timeline.nextCursor
+        loadRun = run; loading = true
+        let task = Task { @MainActor in
+            defer { if loadRun == run { loading = false; loadRun = nil; loadTask = nil } }
+            do {
+                let result = try await CommunityOperationContext.run(scope) {
+                    try await CommunityServices.feed.page(category, page: page, account: account, asOf: asOf, cursor: cursor)
+                }
+                guard scope.isCurrent, loadRun == run, actionRun == nil, exportContext == context else { return }
+                var committed = timeline
+                try committed.merge(page: page, posts: result.posts, hasMore: result.hasMore, asOf: result.asOf, cursor: result.cursor)
+                // Pausing revokes export decisions without discarding paging. A
+                // later page can extend the cursor; only fresh rows regain export permission.
+                guard let binding = FeedExportListing.commit(rows: result.posts,
+                    previous: exportListing?.matches(context) == true ? exportListing : nil,
+                    captured: context, current: exportContext) else { return }
+                timeline = committed
+                if let active = playback, !committed.posts.contains(where: {
+                    $0.id == active.postID && $0.creator == active.creator && $0.playbackSource == active.source
+                }) { playback = nil }
+                cancelExport()
+                if exportFile?.revokePendingShare() == true { exportFile = nil }
+                if case .cache(let updatedAt) = result.source {
+                    offlineUpdatedAt = updatedAt; exportListing = nil
+                } else { offlineUpdatedAt = nil; exportListing = binding }
+                loaded = true; error = nil
+            } catch {
+                if scope.isCurrent, loadRun == run {
+                    loaded = true; self.error = CommunityGateway.normalize(error).errorDescription
+                }
             }
-            loaded = true; error = nil
-        } catch {
-            if revision == epoch && scope == identity && exportContext == listingContext {
-                loaded = true; self.error = CommunityGateway.normalize(error).errorDescription
+        }
+        loadTask = task
+        return task
+    }
+
+    @MainActor private func beginAction(_ action: FeedOwnedAction, post: FeedPost) {
+        guard actionRun == nil, !loading, offlineUpdatedAt == nil,
+              let scope = captureScope(post: post) else { return }
+        let run = UUID()
+        let snapshot: FeedTimeline.Snapshot?
+        let key: UUID
+        switch action {
+        case .like:
+            key = post.id; snapshot = timeline.beginLike(key, enabled: !post.liked)
+            guard snapshot != nil else { return }
+        case .follow:
+            key = post.creator; snapshot = timeline.beginFollow(key, enabled: !post.following)
+            guard snapshot != nil else { return }
+        case .block, .report: key = post.id; snapshot = nil
+        }
+        if let snapshot { pendingReaction = FeedPendingReaction(run: run, key: key, snapshot: snapshot) }
+        actionRun = run; blocking = nil; error = nil; notice = nil
+        actionTask = Task { @MainActor in
+            defer {
+                if actionRun == run {
+                    settleReaction(run: run, confirmed: false)
+                    actionRun = nil; actionTask = nil
+                }
+            }
+            do {
+                let confirmed = try await CommunityOperationContext.run(scope) {
+                    switch action {
+                    case .like: return try await CommunityServices.feed.like(post.id, enabled: !post.liked)
+                    case .follow: return try await CommunityServices.feed.follow(post.creator, enabled: !post.following)
+                    case .block: return try await CommunityServices.feed.block(post.creator)
+                    case .report(let reason): return try await CommunityServices.feed.report(post.id, reason: reason)
+                    }
+                }
+                guard scope.isCurrent, actionRun == run else { return }
+                settleReaction(run: run, confirmed: confirmed)
+                if confirmed {
+                    switch action {
+                    case .like: break
+                    case .follow: notice = post.following ? "Unfollowed \(post.creator_name)." : "Following \(post.creator_name)."
+                    case .block:
+                        if playback?.creator == post.creator { playback = nil }
+                        timeline.removeCreator(post.creator); invalidateExportScope()
+                        notice = "Blocked \(post.creator_name)."
+                    case .report: notice = "Report recorded for moderation. Reporters are not identified to creators."
+                    }
+                } else { error = "The action was not confirmed. Refresh to check the server's current value." }
+            } catch {
+                if scope.isCurrent, actionRun == run { self.error = CommunityGateway.normalize(error).errorDescription }
             }
         }
     }
-    @MainActor private func like(_ post: FeedPost) async {
-        guard auth.isAuthenticated, let snapshot = timeline.beginLike(post.id, enabled: !post.liked) else { return }
-        let revision = epoch
-        var confirmed = false
-        do { confirmed = try await CommunityServices.feed.like(post.id, enabled: !post.liked) }
-        catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
-        guard revision == epoch else { return }
-        timeline.finish(post.id, confirmed: confirmed, snapshot: snapshot)
-        if !confirmed && error == nil { error = "The like was not confirmed. The count shows the server's last value." }
+    @MainActor private func settleReaction(run: UUID? = nil, confirmed: Bool) {
+        guard let pending = pendingReaction, run == nil || run == pending.run else { return }
+        timeline.finish(pending.key, confirmed: confirmed, snapshot: pending.snapshot)
+        pendingReaction = nil
     }
-    @MainActor private func follow(_ post: FeedPost) async {
-        guard auth.isAuthenticated, let snapshot = timeline.beginFollow(post.creator, enabled: !post.following) else { return }
-        let revision = epoch
-        var confirmed = false
-        do { confirmed = try await CommunityServices.feed.follow(post.creator, enabled: !post.following) }
-        catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
-        guard revision == epoch else { return }
-        timeline.finish(post.creator, confirmed: confirmed, snapshot: snapshot)
-        if confirmed { notice = post.following ? "Unfollowed \(post.creator_name)." : "Following \(post.creator_name)." }
+    @MainActor private func pauseWork() {
+        // Snapshot covers the whole row array: settle it before epoch advance,
+        // and never permit another action/page merge while it is outstanding.
+        settleReaction(confirmed: false)
+        activity.update(available: false); activity.invalidate()
+        epoch = UUID()
+        actionTask?.cancel(); actionTask = nil; actionRun = nil
+        loadTask?.cancel(); loadTask = nil; loadRun = nil; loading = false
+        playback = nil; linkShare = nil; blocking = nil
+        invalidateExportScope()
     }
-    @MainActor private func block(_ post: FeedPost) async {
-        blocking = nil
-        guard auth.isAuthenticated else { return }
-        let revision = epoch
-        do {
-            if try await CommunityServices.feed.block(post.creator) {
-                guard revision == epoch else { return }
-                if playback?.creator == post.creator { playback = nil }
-                timeline.removeCreator(post.creator); notice = "Blocked \(post.creator_name)."
-            } else if revision == epoch { error = "The block was not confirmed." }
-        } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
+    @MainActor private func updateAvailability() {
+        guard subjectWindowVisible, phase == .active, listingIdentity == identity else { pauseWork(); return }
+        activity.update(available: true)
+        if activity.canInteract, !loaded, timeline.posts.isEmpty { requestLoad(reset: false) }
     }
-    @MainActor private func report(_ post: FeedPost, _ reason: FeedReportReason) async {
-        guard auth.isAuthenticated else { return }
-        let revision = epoch
-        do {
-            if try await CommunityServices.feed.report(post.id, reason: reason) {
-                if revision == epoch { notice = "Report recorded for moderation. Reporters are not identified to creators." }
-            } else if revision == epoch { error = "The report was not confirmed." }
-        } catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
-    }
+
     /// Capture authorization and scope at the tap, before a queued Task can
     /// run under another account. The task is owned and cancelled by this view.
     @MainActor private func beginExport(_ post: FeedPost, tap: FeedExportListing.Tap?) {
@@ -383,12 +485,7 @@ struct HomeFeedView: View {
         exportRun = nil; exporting = nil; exportProgress = nil
     }
     @MainActor private func revokeViewerListing() {
-        // Every publication advances this generation, even when SwiftUI would
-        // render A → B → A as the same final account. It also schedules a fresh
-        // listing through task(id:), including same-ID session replacement.
-        viewerGeneration = UUID()
-        playback = nil
-        invalidateExportScope()
+        if listingIdentity != identity { pauseWork() }
     }
     @MainActor private func invalidateExportScope() {
         exportListing = nil
@@ -399,12 +496,76 @@ struct HomeFeedView: View {
 
 }
 
+/// The ScrollView's own bounds, excluding title/filter chrome. Child poster
+/// frames are measured in this same named space on iOS17.
+private struct FeedViewportBoundsKey: PreferenceKey {
+    static let defaultValue = CGRect.zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+
+@MainActor
+private final class FeedWindowActivity: ObservableObject {
+    @Published private(set) var revision = UUID()
+    private var available = false
+    func update(available: Bool) {
+        if self.available != available { self.available = available; revision = UUID() }
+    }
+    func invalidate() { revision = UUID() }
+    var canInteract: Bool {
+        let auth = AuthService.shared
+        return available && UIApplication.shared.applicationState == .active &&
+            auth.isAuthenticated && !auth.passwordRecoveryPending && auth.currentUser?.id != nil &&
+            auth.currentUser?.id == CommunityServices.feed.gateway.transport.sessionAccountID
+    }
+}
+private enum FeedOwnedAction { case like, follow, block, report(FeedReportReason) }
+private struct FeedPendingReaction {
+    let run: UUID
+    let key: UUID
+    let snapshot: FeedTimeline.Snapshot
+}
+private struct FeedLinkShareOffer: Identifiable {
+    let id = UUID()
+    let url: URL
+    let scope: CommunityOperationScope
+}
+@MainActor
+private struct FeedLinkSharePresenter: UIViewControllerRepresentable {
+    let offer: FeedLinkShareOffer
+    let onTerminal: @MainActor () -> Void
+    func makeUIViewController(context: Context) -> Host { Host(offer: offer, onTerminal: onTerminal) }
+    func updateUIViewController(_ host: Host, context: Context) { if !offer.scope.isCurrent { host.close() } }
+    static func dismantleUIViewController(_ host: Host, coordinator: ()) { host.close() }
+    final class Host: UIViewController {
+        private let offer: FeedLinkShareOffer
+        private let onTerminal: @MainActor () -> Void
+        private var presented = false
+        init(offer: FeedLinkShareOffer, onTerminal: @escaping @MainActor () -> Void) {
+            self.offer = offer; self.onTerminal = onTerminal; super.init(nibName: nil, bundle: nil)
+        }
+        required init?(coder: NSCoder) { return nil }
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            guard !presented else { return }
+            guard offer.scope.isCurrent else { close(); onTerminal(); return }
+            presented = true
+            let activity = UIActivityViewController(activityItems: [offer.url], applicationActivities: nil)
+            activity.completionWithItemsHandler = { _, _, _, _ in Task { @MainActor in self.onTerminal() } }
+            activity.popoverPresentationController?.sourceView = view
+            activity.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+            present(activity, animated: true)
+        }
+        func close() { presentedViewController?.dismiss(animated: false) }
+    }
+}
+
 private struct FeedPlaybackItem: Identifiable {
     let id = UUID()
     let postID: UUID
     let creator: UUID
     let source: FeedPlaybackSource
     let title: String
+    let scope: CommunityOperationScope
 }
 
 /// Provider-aware entry point shared by Home and Profile. A watch-page URL is
@@ -412,16 +573,17 @@ private struct FeedPlaybackItem: Identifiable {
 struct CommunityVideoPlayer: View {
     let source: FeedPlaybackSource?
     let title: String
+    let isAllowed: @MainActor () -> Bool
     @Environment(\.scenePhase) private var phase
     @Environment(\.dismiss) private var dismiss
-    init(source: FeedPlaybackSource, title: String) { self.source = source; self.title = title }
-    init(url: URL, title: String) { self.source = FeedPlaybackSource.resolve(url.absoluteString); self.title = title }
+    init(source: FeedPlaybackSource, title: String, isAllowed: @escaping @MainActor () -> Bool = { true }) { self.source = source; self.title = title; self.isAllowed = isAllowed }
+    init(url: URL, title: String, isAllowed: @escaping @MainActor () -> Bool = { true }) { self.source = FeedPlaybackSource.resolve(url.absoluteString); self.title = title; self.isAllowed = isAllowed }
     var body: some View {
         Group {
-            if let source {
+            if isAllowed(), phase == .active, let source {
                 switch source {
-                case .rendition(let url): CommunityRenditionPlayer(url: url, title: title)
-                case .youtube(let video): CommunityYouTubePlayer(video: video, title: title)
+                case .rendition(let url): CommunityRenditionPlayer(url: url, title: title, isAllowed: isAllowed)
+                case .youtube(let video): CommunityYouTubePlayer(video: video, title: title, isAllowed: isAllowed)
                 }
             } else {
                 Text("This video address is unsupported or unavailable.")
@@ -441,6 +603,7 @@ struct CommunityVideoPlayer: View {
 private struct CommunityRenditionPlayer: View {
     let url: URL
     let title: String
+    let isAllowed: @MainActor () -> Bool
     @StateObject private var model = CommunityVideoPlayerModel()
     @Environment(\.dismiss) private var dismiss
 
@@ -456,7 +619,7 @@ private struct CommunityRenditionPlayer: View {
                     Text(message).font(.specialElite(14, relativeTo: .callout)).multilineTextAlignment(.center)
                     if case .failed = model.state {
                         HStack(spacing: 12) {
-                            Button("Retry") { model.load(url) }.buttonStyle(CommunitySecondaryButtonStyle())
+                            Button("Retry") { if isAllowed() { model.load(url) } }.buttonStyle(CommunitySecondaryButtonStyle())
                                 .accessibilityIdentifier("feed.player.retry")
                             Button("Close") { dismiss() }.buttonStyle(CommunitySecondaryButtonStyle())
                         }
@@ -468,7 +631,7 @@ private struct CommunityRenditionPlayer: View {
                 .accessibilityIdentifier("feed.player.status")
             }
         }
-        .onAppear { model.load(url) }
+        .onAppear { if isAllowed() { model.load(url) } }
         .onDisappear { model.stop() }
     }
 }
@@ -481,6 +644,7 @@ private struct CommunityRenditionPlayer: View {
 private struct CommunityYouTubePlayer: View {
     let video: YouTubeVideo
     let title: String
+    let isAllowed: @MainActor () -> Bool
     @State private var loading = true
     @State private var failure: String?
     @State private var retryID = UUID()
@@ -493,7 +657,7 @@ private struct CommunityYouTubePlayer: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(title).font(.headline).accessibilityAddTraits(.isHeader)
                     if let configuration = video.embedConfiguration(bundleIdentifier: Bundle.main.bundleIdentifier) {
-                        YouTubeEmbeddedWebView(configuration: configuration, loading: $loading, failure: $failure)
+                        YouTubeEmbeddedWebView(configuration: configuration, loading: $loading, failure: $failure, isAllowed: isAllowed)
                             .id(retryID)
                             .frame(width: max(200, geometry.size.width - 32), height: max(200, (geometry.size.width - 32) * 9 / 16))
                             .accessibilityLabel("YouTube video: \(title)")
@@ -501,7 +665,7 @@ private struct CommunityYouTubePlayer: View {
                         if loading { ProgressView("Loading YouTube player…") }
                         if let failure {
                             Text(failure).accessibilityIdentifier("feed.player.youtube-error")
-                            Button("Retry player") { loading = true; self.failure = nil; retryID = UUID() }
+                            Button("Retry player") { if isAllowed() { loading = true; self.failure = nil; retryID = UUID() } }
                                 .accessibilityIdentifier("feed.player.youtube-retry")
                         }
                     } else {
@@ -511,7 +675,7 @@ private struct CommunityYouTubePlayer: View {
                     Text("Use YouTube’s controls to play. If playback is unavailable here, open YouTube. YouTube may show ads and collect playback data. File downloads are unavailable.")
                         .font(.callout)
                     HStack(spacing: 20) {
-                        Button("Open on YouTube") { openURL(video.watchURL) }
+                        Button("Open on YouTube") { if isAllowed() { openURL(video.watchURL) } }
                             .accessibilityIdentifier("feed.player.youtube-open")
                         Button("Close") { dismiss() }
                     }
@@ -526,8 +690,9 @@ private struct YouTubeEmbeddedWebView: UIViewRepresentable {
     let configuration: YouTubeEmbedConfiguration
     @Binding var loading: Bool
     @Binding var failure: String?
+    let isAllowed: @MainActor () -> Bool
 
-    func makeCoordinator() -> Coordinator { Coordinator(configuration: configuration, loading: $loading, failure: $failure) }
+    func makeCoordinator() -> Coordinator { Coordinator(configuration: configuration, loading: $loading, failure: $failure, isAllowed: isAllowed) }
     func makeUIView(context: Context) -> WKWebView {
         let settings = WKWebViewConfiguration()
         settings.websiteDataStore = .nonPersistent()
@@ -539,10 +704,12 @@ private struct YouTubeEmbeddedWebView: UIViewRepresentable {
         view.uiDelegate = context.coordinator
         var request = URLRequest(url: configuration.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.setValue(configuration.referer.absoluteString, forHTTPHeaderField: "Referer")
-        view.load(request)
+        if isAllowed() { view.load(request) }
         return view
     }
-    func updateUIView(_ view: WKWebView, context: Context) { }
+    func updateUIView(_ view: WKWebView, context: Context) {
+        if !isAllowed() { view.stopLoading(); view.loadHTMLString("", baseURL: nil) }
+    }
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
         // Removing the document destroys its media session. No background player,
         // download task, account session, or persistent website store is retained.
@@ -556,23 +723,26 @@ private struct YouTubeEmbeddedWebView: UIViewRepresentable {
         let configuration: YouTubeEmbedConfiguration
         let loading: Binding<Bool>
         let failure: Binding<String?>
-        init(configuration: YouTubeEmbedConfiguration, loading: Binding<Bool>, failure: Binding<String?>) {
-            self.configuration = configuration; self.loading = loading; self.failure = failure
+        let isAllowed: @MainActor () -> Bool
+        init(configuration: YouTubeEmbedConfiguration, loading: Binding<Bool>, failure: Binding<String?>, isAllowed: @escaping @MainActor () -> Bool) {
+            self.configuration = configuration; self.loading = loading; self.failure = failure; self.isAllowed = isAllowed
         }
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading.wrappedValue = false }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { if isAllowed() { loading.wrappedValue = false } }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            guard isAllowed() else { return }
             loading.wrappedValue = false; failure.wrappedValue = "The YouTube player stopped. Retry or open YouTube."
         }
         private func failed(_ error: Error) {
+            guard isAllowed() else { return }
             guard (error as NSError).code != NSURLErrorCancelled else { return }
             loading.wrappedValue = false
             failure.wrappedValue = "The YouTube player could not load. Check your connection, retry or open YouTube."
         }
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            guard !navigationAction.shouldPerformDownload else { decisionHandler(.cancel); return }
+            guard isAllowed(), !navigationAction.shouldPerformDownload else { decisionHandler(.cancel); return }
             if navigationAction.targetFrame?.isMainFrame == true {
                 let url = navigationAction.request.url
                 if url != configuration.url {
@@ -590,7 +760,7 @@ private struct YouTubeEmbeddedWebView: UIViewRepresentable {
         }
         func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                      decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-            decisionHandler(navigationResponse.canShowMIMEType ? .allow : .cancel)
+            decisionHandler(isAllowed() && navigationResponse.canShowMIMEType ? .allow : .cancel)
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
@@ -600,7 +770,7 @@ private struct YouTubeEmbeddedWebView: UIViewRepresentable {
             return nil
         }
         private func openExternal(_ url: URL?) {
-            guard let url, let checked = CommunityMediaURL.checked(url.absoluteString) else { return }
+            guard isAllowed(), let url, let checked = CommunityMediaURL.checked(url.absoluteString) else { return }
             UIApplication.shared.open(checked)
         }
     }

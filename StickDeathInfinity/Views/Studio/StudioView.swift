@@ -11,6 +11,8 @@ struct StudioView: View {
     @StateObject private var vm = StudioViewModel.shared
     @Environment(\.dismiss) var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @ObservedObject private var roomAuth = AuthService.shared
     @EnvironmentObject private var authVM: AuthViewModel
     @State private var spatterExportRequest: (projectID: UUID, revision: Int, accountID: String?)?
     
@@ -42,6 +44,11 @@ struct StudioView: View {
             }
             await vm.loadProjects()
         }
+        .onAppear { updateRoomAvailability() }
+        .onChange(of: subjectWindowVisible) { _, _ in updateRoomAvailability() }
+        .onChange(of: roomAuth.userId) { _, _ in updateRoomAvailability() }
+        .onChange(of: roomAuth.isAuthenticated) { _, _ in updateRoomAvailability() }
+        .onChange(of: roomAuth.communityIdentityRevision) { _, _ in updateRoomAvailability() }
         .onChange(of: authVM.userId) { _ in
             vm.cancelMenuHandoff(); menuRequest = nil
             // Even switching away and back invalidates the original authority.
@@ -49,11 +56,26 @@ struct StudioView: View {
             bottomImageDeletion = nil; showingBottomImageDeletion = false
         }
         .onChange(of: scenePhase) { phase in
+            updateRoomAvailability()
             if phase != .active { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); BackgroundTaskScope.run("studio.flush") { await vm.flush() } }
         }
-        .onChange(of: vm.document.id) { _ in vm.cancelMenuHandoff(); menuRequest = nil }
-        .onChange(of: vm.isEditing) { editing in if !editing { vm.cancelMenuHandoff(); menuRequest = nil } }
-        .onDisappear { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); Task { await vm.flush() } }
+        .onChange(of: vm.document.id) { _ in
+            vm.cancelMenuHandoff(); menuRequest = nil
+            if let handoff = RoomSessionCoordinator.shared.handoff, handoff.projectID != vm.document.id {
+                RoomSessionCoordinator.shared.finishHandoff(); StudioRoomBridge.shared.stop()
+            }
+        }
+        .onChange(of: vm.isEditing) { editing in
+            if !editing {
+                vm.cancelMenuHandoff(); menuRequest = nil
+                RoomSessionCoordinator.shared.finishHandoff(); StudioRoomBridge.shared.stop()
+            } else { updateRoomAvailability() }
+        }
+        .onDisappear { StudioRoomBridge.shared.updateAvailability(foreground: false, visible: false); vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); Task { await vm.flush() } }
+    }
+    private func updateRoomAvailability() {
+        StudioRoomBridge.shared.updateAvailability(foreground: scenePhase == .active && UIApplication.shared.applicationState == .active,
+                                                   visible: subjectWindowVisible)
     }
 
     private var editorBody: some View {
