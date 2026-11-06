@@ -296,6 +296,42 @@ class OwnedPreinstallTests(unittest.TestCase):
             self.assertEqual(result["targetAppPrelaunches"],0);self.assertEqual(result["automaticRetries"],0)
             self.assertLess(clock["now"],1180.0)  # All cleanup reserve remains available.
 
+
+    def test_cold_readiness_and_install_share_original_work_deadline(self):
+        with self.fixture() as f:
+            root,app,profile,evidence,udid,runtime,marker=f
+            clock={"now":1000.0};calls=[];state={"value":"Shutdown"}
+            def bounded(argv,deadline,stdout_cap,stderr_cap):
+                calls.append((argv,deadline));data=b""
+                self.assertEqual(argv[:2],["xcrun","simctl"]);self.assertNotIn("launch",argv)
+                action=argv[2]
+                if action=="list":
+                    data=json.dumps({"devices":{runtime:[{"udid":udid,"name":"SDI-7-1","deviceTypeIdentifier":selector.TYPE,
+                        "isAvailable":True,"state":state["value"]}]},"runtimes":[],"devicetypes":[]}).encode()
+                    elapsed=1.5
+                elif action=="boot":state["value"]="Booted";elapsed=3.3
+                elif action=="bootstatus":
+                    self.assertAlmostEqual(deadline,1180.0)
+                    self.assertAlmostEqual(deadline-clock["now"],175.2)
+                    elapsed=100.0  # Beyond the former readiness cap, inside the shared work pool.
+                elif action=="install":
+                    self.assertAlmostEqual(deadline,1180.0)
+                    self.assertAlmostEqual(deadline-clock["now"],75.2)
+                    elapsed=65.0  # This stage receives only the remaining pool, not a fresh180s.
+                else:self.fail("Unexpected preinstall command: "+action)
+                clock["now"]+=elapsed
+                self.assertLessEqual(clock["now"],deadline)
+                return Result(0,False,elapsed,stdout=data,stdout_seen=len(data))
+            with mock.patch.object(runner.time,"monotonic",side_effect=lambda:clock["now"]), \
+                    mock.patch.object(runner,"run_bounded",side_effect=bounded),contextlib.redirect_stdout(io.StringIO()):
+                result=runner.preinstall_owned_app(profile,evidence,udid,SHA,2740.0)
+            self.assertTrue(result["passed"],result);self.assertEqual(result["installAttempts"],1)
+            self.assertEqual([c[0][2] for c in calls],["list","boot","bootstatus","install"])
+            self.assertEqual((result["setupMaximumSeconds"],result["workMaximumSeconds"],result["cleanupReserveSeconds"]),(240,180,60))
+            self.assertEqual(result["targetAppPrelaunches"],0);self.assertEqual(result["automaticRetries"],0)
+            self.assertAlmostEqual(clock["now"],1169.8)
+            self.assertLess(clock["now"],1180.0)  # Cleanup's60s reserve remains untouched.
+
     def test_invalid_configuration_or_product_path_never_contacts_simulator(self):
         for invalid in ("configured","redirected"):
             with self.subTest(invalid=invalid),self.fixture() as f:

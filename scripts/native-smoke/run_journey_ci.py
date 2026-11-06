@@ -128,7 +128,7 @@ def preinstall_owned_app(profile, evidence, udid, commit, ui_deadline):
             lease("before-boot")
             command("boot", ["xcrun", "simctl", "boot", udid], 30)
         lease("before-readiness")
-        command("bootstatus", ["xcrun", "simctl", "bootstatus", udid, "-b"], 90)
+        command("bootstatus", ["xcrun", "simctl", "bootstatus", udid, "-b"], report["workMaximumSeconds"])
         lease("before-install")
         report["installAttempts"] += 1
         command("install", ["xcrun", "simctl", "install", udid, str(app)], report["workMaximumSeconds"])
