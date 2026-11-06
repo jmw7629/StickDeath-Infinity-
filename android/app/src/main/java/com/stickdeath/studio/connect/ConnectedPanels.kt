@@ -34,8 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 /** Account section of the Account panel: honest connection state, sign-in, the video wall, the
- * member's own records and joining a room by invitation code. No messaging or calls exist here. */
-@Composable fun ConnectedAccountSection(account: AccountViewModel = viewModel()) {
+ * member's own records and the separate Rooms subject. No messaging or calls exist here. */
+@Composable fun ConnectedAccountSection(account: AccountViewModel = viewModel(), onOpenRooms: () -> Unit) {
     val context = LocalContext.current
     val state = account.state
     Text(state.summary)
@@ -48,7 +48,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         is AccountState.RetryableFailure -> Button({ account.retryRestore() }, enabled = !account.working) { Text("Retry") }
         is AccountState.SignedIn -> {
             TextButton({ account.signOut() }) { Text("Sign out") }
-            if (account.needsNewPassword) NewPasswordForm(account) else CommunitySection(account)
+            if (account.needsNewPassword) NewPasswordForm(account) else CommunitySection(account, onOpenRooms)
         }
         is AccountState.Restoring -> Unit
         else -> SignInForm(account) { provider -> account.beginOAuth(provider)?.let { url ->
@@ -91,7 +91,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
     }
 }
 
-@Composable private fun CommunitySection(account: AccountViewModel) {
+@Composable private fun CommunitySection(account: AccountViewModel, onOpenRooms: () -> Unit) {
     val context = LocalContext.current
     Text("Video wall", style = MaterialTheme.typography.titleMedium)
     Row(Modifier.horizontalScroll(rememberScrollState())) {
@@ -139,27 +139,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
             Text("Earned badges: ${r.badges?.size ?: 0}")
         }
     }
-    Text("Join a room", style = MaterialTheme.typography.titleMedium)
-    Text("Rooms share one explicitly chosen Studio project. Paste an invitation code; the owner approves every request. There is no chat or calling.")
-    var code by remember { mutableStateOf("") }
-    var consent by remember { mutableStateOf(false) }
-    OutlinedTextField(code, { code = it.take(80) }, label = { Text("Invitation code") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    TextButton({ account.previewInvitation(code) }, enabled = account.signedInMember && RoomInvitationPolicy.isWellFormed(code)) { Text("Review invitation") }
-    when (val preview = account.invitation) {
-        is Load.Loaded -> {
-            Text("Room: ${preview.value.title}")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(consent, { consent = it })
-                Text("I accept this invitation and ask the owner to admit me.")
-            }
-            Button({ account.requestAdmission(code, consent) }, enabled = consent) { Text("Request to join") }
-        }
-        is Load.Failed -> Text(preview.message)
-        Load.Loading -> Text("Checking…")
-        Load.Idle -> Unit
-    }
+    Text("Rooms", style = MaterialTheme.typography.titleMedium)
+    Text("Create a shared-project room, review an invitation or manage membership in its own desktop window.")
+    TextButton(onOpenRooms) { Text("Open Rooms") }
     if (!account.signedInMember) Text("Guests can browse the wall; likes, reports, records and rooms need a full account.")
-    Text("Contests, rooms and account", style = MaterialTheme.typography.titleMedium)
+    Text("Contests and account", style = MaterialTheme.typography.titleMedium)
     CommunityFeaturesSection(account)
 }
 

@@ -62,6 +62,7 @@ import com.stickdeath.studio.diagnostics.DiagnosticsStore
 class MainActivity : ComponentActivity() {
     private val studio: StudioViewModel by viewModels()
     private val account: com.stickdeath.studio.connect.AccountViewModel by viewModels()
+    private val community: com.stickdeath.studio.connect.CommunityViewModel by viewModels()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) handleAuthCallback(intent)
@@ -71,7 +72,8 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    override fun onStop() { studio.cancelWand(); studio.stopScenePlayback(); studio.save(); super.onStop() }
+    override fun onStart() { super.onStart(); community.setRoomsAppForeground(true) }
+    override fun onStop() { community.setRoomsAppForeground(false); studio.cancelWand(); studio.stopScenePlayback(); studio.save(); super.onStop() }
     override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handleAuthCallback(intent) }
     /** Only the app's own OAuth redirect is handled; the in-memory PKCE verifier makes it single-use. */
     private fun handleAuthCallback(received: android.content.Intent?) {
@@ -129,6 +131,11 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    // Activity-scoped owners: the account callbacks and all subjects use the same session/model.
+    val account: com.stickdeath.studio.connect.AccountViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val community: com.stickdeath.studio.connect.CommunityViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val accountIdentity = (account.state as? com.stickdeath.studio.connect.AccountState.SignedIn)?.userId
+    LaunchedEffect(accountIdentity) { community.accountChanged(accountIdentity) }
     val document = vm.document
     var showDock by rememberSaveable { mutableStateOf(false) }
     var requestedPanel by remember { mutableStateOf<String?>(null) }
@@ -138,45 +145,69 @@ class MainActivity : ComponentActivity() {
     var accountWindow by rememberSaveable(stateSaver = AndroidDesktopPlacement.saver) {
         mutableStateOf(AndroidDesktopPlacement(x = .10f, y = .08f, width = .88f, height = .86f))
     }
+    var roomsWindow by rememberSaveable(stateSaver = AndroidDesktopPlacement.saver) {
+        mutableStateOf(AndroidDesktopPlacement(x = .05f, y = .04f, width = .90f, height = .90f))
+    }
+    var roomsMounted by rememberSaveable { mutableStateOf(false) }
     var accountMounted by rememberSaveable { mutableStateOf(false) }
     var frontSubject by rememberSaveable { mutableStateOf("studio") }
+    var previousSubject by rememberSaveable { mutableStateOf("account") }
+    fun focusSubject(subject: String) {
+        if (frontSubject != subject) { previousSubject = frontSubject; frontSubject = subject }
+    }
+    fun subjectOrder(subject: String) = when (subject) { frontSubject -> 3f; previousSubject -> 2f; else -> 1f }
     val studioVisible = studioWindow.open && !studioWindow.minimized
     val accountVisible = accountWindow.open && !accountWindow.minimized
-    fun openStudio() { studioWindow = studioWindow.copy(open = true, minimized = false); frontSubject = "studio" }
+    val roomsVisible = roomsWindow.open && !roomsWindow.minimized
+    SideEffect { community.setRoomsWindowVisible(roomsVisible) }
+    DisposableEffect(community) { onDispose { community.setRoomsWindowVisible(false) } }
+    fun openStudio() { studioWindow = studioWindow.copy(open = true, minimized = false); focusSubject("studio") }
     fun openAccount() {
         accountMounted = true
         accountWindow = accountWindow.copy(open = true, minimized = false)
-        frontSubject = "account"
+        focusSubject("account")
+    }
+    fun openRooms() {
+        community.setRoomsWindowVisible(true)
+        roomsMounted = true
+        roomsWindow = roomsWindow.copy(open = true, minimized = false)
+        focusSubject("rooms")
     }
     fun hideStudio(minimize: Boolean) {
         // Hide the window, never discard the editor/project/history or export owner.
         vm.cancelWand(); vm.cancelAudioImport(); vm.cancelImageImport(); vm.cancelFill()
         vm.stopScenePlayback(); vm.save()
         studioWindow = studioWindow.copy(open = minimize, minimized = minimize)
-        frontSubject = if (accountVisible) "account" else "desktop"
+        focusSubject(if (accountVisible) "account" else if (roomsVisible) "rooms" else "desktop")
     }
     fun hideAccount(minimize: Boolean) {
         accountWindow = accountWindow.copy(open = minimize, minimized = minimize)
-        frontSubject = if (studioVisible) "studio" else "desktop"
+        focusSubject(if (studioVisible) "studio" else if (roomsVisible) "rooms" else "desktop")
     }
+    fun hideRooms(minimize: Boolean) {
+        community.setRoomsWindowVisible(false)
+        roomsWindow = roomsWindow.copy(open = minimize, minimized = minimize)
+        focusSubject(if (studioVisible) "studio" else if (accountVisible) "account" else "desktop")
+    }
+    BackHandler(enabled = roomsVisible && frontSubject == "rooms") { hideRooms(false) }
     BackHandler(enabled = accountVisible && frontSubject == "account") { hideAccount(false) }
-    BackHandler(enabled = !studioVisible && !accountVisible && document != null) { openStudio() }
-    // These two fixed hosts never move in the composition when their stacking
+    BackHandler(enabled = !studioVisible && !accountVisible && !roomsVisible && document != null) { openStudio() }
+    // These fixed hosts never move in the composition when their stacking
     // order changes. The canonical Studio and root export launchers stay mounted.
     Column(Modifier.fillMaxSize().safeDrawingPadding().background(Color(0xff24778a))) {
         StudioDesktopNavigation(
             hasProject = document != null, available = !vm.closing,
             showDock = showDock, toggleDock = { showDock = !showDock },
-            openStudio = { openStudio() }, openAccount = { openAccount() },
+            openStudio = { openStudio() }, openAccount = { openAccount() }, openRooms = { openRooms() },
             openProjects = { openStudio(); if (document != null) requestedPanel = "projects" },
             openSettings = { openStudio(); requestedPanel = "project" })
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
             val boundsWidth = maxWidth.value.coerceAtLeast(1f)
             val boundsHeight = maxHeight.value.coerceAtLeast(1f)
             AndroidDesktopWindow("Studio", studioWindow, boundsWidth, boundsHeight,
-                visible = studioVisible, focused = frontSubject == "studio", order = if (frontSubject == "studio") 2f else 1f,
-                focus = { frontSubject = "studio" }, close = { hideStudio(false) }, minimize = { hideStudio(true) },
-                maximize = { studioWindow = studioWindow.copy(maximized = !studioWindow.maximized); frontSubject = "studio" },
+                visible = studioVisible, focused = frontSubject == "studio", order = subjectOrder("studio"),
+                focus = { focusSubject("studio") }, close = { hideStudio(false) }, minimize = { hideStudio(true) },
+                maximize = { studioWindow = studioWindow.copy(maximized = !studioWindow.maximized); focusSubject("studio") },
                 move = { dx, dy -> studioWindow = studioWindow.moved(dx, dy, boundsWidth, boundsHeight) },
                 resize = { dx, dy -> studioWindow = studioWindow.resized(dx, dy, boundsWidth, boundsHeight) }) {
                 BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -187,13 +218,25 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (accountMounted) AndroidDesktopWindow("Account", accountWindow, boundsWidth, boundsHeight,
-                visible = accountVisible, focused = frontSubject == "account", order = if (frontSubject == "account") 2f else 1f,
-                focus = { frontSubject = "account" }, close = { hideAccount(false) }, minimize = { hideAccount(true) },
-                maximize = { accountWindow = accountWindow.copy(maximized = !accountWindow.maximized); frontSubject = "account" },
+                visible = accountVisible, focused = frontSubject == "account", order = subjectOrder("account"),
+                focus = { focusSubject("account") }, close = { hideAccount(false) }, minimize = { hideAccount(true) },
+                maximize = { accountWindow = accountWindow.copy(maximized = !accountWindow.maximized); focusSubject("account") },
                 move = { dx, dy -> accountWindow = accountWindow.moved(dx, dy, boundsWidth, boundsHeight) },
                 resize = { dx, dy -> accountWindow = accountWindow.resized(dx, dy, boundsWidth, boundsHeight) }) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)) { AccountPanel(vm) }
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) { AccountPanel(vm, onOpenRooms = { openRooms() }) }
+            }
+            if (roomsMounted) AndroidDesktopWindow("Rooms", roomsWindow, boundsWidth, boundsHeight,
+                visible = roomsVisible, focused = frontSubject == "rooms", order = subjectOrder("rooms"),
+                focus = { focusSubject("rooms") }, close = { hideRooms(false) }, minimize = { hideRooms(true) },
+                maximize = { roomsWindow = roomsWindow.copy(maximized = !roomsWindow.maximized); focusSubject("rooms") },
+                move = { dx, dy -> roomsWindow = roomsWindow.moved(dx, dy, boundsWidth, boundsHeight) },
+                resize = { dx, dy -> roomsWindow = roomsWindow.resized(dx, dy, boundsWidth, boundsHeight) }) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.stickdeath.studio.connect.RoomsDesktopSection(vm, account, community, roomsVisible,
+                        onOpenAccount = { openAccount() }, onOpenStudio = { openStudio() })
+                }
             }
         }
         if (showDock) Surface(color = Color(0xffead29a), contentColor = Color(0xff171b24)) {
@@ -203,6 +246,9 @@ class MainActivity : ComponentActivity() {
                 }
                 TextButton({ openAccount() }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
                     Text(if (accountWindow.minimized) "Restore Account" else "Account")
+                }
+                TextButton({ openRooms() }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
+                    Text(if (roomsWindow.minimized) "Restore Rooms" else "Rooms")
                 }
             }
         }
@@ -316,10 +362,10 @@ private fun Modifier.desktopVisibility(visible: Boolean): Modifier =
     }
 }
 
-/** Two real subjects share the existing application/state; no placeholder subjects. */
+/** Real subjects share the existing application/state; no placeholder subjects. */
 @Composable private fun StudioDesktopNavigation(
     hasProject: Boolean, available: Boolean, showDock: Boolean, toggleDock: () -> Unit,
-    openStudio: () -> Unit, openProjects: () -> Unit, openSettings: () -> Unit, openAccount: () -> Unit,
+    openStudio: () -> Unit, openProjects: () -> Unit, openSettings: () -> Unit, openAccount: () -> Unit, openRooms: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf<String?>(null) }
     Surface(color = Color(0xfff1dfb0), contentColor = Color(0xff171b24), shadowElevation = 3.dp) {
@@ -330,6 +376,7 @@ private fun Modifier.desktopVisibility(visible: Boolean): Modifier =
                 TextButton({ expanded = "subjects" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Subjects") }
                 DropdownMenu(expanded == "subjects", onDismissRequest = { expanded = null }) {
                     DropdownMenuItem(text = { Text("Studio") }, enabled = available, onClick = { expanded = null; openStudio() })
+                    DropdownMenuItem(text = { Text("Rooms") }, enabled = available, onClick = { expanded = null; openRooms() })
                     DropdownMenuItem(text = { Text("Account, plans & preferences") }, enabled = available, onClick = { expanded = null; openAccount() })
                 }
             }
@@ -1093,8 +1140,8 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
 }
 
 /** Honest connection state, local notification preferences and local crash diagnostics. */
-@Composable private fun AccountPanel(vm: StudioViewModel) {
-    com.stickdeath.studio.connect.ConnectedAccountSection()
+@Composable private fun AccountPanel(vm: StudioViewModel, onOpenRooms: () -> Unit) {
+    com.stickdeath.studio.connect.ConnectedAccountSection(onOpenRooms = onOpenRooms)
     com.stickdeath.studio.billing.PlansSection()
     Text(BackendContract.IDENTITY)
     Text("Planned server contract: ${BackendContract.rpcs.size} member RPCs across " +

@@ -47,7 +47,21 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     /** The newest invitation code, shown only to the owner who minted it; never stored. */
     var invitation by mutableStateOf<Pair<String, String>?>(null); private set
     var pendingRequests by mutableStateOf<Load<List<PendingRequest>>>(Load.Idle); private set
-    /** Bumped whenever the room session's counters may have changed, so the panel re-reads them. */
+    /** Creation is two confirmed RPCs; retain a known partial room instead of creating it twice. */
+    var roomCreation by mutableStateOf<RoomCreationOutcome?>(null); private set
+    var pendingRoomShare by mutableStateOf<PendingRoomProjectShare?>(null); private set
+    var roomPreview by mutableStateOf<Load<InvitationPreview>>(Load.Idle); private set
+    var roomCreating by mutableStateOf(false); private set
+    var roomInvitationWorking by mutableStateOf(false); private set
+    val roomsBusy get() = busy || roomCreating || roomInvitationWorking
+    private var roomsWindowRequested = false
+    private var roomsAppForeground = false
+    @Volatile private var roomsWindowVisible = false
+    @Volatile private var roomReadEpoch = 0L
+    private var roomCreateOperation = 0L
+    @Volatile private var roomInviteOperation = 0L
+    private var reviewedRoomCode: String? = null
+    /** Bumped whenever the shared session counters may have changed. */
     var roomSessionVersion by mutableStateOf(0L); private set
     var calendarMonth by mutableStateOf(java.time.YearMonth.now()); private set
     var calendar by mutableStateOf<Load<CalendarMonth>>(Load.Idle); private set
@@ -93,6 +107,9 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
         lifecycle = Load.Idle; pendingExport = null; notificationPreferences = Load.Idle; inbox = Load.Idle; myRooms = Load.Idle
         roomDetails = emptyMap(); roomMembers = emptyMap(); invitation = null; pendingRequests = Load.Idle; calendar = Load.Idle; moderation = ""
         roomStatus = ""; notice = ""
+        roomReadEpoch++; roomCreateOperation++; roomInviteOperation++
+        roomCreation = null; pendingRoomShare = null; roomPreview = Load.Idle; reviewedRoomCode = null
+        roomCreating = false; roomInvitationWorking = false
     }
 
     // MARK: War Room
@@ -182,12 +199,155 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
 
     // MARK: Shared rooms (#288)
 
-    fun loadRooms() = fetch({ myRooms = it }) { rooms.myRooms() }
-    fun loadPendingRequests() = fetch({ pendingRequests = it }) { rooms.pendingRequests() }
+    // Called by the fixed desktop host, including while its content is unplaced.
+    fun setRoomsWindowVisible(visible: Boolean) {
+        roomsWindowRequested = visible
+        updateRoomsVisibility()
+    }
+    fun setRoomsAppForeground(foreground: Boolean) {
+        roomsAppForeground = foreground
+        updateRoomsVisibility()
+    }
+    private fun updateRoomsVisibility() {
+        val visible = roomsWindowRequested && roomsAppForeground
+        if (roomsWindowVisible == visible) return
+        roomsWindowVisible = visible
+        if (!visible) {
+            roomReadEpoch++
+            if (myRooms is Load.Loading) myRooms = Load.Idle
+            if (pendingRequests is Load.Loading) pendingRequests = Load.Idle
+            roomDetails = roomDetails.mapValues { if (it.value is Load.Loading) Load.Idle else it.value }
+            roomMembers = roomMembers.mapValues { if (it.value is Load.Loading) Load.Idle else it.value }
+            clearRoomInvitationPreview()
+        }
+    }
+    private fun requireRoomMember(): Boolean {
+        if (!roomsWindowVisible) return false
+        if (!manager.isConfigured) { roomStatus = CommunityException.NotConfigured().message!!; return false }
+        if (viewer == null) { roomStatus = CommunityException.SignedOut().message!!; return false }
+        return true
+    }
+    private fun <T> roomFetch(set: (Load<T>) -> Unit, block: () -> T) {
+        if (!requireRoomMember()) return
+        val epoch = roomReadEpoch; val member = viewer
+        fetch({ if (roomsWindowVisible && roomReadEpoch == epoch && viewer == member) set(it) }) {
+            if (!roomsWindowVisible || roomReadEpoch != epoch || viewer != member) throw CommunityException.Stale()
+            block()
+        }
+    }
+    private fun roomAct(progress: String, success: String, block: () -> Unit, done: (Boolean) -> Unit = {}) {
+        if (!requireRoomMember() || roomCreating || roomInvitationWorking) return
+        val epoch = roomReadEpoch; val member = viewer
+        act(progress, success, {
+            if (!roomsWindowVisible || roomReadEpoch != epoch || viewer != member) throw CommunityException.Stale()
+            block()
+        }) { done(roomsWindowVisible && roomReadEpoch == epoch && viewer == member) }
+    }
+
+    fun createRoom(title: String, share: RoomProjectShareDraft, consent: Boolean) {
+        if (!requireRoomMember() || roomsBusy || pendingRoomShare != null) return
+        val member = viewer; val generation = manager.generation; val operation = ++roomCreateOperation; val epoch = roomReadEpoch
+        roomCreating = true; roomCreation = null; notice = "Creating the room and recording the chosen project share…"
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                rooms.createRoom(title, share, consent) { roomsWindowVisible && roomReadEpoch == epoch && manager.generation == generation && viewer == member }
+            } }
+            if (operation != roomCreateOperation || generation != manager.generation || viewer != member) return@launch
+            roomCreating = false
+            result.onSuccess { outcome ->
+                roomCreation = outcome
+                when (outcome) {
+                    is RoomCreationOutcome.Created -> { pendingRoomShare = null; notice = "Room and project reference confirmed. No project files were uploaded." }
+                    is RoomCreationOutcome.CreatedWithoutProject -> {
+                        pendingRoomShare = PendingRoomProjectShare(outcome.room, share)
+                        notice = "The room exists, but its project share was not confirmed. Check this room before creating another."
+                    }
+                }
+                if (roomsWindowVisible && roomReadEpoch == epoch) loadRooms()
+            }.onFailure { notice = "Room creation was not confirmed. Load your rooms before trying again. " + (it.message ?: "") }
+        }
+    }
+    /** Reconcile a known partial room; never issue another create or overwrite a different share. */
+    fun finishPendingRoomShare() {
+        val pending = pendingRoomShare ?: return
+        if (!requireRoomMember() || roomsBusy) return
+        val member = viewer; val generation = manager.generation; val operation = ++roomCreateOperation; val epoch = roomReadEpoch
+        roomCreating = true; notice = "Checking the existing room's project share…"
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (!roomsWindowVisible || roomReadEpoch != epoch || manager.generation != generation || viewer != member) throw CommunityException.Stale()
+                val current = rooms.summary(pending.room)
+                if (manager.generation != generation || viewer != member || !roomsWindowVisible || roomReadEpoch != epoch) throw CommunityException.Stale()
+                if (current.ownerId != member) throw CommunityException.InvalidResponse("This room is not owned by the current account.")
+                val revision = current.projectRevision ?: throw CommunityException.InvalidResponse("Current room revision unavailable.")
+                if (current.projectRef == RoomProjectShare.PREFIX + pending.share.projectId.lowercase()
+                    && current.projectTitle == pending.share.title.trim() && current.permissions?.toSet() == pending.share.permissions.toSet()) revision
+                else {
+                    if (current.projectRef != null) throw CommunityException.Server("The room already shares a different project or permission set. Nothing was overwritten.", null)
+                    rooms.setProject(pending.room, pending.share, revision) { roomsWindowVisible && roomReadEpoch == epoch && manager.generation == generation && viewer == member }
+                }
+            } }
+            if (operation != roomCreateOperation || generation != manager.generation || viewer != member) return@launch
+            roomCreating = false
+            result.onSuccess { revision ->
+                pendingRoomShare = null; roomCreation = RoomCreationOutcome.Created(pending.room, revision)
+                notice = "The existing room's project share is confirmed. No project files were uploaded."
+                if (roomsWindowVisible && roomReadEpoch == epoch) loadRooms()
+            }.onFailure { notice = "The room still exists; its intended share was not confirmed. " + (it.message ?: "") }
+        }
+    }
+    fun dismissPendingRoomShare() {
+        if (roomCreating) return
+        pendingRoomShare = null; roomCreation = null
+        notice = "Pending share draft dismissed. No room was deleted; use the room list to manage it."
+    }
+    fun clearRoomInvitationPreview() {
+        roomInviteOperation++; reviewedRoomCode = null; roomPreview = Load.Idle; roomInvitationWorking = false
+    }
+    fun previewRoomInvitation(raw: String) {
+        if (!requireRoomMember() || roomsBusy) return
+        val code = RoomInvitationPolicy.normalize(raw); val generation = manager.generation; val member = viewer
+        val operation = ++roomInviteOperation
+        reviewedRoomCode = null; roomPreview = Load.Loading; roomInvitationWorking = true
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (!roomsWindowVisible || operation != roomInviteOperation || manager.generation != generation || viewer != member) throw CommunityException.Stale()
+                rooms.previewInvitation(code)
+            } }
+            if (operation != roomInviteOperation || generation != manager.generation || viewer != member || !roomsWindowVisible) return@launch
+            roomInvitationWorking = false
+            roomPreview = result.fold({ reviewedRoomCode = code; Load.Loaded(it) }, { Load.Failed(it.message ?: "Invitation unavailable.") })
+        }
+    }
+    fun requestRoomAdmission(raw: String, consent: Boolean) {
+        if (!requireRoomMember() || roomsBusy) return
+        val code = RoomInvitationPolicy.normalize(raw)
+        if (!consent || reviewedRoomCode != code || roomPreview !is Load.Loaded) {
+            notice = "Review this exact invitation and explicitly accept it before requesting admission. Nothing was sent."; return
+        }
+        val generation = manager.generation; val member = viewer; val operation = ++roomInviteOperation
+        roomInvitationWorking = true
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (!roomsWindowVisible || operation != roomInviteOperation || manager.generation != generation || viewer != member) throw CommunityException.Stale()
+                rooms.requestAdmission(code, true)
+            } }
+            if (operation != roomInviteOperation || generation != manager.generation || viewer != member || !roomsWindowVisible) return@launch
+            roomInvitationWorking = false; reviewedRoomCode = null; roomPreview = Load.Idle
+            notice = result.fold({ when (it) {
+                is AdmissionOutcome.PendingOwnerApproval -> "Request recorded. The owner must approve it before you become a member."
+                is AdmissionOutcome.AlreadyRequested -> "You already requested this room. Check pending requests; membership is not assumed."
+            } }, { "The request was not confirmed. Check pending requests before trying again. " + (it.message ?: "") })
+        }
+    }
+
+    fun loadRooms() = roomFetch({ myRooms = it }) { rooms.myRooms() }
+    fun loadPendingRequests() = roomFetch({ pendingRequests = it }) { rooms.pendingRequests() }
     /** Summary and members of one room; the session begins with the server's edit right and project. */
     fun openRoom(room: RoomSummary) {
-        val me = viewer ?: run { notice = "Sign in with a full account to open a shared room."; return }
-        fetch<RoomDetail>({ load ->
+        if (!requireRoomMember()) return
+        val me = viewer ?: return
+        roomFetch<RoomDetail>({ load ->
             roomDetails = roomDetails + (room.id to load)
             if (load is Load.Loaded) {
                 val detail = load.value
@@ -195,35 +355,38 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
                 roomSessionVersion++
             }
         }) { rooms.summary(room.id) }
-        fetch<List<RoomMember>>({ roomMembers = roomMembers + (room.id to it) }) { rooms.members(room.id) }
+        roomFetch<List<RoomMember>>({ roomMembers = roomMembers + (room.id to it) }) { rooms.members(room.id) }
     }
     fun mintInvitation(room: RoomSummary) {
-        if (busy) return
-        val generation = manager.generation
+        if (!requireRoomMember() || roomsBusy) return
+        val generation = manager.generation; val epoch = roomReadEpoch
         busy = true; notice = "Creating an invitation…"
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { rooms.mintInvitation(room.id) } }
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (!roomsWindowVisible || roomReadEpoch != epoch) throw CommunityException.Stale()
+                rooms.mintInvitation(room.id)
+            } }
             busy = false
             if (generation != manager.generation) { notice = CommunityException.Stale().message!!; return@launch }
-            result.onSuccess { invitation = room.id to it; notice = "Invitation created. Pending requests from older codes were revoked."; openRoom(room) }
+            result.onSuccess { invitation = room.id to it; notice = "Invitation created. Pending requests from older codes were revoked."; if (roomsWindowVisible && roomReadEpoch == epoch) openRoom(room) }
                 .onFailure { notice = it.message ?: "The invitation was not created." }
         }
     }
-    fun revokeInvitations(room: RoomSummary) = act("Revoking invitations…", "Invitations and pending requests revoked.", { rooms.revokeInvitations(room.id) }) {
+    fun revokeInvitations(room: RoomSummary) = roomAct("Revoking invitations…", "Invitations and pending requests revoked.", { rooms.revokeInvitations(room.id) }) { refresh ->
         if (invitation?.first == room.id) invitation = null
-        openRoom(room)
+        if (refresh) openRoom(room)
     }
-    fun approveMember(room: RoomSummary, member: String) = act("Approving…", "Request approved. The member can now open the shared project.", { rooms.approve(room.id, member) }) { openRoom(room) }
-    fun declineMember(room: RoomSummary, member: String) = act("Declining…", "Request declined. The code they used cannot admit them again.", { rooms.decline(room.id, member) }) { openRoom(room) }
-    fun removeMember(room: RoomSummary, member: String) = act("Removing…", "Member removed. Their device copy is theirs; they no longer receive shared edits.", { rooms.remove(room.id, member) }) { openRoom(room) }
-    fun blockMember(room: RoomSummary, member: String) = act("Blocking…", "Member removed and blocked from requesting this room again.", { rooms.block(room.id, member) }) { openRoom(room) }
-    fun setRole(room: RoomSummary, member: String, role: RoomRole) = act("Changing role…", "Role changed to ${role.wire}.", { rooms.setRole(room.id, member, role) }) { openRoom(room) }
-    fun closeOrLeave(room: RoomSummary, owner: Boolean) = act(if (owner) "Closing room…" else "Leaving room…",
+    fun approveMember(room: RoomSummary, member: String) = roomAct("Approving…", "Request approved. The member can now open the shared project.", { rooms.approve(room.id, member) }) { refresh -> if (refresh) openRoom(room) }
+    fun declineMember(room: RoomSummary, member: String) = roomAct("Declining…", "Request declined. The code they used cannot admit them again.", { rooms.decline(room.id, member) }) { refresh -> if (refresh) openRoom(room) }
+    fun removeMember(room: RoomSummary, member: String) = roomAct("Removing…", "Member removed. Their device copy is theirs; they no longer receive shared edits.", { rooms.remove(room.id, member) }) { refresh -> if (refresh) openRoom(room) }
+    fun blockMember(room: RoomSummary, member: String) = roomAct("Blocking…", "Member removed and blocked from requesting this room again.", { rooms.block(room.id, member) }) { refresh -> if (refresh) openRoom(room) }
+    fun setRole(room: RoomSummary, member: String, role: RoomRole) = roomAct("Changing role…", "Role changed to ${role.wire}.", { rooms.setRole(room.id, member, role) }) { refresh -> if (refresh) openRoom(room) }
+    fun closeOrLeave(room: RoomSummary, owner: Boolean) = roomAct(if (owner) "Closing room…" else "Leaving room…",
         if (owner) "Room closed. Members lost access; no project was deleted." else "You left the room. Synchronisation stopped.",
-        { if (owner) rooms.close(room.id) else rooms.leave(room.id) }) {
+        { if (owner) rooms.close(room.id) else rooms.leave(room.id) }) { refresh ->
         if (roomSession.session?.room == room.id) roomSession.end(if (owner) "Room closed. Your device copy of the project is unchanged." else "You left the room. Your device copy of the project is unchanged.")
         roomDetails = roomDetails - room.id; roomMembers = roomMembers - room.id; roomSessionVersion++
-        loadRooms()
+        if (refresh) loadRooms()
     }
 
     /** Pull and push once from the panel; Studio does the same every few seconds while it shares. */

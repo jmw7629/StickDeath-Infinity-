@@ -212,6 +212,21 @@ object RoomProjectShare {
         reference?.takeIf { it.startsWith(PREFIX) }?.removePrefix(PREFIX)?.takeIf { UUID_PATTERN.matches(it) }?.lowercase()
 }
 
+/** Explicit owner-selected metadata only. No frames, files or account tokens are uploaded. */
+data class RoomProjectShareDraft(val projectId: String, val title: String, val allowEditing: Boolean = false) {
+    val permissions get() = if (allowEditing) listOf("view", "edit") else listOf("view")
+    fun validate() {
+        requireUuid(projectId)
+        require(title.trim().length in 1..100) { "Use a shared project title of 1–100 characters." }
+    }
+}
+sealed class RoomCreationOutcome {
+    abstract val room: String
+    data class Created(override val room: String, val projectRevision: Int) : RoomCreationOutcome()
+    data class CreatedWithoutProject(override val room: String, val problem: String) : RoomCreationOutcome()
+}
+data class PendingRoomProjectShare(val room: String, val share: RoomProjectShareDraft)
+
 enum class RoomRole(val wire: String) { Editor("editor"), Viewer("viewer") }
 
 /** `sdi_room_manage` summary (rooms-v2.sql). Absent fields stay null and are shown as unavailable. */
@@ -242,6 +257,39 @@ data class RoomMember(val userId: String, val ownerApproved: Boolean, val member
 }
 
 class RoomsClient(private val gateway: CommunityGateway) {
+    /** Same two-stage contract as iOS: a failed share never pretends the room was not created. */
+    fun createRoom(title: String, share: RoomProjectShareDraft, consent: Boolean,
+                   stillCurrent: () -> Boolean = { true }): RoomCreationOutcome {
+        val name = title.trim()
+        require(consent) { "Confirm this project share before creating a room. Nothing was sent." }
+        require(name.length in 1..100) { "Use a room name of 1–100 characters." }
+        share.validate()
+        if (!stillCurrent()) throw CommunityException.Stale()
+        val created = action(JSONObject().put("action", "create").put("title", name).put("consent", true))
+        if (created.str("status") != "created") throw CommunityException.InvalidResponse("Room creation was not confirmed.")
+        val room = requireUuidOr(created.need("room_id"))
+        return try {
+            RoomCreationOutcome.Created(room, setProject(room, share, 1, stillCurrent))
+        } catch (error: Exception) {
+            RoomCreationOutcome.CreatedWithoutProject(room, error.message ?: "The project share was not confirmed.")
+        }
+    }
+
+    fun setProject(room: String, share: RoomProjectShareDraft, revision: Int,
+                   stillCurrent: () -> Boolean = { true }): Int {
+        share.validate()
+        require(revision in 1 until Int.MAX_VALUE) { "Refresh the current room revision before sharing." }
+        if (!stillCurrent()) throw CommunityException.Stale()
+        val reply = gateway.call("sdi_room_manage", JSONObject().put("action", "set_project")
+            .put("room", requireUuid(room)).put("project_ref", RoomProjectShare.PREFIX + requireUuid(share.projectId))
+            .put("project_title", share.title.trim()).put("permissions", JSONArray(share.permissions)).put("revision", revision))
+        val next = reply.int("project_revision")
+        if (reply.str("status") != "updated" || next != revision + 1) {
+            throw CommunityException.InvalidResponse("The project share was not confirmed.")
+        }
+        return next
+    }
+
     /** Rooms visible under RLS (owned or accepted); closed rooms are filtered out. */
     fun myRooms(): List<RoomSummary> = gateway.rows("sdi_rooms", "*", emptyList(), 100).objects()
         .filter { it.bool("closed") != true }

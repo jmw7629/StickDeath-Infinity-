@@ -445,8 +445,13 @@ private struct StudioAudioWorkspace: View {
                     .accessibilityIdentifier("studio.audio.overlap-count")
             }
             Spacer(minLength: 0)
-            Button(vm.snapEnabled ? "Snap: ON" : "Snap: OFF") { vm.snapEnabled.toggle() }
-                .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
+            Button { vm.snapEnabled.toggle() } label: {
+                Text(vm.snapEnabled ? "Snap: ON" : "Snap: OFF")
+                    .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+                .buttonStyle(.plain)
                 .accessibilityIdentifier("studio.audio.snap")
                 .accessibilityHint("Snap to frames, the playhead and other clip edges while dragging or trimming.")
             Button { openLibrary() } label: {

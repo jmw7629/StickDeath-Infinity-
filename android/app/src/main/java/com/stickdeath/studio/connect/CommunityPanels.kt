@@ -31,9 +31,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.time.Instant
 
-private enum class CommunityTab(val title: String) { War("War Room"), Challenges("Challenges"), Rooms("Shared rooms"), Calendar("Calendar"), Inbox("Notifications"), Data("Account data") }
+private enum class CommunityTab(val title: String) { War("War Room"), Challenges("Challenges"), Calendar("Calendar"), Inbox("Notifications"), Data("Account data") }
 
-/** War Room, challenges, shared-room sync, notifications and account data for a signed-in member.
+/** War Room, challenges, notifications and account data for a signed-in member.
  * There is no chat, calling, camera or microphone anywhere in these screens. */
 @Composable fun CommunityFeaturesSection(account: AccountViewModel, community: CommunityViewModel = viewModel()) {
     val signedIn = account.state as? AccountState.SignedIn
@@ -49,7 +49,6 @@ private enum class CommunityTab(val title: String) { War("War Room"), Challenges
     when (tab) {
         CommunityTab.War -> WarRoomSection(community)
         CommunityTab.Challenges -> ChallengesSection(community)
-        CommunityTab.Rooms -> RoomSyncSection(community)
         CommunityTab.Calendar -> CalendarSection(community)
         CommunityTab.Inbox -> NotificationsSection(community)
         CommunityTab.Data -> AccountDataSection(community)

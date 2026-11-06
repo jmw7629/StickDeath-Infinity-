@@ -420,13 +420,11 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Hardness", value: Binding(get: { vm.dodgeBurnHardness * 100 }, set: { vm.dodgeBurnHardness = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Exposure", value: Binding(get: { vm.dodgeBurnExposure * 100 }, set: { vm.dodgeBurnExposure = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
-                Picker("Tonal range", selection: $vm.dodgeBurnRange) {
-                    ForEach(StudioDodgeBurn.TonalRange.allCases, id: \.self) { range in
-                        Text(range.rawValue.capitalized).tag(range)
-                    }
-                }.pickerStyle(.menu).accessibilityIdentifier("studio.dodge-burn.range")
-                    .accessibilityLabel("Tonal range")
-                    .accessibilityValue(vm.dodgeBurnRange.rawValue.capitalized)
+                StudioSettingChoice(title: "Tonal range", selection: $vm.dodgeBurnRange,
+                    choices: StudioDodgeBurn.TonalRange.allCases,
+                    choiceTitle: { $0.rawValue.capitalized }, identifier: "studio.dodge-burn.range",
+                    showsTitle: true)
+                    .id(vm.selectedTool)
                 Toggle("Protect tones", isOn: $vm.dodgeBurnProtectTones)
                     .accessibilityIdentifier("studio.dodge-burn.protect-tones")
                 Text(vm.selectedTool == .dodge
@@ -905,24 +903,10 @@ struct FloatingToolSettingsPanel: View {
             }
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
-                Menu {
-                    Picker("Selection target", selection: $vm.areaSelectionTarget) {
-                        ForEach(StudioViewModel.AreaSelectionTarget.allCases, id: \.self) { target in
-                            Text(target.label).tag(target)
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(vm.areaSelectionTarget.label).font(.specialElite(12))
-                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 11))
-                    }
-                    .foregroundColor(.sdStudioActionText)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Selection target")
-                .accessibilityValue(vm.areaSelectionTarget.label)
-                .accessibilityIdentifier("studio.selection.target")
+                StudioSettingChoice(title: "Selection target", selection: $vm.areaSelectionTarget,
+                    choices: StudioViewModel.AreaSelectionTarget.allCases,
+                    choiceTitle: { $0.label }, identifier: "studio.selection.target")
+                    .id(vm.selectedTool)
                 Text(areaSelectionGuidance)
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 Text(areaSelectionCount)
@@ -1020,13 +1004,11 @@ struct FloatingToolSettingsPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("SAMPLE SIZE")
                     .font(.specialElite(8)).foregroundColor(.sdStudioSecondaryText).tracking(2)
-                Picker("Sample size", selection: $vm.eyedropperSampleSize) {
-                    ForEach(StudioColorSamplingService.sampleSizes, id: \.self) { size in
-                        Text(size == 1 ? "Point" : "\(size)×\(size)").tag(size)
-                    }
-                }
-                .pickerStyle(.menu).tint(.white)
-                .accessibilityIdentifier("studio.eyedropper.sample-size")
+                StudioSettingChoice(title: "Sample size", selection: $vm.eyedropperSampleSize,
+                    choices: StudioColorSamplingService.sampleSizes,
+                    choiceTitle: { $0 == 1 ? "Point" : "\($0)×\($0)" },
+                    identifier: "studio.eyedropper.sample-size", labelColor: .white)
+                    .id(vm.selectedTool)
                 SettingsToggle(label: "Sample active layer only", isOn: $vm.eyedropperActiveLayerOnly, accent: accentColor)
                     .accessibilityIdentifier("studio.eyedropper.active-layer")
                 Text("Point samples one composited pixel of the visible artwork. Larger sizes average the block around the tap, clipped to the canvas. Active-layer sampling reads that layer over the white canvas. Saved per tool.")
@@ -1072,29 +1054,10 @@ struct FloatingToolSettingsPanel: View {
 
     private var mirrorSettings: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // A native menu Picker ignores the inherited font on its selected-value
-            // trigger. Keep the system choices/checkmark, but draw that trigger here.
-            Menu {
-                Picker("Mirror", selection: $vm.mirrorMode) {
-                    ForEach(StudioMirrorMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                HStack(spacing: 4) {
-                    Text(vm.mirrorMode.title).font(.specialElite(11))
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2.weight(.semibold))
-                        .accessibilityHidden(true)
-                }
-                .foregroundStyle(.tint)
-                .padding(.horizontal, 12)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Mirror")
-            .accessibilityValue(vm.mirrorMode.title)
-            .accessibilityIdentifier("studio.drawing.mirror")
+            StudioSettingChoice(title: "Mirror", selection: $vm.mirrorMode,
+                choices: StudioMirrorMode.allCases, choiceTitle: { $0.title },
+                identifier: "studio.drawing.mirror", labelSize: 11, horizontalPadding: 12)
+                .id(vm.selectedTool)
             if vm.mirrorMode != .off {
                 if vm.mirrorMode != .horizontal {
                     mirrorAxisSlider("Vertical line", value: $vm.mirrorAxisX, identifier: "studio.drawing.mirror.axis-x",
@@ -1168,6 +1131,116 @@ struct FloatingToolSettingsPanel: View {
             get: { vm.toolOpacity * 100 },
             set: { vm.toolOpacity = $0 / 100 }
         )
+    }
+}
+
+/// Native menu rows ignore the Studio font. Keep these preference choices in
+/// SwiftUI so both the trigger and the actual selectable rows use Special Elite.
+/// The caller retains the original binding; choosing a row dismisses only this
+/// anchored choice list, leaving the existing tool settings panel in place.
+private struct StudioSettingChoice<Selection: Hashable>: View {
+    let title: String
+    @Binding var selection: Selection
+    let choices: [Selection]
+    let choiceTitle: (Selection) -> String
+    let identifier: String
+    var labelSize: CGFloat = 12
+    var showsTitle = false
+    var horizontalPadding: CGFloat = 0
+    var labelColor: Color = .sdStudioActionText
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @State private var showingChoices = false
+
+    var body: some View {
+        Button {
+            guard scenePhase == .active, subjectWindowVisible else { return }
+            showingChoices = true
+        } label: {
+            HStack(spacing: 6) {
+                if showsTitle {
+                    Text(title).font(.specialElite(labelSize))
+                    Spacer(minLength: 8)
+                }
+                Text(choiceTitle(selection)).font(.specialElite(labelSize))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11)).accessibilityHidden(true)
+            }
+            .foregroundColor(labelColor)
+            .padding(.horizontal, horizontalPadding)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(choiceTitle(selection))
+        .accessibilityIdentifier(identifier)
+        .popover(isPresented: $showingChoices, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(title).font(.specialElite(13)).foregroundColor(.white.opacity(0.9))
+                    Spacer(minLength: 0)
+                    Button { showingChoices = false } label: {
+                        Text("✕").font(.specialElite(14))
+                            .foregroundColor(.sdStudioSecondaryText)
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close " + title + " choices")
+                    .accessibilityIdentifier(identifier + ".choices.close")
+                }
+                .padding(.leading, 12)
+                Divider().background(Color.white.opacity(0.08))
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(choices, id: \.self) { choice in
+                            Button {
+                                guard scenePhase == .active, subjectWindowVisible else { return }
+                                selection = choice
+                                showingChoices = false
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text(choiceTitle(choice)).font(.specialElite(13))
+                                    Spacer(minLength: 8)
+                                    if selection == choice {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .accessibilityHidden(true)
+                                    }
+                                }
+                                .foregroundColor(selection == choice ? .sdStudioActionText : .white.opacity(0.9))
+                                .padding(.horizontal, 12)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                .background(Color.white.opacity(selection == choice ? 0.06 : 0),
+                                    in: RoundedRectangle(cornerRadius: 6))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(choiceTitle(choice))
+                            .accessibilityAddTraits(selection == choice ? .isSelected : [])
+                            .accessibilityIdentifier(identifier + ".choice." + choiceTitle(choice))
+                        }
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(height: min(CGFloat(choices.count) * 44, 220))
+            }
+            .padding(6)
+            .frame(width: 240)
+            .background(Color(hex: "1A1A24"))
+            .presentationBackground(Color(hex: "1A1A24"))
+            .presentationCompactAdaptation(.popover)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(identifier + ".choices")
+        }
+        .onChange(of: selection) { _, _ in showingChoices = false }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { showingChoices = false }
+        }
+        .onChange(of: subjectWindowVisible) { _, visible in
+            if !visible { showingChoices = false }
+        }
+        .onDisappear { showingChoices = false }
     }
 }
 

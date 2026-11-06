@@ -69,10 +69,23 @@ final class JourneyUITests: XCTestCase {
                 XCTAssertTrue(control.isHittable, "Audio control \(id) is not reachable")
                 XCTAssertTrue(app.frame.contains(control.frame), "Audio control \(id) is clipped")
                 sizes.append("\(id) \(Int(control.frame.width))x\(Int(control.frame.height)) pt")
+                if id == "studio.audio.close" || id == "studio.audio.snap" {
+                    XCTAssertGreaterThanOrEqual(min(control.frame.width, control.frame.height), 44,
+                                                "Audio control \(id) needs a 44 pt touch target")
+                }
             }
-            // Close is built as a 44 pt target. Other measured sizes are recorded
-            // as actionable evidence (#264 touch targets), not asserted here.
-            XCTAssertGreaterThanOrEqual(min(app.buttons["studio.audio.close"].frame.width, app.buttons["studio.audio.close"].frame.height), 44)
+            // Keep the Snap control operable in both orientations and restore
+            // its original value before recording the workspace.
+            let snap = app.buttons["studio.audio.snap"]
+            let originalSnapLabel = snap.label
+            XCTAssertTrue(["Snap: ON", "Snap: OFF"].contains(originalSnapLabel))
+            let toggledSnapLabel = originalSnapLabel == "Snap: ON" ? "Snap: OFF" : "Snap: ON"
+            snap.tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", toggledSnapLabel), evaluatedWith: snap)
+                .waitUntilFulfilled(timeout: 5), "Audio snapping did not toggle")
+            snap.tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", originalSnapLabel), evaluatedWith: snap)
+                .waitUntilFulfilled(timeout: 5), "Audio snapping did not restore")
             let measured = XCTAttachment(string: sizes.joined(separator: "\n"))
             measured.name = "journey-\(idiom)-audio-touch-targets-\(orientation == .portrait ? "portrait" : "landscape")"
             measured.lifetime = .keepAlways
