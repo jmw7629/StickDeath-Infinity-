@@ -318,7 +318,15 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         }
         await test("original 1080x1920 H.264 one-frame portrait encodes and decodes at 12 FPS") {
             let folder = try parent(root, "portrait-original-single-frame")
-            let doc = try document(colors: ["#FF0000"], width: 1080, height: 1920, fps: 12)
+            var doc = try document(colors: ["#FF0000"], width: 1080, height: 1920, fps: 12)
+            // The small-fixture helper's height * 2 brush is wider than the
+            // production 1,024-point limit here. Fill the same portrait canvas
+            // with one valid editable rectangle instead of an oversized stroke.
+            doc.frames[0].elements = [DrawnElement(id: "portrait-red", tool: .rectangle,
+                points: [StrokePoint(x: 0, y: 0), StrokePoint(x: 1080, y: 1920)],
+                color: "#FF0000", width: 1, opacity: 1, layerID: doc.activeLayerID,
+                shape: StudioShapeDescriptor(fillColor: "#FF0000"))]
+            try doc.validate()
             let captured = doc
             // Exercise the exact size/codec/timing that failed before either UI
             // test reached sharing. One frame bounds retained RGBA to 8 MiB;

@@ -193,12 +193,12 @@ final class JourneyUITests: XCTestCase {
         try tapWelcomeAction("welcome.guest", in: app)
         try waitForButton("Skip Tutorial", in: app).tap()
         let notConfigured = NSPredicate(format: "label CONTAINS %@", "not configured in this build")
-        try waitForButton("Home", in: app).tap()
+        try openDesktopSubject("home", in: app)
         XCTAssertTrue(app.buttons["feed.home.sign-in"].waitForExistence(timeout: 5), "Feed must ask a guest to sign in")
         XCTAssertTrue(app.staticTexts.matching(notConfigured).firstMatch.exists, "Feed must say services are not configured")
         XCTAssertFalse(app.descendants(matching: .any)["feed.card"].exists, "No feed card may appear without a service")
         capture(app, name: "journey-\(idiom)-feed-guest")
-        try waitForButton("Rooms", in: app).tap()
+        try openDesktopSubject("rooms", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["rooms.not-configured"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["rooms.sign-in"].exists, "Rooms must ask a guest to sign in")
         XCTAssertFalse(app.descendants(matching: .any)["rooms.browser.room"].exists, "No room may appear without a service")
@@ -257,8 +257,47 @@ final class JourneyUITests: XCTestCase {
         let app = try launchAtWelcome()
         try tapWelcomeAction("welcome.guest", in: app)
         try waitForButton("Skip Tutorial", in: app).tap()
-        try waitForButton("Studio", in: app).tap()
+        try openDesktopSubject("studio", in: app)
         return app
+    }
+
+    /// Exercise the primary native navigation without relying on the optional dock.
+    /// These existing full-page journeys use real maximize controls so persisted
+    /// desktop placements cannot change their editor and sheet geometry.
+    @MainActor
+    private func openDesktopSubject(_ subject: String, in app: XCUIApplication) throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        try desktopButton("desktop.menu.subjects", in: app, deadline: deadline).tap()
+        try desktopButton("desktop.open." + subject, in: app, deadline: deadline).tap()
+        try maximizeDesktopSubject(subject, in: app, deadline: deadline)
+    }
+
+    @MainActor
+    private func maximizeDesktopSubject(_ subject: String, in app: XCUIApplication,
+                                        deadline: TimeInterval = ProcessInfo.processInfo.systemUptime + 10) throws {
+        let prefix = "desktop.window." + subject
+        let maximize = app.buttons[prefix + ".maximize"]
+        let restored = app.buttons[prefix + ".restore-size"]
+        let available = NSPredicate { _, _ in maximize.exists || restored.exists }
+        XCTAssertTrue(expectation(for: available, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Missing native subject size control: " + subject)
+        if maximize.exists {
+            try desktopButton(prefix + ".maximize", in: app, deadline: deadline).tap()
+        }
+        _ = try desktopButton(prefix + ".restore-size", in: app, deadline: deadline)
+    }
+
+    @MainActor
+    private func desktopButton(_ identifier: String, in app: XCUIApplication,
+                               deadline: TimeInterval) throws -> XCUIElement {
+        let element = app.buttons[identifier]
+        XCTAssertTrue(element.waitUntilPresent(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Missing native button: " + identifier)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
+            .waitUntilFulfilled(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Native button is not reachable: " + identifier)
+        return element
     }
 
     @MainActor private func tapWelcomeAction(_ identifier: String, in app: XCUIApplication) throws {
@@ -379,5 +418,23 @@ final class JourneyUITests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+}
+
+private extension XCTestExpectation {
+    func waitUntilFulfilled(timeout: TimeInterval) -> Bool {
+        XCTWaiter.wait(for: [self], timeout: timeout) == .completed
+    }
+}
+
+// The recorded 5a6963a failure spent a one-second initial XCTest poll on
+// already-present controls. Keep the same bounded wait for absent controls;
+// presence alone does not replace any existing hittability/geometry assertion.
+private extension XCUIElement {
+    @MainActor func waitUntilPresent(timeout: TimeInterval) -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        if exists { return true }
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        return remaining > 0 && waitForExistence(timeout: remaining)
     }
 }

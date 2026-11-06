@@ -186,6 +186,7 @@ struct MainTabView: View {
         }
         .frame(width: max(1, size.width), height: max(1, size.height))
         .clipped()
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("desktop.workspace")
     }
 
@@ -457,6 +458,7 @@ private struct SDISubjectWindow<Content: View>: View {
         .shadow(color: .black.opacity(0.65), radius: 0, x: focused ? 5 : 3, y: focused ? 5 : 3)
         .offset(x: rect.minX, y: rect.minY)
         .simultaneousGesture(TapGesture().onEnded { onFocus() })
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("desktop.window." + subject.rawValue)
     }
 
