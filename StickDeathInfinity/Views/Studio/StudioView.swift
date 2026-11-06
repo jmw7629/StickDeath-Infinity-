@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 
 struct StudioView: View {
     @StateObject private var vm = StudioViewModel.shared
+    @State private var libraryPresentation = StudioLibraryPresentation()
     @Environment(\.dismiss) var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
@@ -29,7 +30,7 @@ struct StudioView: View {
     var body: some View {
         Group {
             if vm.isEditing { editorBody }
-            else { StudioProjectLibrary(vm: vm) }
+            else { StudioProjectLibrary(vm: vm, presentation: $libraryPresentation) }
         }
         .alert("Delete this frame's image?", isPresented: $showingBottomImageDeletion,
             presenting: bottomImageDeletion) { capture in
