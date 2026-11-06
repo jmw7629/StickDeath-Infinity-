@@ -1053,7 +1053,8 @@ struct FloatingToolSettingsPanel: View {
         VStack(alignment: .leading, spacing: 4) {
             StudioSettingChoice(title: "Mirror", selection: $vm.mirrorMode,
                 choices: StudioMirrorMode.allCases, choiceTitle: { $0.title },
-                identifier: "studio.drawing.mirror", labelSize: 11, horizontalPadding: 12)
+                identifier: "studio.drawing.mirror", labelSize: 11, horizontalPadding: 12,
+                compactGrid: true)
                 .id(vm.selectedTool)
             if vm.mirrorMode != .off {
                 if vm.mirrorMode != .horizontal {
@@ -1204,9 +1205,50 @@ private struct StudioSettingChoice<Selection: Hashable>: View {
     var showsTitle = false
     var horizontalPadding: CGFloat = 0
     var labelColor: Color = .sdStudioActionText
+    var compactGrid = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
     @State private var showingChoices = false
+
+    // Keep the four Mirror choices together in a short anchored popup.
+    // Other tool menus and larger accessibility text retain their vertical list.
+    private var usesCompactGrid: Bool {
+        compactGrid && !dynamicTypeSize.isAccessibilitySize
+    }
+    private var choiceListHeight: CGFloat {
+        let rows = usesCompactGrid ? (choices.count + 1) / 2 : choices.count
+        return min(CGFloat(rows) * 44 + (usesCompactGrid ? CGFloat(max(0, rows - 1)) * 4 : 0), 220)
+    }
+    private func choiceButton(_ choice: Selection) -> some View {
+        Button {
+            guard scenePhase == .active, subjectWindowVisible else { return }
+            selection = choice
+            showingChoices = false
+        } label: {
+            HStack(spacing: usesCompactGrid ? 4 : 8) {
+                Text(choiceTitle(choice)).font(.specialElite(13))
+                    .lineLimit(usesCompactGrid ? 1 : nil)
+                    .minimumScaleFactor(usesCompactGrid ? 0.9 : 1)
+                Spacer(minLength: usesCompactGrid ? 0 : 8)
+                if selection == choice {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+            }
+            .foregroundColor(selection == choice ? .sdStudioActionText : .white.opacity(0.9))
+            .padding(.horizontal, usesCompactGrid ? 8 : 12)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(Color.white.opacity(selection == choice ? 0.06 : 0),
+                in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(choiceTitle(choice))
+        .accessibilityAddTraits(selection == choice ? .isSelected : [])
+        .accessibilityIdentifier(identifier + ".choice." + choiceTitle(choice))
+    }
 
     var body: some View {
         Button {
@@ -1248,38 +1290,18 @@ private struct StudioSettingChoice<Selection: Hashable>: View {
                 .padding(.leading, 12)
                 Divider().background(Color.white.opacity(0.08))
                 ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(choices, id: \.self) { choice in
-                            Button {
-                                guard scenePhase == .active, subjectWindowVisible else { return }
-                                selection = choice
-                                showingChoices = false
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Text(choiceTitle(choice)).font(.specialElite(13))
-                                    Spacer(minLength: 8)
-                                    if selection == choice {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 12, weight: .semibold))
-                                            .accessibilityHidden(true)
-                                    }
-                                }
-                                .foregroundColor(selection == choice ? .sdStudioActionText : .white.opacity(0.9))
-                                .padding(.horizontal, 12)
-                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                .background(Color.white.opacity(selection == choice ? 0.06 : 0),
-                                    in: RoundedRectangle(cornerRadius: 6))
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(choiceTitle(choice))
-                            .accessibilityAddTraits(selection == choice ? .isSelected : [])
-                            .accessibilityIdentifier(identifier + ".choice." + choiceTitle(choice))
+                    if usesCompactGrid {
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)], spacing: 4) {
+                            ForEach(choices, id: \.self) { choice in choiceButton(choice) }
+                        }
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(choices, id: \.self) { choice in choiceButton(choice) }
                         }
                     }
                 }
                 .scrollBounceBehavior(.basedOnSize)
-                .frame(height: min(CGFloat(choices.count) * 44, 220))
+                .frame(height: choiceListHeight)
             }
             .padding(6)
             .frame(width: 240)

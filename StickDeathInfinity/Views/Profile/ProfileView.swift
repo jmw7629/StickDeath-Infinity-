@@ -198,6 +198,7 @@ struct ProfileView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("profile.identity")
     }
 

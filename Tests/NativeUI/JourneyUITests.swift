@@ -211,7 +211,15 @@ final class JourneyUITests: XCTestCase {
                 mirror.tap()
                 for title in ["Off", "Vertical", "Horizontal", "Both"] {
                     let choice = app.buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch
-                    XCTAssertTrue(choice.waitForExistence(timeout: 5) && choice.isHittable, "Missing native Mirror choice: \(title)")
+                    let available = choice.waitForExistence(timeout: 5) && choice.isHittable
+                    if !available {
+                        let diagnostic = XCTAttachment(string: app.debugDescription)
+                        diagnostic.name = "native-mirror-choice-unavailable-" + side + "-" + title
+                        diagnostic.lifetime = .keepAlways
+                        add(diagnostic)
+                        capture(app, name: "native-mirror-choice-unavailable-" + side + "-" + title, entireScreen: true)
+                    }
+                    XCTAssertTrue(available, "Missing native Mirror choice: \(title)")
                 }
                 capture(app, name: "native-mirror-menu-\(side)-select-\(selected)", entireScreen: true)
                 app.buttons.matching(NSPredicate(format: "label == %@", selected)).firstMatch.tap()
@@ -305,6 +313,7 @@ final class JourneyUITests: XCTestCase {
         let next = app.buttons["onboarding.next"]
         XCTAssertTrue(next.isHittable, "Open Studio must stay reachable")
         next.tap()
+        capture(app, name: "journey-\(idiom)-guide-after-open-studio")
         try waitForButton("Skip Tutorial", in: app).tap()
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8),
                       "The policy step blocked Studio")

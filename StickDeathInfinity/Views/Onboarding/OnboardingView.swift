@@ -163,6 +163,8 @@ struct OnboardingView: View {
                             .font(.specialElite(14))
                             .foregroundColor(.sdTextMuted)
                             .padding(.vertical, 12)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .padding(.top, 4)
                     .disabled(finishing)
