@@ -225,6 +225,7 @@ profile.removal-appeals.open,StickDeathInfinity/Views/Profile/ProfileView.swift,
 profile.removal-appeals.submit,StickDeathInfinity/Views/Profile/ProfileView.swift,RemovalAppealsView,button 'Submit appeal' -> submit,n-a,#224,deferred
 profile.reviews.allow-export,StickDeathInfinity/Views/Profile/ProfileView.swift,CreatorReviewsView,toggle 'Allow viewers to save this video file',n-a,#224,deferred
 profile.reviews.publish-feed,StickDeathInfinity/Views/Profile/ProfileView.swift,CreatorReviewsView,button 'Publish approved video to the SDI feed',n-a,#224,deferred
+profile.settings.bottom-dock,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,toggle 'Show bottom dock' -> binds showsBottomDock,n-a,#224,deferred
 profile.settings.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,label 'Account settings',n-a,#224,deferred
 profile.sign-in,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,label 'Sign in or create an account',n-a,#134 #136 #137,deferred
 profile.statistics,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,grid,n-a,#224,deferred

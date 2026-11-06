@@ -539,6 +539,7 @@ private struct ProfileDesktopStickMark: Shape {
 /// Replace the old disconnected toggles, invented disk usage and inert Sign Out.
 struct ProfileSettingsView: View {
     @EnvironmentObject var authVM: AuthViewModel
+    @AppStorage("sdi.desktop.bottomNavigation") private var showsBottomDock = false
     @State private var showingProfileEditor = false
     @State private var showingMFA = false
     @State private var showingAppeals = false
@@ -566,6 +567,12 @@ struct ProfileSettingsView: View {
                 } else {
                     Text("Sign in with an available profile to edit username and bio.").foregroundStyle(.secondary)
                 }
+            }
+            Section("Appearance") {
+                Toggle("Show bottom dock", isOn: $showsBottomDock)
+                    .accessibilityIdentifier("profile.settings.bottom-dock")
+                Text("Shows the optional dock on the desktop. It stays hidden while you edit in Studio. This device remembers your choice.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Studio") {
                 Text("Change grid, onion skin and project settings in the Studio menu. Those controls apply to the actual project.")
