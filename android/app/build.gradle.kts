@@ -66,6 +66,8 @@ android {
     sourceSets.getByName("main").assets.srcDir(generatedStudioAssets)
     // Shared iOS/Android `.sdi` golden fixtures (Tests/SDIFixtures) feed the instrumented import tests.
     sourceSets.getByName("androidTest").assets.srcDir("../../Tests/SDIFixtures/assets")
+    // Reuse the existing hash-pinned publisher ZIP in instrumentation only; no duplicate archive.
+    sourceSets.getByName("androidTest").assets.srcDir("../../Tests/StudioImagePack/Fixtures")
     // The same fixtures plus `reexport.json` let the JVM re-export comparison run without a device.
     sourceSets.getByName("test").resources.srcDir("../../Tests/SDIFixtures")
     androidResources { noCompress += listOf("wav", "m4a") }

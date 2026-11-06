@@ -233,10 +233,10 @@ jobs:
     # The final aggregate still requires all production/simulator gates to pass.
     needs: [source-security, spatter-production-tests, native-app-compile]
     runs-on: macos-15
-    # Production took 47m09s on run 37668843963 before image-region dependencies.
-    # Forty-five VM recipes now compile the region service and the new admin
-    # suite adds coverage. Keep bounded headroom and every sequential gate.
-    timeout-minutes: 90
+    # 1bd hit the outer 90m ceiling before the expanded sequential suite finished
+    # (run 42218400907). Keep every recipe/step limit and required final gate;
+    # allow remaining production recipes to finish without adding Mac jobs.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

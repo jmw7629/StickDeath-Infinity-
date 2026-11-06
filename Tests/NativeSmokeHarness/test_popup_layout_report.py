@@ -1,6 +1,7 @@
 """Pure Python result-policy checks; no simulator/Swift/toolchain execution."""
 from pathlib import Path
 import copy
+import ast
 import importlib.util
 import contextlib
 import io
@@ -217,6 +218,58 @@ class SetupPolicy(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"Unsafe"):verifier.creator_failure_diagnostic(root,selector,run,"9"*40)
             marker.unlink();marker.symlink_to(root/"absent")
             with self.assertRaises(OSError):verifier.creator_failure_diagnostic(root,selector,run,"9"*40)
+
+    def test_owned_inventory_shares_remaining_work_and_retains_cleanup_refusals(self):
+        # Exercise the actual nested command/owned_device bodies, with only the
+        # subprocess, clock, inventory data and owned marker mocked; no SDK.
+        main = next(node for node in ast.parse(path.read_text()).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "main")
+        factory = ast.parse("def probe():\n    last_command = None\n    last_stdout = last_stderr = b''\n    emitted_command = None\n").body[0]
+        factory.body.extend(copy.deepcopy(next(node for node in main.body
+                            if isinstance(node, ast.FunctionDef) and node.name == name))
+                            for name in ("command", "owned_device"))
+        factory.body.extend(ast.parse("return owned_device").body)
+        unit = ast.fix_missing_locations(ast.Module(body=[factory], type_ignores=[]))
+        self.selector()
+        import seed_diagnostics
+        owned = "A" * 8 + "-" + "A" * 4 + "-" + "A" * 4 + "-" + "A" * 4 + "-" + "A" * 12
+        created = {"runtime":"approved-runtime", "name":"owned", "deviceType":"approved-type"}
+        device = {"udid":owned, "name":"owned", "deviceTypeIdentifier":"approved-type",
+                  "isAvailable":True, "state":"Booted"}
+        marker = mock.Mock(return_value={"created":created})
+        selector = mock.Mock()
+        selector.inventory.return_value = ([], [(created["runtime"], device)], [])
+        raw = b"mock inventory; never a Simulator request"
+        bounded = mock.Mock(return_value=seed_diagnostics.Result(0, False, 0.01, stdout=raw, stdout_seen=len(raw)))
+        clock = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            scope = {"deadline":900.0, "time":clock, "run_bounded":bounded,
+                     "result_projection":seed_diagnostics.result_projection, "emit_failure":mock.Mock(),
+                     "output":Path(directory), "result":{"steps":[]}, "save":mock.Mock(),
+                     "owned_marker":marker, "select_simulator":selector, "owned":owned}
+            exec(compile(unit, str(path), "exec"), scope)
+            owned_device = scope["probe"]()
+            for cleanup, now, expected in ((False,200,380), (False,800,840),
+                                           (True,800,830), (True,890,900)):
+                with self.subTest(cleanup=cleanup, now=now):
+                    clock.monotonic.return_value = now
+                    self.assertEqual(owned_device("inventory", cleanup=cleanup), "Booted")
+                    bounded.assert_called_once_with(["xcrun","simctl","list","--json"], expected,
+                                                    stdout_cap=2*1024*1024, stderr_cap=2*1024*1024)
+                    marker.assert_called_once_with(); selector.inventory.assert_called_once_with(raw)
+                    bounded.reset_mock(); marker.reset_mock(); selector.inventory.reset_mock()
+            clock.monotonic.return_value = 200
+            marker.side_effect = ValueError("lease changed")
+            with self.assertRaisesRegex(ValueError,"lease changed"):owned_device("revoked")
+            bounded.assert_not_called(); selector.inventory.assert_not_called()
+            marker.side_effect = None
+            selector.inventory.return_value = ([], [(created["runtime"], {**device,"name":"foreign"})], [])
+            with self.assertRaisesRegex(ValueError,"identity differs"):owned_device("foreign")
+            self.assertEqual(bounded.call_count,1)  # Read refusal, no retry or device mutation.
+            bounded.reset_mock(); selector.inventory.reset_mock()
+            bounded.return_value = seed_diagnostics.Result(-9, True, 180, reaped=True, capture_incomplete=True)
+            with self.assertRaisesRegex(RuntimeError,"failed; no retry"):owned_device("timed-out")
+            self.assertEqual(bounded.call_count,1); selector.inventory.assert_not_called()
 
     def test_main_restores_environment_and_retains_actual_readiness_failure(self):
         for scenario in ("readiness","creator"):

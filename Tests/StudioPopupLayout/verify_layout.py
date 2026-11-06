@@ -253,7 +253,9 @@ def main():
 
     def owned_device(stage, cleanup=False):
         marker = owned_marker()
-        raw = command(stage, ["xcrun", "simctl", "list", "--json"], 30,
+        # Work inventory shares the original900s pool and60s cleanup reserve;
+        # cleanup keeps its original30s command cap. No second inventory attempt.
+        raw = command(stage, ["xcrun", "simctl", "list", "--json"], 30 if cleanup else 180,
                       cap=2 * 1024 * 1024, cleanup=cleanup)
         _, devices, _ = select_simulator.inventory(raw)
         matches = [(runtime, device) for runtime, device in devices

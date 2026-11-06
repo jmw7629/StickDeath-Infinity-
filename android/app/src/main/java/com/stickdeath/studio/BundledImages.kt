@@ -16,7 +16,7 @@ import java.util.Collections
 data class BundledImage(
     val id: String, val title: String, val category: String, val tags: List<String>,
     val filename: String, val sha256: String, val byteCount: Int, val width: Int,
-    val height: Int, val author: String, val sourceURL: String
+    val height: Int, val author: String, val sourceURL: String, val packID: String? = null
 )
 
 /** Release-approved offline images. A catalogue update must explicitly update the release pin. */
@@ -67,6 +67,7 @@ object BundledImages {
     }
 
     private fun source(context: Context, image: BundledImage, check: () -> Unit): ByteArray {
+        if (image.packID != null) return OptionalImagePacks.checkedPNG(context, image, check)
         require(catalogue(context, check).any { it == image }) { "Image is not in the approved bundled catalogue." }
         val bytes = readBounded(context, image.filename, image.byteCount, check)
         require(bytes.size == image.byteCount && digest(bytes) == image.sha256) { "Bundled image could not be verified." }
