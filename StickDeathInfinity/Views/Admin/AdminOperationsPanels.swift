@@ -3,6 +3,7 @@ import SwiftUI
 // MARK: - Private support triage
 @MainActor
 struct AdminSupportQueueContent: View {
+    @StateObject private var requests = AdminRequestOwner()
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
     @State private var queue: AdminSupportPage?
@@ -23,12 +24,14 @@ struct AdminSupportQueueContent: View {
         let status: AdminSupportStatus
         let note: String
         let context: AdminSupportContext
+        let scope: CommunityOperationScope
+        let filter: String
     }
     private var active: Bool { auth.isAuthenticated && auth.userId != nil && phase == .active }
     private var visibleQueue: AdminSupportPage? { active && loadedAccount == auth.userId ? queue : nil }
     private var selected: AdminSupportItem? { visibleQueue?.items.first { $0.id == selectedID } }
     private func current(_ context: AdminSupportContext) -> Bool {
-        !Task.isCancelled && context.admits(accountID: auth.userId, authenticated: auth.isAuthenticated,
+        CommunityOperationContext.isCurrent && !Task.isCancelled && context.admits(accountID: auth.userId, authenticated: auth.isAuthenticated,
             active: phase == .active, generation: generation)
     }
 
@@ -77,21 +80,21 @@ struct AdminSupportQueueContent: View {
             get: { pending.map { current($0.context) && selected == $0.item } ?? false }, set: { if !$0 { pending = nil } }), titleVisibility: .visible, presenting: pending) { decision in
                 Button("Confirm status change") {
                     pending = nil
-                    Task { await update(decision) }
+                    requests.enqueue(origin: decision.scope) { _ in await update(decision) }
                 }
                 Button("Cancel", role: .cancel) { pending = nil }
             } message: { decision in
                 Text("\(decision.item.receipt) · revision \(decision.item.revision)\n\(decision.item.status.title) → \(decision.status.title)\nPrivate note: \(decision.note)\nNo reply or email is sent.")
             }
-        .onChange(of: statusFilter) { _, _ in clear(); queueLoad(page: 0) }
+        .onChange(of: statusFilter) { _, _ in requests.cancel(); clear(); queueLoad(page: 0) }
         .onChange(of: auth.userId) { _, _ in clear() }
         .onChange(of: auth.isAuthenticated) { _, _ in clear() }
-        .onChange(of: phase) { _, newPhase in if newPhase != .active { clear() } }
-        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
-            guard !Task.isCancelled else { return }
-            clear(); if active { await load(page: 0, expectedGeneration: generation) }
-        }
-        .onDisappear { clear() }
+
+        .adminRequestLifetime(requests,
+            reset: { clear(); statusFilter = "" },
+            initial: { await load(page: 0, expectedGeneration: generation) },
+            pause: { busy = false; pending = nil })
+
     }
 
     @ViewBuilder private func detail(_ item: AdminSupportItem) -> some View {
@@ -130,52 +133,58 @@ struct AdminSupportQueueContent: View {
         clearSelection(); error = nil; notice = nil
     }
     private func select(_ item: AdminSupportItem) {
+        guard requests.capture().isCurrent, !requests.working else { return }
         guard !busy, visibleQueue?.items.contains(item) == true else { return }
         generation = UUID(); clearSelection(); selectedID = item.id
         nextStatus = item.canUpdate ? item.status : .inProgress
     }
     private func prepare(_ item: AdminSupportItem) {
+        guard requests.capture().isCurrent, !requests.working else { return }
         guard !busy, active, let account = auth.userId, selected == item, item.canUpdate,
               AdminSupportStatus.editable.contains(nextStatus), AdminOperationsClient.supportNoteIsValid(note) else { return }
         pending = Decision(item: item, status: nextStatus, note: note.trimmingCharacters(in: .whitespacesAndNewlines),
-            context: AdminSupportContext(accountID: account, generation: generation))
+            context: AdminSupportContext(accountID: account, generation: generation), scope: requests.capture(), filter: statusFilter)
     }
     /// Capture ownership at the UI event, before its unstructured task is queued.
     /// Disappearance/account/filter/selection changes revoke even a task which
     /// has not started yet; load must never acquire the replacement generation.
     private func queueLoad(page: Int) {
+        guard requests.capture().isCurrent, !requests.working else { return }
         let expected = generation
-        Task { await load(page: page, expectedGeneration: expected) }
+        requests.enqueue { [filter = statusFilter] _ in await load(page: page, expectedGeneration: expected, submittedFilter: filter) }
     }
-    private func load(page: Int, expectedGeneration: UUID, keepingNotice: Bool = false) async {
-        guard !Task.isCancelled, generation == expectedGeneration,
+    private func load(page: Int, expectedGeneration: UUID, keepingNotice: Bool = false, submittedFilter: String? = nil) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
+        guard CommunityOperationContext.isCurrent, !Task.isCancelled, generation == expectedGeneration,
               !busy, active, let account = auth.userId else { return }
         generation = UUID(); clearSelection(); queue = nil; loadedAccount = nil; displayAccount = account; error = nil
         if !keepingNotice { notice = nil }
         let context = AdminSupportContext(accountID: account, generation: generation)
-        let filter = statusFilter.isEmpty ? nil : AdminSupportStatus(rawValue: statusFilter)
+        let rawFilter = submittedFilter ?? statusFilter
+        let filter = rawFilter.isEmpty ? nil : AdminSupportStatus(rawValue: rawFilter)
         busy = true
-        defer { if current(context) { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if current(context) { busy = false } } }
         do {
             let value = try await CommunityServices.admin.supportQueue(status: filter, page: page)
             guard current(context) else { return }
             queue = value; loadedAccount = account
-        } catch {
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
             guard current(context) else { return }
             self.error = CommunityServices.admin.noteRefusal(error).errorDescription
         }
     }
     private func update(_ decision: Decision) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
         guard !busy, current(decision.context), selected == decision.item else { return }
         busy = true; error = nil; notice = nil
-        defer { if current(decision.context) { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if current(decision.context) { busy = false } } }
         do {
             let revision = try await CommunityServices.admin.updateSupport(decision.item, to: decision.status, note: decision.note)
             guard current(decision.context), selected == decision.item else { return }
             notice = "\(decision.item.receipt): \(decision.status.title), revision \(revision), confirmed by the server."
             busy = false
-            await load(page: 0, expectedGeneration: decision.context.generation, keepingNotice: true)
-        } catch {
+            await load(page: 0, expectedGeneration: decision.context.generation, keepingNotice: true, submittedFilter: decision.filter)
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
             guard current(decision.context) else { return }
             queue = nil; loadedAccount = nil; clearSelection()
             self.error = CommunityServices.admin.noteRefusal(error).errorDescription
@@ -191,6 +200,7 @@ struct AdminSupportQueueContent: View {
 /// this client, and nothing here starts a backup, restore or deployment.
 @MainActor
 struct AdminOperationsStatusContent: View {
+    @StateObject private var requests = AdminRequestOwner()
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
     @State private var status: AdminOperationsStatus?
@@ -251,15 +261,12 @@ struct AdminOperationsStatusContent: View {
         }
         .onChange(of: auth.userId) { _, _ in clear() }
         .onChange(of: auth.isAuthenticated) { _, _ in clear() }
-        .onChange(of: phase) { _, value in if value != .active { clear() } }
-        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
-            guard !Task.isCancelled else { return }
-            clear()
-            if auth.isAuthenticated, phase == .active, let account = auth.userId {
-                await load(expectedID: requestID, account: account)
-            }
-        }
-        .onDisappear { clear() }
+
+        .adminRequestLifetime(requests,
+            reset: { clear() },
+            initial: { if let account = auth.userId { await load(expectedID: requestID, account: account) } },
+            pause: { busy = false })
+
     }
 
     @ViewBuilder private func milestone(_ title: String, _ value: AdminOperationsMilestone?, id: String) -> some View {
@@ -291,23 +298,25 @@ struct AdminOperationsStatusContent: View {
     }
     private func clear() { requestID = UUID(); busy = false; status = nil; configuration = nil; error = nil; configurationError = nil }
     private func current(_ id: UUID, account: String) -> Bool {
-        !Task.isCancelled && requestID == id && auth.isAuthenticated &&
+        CommunityOperationContext.isCurrent && !Task.isCancelled && requestID == id && auth.isAuthenticated &&
         auth.userId == account && phase == .active
     }
     private func queueLoad() {
+        guard requests.capture().isCurrent, !requests.working else { return }
         guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return }
         let expected = requestID
-        Task { await load(expectedID: expected, account: account) }
+        requests.enqueue { _ in await load(expectedID: expected, account: account) }
     }
     private func load(expectedID: UUID, account: String) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
         guard !busy, current(expectedID, account: account) else { return }
         let id = UUID(); requestID = id; busy = true
-        defer { if requestID == id { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if requestID == id { busy = false } } }
         do {
             let value = try await CommunityServices.admin.operations()
             guard current(id, account: account) else { return }
             status = value; error = nil
-        } catch {
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
             guard current(id, account: account) else { return }
             status = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription
         }
@@ -318,7 +327,7 @@ struct AdminOperationsStatusContent: View {
             let value = try await CommunityServices.admin.configuration()
             guard current(id, account: account) else { return }
             configuration = value; configurationError = nil
-        } catch {
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
             guard current(id, account: account) else { return }
             configuration = nil; configurationError = CommunityServices.admin.noteRefusal(error).errorDescription
         }
@@ -332,6 +341,7 @@ struct AdminOperationsStatusContent: View {
 /// worker; nothing executes from this screen.
 @MainActor
 struct AdminAgentInboxContent: View {
+    @StateObject private var requests = AdminRequestOwner()
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
     @State private var console: [AdminAgentConsoleEntry] = []
@@ -343,6 +353,7 @@ struct AdminAgentInboxContent: View {
         let reason: String
         let account: String
         let generation: UUID
+        let scope: CommunityOperationScope
     }
     private struct HistoryRequest {
         let page: Int
@@ -444,7 +455,7 @@ struct AdminAgentInboxContent: View {
                             titleVisibility: .visible, presenting: decision) { pending in
             Button(pending.approve ? "Approve for the worker" : "Reject proposal", role: pending.approve ? nil : .destructive) {
                 decision = nil
-                Task { await decide(pending) }
+                requests.enqueue(origin: pending.scope) { _ in await decide(pending) }
             }
             Button("Cancel", role: .cancel) { decision = nil }
         } message: { pending in
@@ -453,15 +464,12 @@ struct AdminAgentInboxContent: View {
         }
         .onChange(of: auth.userId) { _, _ in clear() }
         .onChange(of: auth.isAuthenticated) { _, _ in clear() }
-        .onChange(of: phase) { _, value in if value != .active { clear() } }
-        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
-            guard !Task.isCancelled else { return }
-            clear()
-            if auth.isAuthenticated, phase == .active, let account = auth.userId {
-                await loadAll(expectedID: requestID, account: account)
-            }
-        }
-        .onDisappear { clear() }
+
+        .adminRequestLifetime(requests,
+            reset: { clear() },
+            initial: { if let account = auth.userId { await loadAll(expectedID: requestID, account: account) } },
+            pause: { busy = false; decision = nil })
+
     }
 
     private static func runText(_ run: AdminAgentRun) -> String {
@@ -481,31 +489,35 @@ struct AdminAgentInboxContent: View {
         agentFilter = ""; stateFilter = ""; query = ""; runs = nil; audit = nil; error = nil; notice = nil
     }
     private func current(_ id: UUID, account: String) -> Bool {
-        !Task.isCancelled && requestID == id && auth.isAuthenticated &&
+        CommunityOperationContext.isCurrent && !Task.isCancelled && requestID == id && auth.isAuthenticated &&
         auth.userId == account && phase == .active
     }
     private func queueLoadAll() {
+        guard requests.capture().isCurrent, !requests.working else { return }
         guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return }
         let expected = requestID
-        Task { await loadAll(expectedID: expected, account: account) }
+        requests.enqueue { _ in await loadAll(expectedID: expected, account: account) }
     }
     private func queueHistory(page: Int) {
+        guard requests.capture().isCurrent, !requests.working else { return }
         guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return }
         let expected = requestID
         let input = HistoryRequest(page: page, agent: agentKey,
             state: stateFilter.isEmpty ? nil : stateFilter, query: query)
-        Task { await loadHistory(input, expectedID: expected, account: account) }
+        requests.enqueue { _ in await loadHistory(input, expectedID: expected, account: account) }
     }
     private func prepareDecision(_ proposal: AdminAgentProposal, approve: Bool) {
+        guard requests.capture().isCurrent, !requests.working else { return }
         guard !busy, auth.isAuthenticated, phase == .active, let account = auth.userId,
               reasonValid, proposal.state == "pending", proposals.contains(proposal) else { return }
         decision = Decision(proposal: proposal, approve: approve,
-            reason: reason.trimmingCharacters(in: .whitespacesAndNewlines), account: account, generation: requestID)
+            reason: reason.trimmingCharacters(in: .whitespacesAndNewlines), account: account, generation: requestID, scope: requests.capture())
     }
     private func loadAll(expectedID: UUID, account: String) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
         guard !busy, current(expectedID, account: account) else { return }
         let id = UUID(); requestID = id; busy = true
-        defer { if requestID == id { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if requestID == id { busy = false } } }
         do {
             let entries = try await CommunityServices.admin.agentConsole()
             guard current(id, account: account) else { return }
@@ -513,15 +525,16 @@ struct AdminAgentInboxContent: View {
             guard current(id, account: account) else { return }
             console = entries; proposals = inbox.proposals; pending = inbox.pending; error = nil
             if !agentFilter.isEmpty, !entries.contains(where: { $0.key == agentFilter }) { agentFilter = "" }
-        } catch {
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
             guard current(id, account: account) else { return }
             console = []; proposals = []; pending = 0; self.error = CommunityServices.admin.noteRefusal(error).errorDescription
         }
     }
     private func loadHistory(_ input: HistoryRequest, expectedID: UUID, account: String) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
         guard !busy, current(expectedID, account: account) else { return }
         let id = UUID(); requestID = id; busy = true
-        defer { if requestID == id { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if requestID == id { busy = false } } }
         do {
             let runPage = try await CommunityServices.admin.agentRunHistory(agent: input.agent,
                 state: input.state, query: input.query, page: input.page)
@@ -529,17 +542,18 @@ struct AdminAgentInboxContent: View {
             let auditPage = try await CommunityServices.admin.agentAudit(agent: input.agent, query: input.query, page: input.page)
             guard current(id, account: account) else { return }
             runs = runPage; audit = auditPage; error = nil
-        } catch {
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
             guard current(id, account: account) else { return }
             runs = nil; audit = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription
         }
     }
     private func decide(_ pending: Decision) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
         guard !busy, current(pending.generation, account: pending.account),
               pending.proposal.state == "pending", proposals.contains(pending.proposal),
               (1...2000).contains(pending.reason.count) else { return }
         let id = UUID(); requestID = id; busy = true; error = nil; notice = nil
-        defer { if requestID == id { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if requestID == id { busy = false } } }
         do {
             let state = try await CommunityServices.admin.decideProposal(pending.proposal,
                 approve: pending.approve, reason: pending.reason)
@@ -549,7 +563,7 @@ struct AdminAgentInboxContent: View {
             if reason.trimmingCharacters(in: .whitespacesAndNewlines) == pending.reason { reason = "" }
             busy = false
             await loadAll(expectedID: id, account: pending.account)
-        } catch {
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
             guard current(id, account: pending.account) else { return }
             self.error = CommunityServices.admin.noteRefusal(error).errorDescription
         }

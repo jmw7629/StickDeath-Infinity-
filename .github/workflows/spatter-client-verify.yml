@@ -3184,11 +3184,11 @@ jobs:
       matrix:
         include:
           # 25 min build + 4 UI journeys x 180 s + audio 300 s + mirror 420 s +
-          # 300 s UI overhead; add 6 hosted service journeys x 60 s + 300 s
-          # service overhead on the phone only (65 min phone / 54 min iPad).
+          # 300 s UI overhead; add 13 hosted service journeys x 60 s + 300 s
+          # service overhead on the phone only (72 min phone / 54 min iPad).
           # Tests/NativeSmokeHarness/test_journeys.py derives these ceilings.
           - device: iphone
-            timeout: 65
+            timeout: 72
           - device: ipad
             timeout: 54
     timeout-minutes: ${{ matrix.timeout }}

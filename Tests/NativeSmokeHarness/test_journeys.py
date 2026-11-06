@@ -59,7 +59,10 @@ class JourneyReceiptTests(unittest.TestCase):
         self.assertEqual(journey.EXTENDED_CASE_SECONDS,
                          {'testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable': 300,
                           'testMirrorMenuChoicesAccessibilityAndOlderSystemFallback': 420})
-        self.assertEqual(journey.service_timeout_seconds(len(INVENTORY['service'])), 660)
+        self.assertEqual(journey.service_timeout_seconds(6), 660)
+        self.assertEqual(journey.service_timeout_seconds(13), 1080)
+        self.assertEqual(len(INVENTORY['service']), 13)
+        self.assertEqual(journey.service_timeout_seconds(len(INVENTORY['service'])), 1080)
         self.assertEqual(journey.SERVICE_CASE_SECONDS, 60)
 
     def test_mirror_allowance_is_exact_and_cannot_extend_another_journey(self):

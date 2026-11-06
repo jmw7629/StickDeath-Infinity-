@@ -7,6 +7,7 @@ import SwiftUI
 /// fingerprint, so no masked suffix is shown; nothing here reveals a value.
 @MainActor
 struct AdminProviderHealthSection: View {
+    @StateObject private var requests = AdminRequestOwner()
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
     @State private var reply: AdminProviderHealthResponse?
@@ -21,17 +22,15 @@ struct AdminProviderHealthSection: View {
             if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.providers.error") }
             if let reply { rows(reply) }
         }
-        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
-            clear(); if auth.isAuthenticated && phase == .active { await load() }
-        }
-        .onDisappear { clear() }
+        .adminRequestLifetime(requests, reset: { clear() }, initial: { await load() }, pause: { busy = false })
+
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Provider health").font(.specialElite(18))
             Text("Configured yes/no, last success, last failure and error class per integration. Keys, tokens, URLs and provider messages are never shown.").font(.caption)
-            Button("Refresh") { Task { await load() } }.disabled(busy).accessibilityIdentifier("admin.providers.refresh")
+            Button("Refresh") { requests.enqueue { _ in await load() } }.disabled(busy).accessibilityIdentifier("admin.providers.refresh")
         }
     }
 
@@ -44,14 +43,15 @@ struct AdminProviderHealthSection: View {
 
     private func clear() { requestID = UUID(); busy = false; reply = nil; error = nil }
     private func load() async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
         guard !busy, auth.isAuthenticated, phase == .active else { return }
         let id = UUID(); requestID = id; busy = true
-        defer { if requestID == id { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if requestID == id { busy = false } } }
         do {
             let value = try await CommunityServices.admin.providerHealth()
-            guard !Task.isCancelled, requestID == id else { return }
+            guard CommunityOperationContext.isCurrent, !Task.isCancelled, requestID == id else { return }
             reply = value; error = nil
-        } catch { if requestID == id { reply = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }; if requestID == id { reply = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
     }
 }
 

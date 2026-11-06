@@ -198,8 +198,11 @@ struct FloatingToolSettingsPanel: View {
         // ── BRUSH / PENCIL / PEN ──
         case .pencil, .pen, .brush, .marker, .crayon:
             VStack(alignment: .leading, spacing: 8) {
-                mirrorSettings
-                lineRulerSettings
+                // Keep the everyday controls immediately reachable. Mirror,
+                // rulers and the brush library remain in this same popup below.
+                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: " steps", accent: .green)
                 Button { showBrushLibrary.toggle() } label: {
                     HStack {
                         Text("Brush Library: " + vm.brushFamily.title)
@@ -216,9 +219,8 @@ struct FloatingToolSettingsPanel: View {
                 if showBrushLibrary {
                     StudioBrushLibraryView(vm: vm) { showBrushLibrary = false }
                 }
-                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
-                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: " steps", accent: .green)
+                mirrorSettings
+                lineRulerSettings
                 if vm.brushFamily == .calligraphy {
                     SettingsSlider(label: "Tip Angle", value: $vm.brushTipAngle, range: 0...179, unit: "°", accent: accentColor)
                     SettingsToggle(label: "Pencil Tilt", isOn: $vm.pencilTiltEnabled, accent: accentColor)
@@ -1393,21 +1395,168 @@ private struct ToolSettingsContentLayout<Content: View>: View {
     @State private var contentHeight: CGFloat?
 
     var body: some View {
-        ScrollView {
+        ToolSettingsScrollContainer {
             content().fixedSize(horizontal: false, vertical: true)
                 .background(GeometryReader { geometry in
                     Color.clear.preference(key: ToolSettingsContentHeight.self, value: geometry.size.height)
                 })
+                .onPreferenceChange(ToolSettingsContentHeight.self) { height in
+                    // Measurement stays in the hosted SwiftUI tree. A zero
+                    // during presentation must never collapse the viewport.
+                    if height.isFinite && height > 0 && contentHeight != height {
+                        contentHeight = height
+                    }
+                }
         }
-        .scrollBounceBehavior(.basedOnSize)
         .accessibilityIdentifier("studio.tool-settings.scroll")
         .frame(height: min(maximumHeight, contentHeight ?? maximumHeight))
-        .onPreferenceChange(ToolSettingsContentHeight.self) { height in
-            // A transient/default zero preference is not the content's size.
-            // Accepting it collapses the viewport and prevents measurement from
-            // recovering. Keep the last positive size (or initial bound) instead.
-            if height.isFinite && height > 0 { contentHeight = height }
+    }
+}
+
+/// A local UIKit scrolling boundary keeps vertical drags over native controls
+/// available to the popup. No global appearance/proxy or app-wide gesture changes.
+/// The existing SwiftUI controls, FocusState bindings and environment are retained.
+private struct ToolSettingsScrollContainer<Content: View>: UIViewControllerRepresentable {
+    @ViewBuilder let content: () -> Content
+
+    func makeUIViewController(context: Context) -> ToolSettingsScrollController {
+        ToolSettingsScrollController(rootView: hostedContent(environment: context.environment))
+    }
+
+    func updateUIViewController(_ controller: ToolSettingsScrollController, context: Context) {
+        controller.host.rootView = hostedContent(environment: context.environment)
+        controller.host.view.invalidateIntrinsicContentSize()
+    }
+
+    private func hostedContent(environment: EnvironmentValues) -> AnyView {
+        // Forward visibility/scene phase, enabled state, type size, color scheme
+        // and the rest of the caller's environment through this hosting boundary.
+        AnyView(content().environment(\.self, environment))
+    }
+
+    static func dismantleUIViewController(_ controller: ToolSettingsScrollController, coordinator: ()) {
+        controller.stopObservingEditing()
+        controller.scroll.setContentOffset(controller.scroll.contentOffset, animated: false)
+        controller.host.rootView = AnyView(EmptyView())
+    }
+}
+
+private final class ToolSettingsScrollController: UIViewController, UIScrollViewDelegate {
+    let scroll = ToolSettingsVerticalScrollView()
+    let host: UIHostingController<AnyView>
+    private weak var lastEditor: UIView?
+    private var lastViewport = CGSize.zero
+    private var needsFocusReveal = false
+
+    init(rootView: AnyView) {
+        host = UIHostingController(rootView: rootView)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func loadView() {
+        view = scroll
+        scroll.backgroundColor = .clear
+        scroll.isOpaque = false
+        scroll.isDirectionalLockEnabled = true
+        scroll.alwaysBounceVertical = false
+        scroll.alwaysBounceHorizontal = false
+        scroll.canCancelContentTouches = true
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.accessibilityIdentifier = "studio.tool-settings.scroll"
+        host.sizingOptions = [.intrinsicContentSize]
+        addChild(host)
+        host.view.backgroundColor = .clear
+        host.view.isOpaque = false
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            host.view.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
+        ])
+        host.didMove(toParent: self)
+        scroll.delegate = self
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(editingBegan(_:)),
+                           name: UITextField.textDidBeginEditingNotification, object: nil)
+        center.addObserver(self, selector: #selector(editingBegan(_:)),
+                           name: UITextView.textDidBeginEditingNotification, object: nil)
+        center.addObserver(self, selector: #selector(keyboardFrameChanged(_:)),
+                           name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+    }
+
+    func stopObservingEditing() {
+        NotificationCenter.default.removeObserver(self)
+        scroll.delegate = nil
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func editingBegan(_ notification: Notification) {
+        guard let editor = notification.object as? UIView, editor.isDescendant(of: host.view) else { return }
+        needsFocusReveal = true
+        view.setNeedsLayout()
+    }
+
+    @objc private func keyboardFrameChanged(_ notification: Notification) {
+        guard isViewLoaded, view.window != nil, focusedEditor(in: host.view) != nil else { return }
+        // The surrounding SwiftUI geometry performs keyboard avoidance. Reveal
+        // the existing responder after that geometry has laid out the viewport.
+        needsFocusReveal = true
+        view.setNeedsLayout()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let editor = focusedEditor(in: host.view)
+        let changed = scroll.bounds.size != lastViewport || editor !== lastEditor
+        lastViewport = scroll.bounds.size
+        lastEditor = editor
+        guard let editor, view.window != nil, needsFocusReveal || changed else { return }
+        // Preserve deliberate user scrolling; finish a pending reveal afterward.
+        guard !scroll.isTracking, !scroll.isDragging, !scroll.isDecelerating else { needsFocusReveal = true; return }
+        needsFocusReveal = false
+        let rect: CGRect
+        if let field = editor as? UITextField, let selection = field.selectedTextRange {
+            rect = field.caretRect(for: selection.end)
+        } else if let text = editor as? UITextView, let selection = text.selectedTextRange {
+            rect = text.caretRect(for: selection.end)
+        } else { rect = editor.bounds }
+        scroll.scrollRectToVisible(editor.convert(rect, to: scroll).insetBy(dx: 0, dy: -8), animated: false)
+    }
+
+    private func focusedEditor(in root: UIView) -> UIView? {
+        if root.isFirstResponder && (root is UITextField || root is UITextView) { return root }
+        for child in root.subviews { if let editor = focusedEditor(in: child) { return editor } }
+        return nil
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if needsFocusReveal && !decelerate { view.setNeedsLayout() }
+    }
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        if needsFocusReveal { view.setNeedsLayout() }
+    }
+}
+
+private final class ToolSettingsVerticalScrollView: UIScrollView {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === panGestureRecognizer {
+            let velocity = panGestureRecognizer.velocity(in: self)
+            // Horizontal drags belong to sliders, crop handles and segmented
+            // choices. Only a vertical drag can cancel their active touch.
+            guard abs(velocity.y) > abs(velocity.x) else { return false }
         }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+
+    override func touchesShouldCancel(in view: UIView) -> Bool {
+        if view is UIControl && !(view is UITextField) { return true }
+        return super.touchesShouldCancel(in: view)
     }
 }
 

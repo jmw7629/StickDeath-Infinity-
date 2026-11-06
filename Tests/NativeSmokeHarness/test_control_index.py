@@ -218,6 +218,47 @@ class ControlIndexVerification(unittest.TestCase):
         self.assertIn("must have columns", problems[0])
 
 
+class StudioSettingWrapperIdentifiers(unittest.TestCase):
+    def source(self, expression):
+        return """
+private struct StudioSettingSegments<Value>: UIViewRepresentable {
+    func updateUIView(_ control: UISegmentedControl) {
+        control.accessibilityIdentifier = identifier
+    }
+}
+private struct StudioSettingChoice<Value>: View {
+    var body: some View { Button("Choice") {}.accessibilityIdentifier(identifier) }
+}
+""" + expression
+
+    def test_known_forwarded_choice_and_segment_arguments_are_mapped(self):
+        text = self.source('''
+StudioSettingSegments("Shape", selection: $vm.shape,
+    choiceTitle: { String(describing: $0) }, identifier: "studio.fixture.shape")
+StudioSettingChoice("Target", selection: $vm.target,
+    choices: targets.map({ $0 }), identifier: "studio.fixture.target", labelSize: 12)
+''')
+        self.assertEqual(sorted(x for ids in subject.setting_wrapper_identifiers(text).values() for x in ids),
+                         ["studio.fixture.shape", "studio.fixture.target"])
+
+    def test_dynamic_unknown_nested_and_commented_arguments_do_not_claim_controls(self):
+        text = self.source('''
+// StudioSettingChoice("Fake", identifier: "studio.fixture.comment")
+let fake = "StudioSettingChoice(identifier: \"studio.fixture.string\")"
+UnknownSetting("Fake", identifier: "studio.fixture.unknown")
+StudioSettingChoice("Dynamic", identifier: "studio.fixture." + suffix)
+StudioSettingChoice("Nested", choiceTitle: { Other(identifier: "studio.fixture.nested") },
+    identifier: "studio.fixture.actual")
+''')
+        self.assertEqual([x for ids in subject.setting_wrapper_identifiers(text).values() for x in ids],
+                         ["studio.fixture.actual"])
+
+    def test_without_production_forwarding_wrapper_arguments_remain_unmapped(self):
+        text = self.source('StudioSettingChoice("Target", identifier: "studio.fixture.target")')
+        text = text.replace('.accessibilityIdentifier(identifier)', '.accessibilityLabel(identifier)')
+        self.assertEqual(subject.setting_wrapper_identifiers(text), {})
+
+
 class ControlIndexRealTree(unittest.TestCase):
     def test_checked_in_map_matches_current_source_and_ui_tests(self):
         problems, summary = subject.verify(ROOT)

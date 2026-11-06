@@ -9021,7 +9021,9 @@ final class StudioSmokeUITests: XCTestCase {
         let deadline = ProcessInfo.processInfo.systemUptime + 10
         try desktopButton("desktop.menu.subjects", in: app, deadline: deadline).tap()
         try desktopButton("desktop.open." + subject, in: app, deadline: deadline).tap()
-        try maximizeDesktopSubject(subject, in: app, deadline: deadline)
+        // Menu navigation and its idle waits have already spent their own budget.
+        // Give the resulting window its separate, still-bounded state wait.
+        try maximizeDesktopSubject(subject, in: app)
     }
 
     @MainActor
