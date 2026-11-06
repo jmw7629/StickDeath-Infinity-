@@ -208,6 +208,16 @@ class DeviceReviewScratchPolicyTests(unittest.TestCase):
         arguments = subject.build_arguments(self.scratch, self.root / "Info.plist")
         for value in ("COMPILATION_CACHE_ENABLE_CACHING=NO", "SWIFT_ENABLE_COMPILE_CACHE=NO", "CLANG_ENABLE_COMPILE_CACHE=NO"):
             self.assertEqual(arguments.count(value), 1)
+        # OTHER_LDFLAGS reaches clang first. Its linker-only option must be
+        # driver-forwarded; no signing/Review identity/offline guard may drift.
+        linker_settings = [value for value in arguments if value.startswith("OTHER_LDFLAGS=")]
+        self.assertEqual(linker_settings, ["OTHER_LDFLAGS=$(inherited) -Wl,-no_adhoc_codesign"])
+        self.assertNotIn("-no_adhoc_codesign", linker_settings[0].partition("=")[2].split())
+        for value in ("CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "CODE_SIGN_IDENTITY=",
+                      "DEVELOPMENT_TEAM=", "PRODUCT_BUNDLE_IDENTIFIER=" + subject.BUNDLE):
+            self.assertEqual(arguments.count(value), 1)
+        for setting in subject.OFFLINE_SETTINGS:
+            self.assertEqual(arguments.count(setting + "="), 1)
 
 
 if __name__ == "__main__":

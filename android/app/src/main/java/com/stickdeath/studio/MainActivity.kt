@@ -11,6 +11,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -30,7 +31,11 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Alignment
@@ -41,10 +46,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.zIndex
+import kotlin.math.roundToInt
 import androidx.compose.ui.unit.dp
 import com.stickdeath.studio.diagnostics.DiagnosticsSettingsSection
 import com.stickdeath.studio.diagnostics.DiagnosticsStore
@@ -122,45 +132,194 @@ class MainActivity : ComponentActivity() {
     val document = vm.document
     var showDock by rememberSaveable { mutableStateOf(false) }
     var requestedPanel by remember { mutableStateOf<String?>(null) }
-    // Navigation surrounds one canonical Studio. Export launchers and effects
-    // above stay mounted when menus or the optional dock are used.
+    var studioWindow by rememberSaveable(stateSaver = AndroidDesktopPlacement.saver) {
+        mutableStateOf(AndroidDesktopPlacement(open = true, maximized = true))
+    }
+    var accountWindow by rememberSaveable(stateSaver = AndroidDesktopPlacement.saver) {
+        mutableStateOf(AndroidDesktopPlacement(x = .10f, y = .08f, width = .88f, height = .86f))
+    }
+    var accountMounted by rememberSaveable { mutableStateOf(false) }
+    var frontSubject by rememberSaveable { mutableStateOf("studio") }
+    val studioVisible = studioWindow.open && !studioWindow.minimized
+    val accountVisible = accountWindow.open && !accountWindow.minimized
+    fun openStudio() { studioWindow = studioWindow.copy(open = true, minimized = false); frontSubject = "studio" }
+    fun openAccount() {
+        accountMounted = true
+        accountWindow = accountWindow.copy(open = true, minimized = false)
+        frontSubject = "account"
+    }
+    fun hideStudio(minimize: Boolean) {
+        // Hide the window, never discard the editor/project/history or export owner.
+        vm.cancelWand(); vm.cancelAudioImport(); vm.cancelImageImport(); vm.cancelFill()
+        vm.stopScenePlayback(); vm.save()
+        studioWindow = studioWindow.copy(open = minimize, minimized = minimize)
+        frontSubject = if (accountVisible) "account" else "desktop"
+    }
+    fun hideAccount(minimize: Boolean) {
+        accountWindow = accountWindow.copy(open = minimize, minimized = minimize)
+        frontSubject = if (studioVisible) "studio" else "desktop"
+    }
+    BackHandler(enabled = accountVisible && frontSubject == "account") { hideAccount(false) }
+    BackHandler(enabled = !studioVisible && !accountVisible && document != null) { openStudio() }
+    // These two fixed hosts never move in the composition when their stacking
+    // order changes. The canonical Studio and root export launchers stay mounted.
     Column(Modifier.fillMaxSize().safeDrawingPadding().background(Color(0xff24778a))) {
         StudioDesktopNavigation(
             hasProject = document != null, available = !vm.closing,
             showDock = showDock, toggleDock = { showDock = !showDock },
-            openProjects = { if (document != null) requestedPanel = "projects" },
-            openSettings = { requestedPanel = "project" },
-            openAccount = { requestedPanel = "account" })
-        Box(Modifier.weight(1f).fillMaxWidth().padding(4.dp)
-            .border(2.dp, Color(0xff151921)).background(MaterialTheme.colorScheme.background)) {
-            if (document == null) ProjectLibrary(vm)
-            else Editor(vm, document, requestedPanel) { requestedPanel = null }
+            openStudio = { openStudio() }, openAccount = { openAccount() },
+            openProjects = { openStudio(); if (document != null) requestedPanel = "projects" },
+            openSettings = { openStudio(); requestedPanel = "project" })
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+            val boundsWidth = maxWidth.value.coerceAtLeast(1f)
+            val boundsHeight = maxHeight.value.coerceAtLeast(1f)
+            AndroidDesktopWindow("Studio", studioWindow, boundsWidth, boundsHeight,
+                visible = studioVisible, focused = frontSubject == "studio", order = if (frontSubject == "studio") 2f else 1f,
+                focus = { frontSubject = "studio" }, close = { hideStudio(false) }, minimize = { hideStudio(true) },
+                maximize = { studioWindow = studioWindow.copy(maximized = !studioWindow.maximized); frontSubject = "studio" },
+                move = { dx, dy -> studioWindow = studioWindow.moved(dx, dy, boundsWidth, boundsHeight) },
+                resize = { dx, dy -> studioWindow = studioWindow.resized(dx, dy, boundsWidth, boundsHeight) }) {
+                BoxWithConstraints(Modifier.fillMaxSize()) {
+                    if (document == null) ProjectLibrary(vm)
+                    else Editor(vm, document, requestedPanel, onPanelRequestHandled = { requestedPanel = null },
+                        subjectVisible = studioVisible, subjectFront = frontSubject == "studio",
+                        compactHeightOverride = maxHeight < 480.dp, onOpenAccount = { openAccount() })
+                }
+            }
+            if (accountMounted) AndroidDesktopWindow("Account", accountWindow, boundsWidth, boundsHeight,
+                visible = accountVisible, focused = frontSubject == "account", order = if (frontSubject == "account") 2f else 1f,
+                focus = { frontSubject = "account" }, close = { hideAccount(false) }, minimize = { hideAccount(true) },
+                maximize = { accountWindow = accountWindow.copy(maximized = !accountWindow.maximized); frontSubject = "account" },
+                move = { dx, dy -> accountWindow = accountWindow.moved(dx, dy, boundsWidth, boundsHeight) },
+                resize = { dx, dy -> accountWindow = accountWindow.resized(dx, dy, boundsWidth, boundsHeight) }) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) { AccountPanel(vm) }
+            }
         }
         if (showDock) Surface(color = Color(0xffead29a), contentColor = Color(0xff171b24)) {
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                TextButton({ if (document != null) requestedPanel = "projects" }, enabled = !vm.closing, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Projects") }
-                TextButton({ requestedPanel = "project" }, enabled = document != null && !vm.closing, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Project settings") }
-                TextButton({ requestedPanel = "account" }, enabled = !vm.closing, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Account") }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                TextButton({ openStudio() }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
+                    Text(if (studioWindow.minimized) "Restore Studio" else "Studio")
+                }
+                TextButton({ openAccount() }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
+                    Text(if (accountWindow.minimized) "Restore Account" else "Account")
+                }
             }
         }
     }
-    // With no Editor composed, the same existing account content is available
-    // from the library. Once a project is open, its existing single panel hosts it.
-    if (document == null && requestedPanel == "account") {
-        AlertDialog(onDismissRequest = { requestedPanel = null },
-            title = { Text("Account, notifications & diagnostics") },
-            text = { Column(Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)) { AccountPanel(vm) } },
-            confirmButton = { TextButton({ requestedPanel = null }) { Text("Done") } })
+}
+
+/** Normal placements are normalized to the safe workspace, then clamped on each
+ * render and movement/resize. Maximize never overwrites the saved restore size. */
+private data class AndroidDesktopPlacement(
+    val x: Float = .02f, val y: Float = .02f, val width: Float = .96f, val height: Float = .94f,
+    val open: Boolean = false, val minimized: Boolean = false, val maximized: Boolean = false,
+) {
+    fun rect(boundsWidth: Float, boundsHeight: Float): AndroidDesktopRect {
+        if (maximized) return AndroidDesktopRect(0f, 0f, boundsWidth, boundsHeight)
+        val w = (width * boundsWidth).coerceIn(minOf(320f, boundsWidth), boundsWidth)
+        val h = (height * boundsHeight).coerceIn(minOf(320f, boundsHeight), boundsHeight)
+        return AndroidDesktopRect((x * boundsWidth).coerceIn(0f, boundsWidth - w),
+            (y * boundsHeight).coerceIn(0f, boundsHeight - h), w, h)
+    }
+    fun moved(dx: Float, dy: Float, bw: Float, bh: Float): AndroidDesktopPlacement {
+        if (maximized || !dx.isFinite() || !dy.isFinite()) return this
+        val r = rect(bw, bh)
+        return copy(x = (r.x + dx).coerceIn(0f, bw - r.width) / bw,
+            y = (r.y + dy).coerceIn(0f, bh - r.height) / bh)
+    }
+    fun resized(dx: Float, dy: Float, bw: Float, bh: Float): AndroidDesktopPlacement {
+        if (maximized || !dx.isFinite() || !dy.isFinite()) return this
+        val r = rect(bw, bh)
+        return copy(x = r.x / bw, y = r.y / bh,
+            width = (r.width + dx).coerceIn(minOf(320f, bw - r.x), bw - r.x) / bw,
+            height = (r.height + dy).coerceIn(minOf(320f, bh - r.y), bh - r.y) / bh)
+    }
+    companion object {
+        val saver = androidx.compose.runtime.saveable.listSaver<AndroidDesktopPlacement, Any>(
+            save = { listOf(it.x, it.y, it.width, it.height, it.open, it.minimized, it.maximized) },
+            restore = {
+                AndroidDesktopPlacement((it[0] as Number).toFloat(), (it[1] as Number).toFloat(),
+                    (it[2] as Number).toFloat(), (it[3] as Number).toFloat(), it[4] as Boolean, it[5] as Boolean, it[6] as Boolean)
+            })
+    }
+}
+private data class AndroidDesktopRect(val x: Float, val y: Float, val width: Float, val height: Float)
+
+/** Nonplaced children retain composition/drafts but cannot draw, receive input,
+ * or appear in accessibility while their subject window is closed/minimized. */
+private fun Modifier.desktopVisibility(visible: Boolean): Modifier =
+    (if (visible) this else clearAndSetSemantics { }).layout { measurable, constraints ->
+        val child = measurable.measure(constraints)
+        layout(child.width, child.height) { if (visible) child.placeRelative(0, 0) }
+    }
+
+@Composable private fun AndroidDesktopWindow(
+    title: String, placement: AndroidDesktopPlacement, boundsWidth: Float, boundsHeight: Float,
+    visible: Boolean, focused: Boolean, order: Float, focus: () -> Unit,
+    close: () -> Unit, minimize: () -> Unit, maximize: () -> Unit,
+    move: (Float, Float) -> Unit, resize: (Float, Float) -> Unit, content: @Composable () -> Unit,
+) {
+    val rect = placement.rect(boundsWidth, boundsHeight)
+    val density = LocalDensity.current.density
+    val latestFocus by rememberUpdatedState(focus)
+    val latestMove by rememberUpdatedState(move)
+    val latestResize by rememberUpdatedState(resize)
+    Column(Modifier.offset { IntOffset((rect.x * density).roundToInt(), (rect.y * density).roundToInt()) }
+        .size(rect.width.dp, rect.height.dp).zIndex(order).desktopVisibility(visible)
+        .pointerInput(Unit) {
+            // Observe only: never consume the canvas/tool gesture or restart it on focus.
+            awaitEachGesture { awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial); latestFocus() }
+        }
+        .border(2.dp, Color(0xff151921)).background(Color(0xffead29a))) {
+        Row(Modifier.fillMaxWidth().height(44.dp).background(if (focused) Color(0xffead29a) else Color(0xffa7aaa9)),
+            verticalAlignment = Alignment.CenterVertically) {
+            TextButton(close, Modifier.size(44.dp).semantics { contentDescription = "Close $title window" },
+                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("×") }
+            Text(title, color = Color(0xff171b24), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 4.dp)
+                    .semantics {
+                        contentDescription = "$title window title. Restore size to move."
+                        if (!placement.maximized) customActions = listOf(
+                            CustomAccessibilityAction("Move left") { latestFocus(); latestMove(-24f, 0f); true },
+                            CustomAccessibilityAction("Move right") { latestFocus(); latestMove(24f, 0f); true },
+                            CustomAccessibilityAction("Move up") { latestFocus(); latestMove(0f, -24f); true },
+                            CustomAccessibilityAction("Move down") { latestFocus(); latestMove(0f, 24f); true })
+                    }.pointerInput(boundsWidth, boundsHeight, placement.maximized) {
+                        detectDragGestures(onDragStart = { latestFocus() }) { change, drag ->
+                            if (!placement.maximized) { change.consume(); latestMove(drag.x / density, drag.y / density) }
+                        }
+                    })
+            TextButton(minimize, Modifier.size(44.dp).semantics { contentDescription = "Minimize $title window" },
+                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("—") }
+            TextButton(maximize, Modifier.size(44.dp).semantics {
+                contentDescription = if (placement.maximized) "Restore $title window size" else "Maximize $title window"
+            }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text(if (placement.maximized) "↙" else "□") }
+        }
+        Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.background).clipToBounds()) { content() }
+        if (!placement.maximized) Row(Modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Drag title to move", color = Color(0xff171b24),
+                style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f).padding(start = 8.dp))
+            Text("↘", color = Color(0xff171b24), modifier = Modifier.width(44.dp).fillMaxHeight().semantics {
+                contentDescription = "Resize $title window. Restore size first if maximized."
+                if (!placement.maximized) customActions = listOf(
+                    CustomAccessibilityAction("Make wider") { latestFocus(); latestResize(24f, 0f); true },
+                    CustomAccessibilityAction("Make narrower") { latestFocus(); latestResize(-24f, 0f); true },
+                    CustomAccessibilityAction("Make taller") { latestFocus(); latestResize(0f, 24f); true },
+                    CustomAccessibilityAction("Make shorter") { latestFocus(); latestResize(0f, -24f); true })
+            }.pointerInput(boundsWidth, boundsHeight, placement.maximized) {
+                detectDragGestures(onDragStart = { latestFocus() }) { change, drag ->
+                    if (!placement.maximized) { change.consume(); latestResize(drag.x / density, drag.y / density) }
+                }
+            })
+        }
     }
 }
 
-/** Subject navigation only. Independent overlapping desktop windows remain a
- * separate shell feature; the existing canvas and its sole toolbar stay intact. */
+/** Two real subjects share the existing application/state; no placeholder subjects. */
 @Composable private fun StudioDesktopNavigation(
     hasProject: Boolean, available: Boolean, showDock: Boolean, toggleDock: () -> Unit,
-    openProjects: () -> Unit, openSettings: () -> Unit, openAccount: () -> Unit,
+    openStudio: () -> Unit, openProjects: () -> Unit, openSettings: () -> Unit, openAccount: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf<String?>(null) }
     Surface(color = Color(0xfff1dfb0), contentColor = Color(0xff171b24), shadowElevation = 3.dp) {
@@ -168,19 +327,19 @@ class MainActivity : ComponentActivity() {
             verticalAlignment = Alignment.CenterVertically) {
             Text("SDI ∞", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(end = 8.dp))
             Box {
+                TextButton({ expanded = "subjects" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Subjects") }
+                DropdownMenu(expanded == "subjects", onDismissRequest = { expanded = null }) {
+                    DropdownMenuItem(text = { Text("Studio") }, enabled = available, onClick = { expanded = null; openStudio() })
+                    DropdownMenuItem(text = { Text("Account, plans & preferences") }, enabled = available, onClick = { expanded = null; openAccount() })
+                }
+            }
+            Box {
                 TextButton({ expanded = "studio" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Studio") }
                 DropdownMenu(expanded == "studio", onDismissRequest = { expanded = null }) {
                     DropdownMenuItem(text = { Text("Local projects") }, enabled = available,
                         onClick = { expanded = null; openProjects() })
                     DropdownMenuItem(text = { Text("Project settings") }, enabled = hasProject && available,
                         onClick = { expanded = null; openSettings() })
-                }
-            }
-            Box {
-                TextButton({ expanded = "account" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Account") }
-                DropdownMenu(expanded == "account", onDismissRequest = { expanded = null }) {
-                    DropdownMenuItem(text = { Text("Account, plans & preferences") }, enabled = available,
-                        onClick = { expanded = null; openAccount() })
                 }
             }
             Box {
@@ -337,8 +496,10 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
 }
 
 @Composable private fun Editor(vm: StudioViewModel, doc: Document,
-    requestedPanel: String? = null, onPanelRequestHandled: () -> Unit = {}) {
-    val compactHeight = LocalConfiguration.current.screenHeightDp < 480
+    requestedPanel: String? = null, onPanelRequestHandled: () -> Unit = {},
+    subjectVisible: Boolean = true, subjectFront: Boolean = true,
+    compactHeightOverride: Boolean? = null, onOpenAccount: () -> Unit = {}) {
+    val compactHeight = compactHeightOverride ?: (LocalConfiguration.current.screenHeightDp < 480)
     val viewportSize = remember { mutableStateOf(IntSize.Zero) }
     var thumbnailsOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
     val showThumbnails = thumbnailsOverride ?: !compactHeight
@@ -361,9 +522,12 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
         when (requestedPanel) {
             "projects" -> { playing = false; vm.save(close = true) }
             "project" -> { playing = false; settingsCapture = doc; settingsDraft = ProjectDraft.from(doc); panel = "project" }
-            "account" -> panel = "account"
+            "account" -> onOpenAccount()
         }
         if (requestedPanel != null) onPanelRequestHandled()
+    }
+    LaunchedEffect(subjectVisible) {
+        if (!subjectVisible) { playing = false; vm.stopScenePlayback(); vm.stopAudioPreview() }
     }
     LaunchedEffect(vm.sceneStopGeneration) { playing = false }
     LaunchedEffect(playing) { vm.notePlayback(playing) }
@@ -372,10 +536,10 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     var previewIndex by remember(doc.id) { mutableIntStateOf(0) }
     var previewSeconds by remember(doc.id) { mutableDoubleStateOf(0.0) }
     LaunchedEffect(panel) { if (panel != "audio") vm.stopAudioPreview() }
-    BackHandler { if (playing) playing = false else vm.save(close = true) }
+    BackHandler(enabled = subjectVisible && subjectFront) { if (playing) playing = false else vm.save(close = true) }
     val timelineState = androidx.compose.foundation.lazy.rememberLazyListState()
-    LaunchedEffect(playing, doc.id, doc.revision) {
-        if (playing) {
+    LaunchedEffect(playing, doc.id, doc.revision, subjectVisible) {
+        if (playing && subjectVisible) {
             vm.cancelAudioImport(); vm.stopAudioPreview(); vm.cancelImageImport(); vm.cancelFill()
             val clock = FramePlaybackClock(doc)
             previewIndex = clock.frameAt(0)
@@ -419,7 +583,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             StudioFloatingToolbar {
             studioTools.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(toolLabel(tool)) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
             TextButton({ panel = "spatter" }, enabled = !playing && !vm.closing) { Text("Spatter") }
-            TextButton({ panel = "account" }, enabled = !vm.closing) { Text("Account") }
+            TextButton(onOpenAccount, enabled = !vm.closing) { Text("Account") }
             TextButton({
                 if (vm.beginImageImport()) {
                     try { imageImporter.launch(arrayOf("image/png", "image/jpeg")) }
@@ -483,7 +647,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.moveFrame(doc.activeFrameID, false) }, enabled = !playing && !vm.closing && doc.frames.last().id != doc.activeFrameID) { Text("Later") }
         }
     }
-    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "status" -> "Studio status"; "videoFrame" -> "Video frame at playhead"; "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; "spatter" -> "Spatter (local commands)"; "account" -> "Account, notifications & diagnostics"; else -> "Tool settings" }) },
+    if (panel != null && subjectVisible) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "status" -> "Studio status"; "videoFrame" -> "Video frame at playhead"; "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; "spatter" -> "Spatter (local commands)"; "account" -> "Account, notifications & diagnostics"; else -> "Tool settings" }) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (panel) {
@@ -495,7 +659,6 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                         Text(vm.message.ifBlank { "No current notice." })
                     }
                     "spatter" -> SpatterPanel(vm, doc, enabled = !playing && !vm.closing)
-                    "account" -> AccountPanel(vm)
                     "videoFrame" -> {
                         val sourceSeconds = doc.frames.takeWhile { it.id != doc.activeFrameID }.sumOf { it.hold.toLong() }.toDouble() / doc.fps
                         Text("Extract the nearest video frame at %.3f seconds into the selected animation frame. Move the animation playhead to choose a different source time.".format(sourceSeconds))

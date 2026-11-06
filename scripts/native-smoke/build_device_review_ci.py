@@ -259,7 +259,7 @@ def build_arguments(scratch, metadata):
             "-jobs", "2", "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO", "IPHONEOS_DEPLOYMENT_TARGET=17.0",
             "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "CODE_SIGN_IDENTITY=", "DEVELOPMENT_TEAM=",
             "PRODUCT_BUNDLE_IDENTIFIER=" + BUNDLE, "INFOPLIST_FILE=" + str(metadata),
-            "OTHER_LDFLAGS=$(inherited) -no_adhoc_codesign", *(key + "=" for key in OFFLINE_SETTINGS), "build"]
+            "OTHER_LDFLAGS=$(inherited) -Wl,-no_adhoc_codesign", *(key + "=" for key in OFFLINE_SETTINGS), "build"]
 
 
 class Guard:
