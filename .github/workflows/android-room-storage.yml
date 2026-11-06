@@ -58,13 +58,10 @@ jobs:
           disable-linux-hw-accel: false
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none
+          # The action invokes each script line through sh. Keep this sequence
+          # in one explicit Bash process so failure and shell options are real.
           script: |
-            set -euo pipefail
-            test -n "${ANDROID_HOME:-}"
-            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'build-tools;34.0.0'
-            # This class uses isolated app-private projects and fixture bytes only.
-            # No credentials, real accounts, service setup or publication are supplied.
-            timeout 18m gradle --project-dir android --no-daemon --max-workers=2 --console=plain :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.stickdeath.studio.RoomProjectImportTest
+            bash -euo pipefail -c 'test -n "${ANDROID_HOME:-}"; "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;34.0.0"; timeout 18m gradle --project-dir android --no-daemon --max-workers=2 --console=plain :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.stickdeath.studio.RoomProjectImportTest'
       - name: Require six executed storage cases and retain bounded results in job logs
         if: always()
         shell: bash

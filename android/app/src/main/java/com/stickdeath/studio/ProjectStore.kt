@@ -204,9 +204,16 @@ class ProjectStore(context: Context) {
         }
     }
     private fun syncRoomDirectory(directory: File) {
+        // Android's public SDK does not expose O_DIRECTORY. Verify the opened
+        // descriptor itself; nonblocking + NOFOLLOW also refuse a swapped FIFO/link.
         val fd = android.system.Os.open(directory.absolutePath, android.system.OsConstants.O_RDONLY or
-            android.system.OsConstants.O_DIRECTORY or android.system.OsConstants.O_NOFOLLOW or android.system.OsConstants.O_CLOEXEC, 0)
-        try { android.system.Os.fsync(fd) } finally { android.system.Os.close(fd) }
+            android.system.OsConstants.O_NOFOLLOW or android.system.OsConstants.O_CLOEXEC or android.system.OsConstants.O_NONBLOCK, 0)
+        try {
+            require(android.system.OsConstants.S_ISDIR(android.system.Os.fstat(fd).st_mode)) {
+                "The project import directory changed. No server receipt was sent."
+            }
+            android.system.Os.fsync(fd)
+        } finally { android.system.Os.close(fd) }
     }
     private fun java.io.InputStream.readBytesBounded(limit: Int): ByteArray {
         val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(1024)
