@@ -611,6 +611,7 @@ struct AdminUsersContent: View {
     @State private var more = true
     @State private var busy = false
     @State private var error: String?
+    @State private var notice: String?
     @State private var stepUp: String?
     @State private var generation = UUID()
     private var client: SupabaseClient { get throws { try SupabaseManager.shared.client } }
@@ -626,6 +627,7 @@ struct AdminUsersContent: View {
             }
             TextField("Reason for account action", text: $reason, axis: .vertical).lineLimit(2...4)
             if let error { Text(error).foregroundColor(.red) }
+            if let notice { Text(notice).font(.caption).accessibilityIdentifier("admin.users.notice") }
             if let stepUp { AdminStepUpBanner(message: stepUp) }
             if busy { ProgressView() }
             ForEach(users) { user in
@@ -641,6 +643,10 @@ struct AdminUsersContent: View {
                     if let reports = user.feed_report_count {
                         Text("\(reports) feed reports received (all outcomes)").font(.caption)
                     }
+                    if let openReports = user.open_report_count {
+                        Text("\(openReports) open feed reports").font(.caption)
+                            .accessibilityIdentifier("admin.users.open-reports")
+                    }
                     // Present only for administrators holding the finance capability.
                     if let plan = user.plan { Text("Plan: \(plan.capitalized)").font(.caption) }
                     if let last = user.last_sign_in_at { Text("Last sign-in \(last.formatted())").font(.caption) }
@@ -654,13 +660,20 @@ struct AdminUsersContent: View {
                                     generation: generation, scope: requests.capture())
                             }
                         }
+                        if let openReports = user.open_report_count {
+                            Button("Dismiss open feed reports") {
+                                pendingAction = .init(action: "reset_flags", user: user,
+                                    reason: reason.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    generation: generation, scope: requests.capture())
+                            }.disabled(openReports == 0)
+                        }
                     }.disabled(busy || reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || reason.count > 2000)
                 }.padding().background(Color.sdSurface).clipShape(RoundedRectangle(cornerRadius: 12))
             }
             if more { Button("Load more") { requests.enqueue { [page, query = appliedSearch] _ in await load(reset: false, submittedPage: page, pagingQuery: query) } }.disabled(busy) }
         }
         .adminRequestLifetime(requests,
-            reset: { generation = UUID(); users = []; page = 0; more = true; busy = false; historyUser = nil; pendingAction = nil; reason = ""; search = ""; error = nil; appliedSearch = ""; stepUp = nil; appealsOffer = nil },
+            reset: { generation = UUID(); users = []; page = 0; more = true; busy = false; historyUser = nil; pendingAction = nil; reason = ""; search = ""; error = nil; notice = nil; appliedSearch = ""; stepUp = nil; appealsOffer = nil },
             initial: { await load(reset: true) },
             pause: { busy = false; pendingAction = nil; historyUser = nil; appealsOffer = nil })
         .sheet(item: $historyUser) { offer in AdminUserHistoryView(user: offer.user).environment(\.sdiAdminOfferScope, offer.scope) }
@@ -668,7 +681,7 @@ struct AdminUsersContent: View {
         .confirmationDialog("Confirm account action", isPresented: Binding(
             get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }),
             titleVisibility: .visible, presenting: pendingAction) { pending in
-            Button("\(pending.action.capitalized) \(pending.user.username)",
+            Button("\(pending.title) \(pending.user.username)",
                    role: ["suspend", "ban", "signout"].contains(pending.action) ? .destructive : nil) {
                 requests.enqueue(origin: pending.scope) { _ in await apply(pending) }
             }
@@ -678,10 +691,11 @@ struct AdminUsersContent: View {
         }
 
     }
-    @MainActor private func load(reset: Bool, submittedQuery: String? = nil, submittedPage: Int? = nil, pagingQuery: String? = nil) async {
+    @MainActor private func load(reset: Bool, submittedQuery: String? = nil, submittedPage: Int? = nil, pagingQuery: String? = nil, keepingNotice: Bool = false) async {
         guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
         guard !busy, auth.isAuthenticated, phase == .active else { return }
         if reset {
+            if !keepingNotice { notice = nil }
             let query = (submittedQuery ?? search).trimmingCharacters(in: .whitespacesAndNewlines)
             guard query.count <= 100 else { error = "Use at most 100 characters for directory search."; return }
             generation = UUID(); pendingAction = nil; historyUser = nil
@@ -694,7 +708,8 @@ struct AdminUsersContent: View {
             let response: AdminDirectoryResponse = try await adminRPC("sdi_users_action", params: AdminUserRequest(action: "list", query: pagingQuery ?? appliedSearch, page: submittedPage ?? page))
             guard CommunityOperationContext.isCurrent, !Task.isCancelled, epoch == generation, account == auth.userId, auth.isAuthenticated, phase == .active else { return }
             if let problem = response.error { users = []; more = false; error = problem; return }
-            guard let items = response.users, items.count <= 50, let hasMore = response.has_more else { users = []; more = false; error = "Invalid directory response."; return }
+            guard let items = response.users, items.count <= 50, let hasMore = response.has_more,
+                  items.allSatisfy({ $0.open_report_count.map { $0 >= 0 } ?? true }) else { users = []; more = false; error = "Invalid directory response."; return }
             for item in items { if let index = users.firstIndex(where: {$0.id == item.id}) { users[index] = item } else { users.append(item) } }
             page += 1; more = hasMore && page < 200; error = nil
         } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }; if epoch == generation, account == auth.userId, phase == .active { users = []; more = false; self.error = "Directory unavailable. Check your admin session and MFA." } }
@@ -705,7 +720,7 @@ struct AdminUsersContent: View {
         pendingAction = nil
         if let prompt = CommunityServices.admin.stepUpPrompt(for: "users.\(pending.action)") { stepUp = prompt; return }
         stepUp = nil
-        let epoch = generation, account = auth.userId; busy = true
+        let epoch = generation, account = auth.userId; busy = true; notice = nil
         defer { if CommunityOperationContext.isCurrent { if epoch == generation { busy = false } } }
         do {
             let response: AdminDirectoryResponse = try await adminRPC("sdi_users_action", params: AdminUserRequest(action: pending.action, subject: pending.user.id, reason: pending.reason))
@@ -716,6 +731,20 @@ struct AdminUsersContent: View {
                 if refusal.isStepUpRequired { stepUp = problem } else { error = problem }
                 busy = false; return
             }
+            if pending.action == "reset_flags" {
+                guard let dismissed = response.dismissed,
+                      (response.status == "confirmed" && dismissed > 0) ||
+                      (response.status == "unchanged" && dismissed == 0) else {
+                    error = "The report dismissal was not confirmed. Refresh before retrying."
+                    busy = false; return
+                }
+                notice = dismissed == 0
+                    ? "No eligible open feed reports were dismissed. Nothing changed or was audited. Reports you filed stay pending for another reviewer."
+                    : "\(dismissed) open feed reports dismissed and audited, confirmed by the server. Reports you filed stay pending for another reviewer."
+                busy = false; reason = ""
+                await load(reset: true, submittedQuery: appliedSearch, keepingNotice: true)
+                return
+            }
             guard response.status == "confirmed" else { error = "Action was not confirmed."; busy = false; return }
             busy = false; reason = ""; await load(reset: true, submittedQuery: appliedSearch)
         } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }; if epoch == generation, account == auth.userId, phase == .active { self.error = "Action was not confirmed. Refresh before retrying." } }
@@ -723,8 +752,10 @@ struct AdminUsersContent: View {
 }
 private struct AdminPendingAccountAction {
     let action: String; let user: AdminDirectoryUser; let reason: String; let generation: UUID; let scope: CommunityOperationScope
+    var title: String { action == "reset_flags" ? "Dismiss open feed reports for" : action.capitalized }
     var impact: String {
         switch action {
+        case "reset_flags": return "Dismisses eligible open reports against this member's feed posts and records an audit. Requires Users and Moderation capabilities and a recent second factor. Reports you filed stay pending for another reviewer. Posts and account access are unchanged."
         case "suspend", "ban": return "Revokes existing sessions and blocks app-service access. Restore can allow a fresh sign-in."
         case "restore": return "Allows a fresh sign-in. Previously revoked sessions stay revoked."
         case "signout": return "Revokes existing sessions. The user can sign in again."
@@ -737,12 +768,12 @@ private struct AdminUserRequest: Encodable {
     var subject: UUID? = nil; var query = ""; var page = 0; var reason = ""
 }
 private struct AdminDirectoryResponse: CommunityResponse {
-    let status: String?; let error: String?; var code: String? = nil; let users: [AdminDirectoryUser]?; let has_more: Bool?
+    let status: String?; let error: String?; var code: String? = nil; let users: [AdminDirectoryUser]?; let has_more: Bool?; let dismissed: Int?
 }
 private struct AdminDirectoryUser: Decodable, Identifiable {
     let id: UUID; let username: String; let masked_email: String?; let state: String
     let created_at: Date; let last_sign_in_at: Date?; let content_count: Int
-    let sign_in_methods: [String]?; let feed_report_count: Int?
+    let sign_in_methods: [String]?; let feed_report_count: Int?; let open_report_count: Int?
     /// Billing tier (`free`, `creator`, `pro`, `unlimited`); null unless the server granted finance visibility.
     var plan: String? = nil
 }

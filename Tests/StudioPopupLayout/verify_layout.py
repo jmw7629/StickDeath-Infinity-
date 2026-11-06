@@ -118,8 +118,10 @@ def configure_toolchain(command, requested_swiftc="swiftc", applications=Path("/
 
 def prepare_fresh_simulator(command, selector, deadline):
     """One cold read-only readiness check; failure never reaches creation."""
+    # The first cold inventory timed out at59s. One180s read still shares the
+    # unchanged900s overall deadline; no second attempt or runtime fallback.
     raw = command("coresimulator-readiness", ["xcrun", "simctl", "list", "--json"],
-                  60, cap=selector.INVENTORY_CAP)
+                  180, cap=selector.INVENTORY_CAP)
     selector.inventory(raw)
     # The unchanged creator has its own100s bound. Admit it only if its complete
     # budget fits inside this probe's900s limit with the original cleanup reserve.

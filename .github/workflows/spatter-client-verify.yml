@@ -229,8 +229,8 @@ jobs:
           if-no-files-found: error
 
   native-production-tests:
-    # Fail fast before allocating the long native suite; the final aggregate
-    # still requires every production and simulator gate to succeed.
+    # Preserve every production gate while collecting independent evidence.
+    # The final aggregate still requires all production/simulator gates to pass.
     needs: [source-security, spatter-production-tests, native-app-compile]
     runs-on: macos-15
     # Production took 47m09s on run 37668843963 before image-region dependencies.
@@ -476,6 +476,9 @@ jobs:
             -o "$RUNNER_TEMP/sdi-studio-toolbar-tests"
           "$RUNNER_TEMP/sdi-studio-toolbar-tests"
       - name: Verify actual SwiftUI popup content never collapses
+        id: popup-layout
+        # Collect independent production evidence before the final mandatory check.
+        continue-on-error: true
         run: python3 Tests/StudioPopupLayout/verify_layout.py --output-directory "$RUNNER_TEMP/studio-popup-layout"
 
       - name: Verify actual shape fill radius history and exported pixels
@@ -2975,10 +2978,19 @@ jobs:
             StickDeathInfinity/Resources/StudioImages \
             Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip \
             "$RUNNER_TEMP/sdi-image-pack-fixtures/archive-paths.json"
+      - name: Require the measured popup layout gate to pass
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SDI_POPUP_LAYOUT_OUTCOME: ${{ steps.popup-layout.outcome }}
+        run: |
+          set -euo pipefail
+          test "$SDI_POPUP_LAYOUT_OUTCOME" = success
   native-ios-shards:
-    needs: native-production-tests
-    # Do not allocate shard Mac runners after a failed/cancelled production gate.
-    if: ${{ needs.native-production-tests.result == 'success' }}
+    needs: [native-production-tests, native-app-compile]
+    # Independent UI evidence may run after a completed red production gate.
+    # Cancelled/skipped prerequisites still allocate no shard runners.
+    if: ${{ !cancelled() && needs.native-app-compile.result == 'success' && (needs.native-production-tests.result == 'success' || needs.native-production-tests.result == 'failure') }}
     runs-on: macos-15
     strategy:
       fail-fast: false
@@ -3000,13 +3012,18 @@ jobs:
     # Tests/NativeSmokeHarness/test_suite_budget.py derives these exact ceilings.
     timeout-minutes: ${{ matrix.timeout }}
     steps:
-      - name: Require successful production verification
+      - name: Require a compiled app and completed production evidence
         shell: bash
         env:
+          SDI_APP_COMPILE_RESULT: ${{ needs.native-app-compile.result }}
           SDI_PRODUCTION_RESULT: ${{ needs.native-production-tests.result }}
         run: |
           set -euo pipefail
-          test "$SDI_PRODUCTION_RESULT" = success
+          test "$SDI_APP_COMPILE_RESULT" = success
+          case "$SDI_PRODUCTION_RESULT" in
+            success|failure) ;;
+            *) exit 1 ;;
+          esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}

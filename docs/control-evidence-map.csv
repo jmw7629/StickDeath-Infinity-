@@ -92,6 +92,8 @@ admin.support.review,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,
 admin.support.status,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,"text 'New status' -> binds nextStatus, binds 0.title, binds 0",n-a,#272,deferred
 admin.support.withdrawn,StickDeathInfinity/Views/Admin/AdminOperationsPanels.swift,AdminSupportQueueContent,text 'This request was withdrawn by its member and is ',n-a,#272,deferred
 admin.users.history,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminUsersContent,button 'Account history',n-a,#210 #285,deferred
+admin.users.notice,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminUsersContent,text: server-confirmed report dismissal count or unchanged result (read-only),n-a,#210 #285,deferred
+admin.users.open-reports,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminUsersContent,text: open feed-report count supplied by the server directory (read-only),n-a,#210 #285,deferred
 app.notice,StickDeathInfinity/App/AppFlowView.swift,AppFlowView,button 'Dismiss',no,unmapped,deferred
 auth.back,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,text '‹',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 auth.back,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,text 'Back to Welcome',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion

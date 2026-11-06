@@ -1,4 +1,12 @@
 import copy
+import contextlib
+import io
+import json
+import os
+import plistlib
+import tempfile
+import time
+from unittest import mock
 import sys
 import unittest
 from pathlib import Path
@@ -7,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts/native-smoke'))
 import journey_receipt as journey  # noqa: E402
 import test_budget  # noqa: E402
+import run_journey_ci as runner
+import prepare_offline_run as offline
+import select_simulator as selector
+from seed_diagnostics import Result
 
 SHA = 'a' * 40
 BINDING = {'sourceCommit': SHA, 'runID': '7', 'runAttempt': '1'}
@@ -189,6 +201,118 @@ class JourneyReceiptTests(unittest.TestCase):
         self.assertIn('os.environ["GITHUB_ENV"]', setup)
         self.assertIn('DEVELOPER_DIR=', setup)
 
+
+
+class OwnedPreinstallTests(unittest.TestCase):
+    @contextlib.contextmanager
+    def fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();products=root/"sdi-native-build/Build/Products"
+            app=products/"Debug-iphonesimulator/StickDeathInfinity.app"
+            host=products/"Debug-iphonesimulator/Runner.app";(host/"PlugIns/Tests.xctest").mkdir(parents=True)
+            app.mkdir(parents=True)
+            (app/"Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":"com.willisbmb.StickDeathInfinity",
+                                                         **{key:"" for key in offline.PUBLIC_SETTINGS}}))
+            profile=products/"Original.xctestrun"
+            profile.write_bytes(plistlib.dumps({"StickDeathInfinityUITests":{
+                "TestBundlePath":"__TESTHOST__/PlugIns/Tests.xctest",
+                "TestHostPath":"__TESTROOT__/Debug-iphonesimulator/Runner.app",
+                "UITargetAppPath":"__TESTROOT__/Debug-iphonesimulator/StickDeathInfinity.app"}}))
+            evidence=root/"sdi-native-smoke.journey.mock";evidence.mkdir()
+            udid="11111111-1111-4111-8111-111111111111";runtime="com.apple.CoreSimulator.SimRuntime.iOS-26-2"
+            marker={"version":1,"state":"verified","sourceCommit":SHA,
+                "run":{"runID":"7","runAttempt":"1","job":"journeys"},
+                "created":{"udid":udid,"runtime":runtime,"name":"SDI-7-1","deviceType":selector.TYPE}}
+            with mock.patch.dict(os.environ,{"GITHUB_ACTIONS":"true","GITHUB_RUN_ID":"7","GITHUB_RUN_ATTEMPT":"1",
+                                             "GITHUB_JOB":"journeys","RUNNER_TEMP":str(root)},clear=True):
+                (root/selector.MARKER).write_text(json.dumps(marker));selector.copy_marker(evidence,udid,SHA)
+                yield root,app,profile,evidence,udid,runtime,marker
+
+    def simulate(self,f,*,failure=False,revoke=False,remaining=1740):
+        root,app,profile,evidence,udid,runtime,marker=f
+        calls=[];state={"value":"Shutdown"}
+        def bounded(argv,deadline,stdout_cap,stderr_cap):
+            calls.append((argv,deadline));data=b"";code=0
+            self.assertEqual(argv[:2],["xcrun","simctl"]);self.assertNotIn("launch",argv)
+            if argv[2]=="list":
+                data=json.dumps({"devices":{runtime:[{"udid":udid,"name":"SDI-7-1","deviceTypeIdentifier":selector.TYPE,
+                    "isAvailable":True,"state":state["value"]}]},"runtimes":[],"devicetypes":[]}).encode()
+            else:
+                self.assertEqual(argv[3],udid)
+                if argv[2]=="boot":state["value"]="Booted"
+                if argv[2]=="shutdown":state["value"]="Shutdown"
+                if argv[2]=="install":
+                    if failure:code=17
+                    if revoke:(root/selector.MARKER).write_text(json.dumps(dict(marker,run={"runID":"8"})))
+            return Result(code,False,0.01,stdout=data,stdout_seen=len(data))
+        deadline=time.monotonic()+remaining
+        with mock.patch.object(runner,"run_bounded",side_effect=bounded),contextlib.redirect_stdout(io.StringIO()):
+            result=runner.preinstall_owned_app(profile,evidence,udid,SHA,deadline)
+        self.assertTrue(all(end<=deadline for _,end in calls))
+        return result,calls,state
+
+    def test_owned_install_is_once_and_does_not_launch_or_seed_target(self):
+        with self.fixture() as f:
+            result,calls,state=self.simulate(f)
+            self.assertTrue(result["passed"]);self.assertEqual(result["installAttempts"],1)
+            self.assertEqual(result["targetAppPrelaunches"],0)
+            self.assertEqual([c[0][2] for c in calls],["list","boot","bootstatus","install"])
+            self.assertEqual(calls[-1][0],["xcrun","simctl","install",f[4],str(f[1])])
+            self.assertEqual((result["setupMaximumSeconds"],result["workMaximumSeconds"],result["cleanupReserveSeconds"]),(240,180,60))
+
+    def test_invalid_configuration_or_product_path_never_contacts_simulator(self):
+        for invalid in ("configured","redirected"):
+            with self.subTest(invalid=invalid),self.fixture() as f:
+                if invalid=="configured":
+                    (f[1]/"Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":"com.willisbmb.StickDeathInfinity","SUPABASE_URL":"https://configured.invalid"}))
+                else:
+                    value=plistlib.loads(f[2].read_bytes());value["StickDeathInfinityUITests"]["UITargetAppPath"]="/outside/Other.app"
+                    f[2].write_bytes(plistlib.dumps(value))
+                result,calls,state=self.simulate(f)
+                self.assertFalse(result["passed"]);self.assertEqual(calls,[])
+
+    def test_foreign_marker_or_insufficient_phase_budget_never_boots(self):
+        for invalid in ("foreign","budget"):
+            with self.subTest(invalid=invalid),self.fixture() as f:
+                if invalid=="foreign":(f[0]/selector.MARKER).write_text(json.dumps(dict(f[6],run={"runID":"8"})))
+                result,calls,state=self.simulate(f,remaining=30 if invalid=="budget" else 1740)
+                self.assertFalse(result["passed"]);self.assertEqual(calls,[])
+                self.assertEqual(result["installAttempts"],0)
+
+    def test_failed_install_records_actual_exit_and_owned_shutdown_without_retry(self):
+        with self.fixture() as f:
+            result,calls,state=self.simulate(f,failure=True)
+            self.assertFalse(result["passed"]);self.assertEqual(result["installAttempts"],1)
+            self.assertEqual([c[0][2] for c in calls],["list","boot","bootstatus","install","list","shutdown"])
+            install=next(item for item in result["steps"] if item["stage"]=="install")
+            self.assertEqual(install["returnCode"],17);self.assertIs(install["timedOut"],False)
+            self.assertTrue((f[3]/"preinstall/install.stdout").exists());self.assertEqual(state["value"],"Shutdown")
+
+    def test_revoked_ownership_after_failed_install_preserves_foreign_device(self):
+        with self.fixture() as f:
+            result,calls,state=self.simulate(f,failure=True,revoke=True)
+            self.assertFalse(result["passed"]);self.assertEqual(result["installAttempts"],1)
+            self.assertNotIn("shutdown",[c[0][2] for c in calls])
+            self.assertEqual(result["cleanup"]["state"],"unavailable-preserve-devices")
+
+    def test_successful_install_with_revoked_lease_cannot_pass_or_shutdown_foreign_device(self):
+        with self.fixture() as f:
+            result,calls,state=self.simulate(f,revoke=True)
+            self.assertFalse(result["passed"]);self.assertEqual(result["installAttempts"],1)
+            install=next(item for item in result["steps"] if item["stage"]=="install")
+            self.assertEqual(install["returnCode"],0);self.assertIs(install["timedOut"],False)
+            self.assertEqual([c[0][2] for c in calls],["list","boot","bootstatus","install"])
+            self.assertNotIn("shutdown",[c[0][2] for c in calls])
+            self.assertEqual(result["cleanup"]["state"],"unavailable-preserve-devices")
+
+    def test_shared_preflight_metadata_and_actual_product_resolution_remain_compatible(self):
+        with self.fixture() as f:
+            destination=f[2].with_name("Prepared.xctestrun")
+            metadata=offline.prepare(f[2],destination,SHA)
+            self.assertEqual(metadata,{"sourceCommit":SHA,"appBundleIdentifier":"com.willisbmb.StickDeathInfinity",
+                "emptyPublicSettings":list(offline.PUBLIC_SETTINGS),"networkRequestsObserved":None,
+                "networkMeasurementStatus":"Not measured by this UI preflight"})
+            self.assertEqual(offline.validated_app(destination),f[1])
 
 if __name__ == '__main__':
     unittest.main()

@@ -14,10 +14,13 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import journey_receipt  # noqa: E402
-from prepare_offline_run import prepare  # noqa: E402
+import select_simulator  # noqa: E402
+from seed_diagnostics import run_bounded, result_projection  # noqa: E402
+from prepare_offline_run import prepare, validated_app  # noqa: E402
 
 EMPTY_SETTINGS = ["CODE_SIGNING_ALLOWED=NO", "SPATTER_BACKEND_URL=", "SUPABASE_URL=", "SUPABASE_PUBLISHABLE_KEY=",
                   "SUPABASE_ANON_KEY=", "LIVEKIT_WS_URL=", "SDI_OAUTH_PROVIDERS=", "SDI_MICROSOFT_TENANT="]
@@ -54,6 +57,113 @@ def export(result, evidence, stem):
     return tree, summary
 
 
+
+def preinstall_owned_app(profile, evidence, udid, commit, ui_deadline):
+    """Separate install/bootstrap setup; never start the target app process."""
+    folder = evidence / "preinstall"
+    folder.mkdir(mode=0o700)
+    started = time.monotonic()
+    deadline = min(ui_deadline, started + 240)
+    work_deadline = deadline - 60
+    report = {"sourceCommit": commit, "simulatorUDID": udid, "passed": False,
+              "setupMaximumSeconds": 240, "workMaximumSeconds": 180,
+              "cleanupReserveSeconds": 60, "steps": [], "installAttempts": 0,
+              "targetAppPrelaunches": 0, "automaticRetries": 0,
+              "cleanup": "not-needed"}
+    owned_confirmed = False
+
+    def lease(stage):
+        # Reuse the descriptor-bound existing validator before each action.
+        checkpoint = evidence / ("sdi-native-smoke.preinstall-" + stage)
+        checkpoint.mkdir(mode=0o700)
+        select_simulator.copy_marker(checkpoint, udid, commit)
+        data = (checkpoint / "fresh-simulator.json").read_bytes()
+        if data != (evidence / "fresh-simulator.json").read_bytes():
+            raise ValueError("Fresh Simulator ownership changed; preserve devices")
+        return json.loads(data)["created"]
+
+    def command(stage, argv, seconds, *, cleanup=False, cap=16 * 1024):
+        limit = deadline if cleanup else work_deadline
+        end = min(limit, time.monotonic() + seconds)
+        result = run_bounded(argv, end, stdout_cap=cap, stderr_cap=16 * 1024)
+        step = {"stage": stage, "argv": argv, **result_projection(result)}
+        report["steps"].append(step)
+        for name, data in (("stdout", result.stdout), ("stderr", result.stderr)):
+            (folder / (stage + "." + name)).write_bytes(data)
+        if (result.returncode != 0 or result.timed_out or result.spawn_error
+                or not result.reaped or result.capture_incomplete
+                or result.stdout_seen > cap or result.stderr_seen > 16 * 1024):
+            raise RuntimeError("Bounded preinstall " + stage + " failed; no retry")
+        return result.stdout
+
+    def state(stage, *, cleanup=False):
+        created = lease(stage)
+        raw = command(stage, ["xcrun", "simctl", "list", "--json"], 30,
+                      cleanup=cleanup, cap=select_simulator.INVENTORY_CAP)
+        _, devices, _ = select_simulator.inventory(raw)
+        found = [(runtime, device) for runtime, device in devices
+                 if device["udid"].upper() == udid.upper()]
+        if len(found) != 1:
+            raise ValueError("Owned fresh Simulator is absent or ambiguous")
+        runtime, device = found[0]
+        if (runtime != created["runtime"] or device.get("name") != created["name"]
+                or device.get("deviceTypeIdentifier") != created["deviceType"]
+                or device.get("isAvailable") is not True
+                or device.get("state") not in ("Shutdown", "Booted")):
+            raise ValueError("Fresh Simulator identity/state changed")
+        return device["state"]
+
+    try:
+        app = validated_app(profile)
+        products = (Path(os.environ["RUNNER_TEMP"]) / "sdi-native-build/Build/Products").resolve(strict=True)
+        if profile.parent.resolve() != products or not app.is_relative_to(products):
+            raise ValueError("Preinstall must use this locked build's actual products")
+        report["appBundleIdentifier"] = "com.willisbmb.StickDeathInfinity"
+        report["offlineBuiltAppValidated"] = True
+        if time.monotonic() >= work_deadline:
+            raise TimeoutError("Existing UI budget cannot admit preinstall setup")
+        initial = state("owned-before-boot")
+        owned_confirmed = True
+        if initial == "Shutdown":
+            lease("before-boot")
+            command("boot", ["xcrun", "simctl", "boot", udid], 30)
+        lease("before-readiness")
+        command("bootstatus", ["xcrun", "simctl", "bootstatus", udid, "-b"], 90)
+        lease("before-install")
+        report["installAttempts"] += 1
+        command("install", ["xcrun", "simctl", "install", udid, str(app)], 60)
+        lease("after-install")
+        report.update(passed=True, installAcknowledged=True,
+                      cleanup="Existing ephemeral CI teardown after journeys; no erase/delete")
+    except Exception as error:
+        report.update(errorClass=type(error).__name__, error=str(error)[:1000])
+        if owned_confirmed:
+            try:
+                current = state("owned-before-failed-setup-cleanup", cleanup=True)
+                if current == "Booted":
+                    lease("before-failed-setup-shutdown")
+                    command("owned-shutdown", ["xcrun", "simctl", "shutdown", udid],
+                            30, cleanup=True)
+                    report["cleanup"] = "Verified owned fresh Simulator shutdown after setup failure"
+                else:
+                    report["cleanup"] = "Verified owned fresh Simulator already shutdown"
+            except Exception as cleanup_error:
+                report["cleanup"] = {"state": "unavailable-preserve-devices",
+                                     "errorClass": type(cleanup_error).__name__,
+                                     "error": str(cleanup_error)[:1000]}
+        else:
+            report["cleanup"] = "No verified-owned boot action; preserve devices"
+    finally:
+        report["elapsedSeconds"] = time.monotonic() - started
+        (folder / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps({"preinstallPassed": report["passed"],
+                          "errorClass": report.get("errorClass"),
+                          "steps": [{"stage": item["stage"], "returnCode": item["returnCode"],
+                                     "timedOut": item["timedOut"]} for item in report["steps"]]}),
+              flush=True)
+    return report
+
+
 def main():
     assert os.environ.get("GITHUB_ACTIONS") == "true", "Approved CI runner required"
     temporary = Path(os.environ["RUNNER_TEMP"])
@@ -79,6 +189,8 @@ def main():
               "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
               "-skipPackageUpdates", "-jobs", "2"]
     suites = []
+    preinstall = None
+    setup_failed = False
 
     # UI journeys: same offline preflight as the smoke shards, then only JourneyUITests.
     build = run(["xcodebuild", "build-for-testing", "-project", "StickDeathInfinity.xcodeproj",
@@ -101,7 +213,17 @@ def main():
                        "-default-test-execution-time-allowance", str(journey_receipt.PER_CASE_SECONDS),
                        "-maximum-test-execution-time-allowance", str(journey_receipt.MAXIMUM_CASE_SECONDS)]
         ui_timeout = journey_receipt.ui_test_budget((journey_receipt.ROOT / journey_receipt.SUITES["ui"][0]).read_text(), ui_command)
-        ui_exit = run(ui_command, evidence / "journey-ui.log", ui_timeout)
+        # Charge explicit boot/install setup to the existing300s UI overhead;
+        # neither the suite's total allowance nor any case/job ceiling grows.
+        ui_deadline = time.monotonic() + ui_timeout
+        preinstall = preinstall_owned_app(prepared, evidence, udid, commit, ui_deadline)
+        setup_failed = not preinstall["passed"]
+        remaining = ui_deadline - time.monotonic()
+        if setup_failed or remaining <= 0:
+            ui_exit = 78  # Setup failure; xcodebuild UI command was not invoked.
+            setup_failed = True
+        else:
+            ui_exit = run(ui_command, evidence / "journey-ui.log", remaining)
     tree, summary = export(ui_result, evidence, "journey-ui") if ui_result.exists() else ({}, {})
     if ui_result.exists():
         run(["xcrun", "xcresulttool", "export", "attachments", "--path", str(ui_result),
@@ -110,7 +232,7 @@ def main():
 
     if "service" in journey_receipt.DEVICE_SUITES[device]:
         service_result = evidence / "ServiceJourney.xcresult"
-        service_exit = run(["xcodebuild", "test", "-project", "StickDeathInfinity.xcodeproj",
+        service_exit = 78 if setup_failed else run(["xcodebuild", "test", "-project", "StickDeathInfinity.xcodeproj",
                             "-scheme", "StickDeathInfinityAuthTests", "-configuration", "Debug", "-destination", destination,
                             *common, journey_receipt.selector("service"),
                             "-parallel-testing-enabled", "NO", "-maximum-concurrent-test-simulator-destinations", "1",
@@ -122,6 +244,8 @@ def main():
         suites.append(journey_receipt.evaluate("service", inventory["service"], service_exit, tree, summary))
 
     value = journey_receipt.receipt(binding, device, suites)
+    value["preinstallSetup"] = preinstall or {"passed": False, "state": "not-attempted-build-failed"}
+    value["UICommandNotRunAfterSetupFailure"] = setup_failed
     (evidence / "receipt.json").write_text(json.dumps(value, indent=2) + "\n")
     compact = temporary / "native-journey-receipt" / "receipt.json"
     compact.parent.mkdir(parents=True, exist_ok=False)

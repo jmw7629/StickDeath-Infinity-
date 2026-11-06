@@ -186,7 +186,7 @@ class SetupPolicy(unittest.TestCase):
         with mock.patch.object(selector,"create_fresh",return_value="owned") as create:
             self.assertEqual(verifier.prepare_fresh_simulator(command,selector,time.monotonic()+900),"owned")
             create.assert_called_once_with("iphone")
-        command.assert_called_once_with("coresimulator-readiness",["xcrun","simctl","list","--json"],60,cap=selector.INVENTORY_CAP)
+        command.assert_called_once_with("coresimulator-readiness",["xcrun","simctl","list","--json"],180,cap=selector.INVENTORY_CAP)
 
     def test_failed_malformed_or_budget_exhausted_readiness_never_creates(self):
         selector=self.selector()
