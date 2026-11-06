@@ -156,6 +156,60 @@ private func previewFixture(_ target: AdminPreviewTarget, revision: Int? = nil,
             try require(try await client.agentRuns("spatter_daily_video").first?.state == "running", "runs decoded")
         }
 
+        await test("expense drafts validate installed bounds and local MFA blocks transport") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let draft = try AdminExpenseRequest(reference: " host-2026-10 ", amount: "2500", currency: "usd",
+                occurredAt: now, note: " Hosting ", reason: " Invoice ", now: now)
+            try require(draft.ref == "host-2026-10" && draft.amount_minor == 2500 && draft.currency == "USD" && draft.note == "Hosting" && draft.reason == "Invoice", "expense fields were not normalized")
+            for amount in ["0", "-1", "1.25", "1e3", "1000000000000000"] {
+                do { _ = try AdminExpenseRequest(reference: "ref", amount: amount, currency: "USD", occurredAt: now, note: "", reason: "r", now: now)
+                    throw Failure(description: "invalid expense amount accepted: \(amount)")
+                } catch CommunityError.server {}
+            }
+            do { _ = try AdminExpenseRequest(reference: "", amount: "1", currency: "USD", occurredAt: now, note: "", reason: "r", now: now); throw Failure(description: "empty reference accepted") } catch CommunityError.server {}
+            do { _ = try AdminExpenseRequest(reference: "ref", amount: "1", currency: "US", occurredAt: now, note: "", reason: "r", now: now); throw Failure(description: "invalid currency accepted") } catch CommunityError.server {}
+            do { _ = try AdminExpenseRequest(reference: "ref", amount: "1", currency: "USD", occurredAt: now.addingTimeInterval(86_401), note: "", reason: "r", now: now); throw Failure(description: "future expense accepted") } catch CommunityError.server {}
+            do { _ = try await client.recordExpense(draft); throw Failure(description: "expense sent before step-up") } catch CommunityError.server {}
+            try require(transport.calls.isEmpty, "invalid or unverified expense reached transport")
+        }
+
+        await test("expense outcome retry keeps the exact reference and distinguishes recorded from duplicate") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            client.recordVerification()
+            let draft = try AdminExpenseRequest(reference: "host-2026-10", amount: "2500", currency: "USD",
+                occurredAt: now, note: "Invoice", reason: "Recorded receipt", now: now)
+            transport.replies = [.failure(CommunityError.transport("Reply lost after submission"))]
+            do { _ = try await client.recordExpense(draft); throw Failure(description: "uncertain reply reported success") } catch CommunityError.transport {}
+            transport.replies = [.success(#"{"status":"duplicate","ref":"host-2026-10"}"#)]
+            try require(try await client.recordExpense(draft) == .duplicate(reference: draft.ref), "same-reference duplicate was not recognized")
+            try require(transport.calls.count == 2 && transport.calls.allSatisfy { $0.name == "sdi_finance_record" && $0.params["ref"] as? String == draft.ref }, "uncertain retry changed reference or endpoint")
+            try require(NSDictionary(dictionary: transport.calls[0].params).isEqual(to: transport.calls[1].params), "uncertain retry changed submitted values")
+            let wire = transport.calls[0].params
+            try require(Set(wire.keys) == Set(["action", "ref", "amount_minor", "currency", "occurred_at", "note", "reason"]) && wire["action"] as? String == "expense" && (wire["amount_minor"] as? NSNumber)?.int64Value == 2500 && wire["currency"] as? String == "USD", "installed expense RPC fields changed")
+            transport.replies = [.success(#"{"status":"recorded","entry":"\#(review.uuidString)","possible_duplicate":true}"#)]
+            try require(try await client.recordExpense(draft) == .recorded(entry: review, possibleDuplicate: true), "recorded id and possible-duplicate warning were lost")
+        }
+
+        await test("expense client rejects incomplete success wrong duplicate reference and server step-up refusal") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            client.recordVerification()
+            let draft = try AdminExpenseRequest(reference: "invoice", amount: "10", currency: "USD", occurredAt: now, note: "", reason: "Receipt", now: now)
+            for json in [#"{"status":"recorded"}"#, #"{"status":"recorded","entry":"\#(review.uuidString)"}"#, #"{"status":"duplicate","ref":"another-invoice"}"#, #"{"status":"confirmed"}"#] {
+                transport.replies = [.success(json)]
+                do { _ = try await client.recordExpense(draft); throw Failure(description: "unconfirmed expense response accepted") } catch CommunityError.invalidResponse {}
+            }
+            transport.replies = [.success(#"{"error":"Re-verify your second factor.","code":"step_up_required"}"#)]
+            do { _ = try await client.recordExpense(draft); throw Failure(description: "server refusal accepted") }
+            catch let error as CommunityError {
+                _ = client.noteRefusal(error)
+                try require(error.isStepUpRequired, "coded MFA refusal was lost")
+            }
+            try require(client.stepUpPrompt(for: "finance_record.expense") != nil, "server refusal did not reset expense step-up")
+        }
+
         await test("finance reads show provider-reported records only and mutations confirm or fail") {
             let transport = FakeTransport()
             let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
@@ -164,7 +218,11 @@ private func previewFixture(_ target: AdminPreviewTarget, revision: Int? = nil,
             try require(products.products?.first?.approved == true && products.approved_offers?.contains("4.99") == true, "products decoded with the approved offers note")
             transport.replies = [.success(#"{"totals":[{"provider":"stripe","currency":"usd","kind":"charge","amount_minor":1998,"entries":2}],"label":"Sums of provider-reported entries; estimates and cash are not shown here.","entitled_accounts":2}"#)]
             let summary = try await client.finance(AdminFinanceRequest(action: "summary"))
-            try require(summary.totals?.first?.amountText == "USD 19.98" && summary.entitled_accounts == 2, "totals formatted from minor units")
+            try require(summary.totals?.first?.amountText == "USD 1998 minor units" && summary.entitled_accounts == 2, "totals formatted from minor units")
+            let yen = AdminLedgerEntry(id: review, provider: "stripe", provider_ref: nil, kind: "charge", amount_minor: 1000, currency: "jpy", occurred_at: now, note: nil)
+            try require(yen.amountText == "JPY 1000 minor units", "zero-decimal currency was incorrectly divided by 100")
+            let dinar = AdminFinanceTotal(provider: "stripe", currency: "kwd", kind: "charge", amount_minor: 1234, entries: 1)
+            try require(dinar.amountText == "KWD 1234 minor units", "three-decimal currency was incorrectly divided by 100")
             transport.replies = [.success(#"{"ledger":[]}"#)]
             try require(try await client.finance(AdminFinanceRequest(action: "ledger")).ledger?.isEmpty == true, "empty ledger is a real empty state")
             transport.replies = [.success(#"{"subscriptions":null}"#)]

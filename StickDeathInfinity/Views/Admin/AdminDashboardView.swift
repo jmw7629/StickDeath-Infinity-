@@ -2461,10 +2461,17 @@ private struct AdminAgentsContent: View {
     }
 }
 
+private struct AdminPendingExpense {
+    let request: AdminExpenseRequest
+    let scope: CommunityOperationScope
+    let discard: Bool
+}
+
 // MARK: - Finance (#255)
-/// Finance-capability reads of provider-reported records and owner-only
-/// product configuration through `sdi_finance_admin`. No balances, estimates
-/// or charges; the approved offers are the three monthly tiers.
+/// Finance-capability reads of provider-reported records, owner-only product
+/// configuration through `sdi_finance_admin`, and explicit manual expense ledger
+/// recording through `sdi_finance_record`. No balances, estimates or charges;
+/// the approved offers are the three monthly tiers.
 @MainActor
 private struct AdminFinanceContent: View {
     @StateObject private var requests = AdminRequestOwner()
@@ -2484,6 +2491,14 @@ private struct AdminFinanceContent: View {
     @State private var approved = false
     @State private var reason = ""
     @State private var requestID = UUID()
+    @State private var expenseReference = ""
+    @State private var expenseAmount = ""
+    @State private var expenseCurrency = "USD"
+    @State private var expenseDate = Date()
+    @State private var expenseNote = ""
+    @State private var expenseReason = ""
+    @State private var pendingExpense: AdminPendingExpense?
+    @State private var unconfirmedExpense: AdminExpenseRequest?
     private let sections = [("summary", "Summary"), ("products", "Products"), ("subscriptions", "Subscriptions"), ("ledger", "Ledger"), ("events", "Provider events")]
     private var reasonValid: Bool { (1...2000).contains(reason.trimmingCharacters(in: .whitespacesAndNewlines).count) }
     var body: some View {
@@ -2545,9 +2560,41 @@ private struct AdminFinanceContent: View {
                 case "ledger":
                     if let label = response.label { Text(label).font(.caption) }
                     ForEach(response.ledger ?? []) { entry in
-                        Text("\(entry.occurred_at.formatted()) · \(entry.provider) · \(entry.kind) · \(entry.currency.uppercased()) \(String(format: "%.2f", Double(entry.amount_minor) / 100))\(entry.note.map { " · \($0)" } ?? "")").font(.caption)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(entry.occurred_at.formatted()) · \(entry.provider) · \(entry.kind) · \(entry.amountText)\(entry.note.map { " · \($0)" } ?? "")").font(.caption)
+                            Text("Reference: \(entry.provider_ref ?? "Not supplied")").font(.caption.monospaced())
+                            Text("Entry: \(entry.id.uuidString)").font(.caption.monospaced())
+                        }.textSelection(.enabled)
                     }
                     if response.ledger?.isEmpty ?? true { Text("No ledger entries on this page.").font(.caption) }
+                    Divider()
+                    Text("Record an incurred expense").font(.specialElite(15))
+                    Text("Records a ledger entry only. No payment, charge, refund or provider request is made. Keep the same reference when checking or retrying an unconfirmed outcome.").font(.caption)
+                    Group {
+                    TextField("Receipt or invoice reference", text: $expenseReference).textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityIdentifier("admin.finance.expense.reference")
+                    TextField("Positive amount in minor units", text: $expenseAmount).textFieldStyle(.roundedBorder).keyboardType(.numberPad)
+                        .accessibilityIdentifier("admin.finance.expense.amount")
+                    Text("USD example: 2500 minor units = $25.00.").font(.caption)
+                    TextField("Three-letter currency", text: $expenseCurrency).textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .accessibilityIdentifier("admin.finance.expense.currency")
+                    DatePicker("Expense date", selection: $expenseDate, in: ...Date(), displayedComponents: .date)
+                        .accessibilityIdentifier("admin.finance.expense.date")
+                    TextField("Private ledger note (optional)", text: $expenseNote, axis: .vertical).textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("admin.finance.expense.note")
+                    TextField("Required audit reason", text: $expenseReason, axis: .vertical).textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("admin.finance.expense.reason")
+                    }.disabled(unconfirmedExpense != nil)
+                    Button(unconfirmedExpense == nil ? "Review expense" : "Review exact retry") { prepareExpense() }
+                        .disabled(busy || (unconfirmedExpense == nil && (expenseReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || expenseAmount.isEmpty || expenseReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)))
+                        .accessibilityIdentifier("admin.finance.expense.review")
+                    if let unconfirmedExpense {
+                        Text("No confirmed outcome is available for \(unconfirmedExpense.ref). Fields are locked. Check the ledger and retry these exact submitted values, or explicitly discard this local draft.").font(.caption)
+                        Button("Review discarding this unconfirmed local draft") { prepareExpenseDiscard() }
+                            .disabled(busy).accessibilityIdentifier("admin.finance.expense.discard")
+                    }
                 default:
                     ForEach(response.events ?? []) { event in
                         Text("\(event.received_at.formatted()) · \(event.provider) · \(event.event_type) · \(event.processed_at == nil ? "unprocessed" : (event.outcome ?? "processed"))").font(.caption)
@@ -2556,11 +2603,34 @@ private struct AdminFinanceContent: View {
                 }
             }
         }
-        .onChange(of: section) { _, section in requests.cancel(); busy = false; page = 0; requests.enqueue { _ in await load(submittedSection: section, submittedPage: 0) } }
+        .onChange(of: section) { _, section in requests.cancel(); busy = false; pendingExpense = nil; page = 0; requests.enqueue { _ in await load(submittedSection: section, submittedPage: 0) } }
         .adminRequestLifetime(requests,
             reset: { clear(); provider = "apple"; tier = "creator"; period = "monthly"; approved = false },
             initial: { await load() },
-            pause: { busy = false })
+            pause: { busy = false; pendingExpense = nil })
+        .confirmationDialog(pendingExpense?.discard == true ? "Discard the unconfirmed local draft?" : "Record this expense?", isPresented: Binding(
+            get: { pendingExpense != nil }, set: { if !$0 { pendingExpense = nil } }),
+            titleVisibility: .visible, presenting: pendingExpense) { pending in
+            if pending.discard {
+                Button("Discard local draft", role: .destructive) {
+                    guard pending.scope.isCurrent, unconfirmedExpense == pending.request else { return }
+                    pendingExpense = nil; unconfirmedExpense = nil
+                    expenseReference = ""; expenseAmount = ""; expenseNote = ""; expenseReason = ""; expenseDate = Date()
+                    notice = "Only the local draft was discarded. Any server record remains unchanged. Check the ledger before choosing a new reference."
+                }.accessibilityIdentifier("admin.finance.expense.discard-confirm")
+            } else {
+                Button("Record expense") {
+                    requests.enqueue(origin: pending.scope) { _ in await recordExpense(pending.request) }
+                }.accessibilityIdentifier("admin.finance.expense.confirm")
+            }
+            Button("Cancel", role: .cancel) { pendingExpense = nil }
+        } message: { pending in
+            if pending.discard {
+                Text("The outcome for reference \(pending.request.ref) is unconfirmed. This removes only the local draft, not any server record. Check the ledger before submitting another reference; it could duplicate the same expense.")
+            } else {
+                Text("Reference: \(pending.request.ref)\nAmount: \(pending.request.amount_minor) \(pending.request.currency) minor units\nDate: \(pending.request.occurred_at.formatted(date: .abbreviated, time: .omitted))\nNote: \(pending.request.note)\nReason: \(pending.request.reason)\nThis records an expense; it does not pay anyone.")
+            }
+        }
 
     }
     private var currentCount: Int {
@@ -2571,7 +2641,59 @@ private struct AdminFinanceContent: View {
         default: return 0
         }
     }
-    private func clear() { requestID = UUID(); busy = false; response = nil; error = nil; notice = nil; stepUp = nil; page = 0; reason = ""; productID = "" }
+    private func clear() { requestID = UUID(); busy = false; response = nil; error = nil; notice = nil; stepUp = nil; page = 0; reason = ""; productID = ""
+        pendingExpense = nil; unconfirmedExpense = nil; expenseReference = ""; expenseAmount = ""; expenseCurrency = "USD"
+        expenseDate = Date(); expenseNote = ""; expenseReason = ""
+    }
+    private func prepareExpense() {
+        let scope = requests.capture()
+        guard scope.isCurrent, !busy, !requests.working else { return }
+        do {
+            let request: AdminExpenseRequest
+            if let unconfirmedExpense { request = unconfirmedExpense }
+            else { request = try AdminExpenseRequest(reference: expenseReference, amount: expenseAmount,
+                currency: expenseCurrency, occurredAt: Calendar.current.startOfDay(for: expenseDate),
+                note: expenseNote, reason: expenseReason) }
+            pendingExpense = AdminPendingExpense(request: request, scope: scope, discard: false)
+            error = nil; notice = nil
+        } catch { self.error = CommunityServices.admin.noteRefusal(error).errorDescription }
+    }
+    private func prepareExpenseDiscard() {
+        let scope = requests.capture()
+        guard scope.isCurrent, !busy, !requests.working, let unconfirmedExpense else { return }
+        pendingExpense = AdminPendingExpense(request: unconfirmedExpense, scope: scope, discard: true)
+    }
+    private func recordExpense(_ request: AdminExpenseRequest) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent,
+              !busy, auth.isAuthenticated, phase == .active else { return }
+        pendingExpense = nil
+        if let prompt = CommunityServices.admin.stepUpPrompt(for: "finance_record.expense") { stepUp = prompt; return }
+        stepUp = nil
+        let id = UUID(); requestID = id; busy = true; error = nil; notice = nil
+        // A hidden/cancelled or malformed reply must leave the exact sent payload available for review.
+        unconfirmedExpense = request
+        defer { if CommunityOperationContext.isCurrent, requestID == id { busy = false } }
+        do {
+            let outcome = try await CommunityServices.admin.recordExpense(request)
+            guard CommunityOperationContext.isCurrent, !Task.isCancelled, requestID == id else { return }
+            switch outcome {
+            case .recorded(let entry, let possible):
+                notice = "Expense recorded and audited: \(entry.uuidString)."
+                    + (possible ? " A record with the same amount, currency and day exists. Check that it is not a duplicate." : "")
+            case .duplicate(let reference):
+                notice = "An existing record uses reference \(reference). This request added nothing and did not update or verify that record's amount, date or note."
+            }
+            unconfirmedExpense = nil
+            // The visible draft stays intact; only an explicit discard or account reset clears its fields.
+            busy = false; page = 0
+            await load(submittedSection: "ledger", submittedPage: 0)
+        } catch {
+            guard CommunityOperationContext.isCurrent, !Task.isCancelled, requestID == id else { return }
+            let problem = CommunityServices.admin.noteRefusal(error)
+            if problem.isStepUpRequired { stepUp = problem.errorDescription }
+            else { self.error = (problem.errorDescription ?? "Expense outcome unconfirmed.") + " Keep this reference and check the ledger before retrying." }
+        }
+    }
     private func load(submittedSection: String? = nil, submittedPage: Int? = nil) async {
         guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
         guard !busy, auth.isAuthenticated, phase == .active else { return }

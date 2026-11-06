@@ -142,6 +142,29 @@ final class AdminOperationsClient {
         return response
     }
 
+    /// Finance-capability ledger record, with recent MFA checked locally and again by the server.
+    /// No automatic retry: reuse the exact reference if the first outcome cannot be read back.
+    func recordExpense(_ request: AdminExpenseRequest) async throws -> AdminExpenseOutcome {
+        if let prompt = stepUpPrompt(for: "finance_record.expense") {
+            throw CommunityError.server(message: prompt, code: "step_up_required")
+        }
+        let response = try await gateway.call("sdi_finance_record", params: request, as: AdminExpenseResponse.self)
+        switch response.status {
+        case "recorded":
+            guard let entry = response.entry, let possible = response.possible_duplicate else {
+                throw CommunityError.invalidResponse("Expense outcome unconfirmed. Check the ledger for this reference before retrying.")
+            }
+            return .recorded(entry: entry, possibleDuplicate: possible)
+        case "duplicate":
+            guard response.ref == request.ref else {
+                throw CommunityError.invalidResponse("Expense reference was not confirmed. Check the ledger before retrying.")
+            }
+            return .duplicate(reference: request.ref)
+        default:
+            throw CommunityError.invalidResponse("Expense outcome unconfirmed. Check the ledger for this reference before retrying.")
+        }
+    }
+
     // MARK: Room reports (#235/#247)
     func roomReports() async throws -> [AdminRoomReport] {
         let response = try await gateway.call("sdi_room_moderate", params: AdminRoomModerateRequest(action: "list"), as: AdminRoomModerateResponse.self)

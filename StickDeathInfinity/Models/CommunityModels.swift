@@ -1341,7 +1341,7 @@ struct AdminStepUpPolicy: Equatable {
     static let sensitiveActions: Set<String> = [
         "admin_permissions.save", "agent.emergency_stop", "agent.pause", "agent.resume", "agent.set_caps",
         "agent.set_permissions", "agent.publish_instructions", "agent.rollback_instructions",
-        "finance.set_product", "finance.configure_annual", "users.suspend", "users.ban", "users.restore", "users.signout", "users.reset_flags",
+        "finance.set_product", "finance.configure_annual", "finance_record.expense", "users.suspend", "users.ban", "users.restore", "users.signout", "users.reset_flags",
         "moderation.remove", "war.remove", "rooms.close", "appeal.accept", "appeal.reject",
     ]
     var stepUpCurrent: Bool?
@@ -1465,6 +1465,50 @@ struct AdminFinanceRequest: Encodable, Equatable {
     var approved: Bool? = nil
     var reason = ""
 }
+/// Records an already-incurred expense only; it never contacts a billing provider.
+/// The operator's reference is retained for a safe duplicate check after an unknown outcome.
+struct AdminExpenseRequest: Encodable, Equatable, Sendable {
+    let action = "expense"
+    let ref: String
+    let amount_minor: Int64
+    let currency: String
+    let occurred_at: Date
+    let note: String
+    let reason: String
+
+    init(reference: String, amount: String, currency: String, occurredAt: Date,
+         note: String, reason: String, now: Date = Date()) throws {
+        let ref = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        let number = amount.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = currency.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...200).contains(ref.unicodeScalars.count),
+              (1...15).contains(number.utf8.count),
+              number.utf8.allSatisfy({ (48...57).contains($0) }),
+              let minor = Int64(number), minor > 0, minor < 1_000_000_000_000_000,
+              code.utf8.count == 3, code.utf8.allSatisfy({ (65...90).contains($0) }),
+              occurredAt.timeIntervalSince1970.isFinite, occurredAt <= now.addingTimeInterval(86_400),
+              note.unicodeScalars.count <= 500, (1...2000).contains(reason.unicodeScalars.count) else {
+            throw CommunityError.server(message: "Use a reference of 1–200 characters, a positive integer amount in minor units, a three-letter currency, the expense date, a note up to 500 characters and a reason up to 2000 characters.", code: nil)
+        }
+        self.ref = ref; self.amount_minor = minor; self.currency = code
+        self.occurred_at = occurredAt; self.note = note; self.reason = reason
+    }
+}
+struct AdminExpenseResponse: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let status: String?
+    let entry: UUID?
+    let ref: String?
+    let possible_duplicate: Bool?
+}
+enum AdminExpenseOutcome: Equatable {
+    case recorded(entry: UUID, possibleDuplicate: Bool)
+    case duplicate(reference: String)
+}
+
 struct AdminBillingProduct: Decodable, Identifiable, Equatable {
     var id: String { product_id }
     let product_id: String; let provider: String; let tier: String; let period: String
@@ -1477,6 +1521,8 @@ struct AdminSubscription: Decodable, Identifiable, Equatable {
 struct AdminLedgerEntry: Decodable, Identifiable, Equatable {
     let id: UUID; let provider: String; let provider_ref: String?; let kind: String
     let amount_minor: Int; let currency: String; let occurred_at: Date; let note: String?
+    /// Preserve provider units without assuming every currency has two decimal places.
+    var amountText: String { "\(currency.uppercased()) \(amount_minor) minor units" }
 }
 struct AdminProviderEvent: Decodable, Identifiable, Equatable {
     let id: UUID; let provider: String; let event_type: String; let occurred_at: Date?
@@ -1486,7 +1532,7 @@ struct AdminFinanceTotal: Decodable, Identifiable, Equatable {
     var id: String { "\(provider):\(currency):\(kind)" }
     let provider: String; let currency: String; let kind: String; let amount_minor: Int; let entries: Int
     /// Provider-reported sums in minor units; never a balance.
-    var amountText: String { String(format: "%@ %.2f", currency.uppercased(), Double(amount_minor) / 100) }
+    var amountText: String { "\(currency.uppercased()) \(amount_minor) minor units" }
 }
 struct AdminFinanceResponse: CommunityCodedResponse {
     let error: String?
