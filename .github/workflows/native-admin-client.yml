@@ -1,0 +1,50 @@
+name: SDI Native Admin Client
+on:
+  pull_request:
+    paths:
+      - StickDeathInfinity/Models/CommunityModels.swift
+      - StickDeathInfinity/Services/Social/CommunityTransport.swift
+      - StickDeathInfinity/Services/Social/AdminOperationsClient.swift
+      - Tests/CommunityAdmin/**
+      - .github/workflows/native-admin-client.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sdi-admin-client-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  admin-production-client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind the exact source and production inputs
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD
+          swiftc --version
+          sha256sum StickDeathInfinity/Models/CommunityModels.swift \
+            StickDeathInfinity/Services/Social/CommunityTransport.swift \
+            StickDeathInfinity/Services/Social/AdminOperationsClient.swift \
+            Tests/CommunityAdmin/main.swift
+      - name: Compile and run the existing production admin client fixtures
+        # Same production-source recipe as the mandatory native workflow.
+        # This Linux-only job adds timely evidence; it does not replace any native gate.
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -O -parse-as-library \
+            StickDeathInfinity/Models/CommunityModels.swift \
+            StickDeathInfinity/Services/Social/CommunityTransport.swift \
+            StickDeathInfinity/Services/Social/AdminOperationsClient.swift \
+            Tests/CommunityAdmin/main.swift \
+            -o "$RUNNER_TEMP/sdi-community-admin-tests"
+          timeout 60s "$RUNNER_TEMP/sdi-community-admin-tests"

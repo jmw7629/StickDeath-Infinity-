@@ -266,6 +266,11 @@ final class JourneyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.matching(notConfigured).firstMatch.exists, "Feed must say services are not configured")
         XCTAssertFalse(app.descendants(matching: .any)["feed.card"].exists, "No feed card may appear without a service")
         capture(app, name: "journey-\(idiom)-feed-guest")
+        try openDesktopSubject("profile", in: app)
+        XCTAssertTrue(app.descendants(matching: .any)["profile.identity"].firstMatch.waitForExistence(timeout: 5), "Guest Profile identity must appear")
+        _ = try desktopButton("profile.sign-in", in: app,
+                              deadline: ProcessInfo.processInfo.systemUptime + 10)
+        capture(app, name: "journey-\(idiom)-profile-guest")
         try openDesktopSubject("rooms", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["rooms.not-configured"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["rooms.sign-in"].exists, "Rooms must ask a guest to sign in")
