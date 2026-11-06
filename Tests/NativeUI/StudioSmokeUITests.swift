@@ -8394,6 +8394,11 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(canvas.waitUntilPresent(timeout: 8))
         try choosePickerTestColor("#0000FF", app: app)
         try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
+        // This pixel journey needs opaque paint; Fill retains per-tool settings across launches.
+        let fillOpacity = app.sliders["studio.setting.opacity"]
+        XCTAssertTrue(fillOpacity.exists && fillOpacity.isHittable, "Fill opacity must be actionable")
+        fillOpacity.adjust(toNormalizedSliderPosition: 1)
+        XCTAssertEqual(fillOpacity.value as? String, "100%", "Establish opaque Fill before the blue-pixel oracle")
         app.buttons["studio.tool-settings.close"].tap()
         try waitForStableCanvas(canvas)
         canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5)).tap()

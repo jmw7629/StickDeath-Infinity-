@@ -461,7 +461,9 @@ private struct SDISubjectWindow<Content: View>: View {
         .overlay(Rectangle().strokeBorder(SDIDesktopPalette.ink, lineWidth: 2))
         .overlay(alignment: .top) { Color.white.opacity(0.7).frame(height: 1).padding(.horizontal, 2) }
         .offset(x: rect.minX, y: rect.minY)
-        .simultaneousGesture(TapGesture().onEnded { onFocus() })
+        // Focus observation is only needed behind the front window. Preserve
+        // child gestures without another tap recognizer over active canvas input.
+        .simultaneousGesture(TapGesture().onEnded { onFocus() }, including: focused ? .subviews : .all)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("desktop.window." + subject.rawValue)
     }
