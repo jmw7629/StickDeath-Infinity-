@@ -25,9 +25,12 @@ import java.io.Closeable
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.Authenticator
-import java.net.CookieHandler
-import java.net.HttpURLConnection
+import java.net.Proxy
+import java.util.concurrent.TimeUnit
+import okhttp3.Authenticator
+import okhttp3.CookieJar
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -189,9 +192,9 @@ internal object OptionalImagePacks {
         for (file in files) {
             directory.check(); val s = Os.lstat(file.path)
             require(OsConstants.S_ISREG(s.st_mode) && s.st_nlink == 1L && s.st_uid == android.os.Process.myUid() && FileIdentity(s.st_dev, s.st_ino) == owned[file.name])
-            Os.unlink(file.path)
+            Os.remove(file.path)
         }
-        directory.check(); parent.check(); Os.rmdir(directory.path.path); parent.sync()
+        directory.check(); parent.check(); Os.remove(directory.path.path); parent.sync()
     }
     private data class VerifiedPack(val images: List<BundledImage>, val directoryIdentity: FileIdentity,
                                     val ownedFiles: Map<String, FileIdentity>)
@@ -427,6 +430,14 @@ internal object OptionalImagePacks {
         val expires = uri.rawQuery.substringAfter("expires=").toLong(); require(expires > now && expires <= now + 900)
         return uri
     }
+    /** Dedicated public-asset client: never consult global cookie/auth/proxy handlers. */
+    private val publicImageClient by lazy {
+        OkHttpClient.Builder()
+            .authenticator(Authenticator.NONE).proxyAuthenticator(Authenticator.NONE)
+            .cookieJar(CookieJar.NO_COOKIES).proxy(Proxy.NO_PROXY).cache(null)
+            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
+            .build()
+    }
     private object PublisherTransport : Transport {
         override fun archive(pack: Pack, check: () -> Unit): ByteArray {
             require(BuildConfig.SDI_NETWORK_DECLARED) { "This build does not declare network access." }
@@ -436,25 +447,31 @@ internal object OptionalImagePacks {
             val deadline = SystemClock.elapsedRealtime() + 120_000
             fun request(url: String, limit: Int, page: String? = null): Pair<Int, Any> {
                 check(); require(SystemClock.elapsedRealtime() < deadline)
-                require(CookieHandler.getDefault() == null && Authenticator.getDefault() == null) { "Shared credential handlers are not allowed for public image downloads." }
                 val uri = URI(url); require(uri.scheme == "https" && uri.host == "kenney.nl" && uri.port == -1 && uri.userInfo == null && uri.fragment == null)
-                val connection = uri.toURL().openConnection() as HttpURLConnection
+                val remainingFlow = deadline - SystemClock.elapsedRealtime()
+                require(remainingFlow > 0) { "Public image flow deadline expired." }
+                val inactivity = remainingFlow.coerceAtMost(30_000)
+                val client = publicImageClient.newBuilder().connectTimeout(inactivity, TimeUnit.MILLISECONDS)
+                    .readTimeout(inactivity, TimeUnit.MILLISECONDS).callTimeout(remainingFlow, TimeUnit.MILLISECONDS).build()
+                val request = Request.Builder().url(uri.toASCIIString()).get()
+                    .header("Accept", if (page == null) "application/zip" else "application/json")
+                    .header("Accept-Encoding", "identity")
+                if (page != null) request.header("Referer", page)
+                val call = client.newCall(request.build())
                 try {
-                    connection.instanceFollowRedirects = false; connection.useCaches = false; connection.requestMethod = "GET"
-                    val remaining = (deadline - SystemClock.elapsedRealtime()).coerceIn(1, 30_000).toInt()
-                    connection.connectTimeout = remaining; connection.readTimeout = remaining
-                    connection.setRequestProperty("Accept", if (page == null) "application/zip" else "application/json")
-                    connection.setRequestProperty("Cookie", ""); connection.setRequestProperty("Cookie2", "")
-                    if (page != null) connection.setRequestProperty("Referer", page)
-                    val status = connection.responseCode
-                    if (status == 302) return status to (connection.getHeaderField("Location") ?: "")
-                    require(status == 200 && connection.contentLengthLong in -1L..limit.toLong())
-                    val bytes = connection.inputStream.use { bounded(it, limit) { check(); require(SystemClock.elapsedRealtime() < deadline) } }
-                    require(CookieHandler.getDefault() == null && Authenticator.getDefault() == null)
-                    return status to bytes
+                    return call.execute().use { response ->
+                        check(); require(SystemClock.elapsedRealtime() < deadline)
+                        if (response.code == 302) 302 to (response.header("Location") ?: "")
+                        else {
+                            require(response.code == 200)
+                            val body = requireNotNull(response.body)
+                            require(body.contentLength() in -1L..limit.toLong())
+                            200 to body.byteStream().use { bounded(it, limit) { check(); require(SystemClock.elapsedRealtime() < deadline) } }
+                        }
+                    }
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { error("Publisher download failed; no pack was installed.") }
-                finally { connection.disconnect() }
+                finally { call.cancel() }
             }
             val direct = request(pack.archiveURL, pack.archiveBytes)
             if (direct.first == 200) return direct.second as ByteArray

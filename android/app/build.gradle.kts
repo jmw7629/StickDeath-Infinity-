@@ -79,6 +79,8 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies {
+    // Isolated public image GETs; compatible Java8/API21 JAR has no INTERNET manifest merge.
+    implementation("com.squareup.okhttp3:okhttp:4.12.1")
     // Plain JVM unit tests (app/src/test) cover the pure mixing/blend-name math; no Android runtime needed.
     testImplementation("junit:junit:4.13.2")
     // The mockable android.jar stubs org.json; the real library lets JVM tests exercise the retained

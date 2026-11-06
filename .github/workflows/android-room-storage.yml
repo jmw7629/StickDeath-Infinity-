@@ -44,7 +44,7 @@ jobs:
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
-      - name: Run real Android project-store import and interruption cases
+      - name: Run real Android project-store and optional-image cases
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 35
@@ -61,8 +61,8 @@ jobs:
           # The action invokes each script line through sh. Keep this sequence
           # in one explicit Bash process so failure and shell options are real.
           script: |
-            bash -euo pipefail -c 'test -n "${ANDROID_HOME:-}"; "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;34.0.0"; timeout 18m gradle --project-dir android --no-daemon --max-workers=2 --console=plain :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.stickdeath.studio.RoomProjectImportTest'
-      - name: Require six executed storage cases and retain bounded results in job logs
+            bash -euo pipefail -c 'test -n "${ANDROID_HOME:-}"; "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;34.0.0"; timeout 18m gradle --project-dir android --no-daemon --max-workers=2 --console=plain :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.stickdeath.studio.RoomProjectImportTest,com.stickdeath.studio.OptionalImagePacksTest'
+      - name: Require six storage and ten optional-image cases with bounded results
         if: always()
         shell: bash
         run: |
@@ -78,19 +78,37 @@ jobs:
               'stagedRetryNeverOverwritesUnknownFinalOrAtomicFileRecoveryEntries',
               'mixedCaseSwiftProjectReferenceStillImportsTheExistingVectorSubsetLosslessly',
           }
+          expected_images = {
+              'canonicalDescriptorsRetainSixPacksAndAllBundledImages',
+              'realPinnedPackPublishesReopensImportsAndRemovalPreservesProjectCopy',
+              'croppedPNGAndSelfConsistentReceiptCannotClaimVerifiedWrongPixelsOrDimensions',
+              'foreignFileAddedAfterVerificationIsNeverAdoptedOrDeletedByRemoval',
+              'changedArchiveNeverPublishesOrDeletesExistingData',
+              'cancellationAfterActualImageWriteRemovesOnlyOwnedStage',
+              'replacementOfCacheBeforeCommitPreservesForeignTree',
+              'symlinkedCacheIsRefusedWithoutFollowingOrDeletingTarget',
+              'signedPublisherRouteRejectsForeignExpiredAndExpandedScope',
+              'rawPremultipliedRGBAContractPreservesPartialAlpha',
+          }
           root = Path('android/app/build/outputs/androidTest-results/connected')
           reports = sorted(root.rglob('TEST-*.xml'))
           assert 0 < len(reports) <= 8, 'Actual Android test reports missing'
           cases = []
+          image_cases = []
           total = 0
           for report in reports:
               raw = report.read_bytes()
               total += len(raw)
               assert total <= 1024 * 1024, 'Android reports exceed bound'
               for case in ET.fromstring(raw).iter('testcase'):
-                  if case.attrib.get('classname') != 'com.stickdeath.studio.RoomProjectImportTest':
+                  classname = case.attrib.get('classname')
+                  if classname == 'com.stickdeath.studio.RoomProjectImportTest':
+                      selected = cases
+                  elif classname == 'com.stickdeath.studio.OptionalImagePacksTest':
+                      selected = image_cases
+                  else:
                       continue
-                  cases.append({
+                  selected.append({
                       'name': case.attrib['name'],
                       'seconds': float(case.attrib.get('time', '0')),
                       'failed': case.find('failure') is not None or case.find('error') is not None,
@@ -107,4 +125,15 @@ jobs:
           print('SDI_ROOM_STORAGE_RESULT=' + json.dumps(result, sort_keys=True))
           assert len(cases) == 6 and {c['name'] for c in cases} == expected, 'Missing or repeated storage case'
           assert not any(c['failed'] or c['skipped'] for c in cases), 'Storage case failed or skipped'
+          image_result = {
+              'source': result['source'],
+              'deviceScope': 'API35 x86_64 AOSP emulator; actual Android codecs/private storage/JNI',
+              'expected': sorted(expected_images),
+              'actual': image_cases,
+              'livePublisherVerified': False,
+              'UIJourneyVerified': False,
+          }
+          print('SDI_OPTIONAL_IMAGE_PACKS_RESULT=' + json.dumps(image_result, sort_keys=True))
+          assert len(image_cases) == 10 and {c['name'] for c in image_cases} == expected_images, 'Missing or repeated optional-image case'
+          assert not any(c['failed'] or c['skipped'] for c in image_cases), 'Optional-image case failed or skipped'
           PY
