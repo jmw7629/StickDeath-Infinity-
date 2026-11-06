@@ -131,7 +131,7 @@ def preinstall_owned_app(profile, evidence, udid, commit, ui_deadline):
         command("bootstatus", ["xcrun", "simctl", "bootstatus", udid, "-b"], 90)
         lease("before-install")
         report["installAttempts"] += 1
-        command("install", ["xcrun", "simctl", "install", udid, str(app)], 60)
+        command("install", ["xcrun", "simctl", "install", udid, str(app)], report["workMaximumSeconds"])
         lease("after-install")
         report.update(passed=True, installAcknowledged=True,
                       cleanup="Existing ephemeral CI teardown after journeys; no erase/delete")
