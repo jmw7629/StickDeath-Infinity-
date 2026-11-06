@@ -77,6 +77,82 @@ def emit_failure(stage, error, projection=None, stdout=b"", stderr=b""):
             sys.stderr.buffer.flush()
 
 
+
+def configure_toolchain(command, requested_swiftc="swiftc", applications=Path("/Applications")):
+    """Use the native app gate's installed Xcode26 selection, never PATH swiftc."""
+    # The surrounding probe restores inherited values; no workflow/host change.
+    os.environ.pop("SDKROOT", None)
+    xcode = command("xcode-version", ["xcodebuild", "-version"], 10, 4096).decode()
+    supported = r"Xcode (?:2[6-9]|[3-9][0-9])(?:\.|\s)"
+    if not re.search(supported, xcode):
+        choices = []
+        for app in applications.glob("Xcode_26*.app"):
+            info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+            version = tuple(int(x) for x in re.findall(r"\d+", info["CFBundleShortVersionString"]))
+            choices.append((version, app))
+        if not choices:
+            raise ValueError("Xcode26 is required for the UIKit layout probe")
+        os.environ["DEVELOPER_DIR"] = str(max(choices, key=lambda x: x[0])[1] / "Contents/Developer")
+        xcode = command("selected-xcode-version", ["xcodebuild", "-version"], 10, 4096).decode()
+    if not re.search(supported, xcode):
+        raise ValueError("Selected toolchain is not Xcode26 or newer")
+    developer = os.environ.get("DEVELOPER_DIR") or command(
+        "selected-developer-directory", ["xcode-select", "-p"], 10, 4096).decode().strip()
+    if not Path(developer).is_absolute():
+        raise ValueError("Selected developer directory must be absolute")
+    developer = Path(developer).resolve(strict=True)
+    os.environ["DEVELOPER_DIR"] = str(developer)
+    selected_swiftc = Path(command("selected-swiftc", ["xcrun", "--find", "swiftc"],
+                                  30, 4096).decode().strip())
+    if not selected_swiftc.is_absolute():
+        raise ValueError("Selected swiftc must be absolute")
+    swiftc = selected_swiftc.resolve(strict=True)
+    if not swiftc.is_file() or not swiftc.is_relative_to(developer):
+        raise ValueError("swiftc must belong to the selected Xcode toolchain")
+    if requested_swiftc != "swiftc" and Path(requested_swiftc).resolve(strict=True) != swiftc:
+        raise ValueError("Explicit swiftc differs from the selected Xcode toolchain")
+    # swiftc may be a swift-driver symlink. Preserve its selected basename for
+    # driver-mode dispatch while validating the resolved target above.
+    return {"version": xcode.strip(), "developerDirectory": str(developer), "swiftc": str(selected_swiftc)}
+
+
+def prepare_fresh_simulator(command, selector, deadline):
+    """One cold read-only readiness check; failure never reaches creation."""
+    raw = command("coresimulator-readiness", ["xcrun", "simctl", "list", "--json"],
+                  60, cap=selector.INVENTORY_CAP)
+    selector.inventory(raw)
+    # The unchanged creator has its own100s bound. Admit it only if its complete
+    # budget fits inside this probe's900s limit with the original cleanup reserve.
+    if time.monotonic() + selector.TOTAL_SECONDS > deadline - 60:
+        raise ValueError("Insufficient overall budget for fresh Simulator setup")
+    return selector.create_fresh("iphone")
+
+
+def creator_failure_diagnostic(root, selector, run, source):
+    """Read facts only; a failed marker never grants device/cleanup authority."""
+    marker = root / selector.MARKER
+    fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or before.st_uid != os.getuid() or before.st_size > selector.MARKER_CAP):
+            raise ValueError("Unsafe creator diagnostic marker")
+        data = os.read(fd, selector.MARKER_CAP + 1)
+        after = os.fstat(fd)
+        current = marker.lstat()
+    finally:
+        os.close(fd)
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    if len(data) > selector.MARKER_CAP or identity(before) != identity(after) or identity(before) != identity(current):
+        raise ValueError("Creator diagnostic marker changed while reading")
+    value = json.loads(data)
+    if value.get("version") != 1 or value.get("run") != run or value.get("sourceCommit") not in (None, source):
+        raise ValueError("Creator diagnostic belongs to another source/run")
+    return {"diagnosticOnlyNoDeviceAuthority": True, "markerSHA256": hashlib.sha256(data).hexdigest(),
+            "markerBytes": len(data), "creator": value}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--swiftc", default="swiftc")
@@ -115,6 +191,8 @@ def main():
     last_command = None
     last_stdout = last_stderr = b""
     emitted_command = None
+    setup_started = False
+    inherited_toolchain = {key: os.environ.get(key) for key in ("SDKROOT", "DEVELOPER_DIR")}
 
     def save():
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -189,6 +267,7 @@ def main():
         return device["state"]
 
     try:
+        result["toolchain"] = configure_toolchain(command, args.swiftc)
         commit = command("source", ["git", "rev-parse", "--verify", "HEAD"], 5, 128).decode().strip()
         if not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise ValueError("Exact source commit required")
@@ -225,7 +304,7 @@ def main():
                         {"UISceneConfigurationName": "PopupLayout"}]}},
                 **{"SDIPopup_" + key: value for key, value in identity.items()}}
         (app / "Info.plist").write_bytes(plistlib.dumps(info))
-        command("compile", [args.swiftc, "-swift-version", "5", "-parse-as-library",
+        command("compile", [result["toolchain"]["swiftc"], "-swift-version", "5", "-parse-as-library",
                 "-module-name", "SDIPopupLayoutGate", "-module-cache-path", str(output / "module-cache"),
                 "-sdk", str(sdk), "-target", platform.machine() + "-apple-ios17.0-simulator",
                 "-framework", "UIKit", "-framework", "SwiftUI", "-Xlinker", "-rpath",
@@ -233,7 +312,8 @@ def main():
                 240, cap=4 * 1024 * 1024)
         # This existing API rejects local Macs, existing reservations, duplicate
         # creation, unavailable SDK runtimes and devices owned by another run.
-        owned = select_simulator.create_fresh("iphone")
+        setup_started = True
+        owned = prepare_fresh_simulator(command, select_simulator, deadline)
         evidence = output / "sdi-native-smoke.popup-layout"
         evidence.mkdir(mode=0o700)
         select_simulator.copy_marker(evidence, owned, commit)
@@ -270,6 +350,16 @@ def main():
         result["state"] = "FAIL"
         result["errorClass"] = type(error).__name__
         result["error"] = str(error)[:1000]
+        if setup_started and owned is None:
+            try:
+                diagnostic = creator_failure_diagnostic(temporary, select_simulator, run_identity,
+                                                        result.get("sourceCommit"))
+            except BaseException as marker_error:
+                diagnostic = {"state": "unavailable", "errorClass": type(marker_error).__name__,
+                              "error": str(marker_error)[:1000], "diagnosticOnlyNoDeviceAuthority": True}
+            result["creatorFailureDiagnostic"] = diagnostic
+            print("STUDIO_POPUP_CREATOR_DIAGNOSTIC=" + json.dumps(diagnostic, sort_keys=True),
+                  file=sys.stderr, flush=True)
         already_emitted = last_command and emitted_command == last_command["stage"]
         emit_failure("verification", error, last_command,
                      b"" if already_emitted else last_stdout,
@@ -310,6 +400,12 @@ def main():
             emit_failure("result-persistence", error, last_command)
             if failure is None:
                 failure = error
+        finally:
+            for key, value in inherited_toolchain.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
     if failure is not None:
         raise SystemExit("UIKit popup layout failed: " + type(failure).__name__
                          + ": " + str(failure)[:1000])

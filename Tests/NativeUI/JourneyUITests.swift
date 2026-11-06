@@ -20,6 +20,9 @@ import UIKit
 /// they are not a pixel-parity claim.
 final class JourneyUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
+    // AX CGRect subtraction can report a 44-point edge as 43.99999999999997.
+    // This is numerical noise far below one physical pixel; 42x10 still fails.
+    private let hitTargetRoundingEpsilon: CGFloat = 1e-9
 
     @MainActor private var idiom: String { UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "phone" }
     /// Smallest canvas side that still counts as a usable, uncollapsed canvas.
@@ -67,11 +70,12 @@ final class JourneyUITests: XCTestCase {
                 let control = app.buttons[id]
                 XCTAssertTrue(control.waitForExistence(timeout: 5), "Missing audio control \(id)")
                 XCTAssertTrue(control.isHittable, "Audio control \(id) is not reachable")
-                XCTAssertTrue(app.frame.contains(control.frame), "Audio control \(id) is clipped")
-                sizes.append("\(id) \(Int(control.frame.width))x\(Int(control.frame.height)) pt")
+                let frame = control.frame
+                XCTAssertTrue(app.frame.contains(frame), "Audio control \(id) is clipped")
+                sizes.append("\(id) \(frame.width)x\(frame.height) pt")
                 if id == "studio.audio.close" || id == "studio.audio.snap" {
-                    XCTAssertGreaterThanOrEqual(min(control.frame.width, control.frame.height), 44,
-                                                "Audio control \(id) needs a 44 pt touch target")
+                    XCTAssertGreaterThanOrEqual(min(frame.width, frame.height) + hitTargetRoundingEpsilon, 44,
+                                                "Audio control \(id) needs a 44 pt touch target; actual \(frame)")
                 }
             }
             // Keep the Snap control operable in both orientations and restore
@@ -115,7 +119,7 @@ final class JourneyUITests: XCTestCase {
             XCTAssertTrue(popup.waitForExistence(timeout: 10), "Options popup did not open")
             XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(popup.frame), "Options popup extends outside the window")
             let close = app.buttons["studio.tool-settings.close"]
-            XCTAssertTrue(close.isHittable && min(close.frame.width, close.frame.height) >= 44, "Popup close unreachable")
+            XCTAssertTrue(close.isHittable && min(close.frame.width, close.frame.height) + hitTargetRoundingEpsilon >= 44, "Popup close unreachable")
             capture(app, name: "journey-\(idiom)-options-\(orientation == .portrait ? "portrait" : "landscape")", entireScreen: orientation.isLandscape)
             close.tap()
             XCTAssertTrue(waitUntilGone(popup), "Options popup did not dismiss")
@@ -138,13 +142,49 @@ final class JourneyUITests: XCTestCase {
             XCTAssertTrue(popup.waitForExistence(timeout: 10))
             let mirror = app.buttons["studio.drawing.mirror"]
             let options = popup.scrollViews.firstMatch
-            for _ in 0..<12 where !mirror.isHittable { options.swipeUp(velocity: .slow) }
+            let side = orientation == .portrait ? "portrait" : "landscape"
+            var revealFrames: [String] = []
+            for attempt in 0..<12 {
+                let scrollExists = options.exists
+                let scrollID = scrollExists ? options.identifier : "<missing>"
+                let viewport = scrollExists
+                    ? options.frame.intersection(popup.frame).intersection(app.frame) : CGRect.null
+                let target = mirror.exists ? mirror.frame : CGRect.null
+                let fullyVisible = target.width > 0 && target.height > 0
+                    && viewport.width > 0 && viewport.height > 0
+                    && viewport.insetBy(dx: -hitTargetRoundingEpsilon, dy: -hitTargetRoundingEpsilon).contains(target)
+                revealFrames.append("attempt=\(attempt);scroll=\(scrollID);viewport=\(viewport);mirror=\(target);visible=\(fullyVisible)")
+                if fullyVisible && mirror.isHittable { break }
+                guard viewport.width > 0 && viewport.height > 0 else { break }
+                // AX can call an off-viewport hosted button hittable. Reveal its
+                // actual frame, including scrolling back after an overshoot.
+                if target.width > 0 && target.height > 0 && target.midY < viewport.midY {
+                    options.swipeDown(velocity: .slow)
+                } else {
+                    options.swipeUp(velocity: .slow)
+                }
+            }
+            let viewport = options.exists
+                ? options.frame.intersection(popup.frame).intersection(app.frame) : CGRect.null
+            let target = mirror.exists ? mirror.frame : CGRect.null
+            let fullyVisible = target.width > 0 && target.height > 0
+                && viewport.width > 0 && viewport.height > 0
+                && viewport.insetBy(dx: -hitTargetRoundingEpsilon, dy: -hitTargetRoundingEpsilon).contains(target)
+            if !fullyVisible || !mirror.isHittable {
+                revealFrames.append("final viewport=\(viewport);mirror=\(target);visible=\(fullyVisible)")
+                let diagnostic = XCTAttachment(string: revealFrames.joined(separator: "\n"))
+                diagnostic.name = "native-mirror-reveal-frames-" + side
+                diagnostic.lifetime = .keepAlways
+                add(diagnostic)
+                capture(app, name: "native-mirror-reveal-failed-" + side, entireScreen: true)
+            }
             XCTAssertTrue(mirror.isHittable, "Mirror trigger must be reachable in Pencil options")
+            XCTAssertTrue(fullyVisible, "Mirror must be fully inside its visible options viewport")
             XCTAssertEqual(mirror.label, "Mirror")
             XCTAssertEqual(mirror.value as? String, "Off", "New project must default to Mirror Off")
-            XCTAssertGreaterThanOrEqual(min(mirror.frame.width, mirror.frame.height), 44)
+            XCTAssertGreaterThanOrEqual(min(mirror.frame.width, mirror.frame.height) + hitTargetRoundingEpsilon, 44,
+                                            "Mirror needs a 44 pt touch target; actual \(mirror.frame)")
             XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(popup.frame))
-            let side = orientation == .portrait ? "portrait" : "landscape"
             capture(app, name: "native-font-pencil-mirror-\(side)", entireScreen: true)
             var measured = ["orientation=\(side)", "os=\(ProcessInfo.processInfo.operatingSystemVersionString)",
                             "window=\(app.frame)", "popup=\(popup.frame)", "mirror=\(mirror.frame)",
