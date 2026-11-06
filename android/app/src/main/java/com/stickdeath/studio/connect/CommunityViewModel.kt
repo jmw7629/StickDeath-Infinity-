@@ -7,6 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.stickdeath.studio.Document
+import com.stickdeath.studio.StudioViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -24,6 +26,7 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     private val lifecycleClient = AccountLifecycleClient(gateway)
     private val notifications = NotificationsClient(gateway)
     private val rooms = RoomsClient(gateway)
+    private val projectHandoff = RoomProjectHandoffClient(gateway)
     private val calendarClient = CalendarClient(gateway)
     /** Process-wide, so the Studio editor and this panel see the same shared-room session. */
     val roomSession = RoomRuntime.coordinator(application)
@@ -54,7 +57,14 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     var roomPreview by mutableStateOf<Load<InvitationPreview>>(Load.Idle); private set
     var roomCreating by mutableStateOf(false); private set
     var roomInvitationWorking by mutableStateOf(false); private set
-    val roomsBusy get() = busy || roomCreating || roomInvitationWorking
+    val roomsBusy get() = busy || roomCreating || roomInvitationWorking || projectHandoffBusy
+    var roomSnapshots by mutableStateOf<Map<String, Load<RoomProjectSnapshot?>>>(emptyMap()); private set
+    var projectHandoffBusy by mutableStateOf(false); private set
+    var projectHandoffStatus by mutableStateOf(""); private set
+    data class PendingProjectReceipt(val room: String, val snapshot: RoomProjectSnapshot, val localProjectID: String)
+    var pendingProjectReceipt by mutableStateOf<PendingProjectReceipt?>(null); private set
+    @Volatile private var projectHandoffOperation = 0L
+    @Volatile private var projectHandoffCancelled = true
     private var roomsWindowRequested = false
     private var roomsAppForeground = false
     @Volatile private var roomsWindowVisible = false
@@ -197,6 +207,8 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
         roomReadEpoch++; roomCreateOperation++; roomInviteOperation++
         roomCreation = null; pendingRoomShare = null; roomPreview = Load.Idle; reviewedRoomCode = null
         roomCreating = false; roomInvitationWorking = false
+        cancelProjectHandoff()
+        roomSnapshots = emptyMap(); projectHandoffStatus = ""; pendingProjectReceipt = null
     }
 
     // MARK: War Room
@@ -324,6 +336,8 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
         if (roomsWindowVisible == visible) return
         roomsWindowVisible = visible
         if (!visible) {
+            cancelProjectHandoff()
+            roomSnapshots = roomSnapshots.mapValues { if (it.value is Load.Loading) Load.Idle else it.value }
             roomReadEpoch++
             if (myRooms is Load.Loading) myRooms = Load.Idle
             if (pendingRequests is Load.Loading) pendingRequests = Load.Idle
@@ -347,7 +361,7 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
     private fun roomAct(progress: String, success: String, block: () -> Unit, done: (Boolean) -> Unit = {}) {
-        if (!requireRoomMember() || roomCreating || roomInvitationWorking) return
+        if (!requireRoomMember() || roomCreating || roomInvitationWorking || projectHandoffBusy) return
         val epoch = roomReadEpoch; val member = viewer
         act(progress, success, {
             if (!roomsWindowVisible || roomReadEpoch != epoch || viewer != member) throw CommunityException.Stale()
@@ -467,6 +481,98 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }) { rooms.summary(room.id) }
         roomFetch<List<RoomMember>>({ roomMembers = roomMembers + (room.id to it) }) { rooms.members(room.id) }
+    }
+
+    // Explicit snapshot handoff. No reads/uploads run merely because a window is mounted/opened.
+    private data class ProjectHandoffResult(val snapshot: RoomProjectSnapshot?, val text: String,
+        val receipt: PendingProjectReceipt? = null, val imported: Boolean = false)
+    private fun projectHandoffReadable(): Boolean {
+        val member = manager.state as? AccountState.SignedIn
+        return roomsWindowVisible && manager.isConfigured && member != null && !member.isAnonymous &&
+            member.provider != RECOVERY_PROVIDER && member.userId == lastAccount
+    }
+    fun cancelProjectHandoff() {
+        projectHandoffCancelled = true; projectHandoffOperation++
+        if (projectHandoffBusy) projectHandoffStatus = "Handoff stopped. An already imported device copy is retained; an unfinished server upload expires within an hour. Check the sent copy to withdraw it."
+        projectHandoffBusy = false
+    }
+    private fun runProjectHandoff(room: RoomSummary, progress: String, studio: StudioViewModel? = null,
+        block: (RoomDetail, String, () -> Boolean) -> ProjectHandoffResult) {
+        if (!projectHandoffReadable() || roomsBusy) return
+        val detail = (roomDetails[room.id] as? Load.Loaded<RoomDetail>)?.value ?: run { projectHandoffStatus = "Open and refresh this room before transferring a project."; return }
+        val member = viewer ?: return
+        val generation = manager.generation; val epoch = roomReadEpoch
+        val operation = ++projectHandoffOperation
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MINUTES.toNanos(5)
+        projectHandoffCancelled = false; projectHandoffBusy = true; projectHandoffStatus = progress
+        val live = { !projectHandoffCancelled && operation == projectHandoffOperation && projectHandoffReadable() &&
+            generation == manager.generation && viewer == member && epoch == roomReadEpoch && System.nanoTime() < deadline }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (!live()) throw CancellationException("Handoff stopped before it started.")
+                block(detail, member, live)
+            } }
+            // Local library refresh is not an account request and never adopts/opens the new copy.
+            if (result.getOrNull()?.imported == true) studio?.refresh()
+            if (operation != projectHandoffOperation || generation != manager.generation || viewer != member) return@launch
+            projectHandoffBusy = false
+            result.onSuccess { completed ->
+                if (roomsWindowVisible && epoch == roomReadEpoch) {
+                    roomSnapshots = roomSnapshots + (room.id to Load.Loaded(completed.snapshot))
+                    pendingProjectReceipt = completed.receipt ?: pendingProjectReceipt?.takeIf { it.room != room.id }
+                    projectHandoffStatus = completed.text
+                }
+            }.onFailure { projectHandoffStatus = it.message ?: "The handoff was not confirmed. Check the room before retrying; any imported device copy is retained." }
+        }
+    }
+    fun checkRoomProjectCopy(room: RoomSummary) = runProjectHandoff(room, "Checking the room's sent copy…") { detail, _, live ->
+        val snapshot = projectHandoff.current(detail, live)
+        ProjectHandoffResult(snapshot, if (snapshot == null) "No shared project copy is currently waiting on the server." else "Checked the current server copy. Downloading or sending still requires your explicit consent.",
+            pendingProjectReceipt?.takeIf { it.room != room.id || it.snapshot == snapshot })
+    }
+    fun sendRoomProjectCopy(room: RoomSummary, studio: StudioViewModel, snapshot: Document, consent: Boolean) {
+        if (!consent || studio.document?.id != snapshot.id || studio.document?.revision != snapshot.revision) {
+            projectHandoffStatus = "Review and consent to the current open project before sending. Nothing was sent."; return
+        }
+        runProjectHandoff(room, "Sending the complete Android backup, including its managed media…") { detail, member, live ->
+            require(detail.projectID == snapshot.id && detail.ownerId == member) { "Open the owner's shared project before sending its copy." }
+            val bytes = studio.encodeRoomBackup(snapshot) { if (!live()) throw CancellationException("Handoff stopped before encoding completed.") }
+            val offered = projectHandoff.send(detail, member, bytes, live)
+            ProjectHandoffResult(offered, "The server verified the full Android backup. Approved members can consent to import it on Android; it expires after 72 hours at the latest. Already imported copies stay theirs.")
+        }
+    }
+    fun receiveRoomProjectCopy(room: RoomSummary, studio: StudioViewModel, selected: RoomProjectSnapshot, consent: Boolean) {
+        if (!consent || selected.mine || selected.state != "available") { projectHandoffStatus = "Review and consent to this exact copy before importing it."; return }
+        if (selected.byteSize > 24 * 1024 * 1024) { projectHandoffStatus = "This copy exceeds Android's existing 24 MiB local backup limit. Nothing was downloaded or imported."; return }
+        runProjectHandoff(room, "Receiving and verifying the selected project copy…", studio) { detail, member, live ->
+            val bytes = projectHandoff.receive(detail, selected, live)
+            val restored = studio.importRoomBackup(bytes, member, selected.id, selected.projectRef, selected.sha256) {
+                if (!live()) throw CancellationException("Handoff stopped. Any already committed device copy is retained; no new receipt is sent.")
+            }
+            val pending = PendingProjectReceipt(room.id, selected, restored.document.id)
+            // Import is already committed and re-opened. A receipt failure must not imply its
+            // deletion or cause a duplicate import on retry (the private scoped ledger reuses it).
+            try {
+                val receipt = projectHandoff.receipt(detail, selected, live)
+                ProjectHandoffResult(null, "${if (restored.alreadyImported) "Reused" else "Imported"} ${restored.document.name} in Studio Projects as an independent editable copy. Existing projects and the open editor are unchanged. $receipt", imported = true)
+            } catch (error: Exception) {
+                ProjectHandoffResult(selected, "${restored.document.name} was imported and reopened successfully. Its server receipt is pending: ${error.message ?: "not confirmed"} Retry the receipt, not the import.", pending, imported = true)
+            }
+        }
+    }
+    fun retryRoomProjectReceipt(room: RoomSummary) {
+        val pending = pendingProjectReceipt?.takeIf { it.room == room.id } ?: return
+        runProjectHandoff(room, "Confirming receipt for the already imported device copy…") { detail, _, live ->
+            val receipt = projectHandoff.receipt(detail, pending.snapshot, live)
+            ProjectHandoffResult(null, "Your independent device copy is retained. $receipt")
+        }
+    }
+    fun withdrawRoomProjectCopy(room: RoomSummary, selected: RoomProjectSnapshot, consent: Boolean) {
+        if (!consent || !selected.mine) return
+        runProjectHandoff(room, "Withdrawing the room's server copy…") { detail, member, live ->
+            val verified = projectHandoff.revoke(detail, member, selected, live)
+            ProjectHandoffResult(null, if (verified) "The server verified deletion of its copy. Members' already imported projects are unchanged." else "Withdrawal confirmed; deletion verification was not supplied. Members' device copies are unchanged.")
+        }
     }
     fun mintInvitation(room: RoomSummary) {
         if (!requireRoomMember() || roomsBusy) return

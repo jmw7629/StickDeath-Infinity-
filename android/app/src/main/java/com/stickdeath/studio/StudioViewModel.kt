@@ -1184,6 +1184,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             finally { busy = false }
         }
     }
+    /** Rooms use the editor's existing store owner, without changing/opening/closing its document,
+     * history, export consumers or launchers. Blocking helpers are called only on Dispatchers.IO. */
+    internal fun encodeRoomBackup(snapshot: Document, check: () -> Unit): ByteArray {
+        check()
+        return store.encode(snapshot).also { check() }
+    }
+    internal fun importRoomBackup(bytes: ByteArray, account: String, snapshot: String, projectRef: String,
+        sha256: String, check: () -> Unit): ProjectStore.RoomImport =
+        store.importRoomProject(bytes, account, snapshot, projectRef, sha256, check)
     fun open(id: String) {
         if (busy || document != null) return
         busy = true

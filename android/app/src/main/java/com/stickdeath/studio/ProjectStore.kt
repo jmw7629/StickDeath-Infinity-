@@ -58,6 +58,184 @@ class ProjectStore(context: Context) {
         val source = decode(input)
         return saveCopy(source, source.name.take(111) + " restored")
     }
+    /** Room imports are independent root identities, retaining the original frame/layer/artwork
+     * identities and every embedded media byte. This does not attach the copy to command sync:
+     * the current server snapshot contract does not carry a captured command-stream position. */
+    data class RoomImport(val document: Document, val alreadyImported: Boolean)
+    /** Instrumentation fault seam; unset in production. It interrupts real storage operations,
+     * rather than replacing the production decoder, ledger, sync or publication implementation. */
+    internal var roomImportCheckpoint: ((String) -> Unit)? = null
+    @Synchronized fun importRoomProject(bytes: ByteArray, account: String, snapshot: String,
+        projectRef: String, sha256: String, check: () -> Unit): RoomImport {
+        fun uuid(value: String): String = UUID.fromString(value).toString().also { require(it == value) }
+        uuid(account); uuid(snapshot)
+        require(Regex("[a-f0-9]{64}").matches(sha256) && bytes.size in 1..24 * 1024 * 1024 &&
+            com.stickdeath.studio.connect.RoomProjectHandoffPolicy.sha256(bytes) == sha256) { "Room backup integrity or local size check failed. Nothing was imported." }
+        check()
+        val source = decode(bytes.inputStream()) // Existing full Android decoder / strict Swift subset.
+        require(com.stickdeath.studio.connect.RoomProjectShare.projectID(projectRef) == source.id.lowercase()) { "The backup is not the room's shared project. Nothing was imported." }
+        check()
+        val receiptRoot = File(directory.parentFile, "room-project-imports").apply { require(isDirectory || mkdir()) }
+        val receipts = File(receiptRoot, account).apply { require(isDirectory || mkdir()) }
+        syncRoomDirectory(receiptRoot.parentFile!!)
+        syncRoomDirectory(receiptRoot)
+        syncRoomDirectory(receipts)
+        val ledger = AtomicFile(File(receipts, "$snapshot.json"))
+        val record = if (ledger.baseFile.exists() || File(ledger.baseFile.path + ".bak").exists()) {
+            val raw = ledger.openRead().use { input -> input.readBytesBounded(4096) }
+            JSONObject(String(raw, Charsets.UTF_8)).also {
+                require(it.getInt("version") == 1 && it.getString("account") == account && it.getString("snapshot") == snapshot &&
+                    it.getString("projectRef") == projectRef && it.getString("sha256") == sha256) { "The saved import receipt differs from this copy. Nothing was overwritten." }
+                uuid(it.getString("localID"))
+            }
+        } else {
+            JSONObject().put("version", 1).put("account", account).put("snapshot", snapshot).put("projectRef", projectRef)
+                .put("sha256", sha256).put("localID", newID()).put("importedAt", System.currentTimeMillis()).put("verified", false)
+        }
+        // Recommit and verify even a recovered unverified binding before any project write.
+        // AtomicFile.finishWrite can log an I/O failure without throwing; it is not proof alone.
+        check(); writeRoomLedger(ledger, record)
+        roomImportCheckpoint?.invoke("binding-durable")
+        val localID = record.getString("localID")
+        require(localID != source.id) { "Import identity collision. Nothing was overwritten." }
+        val copy = source.copy(id = localID, name = source.name.take(110) + " room copy", modified = record.getLong("importedAt")).validated()
+        val target = File(directory, "$localID.json")
+        val existing = roomPathExists(target) || roomPathExists(File(target.path + ".bak"))
+        if (record.getBoolean("verified") && existing) {
+            // A legitimate subsequent edit may have its own AtomicFile recovery state. Reuse it;
+            // never overwrite the recipient's newer document with the original snapshot.
+            val reopened = load(localID)
+            cleanRoomStage(receipts, record)
+            check()
+            return RoomImport(reopened, true)
+        }
+        require(!roomPathExists(File(target.path + ".bak")) && !roomPathExists(File(target.path + ".new"))) {
+            "An existing project has recovery data at the chosen identity. Nothing was overwritten."
+        }
+        if (record.getBoolean("verified")) { record.put("verified", false); writeRoomLedger(ledger, record) }
+        val expected = encode(copy)
+        if (!roomPathExists(target)) {
+            check()
+            var stage = roomStage(receipts, record, snapshot)
+            if (stage == null || !roomPathExists(stage)) {
+                stage = File.createTempFile("room-$snapshot-", ".stage", receipts)
+                val identity = android.system.Os.lstat(stage.absolutePath)
+                record.put("stageName", stage.name).put("stageDev", identity.st_dev).put("stageIno", identity.st_ino)
+                // Persist ownership of this private inode BEFORE any project bytes are written.
+                writeRoomLedger(ledger, record)
+            }
+            val ownedStage = requireNotNull(stage)
+            require(roomStageMatches(ownedStage, record, false)) { "The private staging file changed. Nothing was overwritten." }
+            roomImportCheckpoint?.invoke("stage-bound")
+            writeRoomStage(ownedStage, record, expected)
+            checkedRoomProject(ownedStage, expected, localID)
+            roomImportCheckpoint?.invoke("stage-reopened")
+            check()
+            syncRoomDirectory(directory.parentFile!!)
+            // API26 Files.createLink is a no-replace hard link: an existing final name is an error.
+            // No ATOMIC_MOVE/rename target-replacement assumption, empty final reservation, or
+            // copy-overwrite fallback. Unsupported filesystems fail with the private stage retained.
+            java.nio.file.Files.createLink(target.toPath(), ownedStage.toPath())
+            syncRoomDirectory(directory)
+            roomImportCheckpoint?.invoke("project-published")
+        }
+        // A crash after publication can only be recovered when this final inode is the one whose
+        // private stage identity was durably bound. Any unknown/colliding file remains untouched.
+        require(roomStageMatches(target, record, true)) { "The final project identity is already occupied. Nothing was overwritten." }
+        require(!roomPathExists(File(target.path + ".bak")) && !roomPathExists(File(target.path + ".new"))) {
+            "Project recovery data appeared before import verification. It is retained; no receipt was sent."
+        }
+        val reopened = checkedRoomProject(target, expected, localID)
+        roomImportCheckpoint?.invoke("project-reopened")
+        syncRoomDirectory(directory)
+        record.put("verified", true)
+        writeRoomLedger(ledger, record)
+        roomImportCheckpoint?.invoke("verified-ledger")
+        cleanRoomStage(receipts, record)
+        check() // A committed copy survives cancellation/account changes; no receipt follows them.
+        return RoomImport(reopened, existing)
+    }
+    private fun roomPathExists(path: File) = java.nio.file.Files.exists(path.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)
+    private fun roomStage(receipts: File, record: JSONObject, snapshot: String = record.getString("snapshot")): File? {
+        if (!record.has("stageName")) return null
+        val name = record.getString("stageName")
+        require(name.startsWith("room-$snapshot-") && name.endsWith(".stage") && name.length <= 240 &&
+            name == File(name).name && File(receipts, name).canonicalFile.parentFile == receipts.canonicalFile) { "Invalid private stage binding." }
+        return File(receipts, name)
+    }
+    private fun roomStageMatches(path: File, record: JSONObject, linked: Boolean): Boolean {
+        if (!record.has("stageDev") || !record.has("stageIno") || !roomPathExists(path)) return false
+        val s = android.system.Os.lstat(path.absolutePath)
+        return (s.st_mode and android.system.OsConstants.S_IFMT) == android.system.OsConstants.S_IFREG &&
+            s.st_dev == record.getLong("stageDev") && s.st_ino == record.getLong("stageIno") &&
+            s.st_uid == android.os.Process.myUid() && s.st_nlink in 1L..(if (linked) 2L else 1L)
+    }
+    private fun writeRoomStage(stage: File, record: JSONObject, bytes: ByteArray) {
+        val fd = android.system.Os.open(stage.absolutePath, android.system.OsConstants.O_WRONLY or
+            android.system.OsConstants.O_NOFOLLOW or android.system.OsConstants.O_CLOEXEC, 0)
+        try {
+            val s = android.system.Os.fstat(fd)
+            require(s.st_dev == record.getLong("stageDev") && s.st_ino == record.getLong("stageIno") &&
+                s.st_uid == android.os.Process.myUid() && s.st_nlink == 1L &&
+                (s.st_mode and android.system.OsConstants.S_IFMT) == android.system.OsConstants.S_IFREG) { "The owned private stage changed before writing." }
+            android.system.Os.ftruncate(fd, 0)
+            java.io.FileOutputStream(fd).use { stream ->
+                val first = bytes.size / 2
+                stream.write(bytes, 0, first)
+                roomImportCheckpoint?.invoke("stage-partial-write")
+                stream.write(bytes, first, bytes.size - first)
+                stream.fd.sync() // Throwing fsync; do not trust AtomicFile's logged-only finish.
+                roomImportCheckpoint?.invoke("stage-synced")
+            }
+        } finally { if (fd.valid()) android.system.Os.close(fd) }
+        syncRoomDirectory(stage.parentFile!!)
+    }
+    private fun checkedRoomProject(path: File, expected: ByteArray, id: String): Document {
+        require(java.nio.file.Files.isRegularFile(path.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) { "The staged project is not a regular file." }
+        val bytes = path.inputStream().use { it.readBytesBounded(24 * 1024 * 1024) }
+        require(bytes.contentEquals(expected)) { "The imported copy could not be verified after reopening. It is retained, and no server receipt was sent." }
+        return decode(bytes.inputStream()).also { require(it.id == id && encode(it).contentEquals(expected)) }
+    }
+    private fun cleanRoomStage(receipts: File, record: JSONObject) {
+        // Failure to remove this private duplicate never deletes or invalidates the published copy.
+        runCatching {
+            val stage = roomStage(receipts, record)
+            if (stage != null && roomStageMatches(stage, record, true) && stage.delete()) syncRoomDirectory(receipts)
+        }
+    }
+    private fun syncRoomDirectory(directory: File) {
+        val fd = android.system.Os.open(directory.absolutePath, android.system.OsConstants.O_RDONLY or
+            android.system.OsConstants.O_DIRECTORY or android.system.OsConstants.O_NOFOLLOW or android.system.OsConstants.O_CLOEXEC, 0)
+        try { android.system.Os.fsync(fd) } finally { android.system.Os.close(fd) }
+    }
+    private fun java.io.InputStream.readBytesBounded(limit: Int): ByteArray {
+        val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(1024)
+        while (true) {
+            val count = read(buffer); if (count < 0) break
+            require(output.size() + count <= limit) { "The local import receipt is invalid; nothing was overwritten." }
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
+    }
+    private fun writeRoomLedger(file: AtomicFile, record: JSONObject) {
+        val bytes = record.toString().toByteArray(Charsets.UTF_8)
+        require(bytes.size <= 4096)
+        val stream = file.startWrite()
+        try {
+            stream.write(bytes)
+            roomImportCheckpoint?.invoke("ledger-before-sync")
+            stream.fd.sync()
+            file.finishWrite(stream)
+        }
+        catch (error: Exception) { file.failWrite(stream); throw error }
+        roomImportCheckpoint?.invoke("ledger-after-finish")
+        val actual = file.openRead().use { it.readBytesBounded(4096) }
+        require(actual.contentEquals(bytes) && !roomPathExists(File(file.baseFile.path + ".bak")) &&
+            !roomPathExists(File(file.baseFile.path + ".new"))) { "The import identity journal was not committed. No further project write or receipt is allowed." }
+        syncRoomDirectory(file.baseFile.parentFile!!)
+        // Re-open the final name AFTER directory fsync; no stage/project publication can precede it.
+        require(file.baseFile.inputStream().use { it.readBytesBounded(4096) }.contentEquals(bytes)) { "The durable import identity journal differs. No further project write or receipt is allowed." }
+    }
     private fun decode(input: java.io.InputStream): Document {
         val output = java.io.ByteArrayOutputStream()
         val buffer = ByteArray(8192)
