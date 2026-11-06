@@ -41,6 +41,13 @@ struct ProfileView: View {
               id == UUID(uuidString: current) else { return nil }
         return user
     }
+    /// Only render the service snapshot for the currently signed-in account.
+    private var currentStatistics: CreatorStatsResponse? {
+        guard authVM.isAuthenticated,
+              let account = authVM.userId.flatMap(UUID.init(uuidString:)),
+              let stats, stats.subject == account else { return nil }
+        return stats
+    }
     private var displayName: String {
         let name = profile?.username?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return name.isEmpty ? (authVM.isAuthenticated ? "Your profile" : "Guest") : name
@@ -104,7 +111,7 @@ struct ProfileView: View {
                         case .publishing: PublishingJobsView()
                         case .account: ProfileSettingsView()
                         case .analytics:
-                            detail("Analytics unavailable", "Views, likes and engagement have not been loaded. No activity totals are estimated.")
+                            analyticsPage
                         case .subscription: EmptyView()
                         }
                     }
@@ -257,12 +264,12 @@ struct ProfileView: View {
             VStack(alignment: .leading, spacing: 14) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 220 : 125), spacing: 2)], spacing: 2) {
                     statistic(localProjectCount.map(String.init) ?? "—", "Projects", source: "On this device")
-                    statistic(stats?.published_videos.map(String.init) ?? "—", "Published", source: "From the service")
-                    statistic(stats?.followers.map(String.init) ?? "—", "Followers", source: "From the service")
-                    statistic(stats?.likes_received.map(String.init) ?? "—", "Likes", source: "From the service")
+                    statistic(currentStatistics?.published_videos.map(String.init) ?? "—", "Published", source: "From the service")
+                    statistic(currentStatistics?.followers.map(String.init) ?? "—", "Followers", source: "From the service")
+                    statistic(currentStatistics?.likes_received.map(String.init) ?? "—", "Likes", source: "From the service")
                 }
                 .accessibilityIdentifier("profile.statistics")
-                Text("Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall. A dash means a total was not loaded.")
+                Text("Projects counts saved animations on this device. Published and Likes come from eligible videos currently visible on the wall. Followers and Following are current account relationships. A dash means a total was not loaded.")
                     .font(.caption).foregroundStyle(ProfileDesktopPalette.secondaryInk)
                 if let localProjectProblem {
                     ProfileDesktopNotice(text: localProjectProblem, icon: "externaldrive.badge.exclamationmark")
@@ -271,7 +278,7 @@ struct ProfileView: View {
                     ProfileDesktopNotice(text: statsProblem, icon: "wifi.exclamationmark")
                         .accessibilityIdentifier("profile.statistics.problem")
                 }
-                if let following = stats?.following {
+                if let following = currentStatistics?.following {
                     Text("Following \(following) creator\(following == 1 ? "" : "s").")
                         .font(.caption).foregroundStyle(ProfileDesktopPalette.secondaryInk)
                 }
@@ -301,7 +308,7 @@ struct ProfileView: View {
                 VStack(spacing: 0) {
                     row("Publishing", subtitle: "Review, permissions & destination jobs", icon: "square.and.arrow.up", destination: .publishing)
                     row("Records & badges", subtitle: "Choose what to display publicly", icon: "trophy", destination: .records)
-                    row("Analytics", subtitle: "Activity availability", icon: "chart.bar", destination: .analytics)
+                    row("Analytics", subtitle: "Published work, audience & device projects", icon: "chart.bar", destination: .analytics)
                 }
             }
             ProfileDesktopWindow(title: "Account", icon: "gearshape") {
@@ -366,12 +373,35 @@ struct ProfileView: View {
         }
         .buttonStyle(.plain)
     }
-    private func detail(_ title: String, _ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(title).font(.specialElite(20))
-            Text(text).font(.specialElite(14)).foregroundStyle(.secondary)
-            Spacer()
-        }.padding().frame(maxWidth: .infinity, alignment: .leading)
+    private var analyticsPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                ProfileDesktopWindow(title: "About this snapshot", icon: "chart.bar") {
+                    Text("Your latest loaded totals")
+                        .font(.specialElite(20, relativeTo: .title2))
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Account totals come from the service. Projects counts saved animations on this device, independently of your account.")
+                        .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    if !authVM.isAuthenticated {
+                        Text("Account analytics require sign-in. Close Analytics and choose Sign in on your profile to load them. Device project totals remain available to guests.")
+                            .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    }
+                }
+                // Reuse the same snapshot and explicit refresh/retry action; opening
+                // Analytics does not start another request or maintain a second cache.
+                statisticsWindow
+                ProfileDesktopWindow(title: "How to read these totals", icon: "info.circle") {
+                    Text("Published counts eligible videos currently visible on the wall; Likes counts the likes on those videos. These totals can change when work is removed, expires or changes visibility; they are not lifetime activity totals.")
+                        .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    Text("Followers and Following are current service counts. Views, watch time, historical trends and engagement rates are not supplied by this service and are not estimated here.")
+                        .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                }
+            }
+            .frame(maxWidth: 780)
+            .padding(20)
+            .frame(maxWidth: .infinity)
+        }
+        .background(ProfileDesktopWallpaper().ignoresSafeArea())
     }
     @MainActor private func loadStatistics() async {
         let id = UUID(); statsRequestID = id
