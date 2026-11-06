@@ -59,11 +59,22 @@ before = inputs()
 if not before:
     raise RuntimeError("Native input inventory is empty")
 (OUT / "input-sha256.json").write_text(json.dumps(before, indent=2) + "\n")
+LIBRARY_OFFLINE_SETTINGS = (
+    "SPATTER_BACKEND_URL", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY", "LIVEKIT_WS_URL",
+    "SDI_UPLOAD_SERVICE_URL", "SDI_RENDER_PREVIEW_URL", "SDI_PUBLISHING_CONSENT_VERSION", "SDI_PUBLISHING_TERMS_URL",
+    "SDI_OAUTH_PROVIDERS", "SDI_MICROSOFT_TENANT", "SDI_STOREKIT_PLAN_4_99_PRODUCT_ID",
+    "SDI_STOREKIT_PLAN_9_99_PRODUCT_ID", "SDI_STOREKIT_PLAN_19_99_PRODUCT_ID",
+    "SDI_STOREKIT_PLAN_4_99_ANNUAL_PRODUCT_ID", "SDI_STOREKIT_PLAN_9_99_ANNUAL_PRODUCT_ID",
+    "SDI_STOREKIT_CREDITS_SMALL_PRODUCT_ID", "SDI_STOREKIT_CREDITS_LARGE_PRODUCT_ID",
+    "SDI_BILLING_ANNUAL_OWNER_CONFIGURED",
+)
+
 args = ["xcodebuild", "-project", "StickDeathInfinity.xcodeproj", "-scheme", "StickDeathInfinity",
         "-configuration", "Debug", "-destination", "generic/platform=iOS Simulator",
         "-derivedDataPath", str(BUILD / "DerivedData"), "-clonedSourcePackagesDirPath", str(BUILD / "Packages"),
         "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
-        "-jobs", "2", "CODE_SIGNING_ALLOWED=NO", "build"]
+        "-jobs", "2", "CODE_SIGNING_ALLOWED=NO"]
+args += [key + "=" for key in LIBRARY_OFFLINE_SETTINGS] + ["build"]
 (OUT / "argv.json").write_text(json.dumps(args, indent=2) + "\n")
 receipt = {"sourceCommit": git("rev-parse", "HEAD"), "sourceTree": git("rev-parse", "HEAD^{tree}"),
            "toolchain": xcode.strip(), "action": "unsigned iOS Simulator app build",
@@ -108,15 +119,6 @@ if receipt["status"] != "passed":
 LIBRARY_SCOPE = "isolated native empty project library only; not Studio journey acceptance"
 LIBRARY_ARGUMENTS = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
                      "-sdi.guest.chosen.v1", "YES", "-tutorial_completed", "YES"]
-LIBRARY_OFFLINE_SETTINGS = (
-    "SPATTER_BACKEND_URL", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY", "LIVEKIT_WS_URL",
-    "SDI_UPLOAD_SERVICE_URL", "SDI_RENDER_PREVIEW_URL", "SDI_PUBLISHING_CONSENT_VERSION", "SDI_PUBLISHING_TERMS_URL",
-    "SDI_OAUTH_PROVIDERS", "SDI_MICROSOFT_TENANT", "SDI_STOREKIT_PLAN_4_99_PRODUCT_ID",
-    "SDI_STOREKIT_PLAN_9_99_PRODUCT_ID", "SDI_STOREKIT_PLAN_19_99_PRODUCT_ID",
-    "SDI_STOREKIT_PLAN_4_99_ANNUAL_PRODUCT_ID", "SDI_STOREKIT_PLAN_9_99_ANNUAL_PRODUCT_ID",
-    "SDI_STOREKIT_CREDITS_SMALL_PRODUCT_ID", "SDI_STOREKIT_CREDITS_LARGE_PRODUCT_ID",
-    "SDI_BILLING_ANNUAL_OWNER_CONFIGURED",
-)
 
 def library_offline_preflight(info, environment):
     # Match AppConfig.configuredString: whitespace-only and unexpanded Xcode
