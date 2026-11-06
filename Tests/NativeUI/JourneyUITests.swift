@@ -156,13 +156,28 @@ final class JourneyUITests: XCTestCase {
                 revealFrames.append("attempt=\(attempt);scroll=\(scrollID);viewport=\(viewport);mirror=\(target);visible=\(fullyVisible)")
                 if fullyVisible && mirror.isHittable { break }
                 guard viewport.width > 0 && viewport.height > 0 else { break }
-                // AX can call an off-viewport hosted button hittable. Reveal its
-                // actual frame, including scrolling back after an overshoot.
-                if target.width > 0 && target.height > 0 && target.midY < viewport.midY {
-                    options.swipeDown(velocity: .slow)
-                } else {
-                    options.swipeUp(velocity: .slow)
-                }
+                // Full flicks overshot this 98 pt viewport in the hosted run.
+                // Keep both endpoints in its middle, measure toward the target,
+                // and hold before release so the pan does not add momentum.
+                guard !fullyVisible, target.width > 0, target.height > 0,
+                      target.width <= viewport.width, target.height <= viewport.height else { break }
+                let deltaY = viewport.midY - target.midY
+                let travel = min(abs(deltaY), viewport.height * 0.4)
+                guard travel > 0 else { break }
+                let direction: CGFloat = deltaY < 0 ? -1 : 1
+                let start = CGPoint(x: viewport.midX, y: viewport.midY - direction * travel / 2)
+                let end = CGPoint(x: start.x, y: start.y + direction * travel)
+                let bounds = app.frame
+                guard bounds.width > 0 && bounds.height > 0 else { break }
+                let from = app.coordinate(withNormalizedOffset: CGVector(
+                    dx: (start.x - bounds.minX) / bounds.width,
+                    dy: (start.y - bounds.minY) / bounds.height))
+                let to = app.coordinate(withNormalizedOffset: CGVector(
+                    dx: (end.x - bounds.minX) / bounds.width,
+                    dy: (end.y - bounds.minY) / bounds.height))
+                revealFrames.append("drag=\(start)->\(end);travel=\(travel)")
+                from.press(forDuration: 0.1, thenDragTo: to,
+                           withVelocity: .slow, thenHoldForDuration: 0.25)
             }
             let viewport = options.exists
                 ? options.frame.intersection(popup.frame).intersection(app.frame) : CGRect.null
