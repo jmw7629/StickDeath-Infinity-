@@ -227,9 +227,9 @@ struct MainTabView: View {
             ForEach(AppTab.allCases, id: \.self) { subject in
                 Button { open(subject) } label: {
                     VStack(spacing: 3) {
-                        Image(systemName: subject.symbol).font(.system(size: 17, weight: .bold))
-                        Text(subject.label).font(.system(size: 9, weight: .bold, design: .monospaced))
-                            .lineLimit(1).minimumScaleFactor(0.7)
+                        Image(systemName: subject.symbol).font(.system(size: 20, weight: .bold))
+                        Text(subject.label).font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .lineLimit(1).minimumScaleFactor(0.9)
                     }
                     .frame(maxWidth: .infinity, minHeight: 52)
                     .background(subject == frontWindow ? subject.desktopAccent : SDIDesktopPalette.paper)
