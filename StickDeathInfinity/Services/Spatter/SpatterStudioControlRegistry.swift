@@ -41,7 +41,13 @@ enum SpatterStudioControlRegistry {
         var explanation: String {
             switch route {
             case .instructions(let names):
+                if names.contains("imagePack") {
+                    return "\(title): explicit Apply can verify/install/remove/cancel known optional picture packs through the shared owner. Pack actions change only library copies, not the project or Undo history; adding a picture is a separate edit."
+                }
                 let list = names.count == 1 ? "the " + names[0] + " instruction" : "these instructions: " + names.joined(separator: ", ")
+                if names.allSatisfy({ ["selectByID", "areaSelection", "wandSelection"].contains($0) }) {
+                    return "\(title): Spatter can prepare \(list). You still choose Apply. Selection changes no project, save or Undo history."
+                }
                 return "\(title): Spatter can prepare \(list) for this control. You still choose Apply, and one Undo reverses it."
             case .manual(let reason): return "\(title): manual only. \(reason)"
             case .blocked(let reason): return "\(title): Spatter will not do this. \(reason)"
@@ -56,35 +62,34 @@ enum SpatterStudioControlRegistry {
     /// what it would change before Apply.
     static let pixelToolNote = "This tool paints pixel effects along your touch path; a typed route could not preview or verify the result before Apply, so use the tool directly."
     static let viewNote = "View navigation only. It never changes the project, so Spatter does not operate it."
-    static let freehandNote = "Spatter has no instruction for this tool yet. Draw with the tool directly; Spatter's brush-stroke instruction covers brush families only."
 
     /// Panel keys are StudioPanelType raw values. The SwiftUI panel maps the
     /// enum with an exhaustive switch, so a new panel cannot compile unmapped.
     static let controls: [Control] = [
         // Primary toolbar, in the toolbar's order.
         .init(id: "tool.move", surface: .toolbar, title: "Move", route: .instructions([
-            "selectionTranslate", "selectionTransform", "selectionReflect", "drawingDuplicate", "artworkOrder",
+            "selectionTranslate", "selectionTransform", "selectionReflect", "drawingDuplicate", "artworkOrder", "artworkTransform",
             "imageReflection", "imageRotation", "imageCrop", "imagePlacement", "textUpdate", "selectByID"])),
         .init(id: "tool.lasso", surface: .toolbar, title: "Lasso", route: .instructions(["areaSelection", "selectByID"])),
         .init(id: "tool.wand", surface: .toolbar, title: "Wand", route: .instructions(["wandSelection"])),
         .init(id: "tool.brush", surface: .toolbar, title: "Brush", route: .instructions(["brushStroke"])),
-        .init(id: "tool.pencil", surface: .toolbar, title: "Pencil", route: .manual(freehandNote)),
-        .init(id: "tool.pen", surface: .toolbar, title: "Pen", route: .manual(freehandNote)),
-        .init(id: "tool.marker", surface: .toolbar, title: "Marker", route: .manual(freehandNote)),
-        .init(id: "tool.crayon", surface: .toolbar, title: "Crayon", route: .manual(freehandNote)),
-        .init(id: "tool.line", surface: .toolbar, title: "Line", route: .manual("Draw single lines directly. Spatter's stick-figure and brief instructions generate whole frames of lines on new layers instead.")),
-        .init(id: "tool.rectangle", surface: .toolbar, title: "Rect", route: .manual("Draw rectangles directly; Spatter has no rectangle instruction.")),
-        .init(id: "tool.circle", surface: .toolbar, title: "Circle", route: .manual("Draw single circles directly. Spatter's circle-motion instruction appends whole frames of a moving circle on a new layer instead.")),
+        .init(id: "tool.pencil", surface: .toolbar, title: "Pencil", route: .instructions(["freehandStroke"])),
+        .init(id: "tool.pen", surface: .toolbar, title: "Pen", route: .instructions(["freehandStroke"])),
+        .init(id: "tool.marker", surface: .toolbar, title: "Marker", route: .instructions(["freehandStroke"])),
+        .init(id: "tool.crayon", surface: .toolbar, title: "Crayon", route: .instructions(["freehandStroke"])),
+        .init(id: "tool.line", surface: .toolbar, title: "Line", route: .instructions(["shape"])),
+        .init(id: "tool.rectangle", surface: .toolbar, title: "Rect", route: .instructions(["shape"])),
+        .init(id: "tool.circle", surface: .toolbar, title: "Circle", route: .instructions(["shape"])),
         .init(id: "tool.fill", surface: .toolbar, title: "Fill", route: .instructions(["fill"])),
-        .init(id: "tool.gradient", surface: .toolbar, title: "Gradient", route: .manual(pixelToolNote)),
+        .init(id: "tool.gradient", surface: .toolbar, title: "Gradient", route: .instructions(["gradientFill"])),
         .init(id: "tool.eyedropper", surface: .toolbar, title: "Dropper", route: .manual("Sampling a color reads the canvas under your finger; give colors to Spatter as #RRGGBB instead.")),
         .init(id: "tool.eraser", surface: .toolbar, title: "Eraser", route: .instructions(["selectedErasure"])),
-        .init(id: "tool.smudge", surface: .toolbar, title: "Smudge", route: .manual(pixelToolNote)),
-        .init(id: "tool.sharpen", surface: .toolbar, title: "Sharpen", route: .manual(pixelToolNote)),
-        .init(id: "tool.dodge", surface: .toolbar, title: "Dodge", route: .manual(pixelToolNote)),
-        .init(id: "tool.burn", surface: .toolbar, title: "Burn", route: .manual(pixelToolNote)),
-        .init(id: "tool.blur", surface: .toolbar, title: "Blur", route: .manual(pixelToolNote)),
-        .init(id: "tool.text", surface: .toolbar, title: "Text", route: .instructions(["textUpdate"])),
+        .init(id: "tool.smudge", surface: .toolbar, title: "Smudge", route: .instructions(["pixelEffect"])),
+        .init(id: "tool.sharpen", surface: .toolbar, title: "Sharpen", route: .instructions(["pixelEffect"])),
+        .init(id: "tool.dodge", surface: .toolbar, title: "Dodge", route: .instructions(["pixelEffect"])),
+        .init(id: "tool.burn", surface: .toolbar, title: "Burn", route: .instructions(["pixelEffect"])),
+        .init(id: "tool.blur", surface: .toolbar, title: "Blur", route: .instructions(["pixelEffect"])),
+        .init(id: "tool.text", surface: .toolbar, title: "Text", route: .instructions(["textCreate", "textUpdate"])),
         .init(id: "tool.hand", surface: .toolbar, title: "Hand", route: .manual(viewNote)),
         .init(id: "tool.zoom", surface: .toolbar, title: "Zoom", route: .manual(viewNote)),
         // Tools present in the document model without a toolbar button.
@@ -98,7 +103,7 @@ enum SpatterStudioControlRegistry {
         // Panels and the single options popup.
         .init(id: "panel.none", surface: .canvas, title: "Canvas", route: .instructions(["navigation"])),
         .init(id: "panel.colorPicker", surface: .panel, title: "Color picker", route: .manual("Choosing a color is manual; instructions take colors inline as #RRGGBB.")),
-        .init(id: "panel.gradientEndColor", surface: .panel, title: "Gradient end color", route: .manual("Gradient brush instructions take both colors inline as #RRGGBB to #RRGGBB.")),
+        .init(id: "panel.gradientEndColor", surface: .panel, title: "Gradient end color", route: .manual("Gradient brush and canvas Gradient instructions take both colors inline; canvas Gradient also accepts a fade to transparent.")),
         .init(id: "panel.shapeFillColor", surface: .panel, title: "Shape fill color", route: .manual("Choosing a shape fill color is manual.")),
         .init(id: "panel.toolSettings", surface: .panel, title: "Tool options popup", route: .manual("Tool sizes, opacity, Hand, Zoom and Fit are set in the options popup by touch; instructions carry their own size and opacity.")),
         .init(id: "panel.projectSettings", surface: .panel, title: "Project settings", route: .instructions(["projectSettings", "projectRename", "grid", "onionSkin"])),
@@ -108,11 +113,11 @@ enum SpatterStudioControlRegistry {
         .init(id: "panel.framesViewer", surface: .panel, title: "Frames", route: .instructions([
             "frameAction", "frameCut", "frameExposure", "frameReverse", "frameDuplicateRange", "frameClipboard", "tween", "navigation"])),
         .init(id: "panel.audioTimeline", surface: .panel, title: "Audio timeline", route: .instructions(["audioClip", "audioTrack"])),
-        .init(id: "panel.soundLibrary", surface: .panel, title: "Sound library", route: .manual("You choose, preview and add licensed sounds yourself; Spatter edits clips already on the timeline.")),
+        .init(id: "panel.soundLibrary", surface: .panel, title: "Sound library", route: .instructions(["librarySound"])),
         .init(id: "panel.stickerEmoji", surface: .panel, title: "Stickers", route: .manual("Stickers are placed by touch.")),
         // Files, Photos and the camera stay with you: no instruction names a path,
         // URL or Photos item, and Spatter never opens those pickers itself.
-        .init(id: "panel.addImage", surface: .panel, title: "Add picture", route: .instructions(["libraryPicture"])),
+        .init(id: "panel.addImage", surface: .panel, title: "Add picture", route: .instructions(["libraryPicture", "imagePack"])),
         .init(id: "panel.backgroundLibrary", surface: .panel, title: "Backgrounds", route: .manual("Backgrounds are chosen and added by you; generated background images are not available.")),
         .init(id: "panel.menu", surface: .panel, title: "Studio menu", route: .manual("Menu commands such as saving copies are performed by you.")),
         .init(id: "panel.aiVoice", surface: .panel, title: "Voice", route: .manual("Voice recording and import are started by you; Spatter edits the resulting clip only after it is on the timeline.")),
@@ -293,8 +298,12 @@ struct SpatterContextSnapshot: Codable, Equatable {
             guard move, selectedDrawingCount > 0, selectedImageCount == 0 else { return .needs("Select one or more drawings with Move, without an image.") }
         case "imageReflection", "imageRotation", "imageCrop", "imagePlacement":
             guard move, selectedImageCount == 1, selectedDrawingCount == 0 else { return .needs("Select one image with Move and deselect drawings.") }
+        case "artworkTransform":
+            guard move, activeFrameNumber != nil, selectedDrawingCount + selectedImageCount > 0, displayedFrameNumber == activeFrameNumber else { return .needs("Select whole artwork with Move on the active frame; pixel-region/Wand selections are unavailable.") }
         case "artworkOrder":
             guard move, selectedDrawingCount + selectedImageCount > 0 else { return .needs("Select artwork with Move.") }
+        case "textCreate":
+            guard activeFrameNumber != nil, activeLayerVisible, activeLayerLockMode == "free" else { return .needs("Show the active layer and set its lock to Free before creating text.") }
         case "textUpdate":
             guard move, selectedDrawingCount == 1, selectedImageCount == 0 else { return .needs("Select exactly one text box with Move.") }
         case "selectedErasure":
@@ -311,11 +320,18 @@ struct SpatterContextSnapshot: Codable, Equatable {
             guard activeFrameNumber != nil, activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "position" else {
                 return .needs("Show the active drawing layer and set its lock to Free or Position.")
             }
+        case "pixelEffect", "gradientFill":
+            guard activeLayerVisible, activeLayerLockMode == "free", selectedImageCount == 0 else {
+                return .needs("Show the active layer with Free lock and deselect images; drawing/Wand selection is supported.")
+            }
+            guard height > 0, width > 0, width <= 4_194_304 / height else { return .needs("Use a canvas with at most 4,194,304 pixels for native raster effects.") }
+        case "librarySound":
+            guard activeFrameNumber != nil else { return .needs("Open the project frame before adding a library sound.") }
         case "libraryPicture":
             guard activeLayerVisible, activeLayerLockMode != "full" else { return .needs("Show and unlock the active layer.") }
         case "projectExport":
             guard !isDirty else { return .needs("Save the project first; export uses the saved revision.") }
-        case "brushStroke":
+        case "brushStroke", "freehandStroke", "shape":
             guard activeLayerVisible, activeLayerLockMode == "free" || activeLayerLockMode == "alpha" else { return .needs("Show and unlock the active layer.") }
         default: break
         }

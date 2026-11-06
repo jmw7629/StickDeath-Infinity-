@@ -233,16 +233,20 @@ class DraftPreviewStore:
         return sign
 
 
-def _secret_file(path: str) -> bytes:
+def read_private_draft_secret(path: str, *, minimum: int = 32, maximum: int = 16384) -> bytes:
     path = Path(path)
     if not path.is_absolute():
         raise ValueError("Secret file paths must be absolute.")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    # A FIFO is invalid configuration, so opening it must not wait for a writer.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as source:
         info = os.fstat(source.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or not 32 <= info.st_size <= 16384:
-            raise ValueError("Use a bounded private worker-owned signing key file.")
-        return source.read(16385)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or not minimum <= info.st_size <= maximum:
+            raise ValueError("Use a bounded private worker-owned secret file.")
+        value = source.read(maximum + 1)
+        if len(value) != info.st_size:
+            raise ValueError("The private secret file changed while being read.")
+        return value
 
 
 def draft_previews_from_env(environ: Optional[Mapping[str, str]] = None,
@@ -262,7 +266,7 @@ def draft_previews_from_env(environ: Optional[Mapping[str, str]] = None,
         raise ValueError(f"{ENV_RETENTION} must be a whole number of seconds.")
     if not re.fullmatch(r"[0-9]{1,13}", values[ENV_QUOTA]):
         raise ValueError(f"{ENV_QUOTA} must be a whole number of bytes.")
-    links = PreviewLinks(values[ENV_ORIGIN], _secret_file(values[ENV_KEY_FILE]), clock=clock)
+    links = PreviewLinks(values[ENV_ORIGIN], read_private_draft_secret(values[ENV_KEY_FILE]), clock=clock)
     from backend.ingestion.store import MAX_BYTES, UploadStore
     # Read-only use: the intake uploads' charged bytes; the same total quota covers both.
     quota = int(values[ENV_QUOTA])

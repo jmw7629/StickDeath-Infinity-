@@ -15,7 +15,7 @@ struct StudioHeaderBar: View {
         switch status.level {
         case .synced: dot = .green
         case .syncing: dot = .white.opacity(0.6)
-        case .waiting, .paused: dot = .orange
+        case .waiting, .paused, .diverged: dot = .orange
         case .conflict: dot = .red
         }
         return Menu {
@@ -53,9 +53,15 @@ struct StudioHeaderBar: View {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 14, weight: .bold))
-                    Text(vm.projectName)
-                        .font(.specialElite(14))
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(vm.projectName)
+                            .font(.specialElite(14))
+                            .lineLimit(1)
+                        Text("\(vm.fps) FPS · \(vm.frames.count) frames · \(vm.studioLayers.count) layers")
+                            .font(.specialElite(9))
+                            .foregroundColor(.white.opacity(0.35))
+                            .lineLimit(1)
+                    }
                 }
                 .foregroundColor(.white.opacity(0.8))
                 .frame(minWidth: 44, minHeight: 44)
@@ -63,11 +69,6 @@ struct StudioHeaderBar: View {
             }
             .accessibilityIdentifier("studio.back")
             
-            // Info pill
-            Text("\(vm.fps) FPS · \(vm.frames.count) frames · \(vm.studioLayers.count) layers")
-                .font(.specialElite(9))
-                .foregroundColor(.white.opacity(0.35))
-
             // Shared-room status (#232): shown only while a room's project is
             // open. Tapping shows the counts and any held-conflict decision;
             // it never blocks the canvas.

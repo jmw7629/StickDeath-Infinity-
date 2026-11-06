@@ -29,7 +29,7 @@ data class BundledSound(
 /** Local assets only. Oversized or unsupported sounds fail without truncation or substitution. */
 object BundledSounds {
     private const val ROOT = ""
-    private const val COUNT = 2127
+    private const val COUNT = 2212
     private const val MAX_CATALOGUE = 8 * 1024 * 1024
     private const val MAX_ENCODED = 4 * 1024 * 1024
     private val hashPattern = Regex("[0-9a-f]{64}")

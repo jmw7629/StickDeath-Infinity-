@@ -475,13 +475,14 @@ final class StudioExportService {
 
     enum ExportError: LocalizedError {
         case limitExceeded, unsafeDestination, renderFailed, encodeFailed, missingRaster, invalidRaster, unsupportedContent, invalidColor, alreadyExporting
-        case invalidImageCredit, verificationFailed, invalidFilename, unsupportedOption
+        case invalidImageCredit, verificationFailed, invalidFilename, unsupportedOption, watermarkDoesNotFit
         case cleanupFailed(URL)
         var errorDescription: String? {
             switch self {
             case .verificationFailed: return "A written PNG did not decode back to the rendered size. No export was published."
             case .invalidFilename: return "The export filename must use ASCII letters, digits, '-' or '_' (at most 40 characters)."
             case .unsupportedOption: return "Separate-layer export needs the PNG sequence format and at least one visible layer. No export was published."
+            case .watermarkDoesNotFit: return "The output frame is too small for the required SDI mark. No export was published."
             case .limitExceeded: return "This PNG export exceeds the current safe frame, image or output size limit. Use a smaller project; no partial export was published."
             case .unsafeDestination: return "Choose an existing app-owned export directory without symbolic links."
             case .renderFailed: return "Studio could not render the requested image. No export was published."
@@ -635,7 +636,7 @@ extension StudioExportService {
     /// bottom-right of one exported frame. It is drawn on a new bitmap copy, so
     /// the editable project, its originals and the source image never change.
     /// The output keeps the input's pixel size; margins keep it off the edge.
-    nonisolated static func watermarked(_ image: CGImage) throws -> CGImage {
+    nonisolated static func watermarked(_ image: CGImage, requiresVisibleMark: Bool = false) throws -> CGImage {
         let width = image.width, height = image.height
         guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -644,6 +645,31 @@ extension StudioExportService {
         }
         let full = CGRect(x: 0, y: 0, width: width, height: height)
         context.draw(image, in: full)
+        // A tiny canvas cannot hold the mark legibly; it is skipped there
+        // rather than covering the artwork unless this export requires it.
+        guard let (line, plate, padding, descent) = watermarkLayout(width: width, height: height) else {
+            guard !requiresVisibleMark else { throw ExportError.watermarkDoesNotFit }
+            guard let copy = context.makeImage() else { throw ExportError.renderFailed }
+            return copy
+        }
+        context.saveGState()
+        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.35))
+        context.addPath(CGPath(roundedRect: plate, cornerWidth: padding, cornerHeight: padding, transform: nil))
+        context.fillPath()
+        context.textMatrix = .identity
+        context.textPosition = CGPoint(x: plate.minX + padding, y: plate.minY + padding + descent)
+        CTLineDraw(line, context)
+        context.restoreGState()
+        guard let marked = context.makeImage() else { throw ExportError.renderFailed }
+        return marked
+    }
+
+    nonisolated static func validateWatermarkPlacement(width: Int, height: Int) throws {
+        guard watermarkLayout(width: width, height: height) != nil else { throw ExportError.watermarkDoesNotFit }
+    }
+
+    private nonisolated static func watermarkLayout(width: Int, height: Int)
+        -> (line: CTLine, plate: CGRect, padding: CGFloat, descent: CGFloat)? {
         // Small: about 4% of the shorter edge, never below 7 px or above 40 px.
         let shortEdge = CGFloat(min(width, height))
         let fontSize = max(7, min(40, shortEdge * 0.04))
@@ -658,22 +684,8 @@ extension StudioExportService {
         let padding = fontSize * 0.35, margin = max(3, fontSize * 0.5)
         let plate = CGRect(x: CGFloat(width) - margin - textWidth - padding * 2, y: margin,
                            width: textWidth + padding * 2, height: ascent + descent + padding * 2)
-        // A tiny canvas cannot hold the mark legibly; it is skipped there
-        // rather than covering the artwork.
-        guard plate.minX >= 0, plate.maxY <= CGFloat(height) else {
-            guard let copy = context.makeImage() else { throw ExportError.renderFailed }
-            return copy
-        }
-        context.saveGState()
-        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.35))
-        context.addPath(CGPath(roundedRect: plate, cornerWidth: padding, cornerHeight: padding, transform: nil))
-        context.fillPath()
-        context.textMatrix = .identity
-        context.textPosition = CGPoint(x: plate.minX + padding, y: plate.minY + padding + descent)
-        CTLineDraw(line, context)
-        context.restoreGState()
-        guard let marked = context.makeImage() else { throw ExportError.renderFailed }
-        return marked
+        guard plate.minX >= 0, plate.maxY <= CGFloat(height) else { return nil }
+        return (line, plate, padding, descent)
     }
 }
 

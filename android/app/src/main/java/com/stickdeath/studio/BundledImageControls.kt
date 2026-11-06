@@ -19,6 +19,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.findViewTreeLifecycleOwner
 
 /** Browsing and previewing never mutate the project; Add uses the ordinary image import transaction. */
 @Composable fun BundledImageControls(vm: StudioViewModel, doc: Document, enabled: Boolean) {
@@ -30,13 +36,80 @@ import kotlinx.coroutines.withContext
     var category by remember { mutableStateOf<String?>(null) }
     val collections = rememberLibraryCollections("images")
     var page by remember(query, category, collections.collection) { mutableIntStateOf(0) }
-    LaunchedEffect(context) {
-        try { images = BundledImages.load(context); loaded = true }
-        catch (cancelled: CancellationException) { throw cancelled }
-        catch (failure: Exception) { error = failure.message ?: "Image library could not open." }
+    val scope = rememberCoroutineScope()
+    val packOperation by OptionalImagePacks.operation.collectAsState()
+    var packs by remember { mutableStateOf<List<OptionalImagePacks.Status>>(emptyList()) }
+    var packError by remember { mutableStateOf<String?>(null) }
+    var packProgress by remember { mutableStateOf<String?>(null) }
+    var inspectionEpoch by remember { mutableIntStateOf(0) }
+    var showPacks by remember { mutableStateOf(false) }
+    var removePack by remember { mutableStateOf<OptionalImagePacks.Pack?>(null) }
+    var packJob by remember { mutableStateOf<Job?>(null) }
+    val lifecycleOwner = LocalView.current.findViewTreeLifecycleOwner()
+    var foreground by remember { mutableStateOf(lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED) == true) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) foreground = true
+            if (event == Lifecycle.Event.ON_STOP) { foreground = false; packJob?.cancel(); removePack = null }
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose { lifecycleOwner?.lifecycle?.removeObserver(observer); packJob?.cancel() }
     }
-    Text(if (loaded) "Image library · ${images.size} bundled images" else "Image library")
-    Text("Kenney · CC0 · offline. Includes cartoon weapon props. Add copies an image into this project.")
+    LaunchedEffect(context, packOperation?.id, packOperation?.busy) {
+        val epoch = ++inspectionEpoch
+        try {
+            val bundled = BundledImages.load(context)
+            try {
+                packs = OptionalImagePacks.inspect(context) { message ->
+                    withContext(Dispatchers.Main.immediate) { if (inspectionEpoch == epoch) packProgress = message }
+                }
+                packError = null
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { packs = emptyList(); packError = "Optional packs could not be checked. The 243 bundled images remain available." }
+            images = bundled + packs.flatMap { it.images }; loaded = true
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) { error = failure.message ?: "Image library could not open." }
+        finally { if (inspectionEpoch == epoch) packProgress = null }
+    }
+    Text(if (loaded) "Image library · ${images.size} available images" else "Image library")
+    Text("Kenney · CC0. 243 images are bundled offline. Includes cartoon weapon props. Optional packs download only when you choose Install. Add copies artwork into this project.")
+    TextButton({ showPacks = !showPacks }) { Text(if (showPacks) "Hide optional packs" else "Optional image packs") }
+    packProgress?.let { Text(it) }
+    if (showPacks) {
+        Text("Six packs · 1,818 optional images. Removing a pack never removes project copies.")
+        if (!BuildConfig.SDI_NETWORK_DECLARED) Text("Downloads are unavailable in this offline build. Installed packs can still be used or removed.")
+        packError?.let { Text(it) }
+        packs.forEach { status ->
+            Text("${status.pack.title} · ${status.pack.entries.size} images · CC0")
+            Text(if (packProgress != null) "Verification in progress" else status.problem ?: if (status.installed) "Installed and verified" else "Not installed")
+            Row {
+                if (status.installed) {
+                    TextButton({ removePack = status.pack }, enabled = foreground && packProgress == null && packOperation?.busy != true && !vm.importingImage) { Text("Remove local pack") }
+                } else if (status.problem == null) {
+                    TextButton({
+                        if (foreground && packOperation?.busy != true && packJob?.isActive != true) {
+                            val packID = status.pack.id
+                            packJob = scope.launch { OptionalImagePacks.install(context, packID) }
+                        }
+                    }, enabled = foreground && packProgress == null && enabled && !vm.importingImage && packOperation?.busy != true && BuildConfig.SDI_NETWORK_DECLARED) { Text("Install pack") }
+                }
+            }
+        }
+    }
+    packOperation?.let { operation ->
+        Text(operation.message)
+        if (operation.busy) TextButton({ OptionalImagePacks.cancel(operation.id) }) { Text("Cancel image pack operation") }
+    }
+    removePack?.let { pack ->
+        AlertDialog(onDismissRequest = { removePack = null }, title = { Text("Remove ${pack.title}?") },
+            text = { Text("Remove only this downloaded library pack. Editable projects and artwork already copied into them stay unchanged. Downloading it again requires network access.") },
+            confirmButton = { TextButton({
+                removePack = null
+                if (foreground && packOperation?.busy != true && packJob?.isActive != true) {
+                    packJob = scope.launch { OptionalImagePacks.remove(context, pack.id) }
+                }
+            }) { Text("Remove local pack") } }, dismissButton = { TextButton({ removePack = null }) { Text("Cancel") } })
+    }
     if (vm.message.isNotEmpty()) Text(vm.message)
     if (vm.importingImage) {
         Text("Preparing image for this project…")

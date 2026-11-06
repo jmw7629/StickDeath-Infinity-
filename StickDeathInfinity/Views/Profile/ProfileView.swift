@@ -3,18 +3,23 @@ import AVKit
 import Supabase
 import UniformTypeIdentifiers
 
-/// Reference-shaped profile. Connected facts remain unavailable until verified.
+/// A creator's desktop: device projects and account facts keep distinct sources.
 struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
     @Environment(\.requestSignIn) private var requestSignIn
     @Environment(\.locale) private var locale
+    @Environment(\.scenePhase) private var phase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject private var stripe = StripeService.shared
     let onOpenProjects: () -> Void
     @State private var destination: Destination?
     @State private var localProjectCount: Int?
+    @State private var localProjectProblem: String?
     @State private var publishedCount: Int?
     @State private var stats: CreatorStatsResponse?
     @State private var statsProblem: String?
+    @State private var statsLoading = false
+    @State private var statsRequestID = UUID()
 
     private enum Destination: String, Identifiable {
         case account, analytics, subscription, publishing, records, admin
@@ -36,6 +41,13 @@ struct ProfileView: View {
               id == UUID(uuidString: current) else { return nil }
         return user
     }
+    /// Only render the service snapshot for the currently signed-in account.
+    private var currentStatistics: CreatorStatsResponse? {
+        guard authVM.isAuthenticated,
+              let account = authVM.userId.flatMap(UUID.init(uuidString:)),
+              let stats, stats.subject == account else { return nil }
+        return stats
+    }
     private var displayName: String {
         let name = profile?.username?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return name.isEmpty ? (authVM.isAuthenticated ? "Your profile" : "Guest") : name
@@ -56,164 +68,478 @@ struct ProfileView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 14) {
-                    AsyncImage(url: avatarURL) { image in
-                        image.resizable().scaledToFill()
-                    } placeholder: {
-                        Text(String(displayName.prefix(2)).uppercased())
-                            .font(.specialElite(24)).frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Color(hex: "1E1E1E"))
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    desktopHeading
+                    identityWindow
+                    if geometry.size.width >= 780 && !dynamicTypeSize.isAccessibilitySize {
+                        HStack(alignment: .top, spacing: 20) {
+                            workWindows.frame(maxWidth: .infinity)
+                            accountWindows.frame(width: 290)
+                        }
+                    } else {
+                        workWindows
+                        accountWindows
                     }
-                    .frame(width: 64, height: 64).clipShape(Circle())
-                    .overlay(Circle().stroke(Color.sdRed, lineWidth: 3))
-                    .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(displayName).font(.specialElite(20)).foregroundStyle(.white)
-                        Text(reportedPlan.map { "Reported plan: \($0)" } ?? (authVM.isAuthenticated ? "Plan unavailable" : "On-device guest"))
-                            .font(.specialElite(11)).padding(.horizontal, 10).padding(.vertical, 4)
-                            .background(Color.sdRed.opacity(0.18)).clipShape(RoundedRectangle(cornerRadius: 4))
-                    }
+                    Text("STICKDEATH ∞  /  YOUR CREATOR DESKTOP")
+                        .font(.specialElite(11, relativeTo: .caption))
+                        .foregroundStyle(ProfileDesktopPalette.paper)
+                        .padding(.top, 4)
+                        .accessibilityHidden(true)
                 }
-                .padding(.top, 24)
-                .accessibilityIdentifier("profile.identity")
-
-                if let bio = profile?.bio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(bio).font(.specialElite(13)).foregroundStyle(.secondary)
-                }
-                HStack(spacing: 0) {
-                    statistic(localProjectCount.map(String.init) ?? "—", "Projects")
-                    statistic(stats?.published_videos.map(String.init) ?? "—", "Published")
-                    statistic(stats?.followers.map(String.init) ?? "—", "Followers")
-                    statistic(stats?.likes_received.map(String.init) ?? "—", "Likes")
-                }
-                .padding(.vertical, 14).background(Color(hex: "141414"))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .accessibilityIdentifier("profile.statistics")
-                Text("Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall; a dash means the total was not loaded, never an estimate.")
-                    .font(.specialElite(11)).foregroundStyle(.secondary)
-                if let statsProblem { Text(statsProblem).font(.specialElite(11)).foregroundStyle(.secondary).accessibilityIdentifier("profile.statistics.problem") }
-                if let following = stats?.following { Text("Following \(following) creator\(following == 1 ? "" : "s").").font(.specialElite(11)).foregroundStyle(.secondary) }
-                if authVM.isAuthenticated {
-                    ProfilePortfolioSection(onCount: { publishedCount = $0 })
-                }
-
-                VStack(spacing: 8) {
-                    if !authVM.isAuthenticated {
-                        Button { requestSignIn() } label: {
-                            rowLabel("Sign in or create an account", icon: "person.crop.circle.badge.plus")
-                        }.buttonStyle(.plain)
-                            .accessibilityIdentifier("profile.sign-in")
-                        Text("Your device projects stay here whether or not you sign in.")
-                            .font(.specialElite(11)).foregroundStyle(.secondary)
-                    }
-                    Button(action: onOpenProjects) {
-                        rowLabel("Projects on this device", icon: "folder")
-                    }.buttonStyle(.plain)
-                        .accessibilityIdentifier("profile.projects.open")
-                    row("Publishing", icon: "square.and.arrow.up", destination: .publishing)
-                    row("Records & badges", icon: "trophy", destination: .records)
-                    row("Analytics", icon: "chart.bar", destination: .analytics)
-                    row("Settings", icon: "gearshape", destination: .account)
-                    if authVM.isAuthenticated {
-                        row("Admin access", icon: "lock.shield", destination: .admin)
-                    }
-                    row("Subscription", icon: "creditcard", destination: .subscription)
-                }
-
-                Text("Subscription").font(.specialElite(16)).foregroundStyle(.secondary)
-                Button { destination = .subscription } label: {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(BillingCopy.status(stripe.billing, catalog: stripe.catalog, locale: locale, timeZone: .current).title)
-                            .font(.specialElite(16))
-                        Text("Plans, prices and renewal come from the App Store. Open to see plans, restore purchases or manage your subscription.")
-                            .font(.specialElite(12)).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-                    .background(Color(hex: "141414")).clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("profile.subscription-status")
+                .frame(maxWidth: 1180)
+                .padding(20)
+                .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 16).padding(.bottom, 24)
+            .background(ProfileDesktopWallpaper().ignoresSafeArea())
         }
-        .background(Color(hex: "0A0A0A").ignoresSafeArea())
-        .foregroundStyle(.white)
-        .task(id: authVM.userId) {
-            // Device-level inventory, never presented as a server/account portfolio.
-            localProjectCount = nil; publishedCount = nil; stats = nil; statsProblem = nil
-            if let listing = try? DeviceStorageManager.shared.listAnimationsReportingFailures(), listing.failures.isEmpty {
-                localProjectCount = listing.animations.count
-            }
-            guard authVM.isAuthenticated, let account = authVM.userId else { return }
-            do {
-                let loaded = try await CommunityServices.profile.stats()
-                guard !Task.isCancelled, account == authVM.userId else { return }
-                stats = loaded
-            } catch {
-                guard !Task.isCancelled, account == authVM.userId else { return }
-                statsProblem = "Totals unavailable: " + (CommunityGateway.normalize(error).errorDescription ?? "service unavailable.")
-            }
+        .task(id: "\(authVM.userId ?? "none"):\(authVM.isAuthenticated):\(phase == .active)") {
+            await loadStatistics()
         }
-        .onChange(of: authVM.userId) { _ in destination = nil }
+        .onChange(of: authVM.userId) { _ in destination = nil; publishedCount = nil }
         .sheet(item: $destination) { page in
             if page == .subscription {
                 // SubscriptionView brings its own header and close control.
                 NavigationStack { SubscriptionView() }
             } else {
-            NavigationStack {
-                Group {
-                    switch page {
-                    case .admin: AdminDashboardView()
-                    case .records: ProfileRecordsView()
-                    case .publishing: PublishingJobsView()
-                    case .account: ProfileSettingsView()
-                    case .analytics:
-                        detail("Analytics unavailable", "Views, likes and engagement have not been loaded. No activity totals are estimated.")
-                    case .subscription:
-                        EmptyView()
+                NavigationStack {
+                    Group {
+                        switch page {
+                        case .admin: AdminDashboardView()
+                        case .records: ProfileRecordsView()
+                        case .publishing: PublishingJobsView()
+                        case .account: ProfileSettingsView()
+                        case .analytics:
+                            analyticsPage
+                        case .subscription: EmptyView()
+                        }
                     }
+                    .navigationTitle(page.title).navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { destination = nil } } }
                 }
-                .navigationTitle(page.title).navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { destination = nil } } }
-            }
             }
         }
     }
 
-    private func statistic(_ value: String, _ label: String) -> some View {
-        VStack(spacing: 4) {
-            Text(value).font(.specialElite(18))
-            Text(label).font(.specialElite(11)).foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity).accessibilityElement(children: .combine)
+    private var desktopHeading: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline) {
+                desktopTitle
+                Spacer(minLength: 12)
+                desktopLocation
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                desktopTitle
+                desktopLocation
+            }
+        }
+        .padding(12)
+        .foregroundStyle(ProfileDesktopPalette.ink)
+        .background(ProfileDesktopPalette.paper)
+        .overlay(Rectangle().stroke(ProfileDesktopPalette.ink, lineWidth: 2))
     }
-    private func row(_ title: String, icon: String, destination page: Destination) -> some View {
+    private var desktopTitle: some View {
+        Text("SD∞ / CREATOR DESKTOP")
+            .font(.specialElite(16, relativeTo: .headline))
+            .accessibilityAddTraits(.isHeader)
+    }
+    private var desktopLocation: some View {
+        Label(authVM.isAuthenticated ? "Account + device" : "On this device", systemImage: authVM.isAuthenticated ? "person.crop.circle" : "internaldrive")
+            .font(.specialElite(11, relativeTo: .caption))
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var identityLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 16))
+    }
+    private var identityWindow: some View {
+        ProfileDesktopWindow(title: "Creator identity", icon: "person.crop.square") {
+            VStack(alignment: .leading, spacing: 16) {
+                identityLayout {
+                    AsyncImage(url: avatarURL) { image in
+                        image.resizable().scaledToFill()
+                    } placeholder: {
+                        ProfileDesktopStickMark()
+                            .stroke(ProfileDesktopPalette.paper, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                            .padding(12)
+                            .background(ProfileDesktopPalette.ink)
+                    }
+                    .frame(width: 72, height: 80)
+                    .clipped()
+                    .overlay(Rectangle().stroke(ProfileDesktopPalette.ink, lineWidth: 2))
+                    .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(displayName)
+                            .font(.specialElite(27, relativeTo: .title))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityAddTraits(.isHeader)
+                        Text(reportedPlan.map { "Reported plan: \($0)" } ?? (authVM.isAuthenticated ? "Plan unavailable" : "On-device guest"))
+                            .font(.specialElite(12, relativeTo: .caption))
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(ProfileDesktopPalette.grey.opacity(0.4))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let bio = profile?.bio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(bio).font(.body).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                }
+                if !authVM.isAuthenticated {
+                    Text("Your device projects stay here whether or not you sign in.")
+                        .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    Button { requestSignIn() } label: {
+                        Label("Sign in or create an account", systemImage: "person.crop.circle.badge.plus")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(ProfileDesktopButtonStyle(prominent: true))
+                    .accessibilityIdentifier("profile.sign-in")
+                } else {
+                    Button { destination = .account } label: {
+                        Label("Account settings", systemImage: "gearshape")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(ProfileDesktopButtonStyle())
+                    .accessibilityIdentifier("profile.settings.open")
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("profile.identity")
+    }
+
+    private var workWindows: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            projectWindow
+            statisticsWindow
+            ProfileDesktopWindow(title: "Portfolio", icon: "play.rectangle") {
+                if authVM.isAuthenticated {
+                    ProfilePortfolioSection(onCount: { publishedCount = $0 })
+                    if let publishedCount {
+                        Text("\(publishedCount) approved rendition\(publishedCount == 1 ? "" : "s") returned by the service. This is separate from the projects stored on this device.")
+                            .font(.caption).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    }
+                } else {
+                    Label("Your approved work belongs here.", systemImage: "film")
+                        .font(.specialElite(18, relativeTo: .headline))
+                    Text("Sign in to load your account's approved renditions. Private projects stay in the device library.")
+                        .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                }
+            }
+        }
+    }
+    private var projectWindow: some View {
+        ProfileDesktopWindow(title: "Projects on this device", icon: "folder") {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text("DRAW IT.\nTIME IT.\nMAKE IT MOVE.")
+                        .font(.specialElite(25, relativeTo: .title2))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ProfileDesktopStickMark()
+                        .stroke(ProfileDesktopPalette.ink, style: StrokeStyle(lineWidth: 3, lineCap: .square, lineJoin: .miter))
+                        .frame(width: 52, height: 80)
+                        .accessibilityHidden(true)
+                }
+                Text("Open a saved animation or start a new project in your library. Editable originals stay on this device.")
+                    .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                Button(action: onOpenProjects) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder.badge.plus")
+                        Text("Open projects / create")
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.right")
+                    }
+                }
+                .buttonStyle(ProfileDesktopButtonStyle(prominent: true))
+                .accessibilityLabel("Projects on this device")
+                .accessibilityHint("Opens the project library, where you can open or create an animation.")
+                .accessibilityIdentifier("profile.projects.open")
+            }
+        }
+    }
+    private var statisticsWindow: some View {
+        ProfileDesktopWindow(title: "Creator totals", icon: "chart.bar.xaxis") {
+            VStack(alignment: .leading, spacing: 14) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 220 : 125), spacing: 2)], spacing: 2) {
+                    statistic(localProjectCount.map(String.init) ?? "—", "Projects", source: "On this device")
+                    statistic(currentStatistics?.published_videos.map(String.init) ?? "—", "Published", source: "From the service")
+                    statistic(currentStatistics?.followers.map(String.init) ?? "—", "Followers", source: "From the service")
+                    statistic(currentStatistics?.likes_received.map(String.init) ?? "—", "Likes", source: "From the service")
+                }
+                .accessibilityIdentifier("profile.statistics")
+                Text("Projects counts saved animations on this device. Published and Likes come from eligible videos currently visible on the wall. Followers and Following are current account relationships. A dash means a total was not loaded.")
+                    .font(.caption).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                if let localProjectProblem {
+                    ProfileDesktopNotice(text: localProjectProblem, icon: "externaldrive.badge.exclamationmark")
+                }
+                if let statsProblem {
+                    ProfileDesktopNotice(text: statsProblem, icon: "wifi.exclamationmark")
+                        .accessibilityIdentifier("profile.statistics.problem")
+                }
+                if let following = currentStatistics?.following {
+                    Text("Following \(following) creator\(following == 1 ? "" : "s").")
+                        .font(.caption).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                }
+                if statsLoading {
+                    HStack(spacing: 8) { ProgressView().tint(ProfileDesktopPalette.ink); Text("Loading totals…").font(.callout) }
+                        .accessibilityElement(children: .combine)
+                } else if !authVM.isAuthenticated {
+                    Text("Sign in to load account totals.").font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                }
+                Button {
+                    guard !statsLoading else { return }
+                    statsLoading = true
+                    Task { await loadStatistics() }
+                } label: {
+                    Label(statsProblem == nil && localProjectProblem == nil ? "Refresh totals" : "Retry totals", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(ProfileDesktopButtonStyle())
+                .disabled(statsLoading)
+                .accessibilityIdentifier("profile.statistics.retry")
+            }
+        }
+    }
+    private var accountWindows: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            ProfileDesktopWindow(title: "Creator tools", icon: "square.grid.2x2") {
+                VStack(spacing: 0) {
+                    row("Publishing", subtitle: "Review, permissions & destination jobs", icon: "square.and.arrow.up", destination: .publishing)
+                    row("Records & badges", subtitle: "Choose what to display publicly", icon: "trophy", destination: .records)
+                    row("Analytics", subtitle: "Published work, audience & device projects", icon: "chart.bar", destination: .analytics)
+                }
+            }
+            ProfileDesktopWindow(title: "Account", icon: "gearshape") {
+                VStack(spacing: 0) {
+                    row("Settings", subtitle: "Identity, security, privacy & your data", icon: "gearshape", destination: .account)
+                    if authVM.isAuthenticated {
+                        row("Admin access", subtitle: "Server-authorized roles only", icon: "lock.shield", destination: .admin)
+                    }
+                    row("Subscription", subtitle: "Plans, restore & manage", icon: "creditcard", destination: .subscription)
+                }
+            }
+            ProfileDesktopWindow(title: "Subscription", icon: "creditcard") {
+                Button { destination = .subscription } label: {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(BillingCopy.status(stripe.billing, catalog: stripe.catalog, locale: locale, timeZone: .current).title)
+                            .font(.specialElite(18, relativeTo: .headline))
+                        Text("Plans, prices and renewal come from the App Store. Open to see plans, restore purchases or manage your subscription.")
+                            .font(.callout)
+                        Label("Open subscription", systemImage: "arrow.up.right")
+                            .font(.specialElite(13, relativeTo: .callout))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(12)
+                    .background(ProfileDesktopPalette.grey.opacity(0.35))
+                    .overlay(Rectangle().stroke(ProfileDesktopPalette.ink, lineWidth: 1))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("profile.subscription-status")
+            }
+        }
+    }
+
+    private func statistic(_ value: String, _ label: String, source: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(value).font(.specialElite(27, relativeTo: .title2)).monospacedDigit()
+            Text(label).font(.specialElite(13, relativeTo: .callout))
+            Text(source).font(.caption2).foregroundStyle(ProfileDesktopPalette.grey)
+        }
+        .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+        .padding(12)
+        .foregroundStyle(ProfileDesktopPalette.paper)
+        .background(ProfileDesktopPalette.ink)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label), \(value == "—" ? "unavailable" : value). \(source).")
+    }
+    private func row(_ title: String, subtitle: String, icon: String, destination page: Destination) -> some View {
         Button { destination = page } label: {
-            rowLabel(title, icon: icon)
-        }.buttonStyle(.plain)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: icon).frame(width: 22).padding(.top, 2)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.specialElite(15, relativeTo: .body))
+                    Text(subtitle).font(.caption).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption).padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+            .overlay(alignment: .bottom) { Rectangle().fill(ProfileDesktopPalette.grey).frame(height: 1) }
+        }
+        .buttonStyle(.plain)
     }
-    private func rowLabel(_ title: String, icon: String) -> some View {
-            HStack(spacing: 14) {
-                Image(systemName: icon).frame(width: 22)
-                Text(title).font(.specialElite(15))
-                Spacer()
-                Image(systemName: "chevron.right").foregroundStyle(.secondary)
-            }.padding(15).background(Color(hex: "141414"))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+    private var analyticsPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                ProfileDesktopWindow(title: "About this snapshot", icon: "chart.bar") {
+                    Text("Your latest loaded totals")
+                        .font(.specialElite(20, relativeTo: .title2))
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Account totals come from the service. Projects counts saved animations on this device, independently of your account.")
+                        .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    if !authVM.isAuthenticated {
+                        Text("Account analytics require sign-in. Close Analytics and choose Sign in on your profile to load them. Device project totals remain available to guests.")
+                            .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    }
+                }
+                // Reuse the same snapshot and explicit refresh/retry action; opening
+                // Analytics does not start another request or maintain a second cache.
+                statisticsWindow
+                ProfileDesktopWindow(title: "How to read these totals", icon: "info.circle") {
+                    Text("Published counts eligible videos currently visible on the wall; Likes counts the likes on those videos. These totals can change when work is removed, expires or changes visibility; they are not lifetime activity totals.")
+                        .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    Text("Followers and Following are current service counts. Views, watch time, historical trends and engagement rates are not supplied by this service and are not estimated here.")
+                        .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                }
+            }
+            .frame(maxWidth: 780)
+            .padding(20)
+            .frame(maxWidth: .infinity)
+        }
+        .background(ProfileDesktopWallpaper().ignoresSafeArea())
     }
-    private func detail(_ title: String, _ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(title).font(.specialElite(20))
-            Text(text).font(.specialElite(14)).foregroundStyle(.secondary)
-            Spacer()
-        }.padding().frame(maxWidth: .infinity, alignment: .leading)
+    @MainActor private func loadStatistics() async {
+        let id = UUID(); statsRequestID = id
+        localProjectCount = nil; localProjectProblem = nil
+        stats = nil; statsProblem = nil; statsLoading = true
+        defer { if statsRequestID == id { statsLoading = false } }
+        // Device-level inventory, never presented as a server/account portfolio.
+        do {
+            let listing = try DeviceStorageManager.shared.listAnimationsReportingFailures()
+            if listing.failures.isEmpty { localProjectCount = listing.animations.count }
+            else { localProjectProblem = "Some device projects could not be read. Open Projects to review your library." }
+        } catch { localProjectProblem = "Device project count unavailable. Open Projects to review your library." }
+        guard authVM.isAuthenticated, phase == .active, let account = authVM.userId else { return }
+        do {
+            let loaded = try await CommunityServices.profile.stats()
+            guard !Task.isCancelled, statsRequestID == id, account == authVM.userId else { return }
+            stats = loaded
+        } catch {
+            guard !Task.isCancelled, statsRequestID == id, account == authVM.userId else { return }
+            statsProblem = "Totals unavailable: " + (CommunityGateway.normalize(error).errorDescription ?? "service unavailable.")
+        }
+    }
+}
+
+/// Scoped to Profile: website OS palette, static dither, striped paper windows.
+private enum ProfileDesktopPalette {
+    static let paper = Color(hex: "EFEAE0")
+    static let ink = Color(hex: "101011")
+    static let grey = Color(hex: "BDB9B3")
+    static let red = Color(hex: "FF454C")
+    static let secondaryInk = Color(hex: "454341")
+}
+private struct ProfileDesktopWallpaper: View {
+    var body: some View {
+        Canvas { context, size in
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(ProfileDesktopPalette.ink))
+            var dots = Path()
+            for y in stride(from: 0, to: size.height, by: 8) {
+                for x in stride(from: 0, to: size.width, by: 8) {
+                    let shift: CGFloat = Int(y / 8).isMultiple(of: 2) ? 0 : 4
+                    dots.addRect(CGRect(x: x + shift, y: y, width: 1, height: 1))
+                    dots.addRect(CGRect(x: x + shift + 2, y: y + 3, width: 1, height: 1))
+                }
+            }
+            context.fill(dots, with: .color(ProfileDesktopPalette.paper.opacity(0.19)))
+        }
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+}
+private struct ProfileDesktopWindow<Content: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder let content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .accessibilityHidden(true)
+                Text(title.uppercased()).accessibilityAddTraits(.isHeader)
+            }
+            .font(.specialElite(13, relativeTo: .headline))
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(ProfileDesktopPalette.paper)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .padding(.vertical, 4)
+            .background {
+                Canvas { context, size in
+                    var stripes = Path()
+                    for y in stride(from: 2, to: size.height, by: 4) {
+                        stripes.addRect(CGRect(x: 0, y: y, width: size.width, height: 1))
+                    }
+                    context.fill(stripes, with: .color(ProfileDesktopPalette.ink))
+                }
+            }
+            .overlay(alignment: .bottom) { Rectangle().fill(ProfileDesktopPalette.ink).frame(height: 2) }
+            VStack(alignment: .leading, spacing: 12) { content }.padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .foregroundStyle(ProfileDesktopPalette.ink)
+        .background {
+            // Shadow the opaque window, never its text and controls.
+            Rectangle().fill(ProfileDesktopPalette.paper)
+                .shadow(color: ProfileDesktopPalette.ink, radius: 0, x: 4, y: 4)
+        }
+        .overlay(Rectangle().stroke(ProfileDesktopPalette.ink, lineWidth: 2))
+    }
+}
+private struct ProfileDesktopButtonStyle: ButtonStyle {
+    var prominent = false
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.specialElite(14, relativeTo: .body))
+            .foregroundStyle(ProfileDesktopPalette.ink)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .frame(minWidth: 44, minHeight: 44)
+            .background {
+                Rectangle()
+                    .fill(configuration.isPressed ? ProfileDesktopPalette.grey : (prominent ? ProfileDesktopPalette.red : ProfileDesktopPalette.paper))
+                    .shadow(color: ProfileDesktopPalette.ink.opacity(isEnabled ? 1 : 0.3), radius: 0, x: 2, y: 2)
+            }
+            .overlay(Rectangle().stroke(ProfileDesktopPalette.ink, lineWidth: 2))
+            .opacity(isEnabled ? 1 : 0.55)
+            .contentShape(Rectangle())
+    }
+}
+private struct ProfileDesktopNotice: View {
+    let text: String
+    let icon: String
+    var body: some View {
+        Label(text, systemImage: icon)
+            .font(.callout)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ProfileDesktopPalette.grey.opacity(0.35))
+            .overlay(alignment: .leading) { Rectangle().fill(ProfileDesktopPalette.red).frame(width: 3) }
+            .accessibilityElement(children: .combine)
+    }
+}
+/// A native line drawing, echoing the site's sequential stick-figure poster.
+private struct ProfileDesktopStickMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height) }
+        path.addEllipse(in: CGRect(x: rect.minX + rect.width * 0.36, y: rect.minY + rect.height * 0.04, width: rect.width * 0.28, height: rect.height * 0.2))
+        path.move(to: point(0.5, 0.24)); path.addLine(to: point(0.5, 0.59))
+        path.move(to: point(0.08, 0.38)); path.addLine(to: point(0.5, 0.32)); path.addLine(to: point(0.89, 0.5))
+        path.move(to: point(0.16, 0.94)); path.addLine(to: point(0.5, 0.59)); path.addLine(to: point(0.86, 0.94))
+        return path
     }
 }
 
 /// Replace the old disconnected toggles, invented disk usage and inert Sign Out.
 struct ProfileSettingsView: View {
     @EnvironmentObject var authVM: AuthViewModel
+    @AppStorage("sdi.desktop.bottomNavigation") private var showsBottomDock = false
     @State private var showingProfileEditor = false
     @State private var showingMFA = false
     @State private var showingAppeals = false
@@ -241,6 +567,12 @@ struct ProfileSettingsView: View {
                 } else {
                     Text("Sign in with an available profile to edit username and bio.").foregroundStyle(.secondary)
                 }
+            }
+            Section("Appearance") {
+                Toggle("Show bottom dock", isOn: $showsBottomDock)
+                    .accessibilityIdentifier("profile.settings.bottom-dock")
+                Text("Shows the optional dock on the desktop. It stays hidden while you edit in Studio. This device remembers your choice.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Studio") {
                 Text("Change grid, onion skin and project settings in the Studio menu. Those controls apply to the actual project.")
@@ -666,47 +998,106 @@ private struct ProfilePortfolioSection: View {
     @Environment(\.scenePhase) private var phase
     @State private var items: [ApprovedMedia] = []
     @State private var loaded = false
+    @State private var busy = false
     @State private var problem: String?
     @State private var playback: ProfilePlayback?
     @State private var requestID = UUID()
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(loaded && problem == nil ? "Portfolio · \(items.count) approved" : "Portfolio").font(.specialElite(16)).foregroundStyle(.secondary)
-            if let problem { CommunityMessage(text: problem, kind: .info) }
+        VStack(alignment: .leading, spacing: 14) {
+            Text(loaded && problem == nil ? "\(items.count) approved rendition\(items.count == 1 ? "" : "s")" : "Approved renditions")
+                .font(.specialElite(18, relativeTo: .headline))
+                .accessibilityAddTraits(.isHeader)
+            if busy {
+                HStack(spacing: 8) { ProgressView().tint(ProfileDesktopPalette.ink); Text("Loading portfolio…").font(.callout) }
+                    .accessibilityElement(children: .combine)
+            }
+            if let problem { ProfileDesktopNotice(text: problem, icon: "wifi.exclamationmark") }
             if loaded && items.isEmpty && problem == nil {
-                Text("No approved renditions yet. Submit an exported MP4 for review from Publishing.").font(.specialElite(12)).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("profile.portfolio.empty")
+                VStack(alignment: .leading, spacing: 8) {
+                    Image(systemName: "film.stack").font(.title2).accessibilityHidden(true)
+                    Text("No approved renditions yet.").font(.specialElite(17, relativeTo: .headline))
+                    Text("Submit an exported MP4 for review from Publishing. Opening a device project never uploads it automatically.")
+                        .font(.callout).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(Rectangle().stroke(ProfileDesktopPalette.grey, lineWidth: 1))
+                .accessibilityIdentifier("profile.portfolio.empty")
             }
-            ForEach(items) { item in
-                Button {
-                    guard let url = CommunityMediaURL.checked(item.url) else { return }
-                    playback = ProfilePlayback(url: url, title: item.title)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "play.rectangle.fill").foregroundStyle(Color.sdRed)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title).font(.specialElite(15))
-                            Text(item.duration.map { "\(Int($0.rounded())) s" } ?? "Duration unavailable").font(.specialElite(11)).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if let expiry = item.expires_at { Text("Until \(expiry.formatted(date: .abbreviated, time: .omitted))").font(.specialElite(11)).foregroundStyle(.secondary) }
-                    }.padding(12).background(Color(hex: "141414")).clipShape(RoundedRectangle(cornerRadius: 12))
-                }.buttonStyle(.plain).accessibilityLabel("Play \(item.title)").accessibilityIdentifier("profile.portfolio.play")
+            ForEach(items) { item in portfolioItem(item) }
+            Button { Task { await load() } } label: {
+                Label(problem == nil ? "Refresh portfolio" : "Retry portfolio", systemImage: "arrow.clockwise")
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(ProfileDesktopButtonStyle())
+            .disabled(busy || !auth.isAuthenticated)
+            .accessibilityIdentifier("profile.portfolio.retry")
         }
         .accessibilityIdentifier("profile.portfolio")
         .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
-            requestID = UUID(); items = []; loaded = false; problem = nil; onCount(nil)
-            guard auth.isAuthenticated, phase == .active, let account = auth.userId.flatMap(UUID.init(uuidString:)) else { return }
-            let id = requestID
-            do {
-                let rows = try await CommunityServices.profile.portfolio(account: account)
-                guard !Task.isCancelled, requestID == id else { return }
-                items = rows; loaded = true; onCount(rows.count)
-            } catch { if requestID == id { loaded = true; problem = CommunityGateway.normalize(error).errorDescription } }
+            requestID = UUID(); busy = false; items = []; loaded = false; problem = nil; playback = nil; onCount(nil)
+            if auth.isAuthenticated && phase == .active { await load() }
         }
         .sheet(item: $playback) { item in CommunityVideoPlayer(url: item.url, title: item.title) }
-        .onDisappear { playback = nil }
+        .onDisappear { requestID = UUID(); busy = false; playback = nil }
+    }
+    private func portfolioItem(_ item: ApprovedMedia) -> some View {
+        let url = CommunityMediaURL.checked(item.url)
+        return Button {
+            guard let url else { return }
+            playback = ProfilePlayback(url: url, title: item.title)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: url == nil ? "film" : "play.fill")
+                    .font(.body)
+                    .frame(width: 36, height: 44)
+                    .foregroundStyle(ProfileDesktopPalette.paper)
+                    .background(ProfileDesktopPalette.ink)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.title).font(.specialElite(17, relativeTo: .headline))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(durationText(item.duration)).font(.caption).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    if let expiry = item.expires_at {
+                        Text("Available until \(expiry.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.caption).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    }
+                    if url == nil {
+                        Text("Playback link unavailable. Refresh to try again.").font(.caption).foregroundStyle(ProfileDesktopPalette.secondaryInk)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 44)
+            .padding(12)
+            .background(ProfileDesktopPalette.grey.opacity(0.25))
+            .overlay(Rectangle().stroke(ProfileDesktopPalette.ink, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(url == nil)
+        .accessibilityLabel(url == nil ? "\(item.title), playback unavailable" : "Play \(item.title)")
+        .accessibilityIdentifier("profile.portfolio.play")
+    }
+    private func durationText(_ duration: Double?) -> String {
+        guard let duration, duration.isFinite, duration >= 0 else { return "Duration unavailable" }
+        let seconds = duration.rounded()
+        guard seconds < Double(Int.max) else { return "Duration unavailable" }
+        return "\(Int(seconds)) s"
+    }
+    private func load() async {
+        guard !busy, auth.isAuthenticated, phase == .active, let account = auth.userId.flatMap(UUID.init(uuidString:)) else { return }
+        let id = UUID(); requestID = id; busy = true; problem = nil; loaded = false; items = []; onCount(nil)
+        defer { if requestID == id { busy = false } }
+        do {
+            let rows = try await CommunityServices.profile.portfolio(account: account)
+            guard !Task.isCancelled, requestID == id, auth.userId.flatMap(UUID.init(uuidString:)) == account else { return }
+            items = rows; loaded = true; onCount(rows.count)
+        } catch {
+            guard !Task.isCancelled, requestID == id else { return }
+            loaded = true
+            problem = CommunityGateway.normalize(error).errorDescription ?? "Portfolio unavailable. Check your connection and retry."
+        }
     }
 }
 private struct ProfilePlayback: Identifiable { let id = UUID(); let url: URL; let title: String }

@@ -7,11 +7,12 @@ import UIKit
 struct StudioGIFSharePresenter: UIViewControllerRepresentable {
     let request: StudioGIFExportSession.ShareRequest
     let session: StudioGIFExportSession
+    var onOfferedToUIKit: @MainActor () -> Void = {}
     let isAllowed: @MainActor () -> Bool
     let onTerminal: (UUID) -> Void
 
     func makeUIViewController(context: Context) -> Host {
-        Host(request: request, session: session, isAllowed: isAllowed, onTerminal: onTerminal)
+        Host(request: request, session: session, onOfferedToUIKit: onOfferedToUIKit, isAllowed: isAllowed, onTerminal: onTerminal)
     }
     func updateUIViewController(_ controller: Host, context: Context) { controller.updateAuthorization(isAllowed) }
     static func dismantleUIViewController(_ controller: Host, coordinator: ()) { controller.detachFromPanel() }
@@ -20,17 +21,19 @@ struct StudioGIFSharePresenter: UIViewControllerRepresentable {
         private let request: StudioGIFExportSession.ShareRequest
         private let session: StudioGIFExportSession
         private var onTerminal: ((UUID) -> Void)?
+        private let onOfferedToUIKit: @MainActor () -> Void
         private var isAllowed: @MainActor () -> Bool
         private var activity: Activity?
         private var lease: StudioGIFShareLifetime.Lease?
-        private var deadline: Task<Void, Never>?
         private var attempted = false
         private var dismissedWithoutCompletion = false
         private var finished = false
 
         init(request: StudioGIFExportSession.ShareRequest, session: StudioGIFExportSession,
+             onOfferedToUIKit: @escaping @MainActor () -> Void = {},
              isAllowed: @escaping @MainActor () -> Bool, onTerminal: @escaping (UUID) -> Void) {
-            self.request = request; self.session = session; self.isAllowed = isAllowed; self.onTerminal = onTerminal
+            self.request = request; self.session = session; self.onOfferedToUIKit = onOfferedToUIKit
+            self.isAllowed = isAllowed; self.onTerminal = onTerminal
             super.init(nibName: nil, bundle: nil)
         }
         required init?(coder: NSCoder) { fatalError("Programmatic gif sharing only") }
@@ -64,10 +67,10 @@ struct StudioGIFSharePresenter: UIViewControllerRepresentable {
                 // The initializer receives the URL; ownership must already be
                 // reserved even if presentation subsequently fails or times out.
                 reservation.offeredToUIKit()
+                onOfferedToUIKit()
                 let controller = Activity(gifURL: gif)
                 controller.appeared = { [weak self] in
                     guard let self else { return }
-                    self.deadline?.cancel(); self.deadline = nil
                     if !self.isAllowed() { self.endWithoutCompletion() }
                 }
                 controller.completionWithItemsHandler = { [weak self, reservation] _, completed, _, error in
@@ -83,11 +86,11 @@ struct StudioGIFSharePresenter: UIViewControllerRepresentable {
                 }
                 controller.presentationController?.delegate = self
                 activity = controller
-                deadline = Task { [weak self] in
-                    do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
-                    guard let self, self.activity?.didAppear != true else { return }
-                    self.endWithoutCompletion()
-                }
+                // UIKit owns the asynchronous activity-extension transition.
+                // A slow initial presentation is not a dismissal: a wall-clock
+                // timer must not close it and strand its unfinished file lease.
+                // Authorization, actual dismissal and presentation completion
+                // below still terminate an invalid or rejected presentation.
                 present(controller, animated: true) { [weak self, weak controller] in
                     guard let self, let controller, !self.finished else { return }
                     controller.presentationController?.delegate = self
@@ -111,7 +114,7 @@ struct StudioGIFSharePresenter: UIViewControllerRepresentable {
             guard let lease, lease.wasOffered else { failBeforeHandoff(nil); return }
             lease.presentationEndedWithoutCompletion()
             guard !dismissedWithoutCompletion else { return }
-            dismissedWithoutCompletion = true; deadline?.cancel(); deadline = nil
+            dismissedWithoutCompletion = true
             activity?.appeared = nil
             // Keep completionWithItemsHandler installed. Dismissal does not
             // finish the lease, whether or not its completion block runs.
@@ -126,7 +129,7 @@ struct StudioGIFSharePresenter: UIViewControllerRepresentable {
         }
         private func completeUI() {
             guard !finished else { return }
-            finished = true; deadline?.cancel(); deadline = nil
+            finished = true
             activity?.appeared = nil
             activity = nil; lease = nil
             let callback = onTerminal; onTerminal = nil; isAllowed = { false }

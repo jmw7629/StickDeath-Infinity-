@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 // Foundation-only verification of the social wall and profile clients against
 // scripted fake transports. No network, no SwiftUI, no Supabase SDK.
@@ -31,6 +34,100 @@ final class FakeTransport: CommunityTransport {
         case .failure(let error): throw error
         }
     }
+}
+
+// Every request in these transfer cases is intercepted, including unexpected
+// hosts or redirects. No fixture ever falls through to a public media host.
+private final class ExportFixtureProtocol: URLProtocol, @unchecked Sendable {
+    enum Reply {
+        case body(status: Int, headers: [String: String], chunks: [Data], finishes: Bool)
+        case redirect(URL)
+    }
+    private static let lock = NSLock()
+    private static var replies: [String: Reply] = [:]
+    private static var requests: [URLRequest] = []
+    private static var stops = 0
+    private let stateLock = NSLock()
+    private var stopped = false
+    private var isStopped: Bool { stateLock.lock(); defer { stateLock.unlock() }; return stopped }
+    static func install(_ replies: [String: Reply]) {
+        lock.lock(); defer { lock.unlock() }
+        Self.replies = replies; requests = []; stops = 0
+    }
+    static func snapshot() -> (requests: [URLRequest], stops: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (requests, stops)
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock()
+        Self.requests.append(request)
+        let reply = Self.replies[request.url?.path ?? ""]
+        Self.lock.unlock()
+        guard let url = request.url, let reply else { client?.urlProtocol(self, didFailWithError: Failure(description: "Unscripted media request")); return }
+        switch reply {
+        case .body(let status, let headers, let chunks, let finishes):
+            let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            for chunk in chunks {
+                guard !isStopped else { return }
+                client?.urlProtocol(self, didLoad: chunk)
+            }
+            if finishes && !isStopped { client?.urlProtocolDidFinishLoading(self) }
+        case .redirect(let target):
+            let response = HTTPURLResponse(url: url, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: ["Location": target.absoluteString])!
+            var next = URLRequest(url: target)
+            next.setValue("synthetic-fixture-credential", forHTTPHeaderField: "Authorization")
+            next.setValue("synthetic-fixture-cookie", forHTTPHeaderField: "Cookie")
+            client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: response)
+        }
+    }
+    override func stopLoading() {
+        stateLock.lock(); stopped = true; stateLock.unlock()
+        Self.lock.lock(); Self.stops += 1; Self.lock.unlock()
+    }
+}
+private final class ExportProgressProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [FeedExportDownload.Progress] = []
+    func record(_ value: FeedExportDownload.Progress) { lock.lock(); values.append(value); lock.unlock() }
+    func snapshot() -> [FeedExportDownload.Progress] { lock.lock(); defer { lock.unlock() }; return values }
+}
+private func waitForExportBytes(_ probe: ExportProgressProbe, atLeast count: Int64) async throws {
+    for _ in 0..<200 {
+        if probe.snapshot().last?.receivedBytes ?? 0 >= count { return }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    throw Failure(description: "The local media fixture did not report progress")
+}
+private func waitForExportPartial(_ directory: URL, byteCount: Int64) async throws -> URL {
+    for _ in 0..<200 {
+        if FileManager.default.fileExists(atPath: directory.path) {
+            let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            let partials = files.filter { $0.pathExtension == "part" }
+            try require(files.count == partials.count && partials.count <= 1, "An unfinished export must own only one partial file")
+            if let partial = partials.first {
+                let attributes = try FileManager.default.attributesOfItem(atPath: partial.path)
+                guard let size = (attributes[.size] as? NSNumber)?.int64Value else { throw Failure(description: "The partial export file has no byte length") }
+                try require(size <= byteCount, "The held export wrote bytes beyond its delivered prefix")
+                if size == byteCount { return partial }
+            }
+        }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    throw Failure(description: "The local media fixture did not write its partial prefix")
+}
+private func waitForExportStop() async throws {
+    for _ in 0..<200 {
+        if ExportFixtureProtocol.snapshot().stops > 0 { return }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    throw Failure(description: "The cancelled local media request did not stop")
+}
+private func noExportFiles(_ directory: URL) throws -> Bool {
+    if !FileManager.default.fileExists(atPath: directory.path) { return true }
+    return try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty
 }
 
 private let postA = "11111111-1111-4111-8111-111111111111"
@@ -160,6 +257,72 @@ private let cursorA = "0|2026-10-12T20:33:11.123456Z|11111111-1111-4111-8111-111
             try require(transport.calls.count == before, "no request without a session")
         }
 
+        await test("canonical YouTube watch links route to embedded playback; alternate provider URLs never become renditions") {
+            let id = "Abc_123-xyz"
+            let canonical = "https://www.youtube.com/watch?v=" + id
+            guard case .youtube(let video) = FeedPlaybackSource.resolve(canonical) else {
+                throw Failure(description: "canonical publishing URL did not select YouTube")
+            }
+            try require(video.id == id && video.watchURL.absoluteString == canonical, "provider identity and share URL")
+            try require(FeedPlaybackSource.resolve(canonical)?.renditionURL == nil, "YouTube is never a direct rendition")
+            let refused = [
+                "http://www.youtube.com/watch?v=" + id,
+                "https://user:password@www.youtube.com/watch?v=" + id,
+                canonical + "&v=" + id, canonical + "&list=other", canonical + "#fragment", canonical + "&autoplay=1",
+                "https://www.youtube.com:444/watch?v=" + id,
+                "https://www.youtube.com./watch?v=" + id,
+                "https://www.youtube.com/%77atch?v=" + id,
+                "https://www.youtube.com/watch?%76=" + id,
+                "https://www.youtube.com/watch?v=short",
+                "https://www.youtube.com/watch?v=Abc_123%2Dxyz",
+                "https://www.youtube.com/embed/" + id,
+                "https://www.youtube.com/shorts/" + id,
+                "https://youtube.com/watch?v=" + id,
+                "https://m.youtube.com/watch?v=" + id,
+                "https://youtu.be/" + id,
+                "https://www.youtube-nocookie.com/embed/" + id,
+                "https://r1.googlevideo.com/videoplayback?source=extracted",
+                "https://i.ytimg.com/vi/" + id + "/default.jpg",
+                " " + canonical, canonical + "\n"
+            ]
+            for raw in refused { try require(FeedPlaybackSource.resolve(raw) == nil, "unsupported provider URL accepted: " + raw) }
+            try require(YouTubeVideo(id: "abc<123-xyz") == nil && YouTubeVideo(id: "abc_123-xy💀") == nil, "HTML and Unicode cannot enter a video ID")
+            let rendition = "https://cdn.example/approved.mp4?token=opaque"
+            try require(FeedPlaybackSource.resolve(rendition) == .rendition(URL(string: rendition)!), "existing HTTPS rendition remains unchanged")
+        }
+
+        await test("YouTube embed configuration identifies the actual app and disables autoplay without suppressing controls") {
+            let video = YouTubeVideo(id: "Abc_123-xyz")!
+            guard let config = video.embedConfiguration(bundleIdentifier: "Com.StickDeath.Infinity"),
+                  let parts = URLComponents(url: config.url, resolvingAgainstBaseURL: false) else {
+                throw Failure(description: "app embed configuration missing")
+            }
+            try require(config.referer.absoluteString == "https://com.stickdeath.infinity", "bundle ID HTTPS referer")
+            try require(parts.scheme == "https" && parts.host == "www.youtube.com" && parts.path == "/embed/Abc_123-xyz", "official embedded player only")
+            let query = Dictionary(uniqueKeysWithValues: (parts.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+            try require(query["autoplay"] == "0" && query["playsinline"] == "1" && query["controls"] == "1" && query["origin"] == config.referer.absoluteString, "explicit user play, official controls and origin")
+            for bundle in [nil, "", "app", ".com.app", "com..app", "com.app.", "com.-app", "com.app-", "com.app/path", "com.app?token=secret", "com.app@foreign.example", "com.app\nheader", "com.💀"] as [String?] {
+                try require(video.embedConfiguration(bundleIdentifier: bundle) == nil, "invalid app identity accepted")
+            }
+        }
+
+        await test("YouTube playback and link sharing never authorize a video download, even with server export flags") {
+            let client = FeedClient(gateway: CommunityGateway(transport: FakeTransport()))
+            let canonical = "https://www.youtube.com/watch?v=Abc_123-xyz"
+            let post = try CommunityCoding.decoder().decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: true, url: canonical).utf8))
+            try require(post.safeURL?.absoluteString == canonical && post.downloadableURL == nil, "share URL available but no downloadable URL")
+            try require(FeedExportPolicy.state(post) == .providerDownloadUnavailable && !FeedExportPolicy.canExport(post), "provider download unavailable state")
+            do {
+                _ = try await client.exportFile(for: post) { _ in throw Failure(description: "YouTube transfer attempted") }
+                throw Failure(description: "YouTube export succeeded")
+            } catch CommunityError.server(let message, _) { try require(message.contains("YouTube"), "explicit provider denial") }
+            let context = FeedExportListing.Context(account: "viewer", generation: UUID())
+            guard let listing = FeedExportListing.commit(rows: [post], captured: context, current: context), let tap = listing.capture(for: post) else {
+                throw Failure(description: "listing fixture missing")
+            }
+            try require(listing.authorize(tap, rendered: post, current: context, visibleRows: [post]) == nil, "listing flags cannot override provider denial")
+        }
+
         await test("export is offered only with creator permission and refuses oversized downloads") {
             let decoder = CommunityCoding.decoder()
             let denied = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0).utf8))
@@ -180,6 +343,304 @@ private let cursorA = "0|2026-10-12T20:33:11.123456Z|11111111-1111-4111-8111-111
             try require(!FileManager.default.fileExists(atPath: big.path), "oversized temporary file removed")
             let ok = root.appendingPathComponent("ok.mp4"); try Data([1]).write(to: ok)
             try require(try await client.exportFile(for: allowed) { _ in (ok, 1) } == ok, "permitted export returns the file")
+        }
+
+        await test("bounded export streams exact and unknown-length bodies without account headers") {
+            let directory = root.appendingPathComponent("bounded-success")
+            let probe = ExportProgressProbe()
+            ExportFixtureProtocol.install(["/exact": .body(status: 200, headers: ["Content-Length": "8"], chunks: [Data([1, 2, 3]), Data([4, 5, 6, 7, 8])], finishes: true)])
+            let (file, count) = try await FeedExportDownload.fetch(URL(string: "https://cdn.example/exact")!, directory: directory,
+                maximumBytes: 8, protocolClasses: [ExportFixtureProtocol.self], progress: { probe.record($0) })
+            try require(count == 8 && (try Data(contentsOf: file)) == Data([1, 2, 3, 4, 5, 6, 7, 8]), "the completed file contains the exact transferred bytes")
+            let requests = ExportFixtureProtocol.snapshot().requests
+            try require(requests.count == 1 && requests[0].value(forHTTPHeaderField: "Authorization") == nil &&
+                requests[0].value(forHTTPHeaderField: "Cookie") == nil && !requests[0].httpShouldHandleCookies, "media requests carry no account credentials or cookies")
+            try require(probe.snapshot().last?.receivedBytes == 8 && probe.snapshot().last?.expectedBytes == 8, "actual download progress reaches the declared length")
+            try FileManager.default.removeItem(at: file)
+            ExportFixtureProtocol.install(["/chunked": .body(status: 200, headers: [:], chunks: [Data([1, 2, 3, 4]), Data([5, 6, 7, 8])], finishes: true)])
+            let (chunked, actual) = try await FeedExportDownload.fetch(URL(string: "https://cdn.example/chunked")!, directory: directory,
+                maximumBytes: 8, protocolClasses: [ExportFixtureProtocol.self])
+            try require(actual == 8 && (try Data(contentsOf: chunked)).count == 8, "unknown-length bodies may finish at the exact cap")
+            try FileManager.default.removeItem(at: chunked)
+            try require(try noExportFiles(directory), "success leaves no partial files")
+        }
+
+        await test("bounded export rejects declared, chunked and dishonest oversized bodies and incomplete files") {
+            let directory = root.appendingPathComponent("bounded-refused")
+            let cases: [(String, [String: String], [Data])] = [
+                ("declared", ["Content-Length": "9"], [Data(repeating: 1, count: 9)]),
+                ("chunked", [:], [Data(repeating: 1, count: 4), Data(repeating: 2, count: 4), Data([3])]),
+                ("dishonest", ["Content-Length": "4"], [Data(repeating: 1, count: 4), Data(repeating: 2, count: 5)]),
+                ("truncated", ["Content-Length": "8"], [Data(repeating: 1, count: 4)]),
+                ("empty", ["Content-Length": "0"], [])
+            ]
+            for (path, headers, chunks) in cases {
+                let probe = ExportProgressProbe()
+                ExportFixtureProtocol.install(["/" + path: .body(status: 200, headers: headers, chunks: chunks, finishes: true)])
+                do {
+                    _ = try await FeedExportDownload.fetch(URL(string: "https://cdn.example/" + path)!, directory: directory,
+                        maximumBytes: 8, protocolClasses: [ExportFixtureProtocol.self], progress: { probe.record($0) })
+                    throw Failure(description: "Accepted " + path)
+                } catch CommunityError.invalidResponse {}
+                try require(try noExportFiles(directory), path + " left a partial or completed file")
+                try require(probe.snapshot().allSatisfy { $0.receivedBytes <= 8 }, path + " wrote beyond the byte ceiling")
+            }
+        }
+
+        await test("bounded export rejects HTTP errors, partial responses and an unhandled redirect") {
+            let directory = root.appendingPathComponent("bounded-status")
+            for status in [206, 302, 403, 500] {
+                ExportFixtureProtocol.install(["/status": .body(status: status, headers: ["Location": "http://unavailable.example/video"], chunks: [Data([1])], finishes: true)])
+                do {
+                    _ = try await FeedExportDownload.fetch(URL(string: "https://cdn.example/status")!, directory: directory,
+                        maximumBytes: 8, protocolClasses: [ExportFixtureProtocol.self])
+                    throw Failure(description: "Accepted status \(status)")
+                } catch CommunityError.invalidResponse {}
+                try require(try noExportFiles(directory), "a refused HTTP response left a file")
+                try require(ExportFixtureProtocol.snapshot().requests.count == 1, "a refused response opened another media request")
+            }
+            for raw in ["http://cdn.example/video", "https://user:password@cdn.example/video",
+                        "https://www.youtube.com/watch?v=Abc_123-xyz", "https://youtu.be/Abc_123-xyz",
+                        "https://r1.googlevideo.com/videoplayback?source=extracted"] {
+                ExportFixtureProtocol.install([:])
+                do {
+                    _ = try await FeedExportDownload.fetch(URL(string: raw)!, directory: directory,
+                        maximumBytes: 8, protocolClasses: [ExportFixtureProtocol.self])
+                    throw Failure(description: "Accepted unsafe initial URL")
+                } catch CommunityError.invalidResponse {}
+                try require(ExportFixtureProtocol.snapshot().requests.isEmpty, "unsafe URLs must be refused before opening a connection")
+            }
+        }
+
+        #if !canImport(FoundationNetworking)
+        // corelibs URLProtocol explicitly does not implement wasRedirectedTo.
+        // These real delegate redirect cases run on Darwin alongside native QA.
+        await test("bounded export follows only sanitized HTTPS redirects") {
+            let directory = root.appendingPathComponent("bounded-redirect")
+            let secure = URL(string: "https://second.example/target")!
+            ExportFixtureProtocol.install(["/start": .redirect(secure), "/target": .body(status: 200, headers: ["Content-Length": "1"], chunks: [Data([7])], finishes: true)])
+            let (file, _) = try await FeedExportDownload.fetch(URL(string: "https://cdn.example/start")!, directory: directory,
+                maximumBytes: 8, protocolClasses: [ExportFixtureProtocol.self])
+            let requests = ExportFixtureProtocol.snapshot().requests
+            try require(requests.count == 2 && requests[1].url == secure && requests[1].value(forHTTPHeaderField: "Authorization") == nil &&
+                requests[1].value(forHTTPHeaderField: "Cookie") == nil, "a cross-host HTTPS redirect must use a fresh credential-free request")
+            try FileManager.default.removeItem(at: file)
+            for target in [URL(string: "http://second.example/target")!, URL(string: "https://user:password@second.example/target")!,
+                           URL(string: "https://www.youtube.com/watch?v=Abc_123-xyz")!, URL(string: "https://r1.googlevideo.com/videoplayback")!] {
+                ExportFixtureProtocol.install(["/start": .redirect(target)])
+                do {
+                    _ = try await FeedExportDownload.fetch(URL(string: "https://cdn.example/start")!, directory: directory,
+                        maximumBytes: 8, protocolClasses: [ExportFixtureProtocol.self])
+                    throw Failure(description: "Accepted an unsafe redirect")
+                } catch CommunityError.invalidResponse {}
+                try require(ExportFixtureProtocol.snapshot().requests.count == 1 && (try noExportFiles(directory)), "unsafe redirects cannot open their target or leave a file")
+            }
+            ExportFixtureProtocol.install(["/loop": .redirect(URL(string: "https://cdn.example/loop")!)])
+            do {
+                _ = try await FeedExportDownload.fetch(URL(string: "https://cdn.example/loop")!, directory: directory,
+                    maximumBytes: 8, protocolClasses: [ExportFixtureProtocol.self])
+                throw Failure(description: "An endless redirect was accepted")
+            } catch CommunityError.invalidResponse {}
+            try require(ExportFixtureProtocol.snapshot().requests.count <= 6 && (try noExportFiles(directory)), "redirect loops must stop within the transfer's request budget")
+        }
+        #endif
+
+        await test("bounded export cancels an active transfer and enforces a complete-transfer deadline") {
+            let directory = root.appendingPathComponent("bounded-cancel")
+            let probe = ExportProgressProbe()
+            let declaredBytes = 128 * 1024
+            let prefix = Data(repeating: 7, count: 64 * 1024)
+            ExportFixtureProtocol.install(["/held": .body(status: 200,
+                headers: ["Content-Type": "video/mp4", "Content-Length": String(declaredBytes)], chunks: [prefix], finishes: false)])
+            let task = Task {
+                try await FeedExportDownload.fetch(URL(string: "https://cdn.example/held")!, directory: directory,
+                    maximumBytes: Int64(declaredBytes), protocolClasses: [ExportFixtureProtocol.self], progress: { probe.record($0) })
+            }
+            defer { task.cancel() }
+            try await waitForExportBytes(probe, atLeast: 4)
+            let partial = try await waitForExportPartial(directory, byteCount: Int64(prefix.count))
+            try require(probe.snapshot().last?.expectedBytes == Int64(declaredBytes), "The held transfer must report its declared complete length")
+            try require(try Data(contentsOf: partial) == prefix, "Cancellation must interrupt an actually written, incomplete body prefix")
+            task.cancel()
+            do { _ = try await task.value; throw Failure(description: "Cancelled export returned a file") } catch is CancellationError {}
+            try require(try noExportFiles(directory), "cancellation must remove a partially written file before returning")
+            try await waitForExportStop()
+            let timeoutProbe = ExportProgressProbe()
+            ExportFixtureProtocol.install(["/held": .body(status: 200, headers: [:], chunks: [Data([1])], finishes: false)])
+            do {
+                _ = try await FeedExportDownload.fetch(URL(string: "https://cdn.example/held")!, directory: directory,
+                    maximumBytes: 8, timeout: 0.15, protocolClasses: [ExportFixtureProtocol.self], progress: { timeoutProbe.record($0) })
+                throw Failure(description: "A stalled export outlived its deadline")
+            } catch CommunityError.transport {}
+            try require(try noExportFiles(directory), "timeout must remove its partial file")
+            try await waitForExportStop()
+        }
+
+        await test("export context guards reject queued and completed work after scope changes") {
+            let client = FeedClient(gateway: CommunityGateway(transport: FakeTransport()))
+            let post = try CommunityCoding.decoder().decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: true).utf8))
+            var generation = UUID()
+            let captured = generation
+            generation = UUID()
+            do {
+                _ = try await client.exportFile(for: post, isCurrent: { generation == captured }) { _ in throw Failure(description: "Stale queued export started") }
+                throw Failure(description: "Stale queued export was accepted")
+            } catch is CancellationError {}
+            let file = root.appendingPathComponent("stale-completion.mp4")
+            try Data([1]).write(to: file)
+            let current = generation
+            do {
+                _ = try await client.exportFile(for: post, isCurrent: { generation == current }) { _ in generation = UUID(); return (file, 1) }
+                throw Failure(description: "Stale completion was accepted")
+            } catch is CancellationError {}
+            try require(!FileManager.default.fileExists(atPath: file.path), "a completed export from an old account generation must be removed")
+            let cancelled = root.appendingPathComponent("cancelled-completion.mp4")
+            try Data([1]).write(to: cancelled)
+            let task = Task {
+                try await client.exportFile(for: post) { _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return (cancelled, 1)
+                }
+            }
+            do { _ = try await task.value; throw Failure(description: "Cancelled completion was accepted") } catch is CancellationError {}
+            try require(!FileManager.default.fileExists(atPath: cancelled.path), "post-await cancellation must remove a returned temporary file")
+        }
+
+        await test("export listing authorization rejects stale viewer cards and replaced same-ID decisions before download") {
+            let client = FeedClient(gateway: CommunityGateway(transport: FakeTransport()))
+            let decoder = CommunityCoding.decoder()
+            let allowedA = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: true).utf8))
+            let deniedB = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: false).utf8))
+            let replacedDenied = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: false, url: "https://cdn.example/replaced.mp4").utf8))
+            let replacedAllowed = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: true, url: "https://cdn.example/new-approved.mp4").utf8))
+            let requestA = FeedExportListing.Context(account: creatorA, generation: UUID())
+            var current: FeedExportListing.Context? = requestA
+            var visible = [allowedA]
+            var listing = FeedExportListing.commit(rows: visible, captured: requestA, current: current)
+            let oldATap = listing!.capture(for: allowedA)!
+            var downloads = 0
+            var downloadedURL: URL?
+            @MainActor func attempt(_ rendered: FeedPost, tap: FeedExportListing.Tap?) async throws -> Bool {
+                guard let tap, let permission = listing?.authorize(tap, rendered: rendered, current: current, visibleRows: visible) else { return false }
+                let file = try await client.exportFile(for: permission, isCurrent: {
+                    listing?.contains(permission, current: current, visibleRows: visible) == true
+                }) { url in
+                    downloads += 1; downloadedURL = url
+                    let file = root.appendingPathComponent("bound-listing-export-" + UUID().uuidString + ".mp4")
+                    try Data([1]).write(to: file)
+                    return (file, 1)
+                }
+                try FileManager.default.removeItem(at: file)
+                return true
+            }
+
+            // Publish B synchronously and revoke the binding, deliberately
+            // retaining A's visible card while the identity reset is held.
+            let requestB = FeedExportListing.Context(account: creatorB, generation: UUID())
+            current = requestB; listing = nil
+            try require(try await attempt(allowedA, tap: oldATap) == false && downloads == 0, "B must never download using A's retained card before task reset")
+            try require(FeedExportListing.commit(rows: [allowedA], captured: requestA, current: current) == nil, "an in-flight A page cannot authorize B")
+            visible = [deniedB]
+            listing = FeedExportListing.commit(rows: visible, captured: requestB, current: current)
+            try require(try await attempt(allowedA, tap: oldATap) == false && downloads == 0, "B's fresh no-plan decision cannot be replaced by A's old argument")
+
+            // A returns before any reset/fetch completes. Equal account IDs do
+            // not revive either the old card or A's old in-flight page result.
+            let returnedA = FeedExportListing.Context(account: creatorA, generation: UUID())
+            current = returnedA; listing = nil
+            try require(try await attempt(allowedA, tap: oldATap) == false && downloads == 0, "A → B → A requires a fresh committed listing")
+            try require(FeedExportListing.commit(rows: [allowedA], captured: requestA, current: current) == nil, "the first A generation cannot commit into the returned A session")
+            visible = [allowedA]
+            listing = FeedExportListing.commit(rows: visible, captured: returnedA, current: current)
+            try require(try await attempt(allowedA, tap: oldATap) == false && downloads == 0, "fresh A rows do not revive an obsolete card revision")
+            let currentATap = listing!.capture(for: allowedA)!
+
+            visible = [replacedDenied]
+            listing = FeedExportListing.commit(rows: visible, captured: returnedA, current: current)
+            try require(try await attempt(allowedA, tap: currentATap) == false && downloads == 0, "same-ID permission and URL replacement must revoke an old allowed card")
+            try require(try await attempt(replacedDenied, tap: listing!.capture(for: replacedDenied)) == false && downloads == 0, "fresh no-plan rows remain denied by the existing policy")
+            // A reaction rollback can restore an old visible row. Paging must
+            // preserve the committed denied decision instead of trusting it.
+            visible = [allowedA]
+            listing = FeedExportListing.commit(rows: [], previous: listing, captured: returnedA, current: current)
+            try require(listing!.capture(for: allowedA) == nil && downloads == 0, "later pages cannot reauthorize a stale optimistic timeline snapshot")
+
+            visible = [replacedAllowed]
+            listing = FeedExportListing.commit(rows: visible, captured: returnedA, current: current)
+            let replacementTap = listing!.capture(for: replacedAllowed)!
+            try require(try await attempt(allowedA, tap: replacementTap) == false && downloads == 0, "an obsolete row argument cannot borrow the current row's token")
+            // Replacing a committed snapshot also revokes old tokens when all
+            // fields happen to compare equal; row identity alone is insufficient.
+            listing = FeedExportListing.commit(rows: visible, captured: returnedA, current: current)
+            try require(try await attempt(replacedAllowed, tap: replacementTap) == false && downloads == 0, "an obsolete listing revision cannot start a transfer")
+            let freshTap = listing!.capture(for: replacedAllowed)!
+            try require(try await attempt(replacedAllowed, tap: freshTap) && downloads == 1 && downloadedURL == replacedAllowed.safeURL, "a fresh correctly bound listing exports only its current approved URL")
+        }
+
+        await test("listing replacement revokes completed pending shares while retaining an offered consumer input") {
+            let client = FeedClient(gateway: CommunityGateway(transport: FakeTransport()))
+            let decoder = CommunityCoding.decoder()
+            let allowed = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: true).utf8))
+            let denied = try decoder.decode(FeedPost.self, from: Data(postJSON(postA, creator: creatorA, likes: 0, export: true, download: false).utf8))
+            let context = FeedExportListing.Context(account: creatorA, generation: UUID())
+            let original = FeedExportListing.commit(rows: [allowed], captured: context, current: context)!
+            let tap = original.capture(for: allowed)!
+            let permission = original.authorize(tap, rendered: allowed, current: context, visibleRows: [allowed])!
+            var downloads = 0
+            var current = original
+            var visible = [allowed]
+            @MainActor func completedFile(_ name: String, permission: FeedExportListing.Authorization) async throws -> FeedExportFile {
+                let url = try await client.exportFile(for: permission, isCurrent: {
+                    current.contains(permission, current: context, visibleRows: visible)
+                }) { _ in
+                    downloads += 1
+                    let file = root.appendingPathComponent(name + ".mp4")
+                    try Data([1, 2, 3]).write(to: file)
+                    return (file, 3)
+                }
+                return FeedExportFile(url: url, title: "Clip", account: context.account, generation: context.generation)
+            }
+            let pending = try await completedFile("pending-before-policy-replacement", permission: permission)
+            defer { pending.ownerClosed() }
+            current = FeedExportListing.commit(rows: [denied], captured: context, current: context)!
+            visible = [denied]
+            try require(!current.contains(permission, current: context, visibleRows: visible), "same-account replacement must revoke the completed file's listing authorization")
+            try require(pending.revokePendingShare(), "a completed unoffered file must be revoked when the listing is replaced")
+            try require(!FileManager.default.fileExists(atPath: pending.url.path) && !pending.offerToShare(), "a queued share host must refuse the revoked file and its output must be removed")
+
+            current = FeedExportListing.commit(rows: [allowed], captured: context, current: context)!
+            visible = [allowed]
+            let secondTap = current.capture(for: allowed)!
+            let secondPermission = current.authorize(secondTap, rendered: allowed, current: context, visibleRows: visible)!
+            let offered = try await completedFile("offered-before-policy-replacement", permission: secondPermission)
+            defer { offered.consumerFinished(); offered.ownerClosed() }
+            try require(offered.offerToShare(), "the original permitted file must be reserved before UIKit receives its URL")
+            current = FeedExportListing.commit(rows: [denied], captured: context, current: context)!
+            visible = [denied]
+            try require(!current.contains(secondPermission, current: context, visibleRows: visible), "the offered file's former permission is also replaced")
+            try require(!offered.revokePendingShare(), "listing replacement cannot revoke an input already offered to a consumer")
+            offered.ownerClosed()
+            try require(FileManager.default.fileExists(atPath: offered.url.path) && FeedExportFile.hasOutstandingConsumer, "the existing consumer retains its file after listing replacement and owner teardown")
+            offered.consumerFinished()
+            try require(!FileManager.default.fileExists(atPath: offered.url.path) && !FeedExportFile.hasOutstandingConsumer && downloads == 2, "only the consumer callback releases its input; both files came from completed exports")
+        }
+
+        await test("file sharing retains the consumer file across owner dismissal with one outstanding lease") {
+            let url = root.appendingPathComponent("share-lifetime.mp4")
+            try Data([1, 2]).write(to: url)
+            var owner: FeedExportFile? = FeedExportFile(url: url, title: "Clip")
+            weak var lease = owner
+            try require(owner!.offerToShare(), "the first consumer must reserve its file")
+            owner!.ownerClosed(); owner = nil
+            try require(lease != nil && FileManager.default.fileExists(atPath: url.path), "clearing the view owner cannot remove a file offered to UIKit")
+            let secondURL = root.appendingPathComponent("share-second.mp4")
+            try Data([3]).write(to: secondURL)
+            let second = FeedExportFile(url: secondURL, title: "Second")
+            try require(!second.offerToShare(), "unfinished consumer leases must remain bounded to one")
+            second.ownerClosed()
+            try require(!FileManager.default.fileExists(atPath: secondURL.path), "an unoffered file must clean up when its owner closes")
+            lease!.consumerFinished()
+            try require(!FileManager.default.fileExists(atPath: url.path) && !FeedExportFile.hasOutstandingConsumer, "the actual consumer callback releases the file and slot")
         }
 
         await test("handle rules, avatar bounds, records completeness and achievement grouping") {

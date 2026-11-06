@@ -111,7 +111,8 @@ approved packs (no prices; Stripe packs bind a `price_...` id).
 - `stripe-webhook` with `credit_packs=`: paid `checkout.session.completed` /
   `async_payment_succeeded` grants by PaymentIntent (plus a live-mode `charge`
   ledger row); fully refunded `charge.refunded` claws back. Partial refunds do not.
-- Google Play: no verification path exists; not implemented.
+- Google Play credit packs: no grant/refund verification path exists; unavailable.
+  The read-only subscription inspection foundation below does not activate purchases.
 
 Tests: `backend/tests/test_spatter_credits.py`.
 
@@ -147,3 +148,72 @@ created in App Store Connect and Stripe (test mode), secrets in the server secre
 the runtime bindings (ES256 chain verifier, JWT verification, service-role executor),
 StoreKit sandbox and Stripe test-mode exercises (purchase, pending, cancel, restore,
 renewal, revocation, refund, replay). None of that has run.
+
+
+## Google Play subscription inspection foundation (#289)
+
+`google_play.py` and `google_play_transport.py` add an **undeployed, default-off,
+read-only** subscription inspector. They do not grant an entitlement, acknowledge a
+purchase, consume a pack, write SQL or enable the Android purchase buttons. Existing
+`contract.PROVIDERS` and database provider constraints remain Apple/Stripe only.
+A successful inspection response explicitly says `verificationOnly: true`,
+`entitlementApplied: false`, `acknowledgementPerformed: false` and
+`reconciliationAvailable: false`; it is never an Android `Granted` response.
+
+The deployment must inject a signature/issuer-validating member JWT verifier,
+active-account lookup, durable query limiter, approved product/base-plan pairs,
+read-only `SecretStore`, and bounded transport. No secret path or reference is
+assumed. `PlayVerificationConfig.enabled` defaults to false; missing runtime
+bindings prevent secret reads and Google requests. The dedicated service-account
+signer validates the key type, credential/token endpoint and response bounds;
+requests only `androidpublisher` OAuth scope, not the FCM scope. Keys, bearer
+tokens, purchase tokens, provider contact fields and raw responses are never
+returned in an inspection receipt. HTTP redirects and arbitrary destinations
+are refused; calls have finite timeout/byte bounds and no automatic retry.
+
+Account ownership requires Google's `obfuscatedExternalAccountId` to match the
+server's package-separated HMAC of the authenticated member UUID. The binding
+key must be 32–64 server-held random bytes; the future authenticated launch
+binding endpoint must supply this exact 64-character value to Android's
+`setObfuscatedAccountId`. Caller user IDs, emails and provider profile names are
+not substitutes. Binding-key rotation needs a versioned migration. Existing
+purchases without a binding cannot be silently assigned to a claimant.
+
+Only one configured auto-renewing item is inspected. Pending, paused, held or
+expired subscriptions have no current snapshot access. Cancellation retains
+snapshot access only through verified expiry; grace follows Google's expiry.
+Current `offerPhase.freeTrial` remains a trial; an explicit paid phase clears
+it. Missing/prorated phases are unknown and cannot fund paid access. Linked or
+deferred replacements require atomic reconciliation first. Test purchases need
+a separate explicit switch. An expired resource can represent revocation; no
+refund amount/reason is invented from it. The observation fingerprint is for
+equality only: **do not use it as a durable event ID** (A→B→A can repeat).
+
+Still required before any purchase/grant activation:
+
+- Reviewed Google provider schema/catalogue upgrade plus canonical durable token
+  ownership, encrypted retryable token storage, per-token locks, ordered state
+  updates and existing billing ledger integration. Never reuse the current
+  16-day Apple/Stripe expiry grace blindly for Google hold/expiry/revocation.
+- Authenticated RTDN/Pub/Sub delivery IDs and replay storage, latest Publisher
+  requery, atomic linked-token deprovisioning, voided/order/refund handling and
+  bounded scheduled catch-up. No fabricated charge/refund rows from list prices.
+- Idempotent post-durable-grant acknowledgement/outbox and refund/rejection
+  handling; ack never precedes a successful entitlement commit. Consumables,
+  prepaid/installment plans and multi-item subscriptions remain unavailable.
+- Real runtime SecretStore/JWT/account/limiter/service-role adapters, approved
+  Play Console products/access, client binding and verifier integration, then
+  sandbox/internal-track purchase/restore/renewal/cancel/refund/device evidence.
+
+Offline assertions: `python3 -m unittest backend.tests.test_google_play -v`.
+Fixtures generate a temporary test RSA key in memory and verify the actual
+RS256 assertion; injected transports open no socket. This does not prove a
+Google account is configured or that a real purchase works.
+
+Primary sources checked November 3, 2026:
+[purchases.subscriptionsv2](https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.subscriptionsv2),
+[Publisher get/scope](https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.subscriptionsv2/get),
+[subscription lifecycle](https://developer.android.com/google/play/billing/lifecycle/subscriptions),
+[verification/account binding](https://developer.android.com/google/play/billing/security),
+[acknowledgement](https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.subscriptions/acknowledge),
+[service-account OAuth](https://developers.google.com/identity/protocols/oauth2/service-account).

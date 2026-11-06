@@ -3,24 +3,48 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
-<meta name="description" content="StickDeath Infinity command center shell. Server-authorized administrator views; reports an honest not-configured state until the owner connects the backend.">
-<meta name="theme-color" content="#0e0e10"><title>Command center — StickDeath Infinity</title>
+<meta name="description" content="StickDeath Infinity administrator command center. Server-authorized access, private approvals and operations.">
+<meta name="theme-color" content="#188c89"><title>Command center — StickDeath Infinity</title>
 <meta name="sdi:canonical-base" content="https://stickdeathinfinity.com/">
-<link rel="icon" href="assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="styles.css">
+<link rel="icon" href="assets/mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="admin-desktop.css">
 <script src="admin-config.js" defer></script><script src="admin.js" defer></script>
-<noscript><style>.header nav{display:flex!important}.menu{display:none!important}</style></noscript>
-<script src="site.js" defer></script>
+<script src="admin-desktop.js" defer></script>
 </head>
-<body>
-<a class="skip" href="#main">Skip to content</a>
-<header class="header"><a class="brand" href="index.html" aria-label="StickDeath Infinity home"><img src="assets/mark.svg" width="36" height="36" alt=""><span>STICKDEATH<span class="brand-sub">INFINITY</span></span></a>
-<button class="menu" aria-controls="navigation" aria-expanded="false">Menu</button>
-<nav id="navigation" aria-label="Main navigation"><a href="studio.html">Studio</a><a href="community.html">Community</a><a href="screens.html">Screens</a><a href="play.html">Play</a><a href="store.html">Store</a><a href="about.html#pricing">Pricing</a><a href="about.html#help">Help</a><a href="admin.html" aria-current="page">Command center</a><a class="cta" href="about.html#availability">Get the app</a></nav></header>
-<main id="main" tabindex="-1" class="wrap policy">
-<p class="eyebrow">COMMAND CENTER</p>
-<h1>Administration,<br>authorized by the <em>server.</em></h1>
-<p>This page is a static shell over the same <code>sdi_*</code> RPCs the native Admin uses. Nothing here grants access: every call is checked server-side for an enabled administrator role, MFA, a live session, the capability for that area and a recent re-authentication for sensitive changes. Without <code>admin-config.js</code> it reports the state below and sends no request anywhere.</p>
-<noscript><p class="note">JavaScript is off. The command center needs it to call the backend; with it off this page only states that nothing is configured.</p></noscript>
+<body class="admin-desktop">
+<a class="skip" href="#main">Skip to command center</a>
+<header class="desktop-menubar">
+<a class="desktop-brand" href="index.html" aria-label="StickDeath Infinity website"><span class="desktop-mark" aria-hidden="true">S</span><span>SDI<span class="desktop-brand-sub"> INFINITY</span></span></a>
+<nav id="navigation" class="desktop-menus" aria-label="Command center menus">
+<details class="desktop-menu" data-desktop-menu><summary>Desk</summary><div class="desktop-menu-popover"><a href="#desktop-dashboard" data-open-window="dashboard" data-private-menu>Command center</a><a href="#desktop-access" data-open-window="access">Sign-in / session status</a><hr><a href="index.html">Product website</a><a href="studio.html">Studio</a><a href="account.html">Member account</a></div></details>
+<details class="desktop-menu" data-desktop-menu><summary>Work</summary><div class="desktop-menu-popover" id="desktop-work-menu"><a href="#desktop-approvals" data-open-window="approvals">Exact-render approvals</a>
+<a href="#desktop-users" data-open-window="users">User directory</a>
+<a href="#desktop-support" data-open-window="support">Support requests</a>
+<a href="#desktop-history" data-open-window="history">Agent run history and audit</a>
+<a href="#desktop-proposals" data-open-window="proposals">Agent proposals</a>
+<a href="#desktop-publishing" data-open-window="publishing">Publishing stages</a>
+<a href="#desktop-diagnostics" data-open-window="diagnostics">Diagnostics</a>
+<a href="#desktop-announcements" data-open-window="announcements">Announcements</a>
+<a href="#desktop-agents" data-open-window="agents">Agent controls</a>
+<a href="#desktop-finance" data-open-window="finance">Finance records</a>
+<a href="#desktop-stop" data-open-window="stop">Emergency stop</a></div></details>
+<details class="desktop-menu" data-desktop-menu><summary>Reports</summary><div class="desktop-menu-popover" id="desktop-report-menu"><p>Sign in to see available server reports.</p></div></details>
+<details class="desktop-menu" data-desktop-menu><summary>Window</summary><div class="desktop-menu-popover"><p class="desktop-menu-label">Open windows</p><div id="desktop-window-list"></div><hr><button type="button" id="desktop-cascade">Cascade windows</button><button type="button" id="desktop-reset-layout">Reset window positions</button></div></details>
+<details class="desktop-menu" data-desktop-menu><summary>Help</summary><div class="desktop-menu-popover"><a href="#desktop-about" data-open-window="about">About / security</a><button type="button" id="desktop-keyboard-help">Window keyboard shortcuts</button></div></details>
+</nav>
+<div class="desktop-system"><span id="desktop-session-state">Access locked</span><time id="desktop-clock" aria-label="Local time"></time></div>
+</header>
+<main id="main" class="desktop-workspace" tabindex="-1">
+<div class="desktop-wallpaper"><span class="wallpaper-index">STICKDEATH / INFINITY</span><h1>CONTROL<br>CENTER<span aria-hidden="true">01</span></h1><span class="wallpaper-edition">PRIVATE OPERATIONS<br>APPROVAL BEFORE RELEASE</span></div>
+<noscript><p class="desktop-noscript">JavaScript is off. Sign-in and server actions are unavailable. The forms below describe the command center; nothing is sent.</p></noscript>
+<section id="desktop-access" class="desktop-window" data-desktop-window="access" data-accent="lime" data-public-window aria-labelledby="desktop-access-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Administrator access" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-access-title" tabindex="-1">Administrator access</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Administrator access" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Administrator access" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <div class="status-card" id="admin-status" aria-live="polite">
 <h2 id="admin-status-title">The command center is not configured.</h2>
 <p id="admin-status-detail">No backend origin is set, so there is no sign-in and no data. This page keeps no cookies, no local storage and sends no request until the owner configures it.</p>
@@ -29,6 +53,11 @@
 <section id="admin-signin" hidden>
 <h2>Sign in</h2>
 <p class="quiet">Administrator accounts are provisioned server-side with MFA. A matching email or handle grants nothing.</p>
+<form id="admin-invite-form" class="support" novalidate hidden>
+<h3>Activate your invitation</h3>
+<p class="quiet">Confirm this invitation to choose your password and enrol an authenticator. Administrator access still requires a verified server role; this page cannot grant it.</p>
+<div class="actions"><button class="button" type="submit" id="admin-invite-activate">Activate invitation</button><button class="button" type="button" id="admin-invite-cancel">Cancel</button></div>
+</form>
 <form id="admin-password-form" class="support" novalidate>
 <label for="admin-email">Email</label>
 <input id="admin-email" name="email" type="email" autocomplete="username" maxlength="320" required>
@@ -61,13 +90,62 @@
 <div class="actions"><button class="button" type="submit">Save password and continue</button><button class="button" type="button" id="admin-newpassword-cancel">Cancel</button></div>
 </form>
 </section>
-
-<section id="admin-console" hidden>
-<h2>Console</h2>
+</div>
+</section>
+<section id="admin-console" hidden aria-label="Authenticated administrator workspace">
+<section id="desktop-dashboard" class="desktop-window" data-desktop-window="dashboard" data-accent="lime" aria-labelledby="desktop-dashboard-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Command center" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-dashboard-title" tabindex="-1">Command center</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Command center" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Command center" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p id="admin-identity" class="quiet"></p>
 <div class="actions"><button class="button" type="button" id="admin-signout">Sign out</button><button class="button" type="button" id="admin-refresh">Refresh permissions</button></div>
-<div id="admin-panels"></div>
-<h2>User directory</h2>
+<div id="desktop-dashboard-status"></div>
+<div class="desktop-welcome"><span class="desktop-stamp" aria-hidden="true">SDI / CC</span><h3>Your control desk.</h3><p>Choose a subject in <strong>Work</strong> or a server report in <strong>Reports</strong>. Each opens in its own window. Opening a window does not load records or take an action.</p></div>
+<p class="desktop-hint">Drag a title bar to move a window. Use its title-bar buttons to close, minimize or maximize. Window → Open windows brings it back.</p>
+</div>
+</section>
+<section id="desktop-approvals" class="desktop-window" data-desktop-window="approvals" data-accent="pink" aria-labelledby="desktop-approvals-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Exact-render approvals" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-approvals-title" tabindex="-1">Exact-render approvals</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Exact-render approvals" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Exact-render approvals" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
+<p class="quiet">Watch the current private render with audio, then review its rights, consent and destinations. Spatter videos require the owner. Approval records a decision; it does not upload or schedule a video. Changed renders need a new decision.</p>
+<button class="button" type="button" id="admin-review-load">Load pending renders</button>
+<div id="admin-review-queue" class="actions" aria-label="Pending renders"></div>
+<form id="admin-review-form" class="support" novalidate>
+<fieldset id="admin-review-fields" disabled>
+<legend>Selected render</legend>
+<div id="admin-review-metadata"></div>
+<video id="admin-review-video" controls playsinline preload="none" hidden aria-label="Private rendered video"></video>
+<label><input id="admin-review-confirm" type="checkbox"> I watched this exact video with audio and reviewed its rights, consent and destinations.</label>
+<label for="admin-review-note">Decision notes / rights evidence</label>
+<textarea id="admin-review-note" maxlength="4000" rows="3"></textarea>
+<div class="actions">
+<button class="button" type="submit" id="admin-review-approve" data-decision="approved" disabled>Approve exact render</button>
+<button class="button" type="submit" data-decision="changes">Request changes</button>
+<button class="button" type="submit" data-decision="rejected">Reject</button>
+<button class="button" type="button" id="admin-review-rights" disabled>Record rights clearance</button>
+</div>
+</fieldset>
+<div id="admin-review-result" aria-live="polite"></div>
+</form>
+</div>
+</section>
+<section id="desktop-users" class="desktop-window" data-desktop-window="users" data-accent="blue" aria-labelledby="desktop-users-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close User directory" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-users-title" tabindex="-1">User directory</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize User directory" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize User directory" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p class="quiet">Search by username or account id (users capability). Plan appears only for administrators with the finance capability; feed report counts only with moderation.</p>
 <form id="admin-users-form" class="support" novalidate>
 <label for="admin-users-query">Username or account id (optional)</label>
@@ -90,7 +168,50 @@
 <div class="actions"><button class="button" type="submit">Apply</button></div>
 <p id="admin-account-result" class="quiet" aria-live="polite"></p>
 </form>
-<h2>Agent run history and audit</h2>
+</div>
+</section>
+<section id="desktop-support" class="desktop-window" data-desktop-window="support" data-accent="orange" aria-labelledby="desktop-support-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Support requests" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-support-title" tabindex="-1">Support requests</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Support requests" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Support requests" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
+<p class="quiet">Load current requests using the users capability and the server's MFA checks. A selected request carries its actual revision; if a member withdraws it or another administrator changes it, the server refuses an outdated action. Notes below are private administrator records and are never sent to the member. This is support triage, not a messaging service.</p>
+<form id="admin-support-form" class="support" novalidate>
+<label for="admin-support-filter">Request status</label>
+<select id="admin-support-filter" name="status"><option value="">All statuses</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting_on_member">Waiting on member</option><option value="resolved">Resolved</option><option value="withdrawn">Withdrawn (read only)</option></select>
+<label for="admin-support-page">Page (1 to 200, up to 50 requests each)</label>
+<input id="admin-support-page" name="page" inputmode="numeric" maxlength="3" value="1">
+<div class="actions"><button class="button" type="submit">Load support queue</button><button class="button" type="button" id="admin-support-prev" disabled>Previous page</button><button class="button" type="button" id="admin-support-next" disabled>Next page</button></div>
+<div id="admin-support-queue" aria-live="polite"></div>
+</form>
+<form id="admin-support-update-form" class="support" novalidate>
+<h3>Update selected support request</h3>
+<p id="admin-support-selected" class="quiet" aria-live="polite">Load the queue and select a request above.</p>
+<fieldset id="admin-support-fields" disabled>
+<legend>Selected request action</legend>
+<label for="admin-support-status">New status</label>
+<select id="admin-support-status" name="status"><option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting_on_member">Waiting on member</option><option value="resolved">Resolved</option></select>
+<label for="admin-support-note">Private admin note (required, up to 2,000 characters)</label>
+<textarea id="admin-support-note" name="note" maxlength="4000" rows="4" aria-describedby="admin-support-note-help" required></textarea>
+<p id="admin-support-note-help" class="quiet">Explain the status decision. The member sees the request status through their account; this note is not a reply and is not delivered by email or chat.</p>
+<label><input id="admin-support-confirm" type="checkbox" required> I checked the selected receipt and the status change.</label>
+<div class="actions"><button class="button" type="submit">Apply support status</button></div>
+</fieldset>
+<p id="admin-support-result" class="quiet" aria-live="polite"></p>
+</form>
+</div>
+</section>
+<section id="desktop-history" class="desktop-window" data-desktop-window="history" data-accent="lilac" aria-labelledby="desktop-history-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Agent run history and audit" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-history-title" tabindex="-1">Agent run history and audit</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Agent run history and audit" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Agent run history and audit" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p class="quiet">Searchable, paged (50 per page). Finished runs are kept 180 days and audit entries 400 days; audit entries cannot be edited.</p>
 <form id="admin-history-form" class="support" novalidate>
 <label for="admin-history-kind">Log</label>
@@ -106,7 +227,16 @@
 <div class="actions"><button class="button" type="submit">Search</button></div>
 <div id="admin-history-result" aria-live="polite"></div>
 </form>
-<h2>Agent proposals</h2>
+</div>
+</section>
+<section id="desktop-proposals" class="desktop-window" data-desktop-window="proposals" data-accent="lime" aria-labelledby="desktop-proposals-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Agent proposals" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-proposals-title" tabindex="-1">Agent proposals</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Agent proposals" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Agent proposals" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p class="quiet">Actions an agent proposed above its caps wait here (owner only, recent MFA required). Approving hands the proposal to the worker; rejecting records the reason. Nothing runs until a decision, and pending proposals expire after fourteen days.</p>
 <form id="admin-proposal-form" class="support" novalidate>
 <label for="admin-proposal-id">Proposal id (from the inbox panel)</label>
@@ -118,7 +248,16 @@
 <div class="actions"><button class="button" type="submit" data-decision="approve">Approve</button><button class="button" type="submit" data-decision="reject">Reject</button></div>
 <p id="admin-proposal-result" class="quiet" aria-live="polite"></p>
 </form>
-<h2>Publishing stages</h2>
+</div>
+</section>
+<section id="desktop-publishing" class="desktop-window" data-desktop-window="publishing" data-accent="pink" aria-labelledby="desktop-publishing-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Publishing stages" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-publishing-title" tabindex="-1">Publishing stages</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Publishing stages" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Publishing stages" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p class="quiet">Every official-channel job with its stage (queued, uploading, provider processing, published with the provider link, failed with the stored reason, cancellation, withdrawal or reconciliation), as the publishing worker last recorded it (publishing capability). Withdrawal and retry stay in the native Admin.</p>
 <form id="admin-publish-form" class="support" novalidate>
 <label for="admin-publish-page">Page (from 1)</label>
@@ -128,7 +267,16 @@
 <div class="actions"><button class="button" type="submit">Show stages</button></div>
 <div id="admin-publish-result" aria-live="polite"></div>
 </form>
-<h2>Diagnostics</h2>
+</div>
+</section>
+<section id="desktop-diagnostics" class="desktop-window" data-desktop-window="diagnostics" data-accent="blue" aria-labelledby="desktop-diagnostics-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Diagnostics" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-diagnostics-title" tabindex="-1">Diagnostics</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Diagnostics" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Diagnostics" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p class="quiet">Aggregated, anonymous counters per day, platform and build (<code>sdi_diagnostics_admin</code>, overview capability): totals, crash spikes against the prior week and failed agent runs. No member identity is collected.</p>
 <form id="admin-diagnostics-form" class="support" novalidate>
 <label for="admin-diagnostics-days">Days (1 to 90)</label>
@@ -136,7 +284,16 @@
 <div class="actions"><button class="button" type="submit">Load diagnostics</button></div>
 <div id="admin-diagnostics-result" aria-live="polite"></div>
 </form>
-<h2>Announcements</h2>
+</div>
+</section>
+<section id="desktop-announcements" class="desktop-window" data-desktop-window="announcements" data-accent="orange" aria-labelledby="desktop-announcements-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Announcements" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-announcements-title" tabindex="-1">Announcements</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Announcements" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Announcements" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p class="quiet">Compose a draft, then schedule or cancel it (users capability; scheduling and cancelling need a recent second factor). Product and marketing notices reach only members who turned them on, within their daily cap; account and service notices always reach active members. Every change needs a reason and is audited. Ids and revisions are in the Announcements panel above.</p>
 <form id="admin-announce-form" class="support" novalidate>
 <label for="admin-announce-title">Title (up to 120 characters)</label>
@@ -165,7 +322,16 @@
 <div class="actions"><button class="button" type="submit" data-change="schedule">Schedule</button><button class="button" type="submit" data-change="cancel">Cancel</button><button class="button" type="submit" data-change="results">Delivery results</button></div>
 <div id="admin-announce-change-result" aria-live="polite"></div>
 </form>
-<h2>Agent controls</h2>
+</div>
+</section>
+<section id="desktop-agents" class="desktop-window" data-desktop-window="agents" data-accent="lilac" aria-labelledby="desktop-agents-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Agent controls" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-agents-title" tabindex="-1">Agent controls</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Agent controls" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Agent controls" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p class="quiet">Owner only, with a recent second factor and a reason; each change is audited and bumps the agent's revision (shown in the Agents panel). Pausing stops the agent's running work; resuming needs published instructions and no emergency stop. Caps are configuration, not spending.</p>
 <form id="admin-agent-form" class="support" novalidate>
 <label for="admin-agent-key">Agent key</label>
@@ -192,7 +358,16 @@
 <div class="actions"><button class="button" type="submit">Apply</button></div>
 <div id="admin-agent-result" aria-live="polite"></div>
 </form>
-<h2>Finance records</h2>
+</div>
+</section>
+<section id="desktop-finance" class="desktop-window" data-desktop-window="finance" data-accent="lime" aria-labelledby="desktop-finance-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Finance records" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-finance-title" tabindex="-1">Finance records</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Finance records" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Finance records" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p class="quiet">Finance capability; every record needs a recent second factor and a reason and is written to the finance audit. Amounts are whole minor units (cents). Expenses are entered positive and stored as money out. Nothing here moves money.</p>
 <form id="admin-finance-form" class="support" novalidate>
 <label for="admin-finance-action">Record</label>
@@ -232,7 +407,16 @@
 <div class="actions"><button class="button" type="submit">Show</button><button class="button" type="button" id="admin-report-download" disabled>Download CSV of the shown export</button></div>
 <div id="admin-report-result" aria-live="polite"></div>
 </form>
-<h2>Emergency stop</h2>
+</div>
+</section>
+<section id="desktop-stop" class="desktop-window" data-desktop-window="stop" data-accent="red" aria-labelledby="desktop-stop-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close Emergency stop" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-stop-title" tabindex="-1">Emergency stop</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize Emergency stop" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize Emergency stop" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <p class="quiet">Stops every automated agent (owner only, recent MFA required). Drafts are kept; nothing is deleted.</p>
 <form id="admin-stop-form" class="support" novalidate>
 <label for="admin-stop-reason">Reason</label>
@@ -240,17 +424,30 @@
 <div class="actions"><button class="button" type="submit" data-enabled="true">Engage stop</button><button class="button" type="submit" data-enabled="false">Clear stop</button></div>
 <p id="admin-stop-result" class="quiet" aria-live="polite"></p>
 </form>
+</div>
 </section>
-
-<h2>What this shell does and does not do</h2>
+<div id="admin-panels"></div>
+</section>
+<section id="desktop-about" class="desktop-window" data-desktop-window="about" data-accent="lilac" data-public-window aria-labelledby="desktop-about-title">
+<header class="desktop-titlebar" data-window-handle>
+<button class="window-control window-close" type="button" data-window-close aria-label="Close About this command center" title="Close window"><span aria-hidden="true">×</span></button>
+<h2 id="desktop-about-title" tabindex="-1">About this command center</h2>
+<button class="window-control window-minimize" type="button" data-window-minimize aria-label="Minimize About this command center" title="Minimize window"><span aria-hidden="true">−</span></button>
+<button class="window-control window-zoom" type="button" data-window-zoom aria-label="Maximize About this command center" aria-pressed="false" title="Maximize or restore"><span aria-hidden="true">□</span></button>
+</header>
+<div class="desktop-window-body">
 <ul>
 <li>Reads: health and queues, approvals, users, moderation, publishing, support, finance records, agents, announcements, marketing, consent versions, through the existing RPC contracts. Each panel shows the server's answer, including <code>forbidden</code> or <code>step_up_required</code>, verbatim.</li>
-<li>Writes: the emergency stop, owner decisions on agent proposals, agent controls (pause, resume, caps, permissions, instructions and rollback), account actions (note, sign-out, suspend, ban, restore, reset flags), finance records (expense, import, correction, reconciliation) and announcements (draft, schedule, cancel), each with a required reason and server-side audit. Render approvals, moderation decisions and publishing withdrawals stay in the native Admin, where the exact render is played before a decision.</li>
+<li>Writes: exact-render approval and rights decisions, emergency stop, owner decisions on agent proposals, agent controls, account actions, finance records, support triage and announcements. Decisions bind to the selected server version; sensitive changes require current MFA and server authorization. Moderation decisions and publishing withdrawals also remain available in native Admin.</li>
 <li>Backups, restore drills, releases and retention are shown as reported outcomes only; no control or terminal endpoint exists on this page.</li>
 <li>Sessions live in page memory only; reloading signs you out. Tokens are never written to storage.</li>
 <li>No secrets: the configuration holds the backend origin and the publishable key only. Service keys, provider credentials and host details never reach this page.</li>
 </ul>
 <p class="quiet">Owner gate: backend project, administrator provisioning (<code>sdi_provision_owner</code>, service role, no password in source) and MFA enrolment remain open items (#246, #277). Status read from source on October 18, 2026.</p>
+</div>
+</section>
+<div id="desktop-announcer" class="sr-only" role="status" aria-live="polite"></div>
 </main>
-<footer class="wrap"><a class="brand" href="index.html">STICKDEATH INFINITY</a><p>Companion website source</p><div><a href="account.html">Account</a><a href="policies/privacy-v1.html">Privacy (draft)</a><a href="policies/terms-v1.html">Terms (draft)</a><a href="https://discord.gg/mVUxqbB5c" rel="noopener" target="_blank">Discord</a></div></footer>
-</body></html>
+<footer class="desktop-footer"><span>SDI SYSTEM / COMMAND CENTER</span><span>Session &amp; layout stay in page memory.</span><a href="policies/privacy-v1.html">Privacy (draft)</a></footer>
+</body>
+</html>

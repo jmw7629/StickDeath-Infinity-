@@ -13,9 +13,9 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   var groups=0
   func pass(_ name:String) { groups+=1;print("PASS "+name) }
   let catalogue=try StudioImageCatalogue(directory:source)
-  try require(catalogue.images.count==207 && catalogue.licenses.count==3,"Wrong real catalogue count")
+  try require(catalogue.images.count==243 && catalogue.licenses.count==4,"Wrong real catalogue count")
   for image in catalogue.images { let data=try catalogue.checkedPNG(image);try require(data.count==image.byteCount,"Wrong pinned bytes") }
-  pass("all 207 curated PNGs license provenance encoded and decoded pixel hashes verify")
+  pass("all 243 curated PNGs license provenance encoded and decoded pixel hashes verify")
   let loaded=try await StudioImageCatalogue.load(directory:source)
   try require(loaded.images==catalogue.images,"Background load changed entries")
   let cancelled=Task { try await StudioImageCatalogue.load(directory:root.appendingPathComponent("missing")) };cancelled.cancel()
@@ -23,15 +23,26 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   pass("asynchronous load preserves entries and cancellation precedes file access")
   let matches=catalogue.search("cloud hand",category:.scenery)
   try require(matches.count==2 && catalogue.search("NO-ASSET-MATCH").isEmpty,"Search returned wrong actual items")
-  try require(catalogue.search("",category:.effects).count==6,"Category filter")
+  try require(catalogue.search("",category:.effects).count==42,"Category filter")
   let safe=catalogue.search("",includeCartoonWeapons:false)
-  try require(safe.count==178 && safe.allSatisfy{$0.contentAdvisory == .none},"Advisory filter")
+  try require(safe.count==209 && safe.allSatisfy{$0.contentAdvisory == .none},"Advisory filter")
   pass("multi-term local search category and cartoon-weapon filter use curated metadata")
   try require(catalogue.search("dragon top down",category:.props).map(\.id)==["kenney.scribble-dungeons.dragon"],"Dungeon tags lost")
   try require(catalogue.search("smoke side view",category:.effects).map(\.id)==["kenney.scribble-platformer-expansion.smoke"],"Expansion tags lost")
   try require(catalogue.search("sword",includeCartoonWeapons:false).isEmpty,"A new sword bypassed advisory filter")
   try require(catalogue.images.filter{$0.licenseID=="kenney.scribble-platformer-expansion.cc0"}.count==59 &&
               catalogue.images.filter{$0.licenseID=="kenney.scribble-dungeons.cc0"}.count==76,"Pack counts include excluded aliases")
+  let particles = catalogue.images.filter { $0.licenseID == "kenney.particle-pack.cc0" }
+  try require(particles.count == 36 && particles.allSatisfy { $0.category == .effects && $0.width == 512 && $0.height == 512 &&
+      $0.originalSHA256 != $0.sha256 && $0.tags.contains("ink effect") && $0.tags.contains("transparent") },
+      "Curated ink effects lost source-derivative provenance, real resolution or category")
+  try require(catalogue.search("muzzle flash", category: .effects).count == 5 &&
+      catalogue.search("muzzle flash", includeCartoonWeapons: false).isEmpty &&
+      catalogue.search("lightning", category: .effects).count == 7 &&
+      catalogue.search("swoosh motion", category: .effects).count == 3,
+      "Particle search or cartoon-weapon filtering returned incorrect actual assets")
+  try require(particles.allSatisfy { !$0.id.contains("rotated") && !$0.title.contains("Black Background") },
+      "Rotated or opaque-background aliases inflated the curated library")
   pass("new packs retain specific search perspective tags weapon filtering and 135 unique curated originals")
   let manifest=copy.appendingPathComponent("catalogue.json")
   func reject(_ name:String,_ mutation:(inout [String:Any])->Void) throws {
@@ -79,7 +90,9 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   try require(governed.catalogueRevision == 1, "Legacy catalogue revision changed")
   let quarantine = StudioImageCatalogue.ReleasePolicy.Quarantine(assetID: selected.id, sha256: selected.sha256, reason: "Isolated test rights review")
   try policy.advance(revision: 2, quarantined: [quarantine])
-  try require(governed.images == catalogue.images && governed.availableImages.count == 206, "Policy mutated inventory or failed to hide asset")
+  let expectedQuarantinedIDs = Set(catalogue.images.map(\.id)).subtracting([selected.id])
+  try require(governed.images == catalogue.images && governed.availableImages.count == 242 &&
+              Set(governed.availableImages.map(\.id)) == expectedQuarantinedIDs, "Policy mutated inventory or failed to hide asset")
   try require(!governed.search("").contains(selected), "Quarantine search bypass")
   do { _ = try governed.checkedPNG(selected); throw TestFailure(message: "Quarantine bytes bypass") } catch StudioImageCatalogue.CatalogueError.quarantined { }
   do { _ = try governed.sourceURL(for: selected); throw TestFailure(message: "Quarantine URL bypass") } catch StudioImageCatalogue.CatalogueError.quarantined { }
@@ -95,7 +108,8 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   revisionManifest["catalogueRevision"] = 2
   try JSONSerialization.data(withJSONObject: revisionManifest).write(to: manifest)
   let revised = try StudioImageCatalogue(directory: copy, releasePolicy: policy)
-  try require(revised.catalogueRevision == 2 && revised.images == governed.images && revised.availableImages.count == 206, "New manifest overrode policy or IDs")
+  try require(revised.catalogueRevision == 2 && revised.images == governed.images && revised.availableImages.count == 242 &&
+              Set(revised.availableImages.map(\.id)) == expectedQuarantinedIDs, "New manifest overrode policy or IDs")
   revisionManifest["catalogueRevision"] = 0
   try JSONSerialization.data(withJSONObject: revisionManifest).write(to: manifest)
   do { _ = try StudioImageCatalogue(directory: copy); throw TestFailure(message: "Invalid revision accepted") } catch StudioImageCatalogue.CatalogueError.invalid { }
@@ -116,7 +130,9 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
     removed: [.init(assetID: dropped.id, sha256: dropped.sha256, reason: "Isolated test withdrawal")],
     metadata: [.init(assetID: corrected.id, sha256: corrected.sha256, title: "Revised test title", tags: ["revisedtesttag"], contentAdvisory: .cartoonWeapons)])
   try versioned.advance(to: revision2)
-  try require(versioned.currentRevision == 2 && live.images == catalogue.images && live.availableImages.count == 205, "Revision changed inventory or availability count")
+  let expectedWithdrawnIDs = Set(catalogue.images.map(\.id)).subtracting([held.id, dropped.id])
+  try require(versioned.currentRevision == 2 && live.images == catalogue.images && live.availableImages.count == 241 &&
+              Set(live.availableImages.map(\.id)) == expectedWithdrawnIDs, "Revision changed inventory or availability count")
   try require(live.removedImages == [dropped], "Removal not reported")
   guard let shown = live.availableImages.first(where: { $0.id == corrected.id }) else { throw TestFailure(message: "Corrected asset hidden") }
   try require(shown.title == "Revised test title" && shown.tags == ["revisedtesttag"] && shown.contentAdvisory == .cartoonWeapons
@@ -151,7 +167,7 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   let offline = root.appendingPathComponent("offline"); try fm.copyItem(at: source, to: offline)
   try fm.removeItem(at: offline.appendingPathComponent(dropped.filename))
   let offlineCatalogue = try StudioImageCatalogue(directory: offline, releasePolicy: versioned)
-  try require(offlineCatalogue.images.count == 207 && offlineCatalogue.availableImages.count == 205, "Missing removed file broke offline load")
+  try require(offlineCatalogue.images.count == 243 && offlineCatalogue.availableImages.count == 241, "Missing removed file broke offline load")
   do { _ = try offlineCatalogue.checkedPNG(dropped); throw TestFailure(message: "Missing removed asset reported available") } catch StudioImageCatalogue.CatalogueError.quarantined { }
   try require(try offlineCatalogue.checkedPNG(shown) == correctedBytes, "Other assets failed after removal")
   try versioned.advance(to: Policy.Revision(revision: 3))
@@ -159,6 +175,6 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   do { _ = try offlineCatalogue.checkedPNG(dropped); throw TestFailure(message: "Deleted file decoded") } catch StudioImageCatalogue.CatalogueError.invalid { }
   try require(try Data(contentsOf: source.appendingPathComponent(dropped.filename)).count == dropped.byteCount, "Source asset changed by removal")
   pass("offline removal of a withdrawn cached file leaves other assets and every original intact; later revisions apply in order")
-  print("STUDIO_IMAGE_CATALOGUE_TESTS=PASS \(groups)/\(groups), 207 original PNGs")
+  print("STUDIO_IMAGE_CATALOGUE_TESTS=PASS \(groups)/\(groups), 243 curated PNGs")
  }
 }

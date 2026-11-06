@@ -1,12 +1,24 @@
-name: SDI iOS TestFlight Upload
+name: SDI iOS Delivery
 # Manual only (Actions tab -> Run workflow); it never runs on push or PR.
-# Needs the seven repository secrets listed in docs/TESTFLIGHT_DISTRIBUTION.md.
-# Every credential is a repository secret (never a file in the repo); the job
+# TestFlight mode needs the seven secrets in docs/TESTFLIGHT_DISTRIBUTION.md.
+# unsigned_review builds an offline, unsigned SDI Review device artifact only.
+# native_ui_review runs the existing offline phone/iPad journeys only; this
+# targeted evidence never replaces the mandatory PR native verification gate.
+# Every distribution credential is a repository secret; the TestFlight job
 # refuses to start when any secret is missing and never prints them. It
 # uploads to TestFlight only; App Store release stays manual.
 on:
   workflow_dispatch:
     inputs:
+      delivery_mode:
+        description: Select TestFlight upload, unsigned device artifact, or offline native UI review
+        required: true
+        type: choice
+        default: testflight
+        options:
+          - testflight
+          - unsigned_review
+          - native_ui_review
       ref_note:
         description: Optional note recorded in the upload receipt
         required: false
@@ -17,7 +29,35 @@ concurrency:
   group: sdi-testflight-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  validate:
+    name: Validate delivery mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      delivery_mode: ${{ steps.mode.outputs.delivery_mode }}
+    steps:
+      - name: Require an explicit supported manual delivery route
+        id: mode
+        env:
+          SDI_DELIVERY_MODE: ${{ inputs.delivery_mode }}
+          SDI_EVENT_NAME: ${{ github.event_name }}
+          SDI_EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          python3 - <<'PYMODE'
+          import os
+          import re
+          mode = os.environ["SDI_DELIVERY_MODE"]
+          if (os.environ["SDI_EVENT_NAME"] != "workflow_dispatch" or
+                  mode not in {"testflight", "unsigned_review", "native_ui_review"} or
+                  not re.fullmatch(r"[0-9a-f]{40}", os.environ["SDI_EXPECTED_HEAD"])):
+              raise SystemExit("Unsupported manual delivery route or source; no build/upload job is eligible")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+              stream.write("delivery_mode=" + mode + "\n")
+          print("Validated the manual delivery route and exact source format")
+          PYMODE
   testflight:
+    needs: validate
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.validate.outputs.delivery_mode == 'testflight' }}
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -149,3 +189,102 @@ jobs:
         with:
           name: sdi-testflight-receipt-${{ github.sha }}-${{ github.run_number }}
           path: testflight-evidence/
+
+  unsigned-review:
+    name: Unsigned SDI Review device artifact
+    needs: validate
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.validate.outputs.delivery_mode == 'unsigned_review' }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build and validate an unsigned isolated arm64 device review artifact
+        id: device-review
+        timeout-minutes: 38
+        env:
+          SDI_DELIVERY_MODE: ${{ inputs.delivery_mode }}
+          SDI_EXPECTED_HEAD: ${{ github.sha }}
+        run: python3 scripts/native-smoke/build_device_review_ci.py
+      - name: Preserve unsigned device compilation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-unsigned-device-review-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdi-device-review-evidence/
+          retention-days: 3
+          if-no-files-found: error
+      - name: Preserve the validated unsigned device review package
+        if: ${{ success() && steps.device-review.outputs.review_app_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-unsigned-device-review-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sdi-device-review-package/StickDeathInfinity-review-unsigned-iphoneos.zip
+            ${{ runner.temp }}/sdi-device-review-package/manifest.json
+            ${{ runner.temp }}/sdi-device-review-package/compile-provenance.json
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+
+  native-ios-journeys:
+    name: Targeted offline native UI review (${{ matrix.device }})
+    # Independent manual evidence; this cannot satisfy the mandatory PR aggregate.
+    needs: validate
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.validate.outputs.delivery_mode == 'native_ui_review' }}
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          # 25 min build + 4 UI journeys x 180 s + audio 300 s + mirror 420 s +
+          # 300 s UI overhead; add 13 hosted service journeys x 60 s + 300 s
+          # service overhead on the phone only (72 min phone / 54 min iPad).
+          # Tests/NativeSmokeHarness/test_journeys.py derives these ceilings.
+          - device: iphone
+            timeout: 72
+          - device: ipad
+            timeout: 54
+    timeout-minutes: ${{ matrix.timeout }}
+    env:
+      SDI_JOURNEY_DEVICE: ${{ matrix.device }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build checked-in native iOS target without signing or deployment
+        run: python3 scripts/native-smoke/prepare_locked_build.py
+      - name: Create one fresh simulator of this family
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdi_udid="$(python3 scripts/native-smoke/select_simulator.py --device "$SDI_JOURNEY_DEVICE")"
+          printf 'simulator_udid=%s\n' "$sdi_udid" >> "$GITHUB_OUTPUT"
+      - name: Run phone and iPad journeys with isolated local data
+        id: journeys
+        if: ${{ !cancelled() && steps.simulator.outputs.simulator_udid != '' }}
+        env:
+          SDI_SMOKE_SIMULATOR_UDID: ${{ steps.simulator.outputs.simulator_udid }}
+        run: python3 scripts/native-smoke/run_journey_ci.py
+      - name: Preserve journey evidence from this exact source
+        if: always() && steps.journeys.outputs.artifact_path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-journeys-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.device }}
+          path: ${{ steps.journeys.outputs.artifact_path }}
+          retention-days: 3
+          compression-level: 3
+          if-no-files-found: error
+      - name: Upload compact journey receipt
+        if: always() && steps.journeys.outputs.artifact_path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-journey-receipt-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.device }}
+          path: ${{ runner.temp }}/native-journey-receipt/receipt.json
+          retention-days: 3
+          if-no-files-found: error

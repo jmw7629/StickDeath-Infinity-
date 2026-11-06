@@ -1,8 +1,18 @@
 package com.stickdeath.studio
 
+import android.app.Application
+import androidx.core.content.FileProvider
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.junit.Assert.*
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
@@ -14,6 +24,65 @@ import org.json.JSONObject
  * Fixtures are format-contract fixtures, not evidence of an iOS device export.
  */
 class SwiftProjectImportTest {
+    /** Uses the release APK's actual shared assets and production catalogue/thumbnail pipeline.
+     * This catches a stale release pin, wrong license/author pair or missing packaged PNG;
+     * it does not substitute a test catalogue or private parser. */
+    @Test fun testBundledInkImageCatalogueCreditsAndActualPreviews() = kotlinx.coroutines.runBlocking {
+        val context = instrumentation.targetContext
+        val images = BundledImages.load(context)
+        assertEquals(243, images.size)
+        assertEquals(images.size, images.map { it.id }.distinct().size)
+        assertEquals(images.size, images.map { it.sha256 }.distinct().size)
+        val ink = images.filter { it.id.startsWith("kenney.particle-pack.ink.") }
+        assertEquals(36, ink.size)
+        assertEquals(207, images.size - ink.size)
+        assertTrue(images.filterNot { it in ink }.all { it.author == "Kenney" })
+        assertTrue(ink.all { it.author == "Kenney Vleugels" &&
+            it.sourceURL == "https://kenney.nl/assets/particle-pack" && it.category == "effects" &&
+            it.width == 512 && it.height == 512 && "ink effect" in it.tags })
+        val manifest = context.assets.open("StudioImages/catalogue.json").bufferedReader().use { JSONObject(it.readText()) }
+        assertEquals(4, manifest.getJSONArray("licenses").length())
+        val rows = manifest.getJSONArray("images")
+        val byID = (0 until rows.length()).associate { index ->
+            rows.getJSONObject(index).let { it.getString("id") to it }
+        }
+        ink.forEach { image ->
+            val row = byID.getValue(image.id)
+            assertEquals("kenney.particle-pack.cc0", row.getString("licenseID"))
+            assertFalse(row.getString("originalSHA256") == row.getString("sha256"))
+            val preview = BundledImages.thumbnail(context, image) {}
+            try {
+                assertTrue(preview.width in 1..128 && preview.height in 1..128)
+                val pixels = IntArray(preview.width * preview.height)
+                preview.getPixels(pixels, 0, preview.width, 0, 0, preview.width, preview.height)
+                assertTrue("Ink preview has no transparent area: " + image.id,
+                    pixels.any { android.graphics.Color.alpha(it) == 0 })
+                assertTrue("Ink preview is invisible over white: " + image.id, pixels.count {
+                    val alpha = android.graphics.Color.alpha(it)
+                    alpha >= 32 && android.graphics.Color.red(it) <= 64 &&
+                        android.graphics.Color.green(it) <= 64 && android.graphics.Color.blue(it) <= 64
+                } >= 4)
+            } finally { preview.recycle() }
+        }
+    }
+
+    @Test fun testBundledImageForgedCreditsAndCancellationAreRefused() = kotlinx.coroutines.runBlocking {
+        val context = instrumentation.targetContext
+        val image = BundledImages.load(context).first { it.id.startsWith("kenney.particle-pack.ink.") }
+        for (forged in listOf(image.copy(author = "Unapproved author"), image.copy(sha256 = "0".repeat(64)),
+                image.copy(filename = "../unapproved.png"))) {
+            try {
+                BundledImages.thumbnail(context, forged) {}.recycle()
+                fail("Unapproved catalogue record was accepted")
+            } catch (_: IllegalArgumentException) { }
+        }
+        val cancelled = java.util.concurrent.CancellationException("fixture cancelled")
+        try {
+            BundledImages.thumbnail(context, image) { throw cancelled }.recycle()
+            fail("Cancelled image read returned")
+        } catch (actual: java.util.concurrent.CancellationException) { assertSame(cancelled, actual) }
+    }
+
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val magic = "SDIPROJECT000001\n".toByteArray(Charsets.US_ASCII)
     private fun fixture(name: String = "swift-legacy.sdi") = instrumentation.context.assets.open(name).use { it.readBytes() }
@@ -28,6 +97,168 @@ class SwiftProjectImportTest {
             java.io.File(instrumentation.targetContext.filesDir, "studio-projects/$id$suffix").delete()
         }
     }
+    @Test fun testPendingRenderedExportKeepsItsProjectOpenUntilPickerReturns() = runBlocking {
+        val app = instrumentation.targetContext.applicationContext as Application
+        val store = ProjectStore(app)
+        val project = Document.create("Export boundary fixture", 640, 480, 12)
+        try {
+            store.save(project)
+            withContext(Dispatchers.Main) {
+                val models = ViewModelStore()
+                val vm = ViewModelProvider(models, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[StudioViewModel::class.java]
+                try {
+                    vm.open(project.id)
+                    withTimeout(10_000) { while (vm.busy) delay(10) }
+                    assertEquals(project, vm.document)
+
+                    vm.prepareExport(ExportKind.PNG)
+                    assertTrue(vm.exporting)
+                    vm.save(close = true)
+                    assertFalse(vm.closing)
+                    assertEquals(project.id, vm.document?.id)
+                    assertTrue(vm.message.contains("Finish or cancel"))
+                    withTimeout(10_000) { while (vm.exporting) delay(10) }
+
+                    val cancelled = requireNotNull(vm.exportArtifact)
+                    assertTrue(cancelled.file.length() > 0)
+                    val staleRequest = requireNotNull(vm.beginExportHandoff(cancelled))
+                    vm.cancelExport()
+                    assertNull(vm.exportHandoff)
+                    assertFalse(cancelled.file.exists())
+                    assertFalse(vm.offerExportHandoff(staleRequest))
+                    assertNull(vm.beginExportHandoff(cancelled))
+
+                    vm.prepareExport(ExportKind.PNG)
+                    withTimeout(10_000) { while (vm.exporting) delay(10) }
+                    val artifact = requireNotNull(vm.exportArtifact)
+                    assertTrue(artifact.file.length() > 0)
+                    assertNull(vm.beginExportHandoff(cancelled))
+                    val request = requireNotNull(vm.beginExportHandoff(artifact))
+                    assertTrue(vm.offerExportHandoff(request))
+                    assertFalse(vm.offerExportHandoff(request))
+                    vm.cancelExport()
+                    assertTrue(vm.message.contains("Cancel in Files"))
+                    vm.finishExport(staleRequest, null)
+                    vm.exportHandoffLaunchFailed(staleRequest, "Stale launch failure")
+                    vm.save(close = true)
+                    assertFalse(vm.closing)
+                    assertSame(request, vm.exportHandoff)
+                    assertSame(artifact, vm.exportArtifact)
+                    assertTrue(artifact.file.isFile)
+
+                    vm.finishExport(request, null)
+                    assertNull(vm.exportHandoff)
+                    assertNull(vm.exportArtifact)
+                    assertFalse(artifact.file.exists())
+
+                    vm.prepareExport(ExportKind.PNG)
+                    withTimeout(10_000) { while (vm.exporting) delay(10) }
+                    val evicted = requireNotNull(vm.exportArtifact)
+                    val evictedRequest = requireNotNull(vm.beginExportHandoff(evicted))
+                    assertTrue(vm.offerExportHandoff(evictedRequest))
+                    assertTrue(evicted.file.isFile && evicted.file.delete())
+                    val providerRoot = File(app.cacheDir, "studio-share").apply { check(isDirectory || mkdirs()) }
+                    val destination = File.createTempFile("export-boundary-", ".txt", providerRoot)
+                    try {
+                        val uri = FileProvider.getUriForFile(app, app.packageName + ".exports", destination)
+                        val original = "Existing destination bytes"
+                        destination.writeText(original.repeat(2))
+                        // The real provider accepts write-and-truncate for this owned fixture.
+                        requireNotNull(app.contentResolver.openOutputStream(uri, "wt")).use {
+                            it.write(original.toByteArray())
+                        }
+                        assertEquals(original, destination.readText())
+                        vm.finishExport(evictedRequest, uri)
+                        withTimeout(10_000) { while (vm.exporting) delay(10) }
+                        assertTrue(vm.message.contains("The prepared export is unavailable"))
+                        assertEquals(original, destination.readText())
+                        assertNull(vm.exportHandoff)
+                        assertNull(vm.exportArtifact)
+                    } finally {
+                        destination.delete()
+                    }
+
+                    vm.save(close = true)
+                    withTimeout(10_000) { while (vm.saving) delay(10) }
+                    assertNull(vm.document)
+                } finally {
+                    models.clear()
+                }
+            }
+            assertEquals(project, store.load(project.id))
+        } finally {
+            cleanup(project.id)
+        }
+    }
+    @Test fun testWandUsesTopmostPaintAndPassesEditableIDsToMove() = runBlocking {
+        val app = instrumentation.targetContext.applicationContext as Application
+        val store = ProjectStore(app)
+        val project = Document.create("Wand fixture", 64, 64, 12)
+        val layer = project.layer
+        val red = 0xffff0000.toInt()
+        fun square(x: Float, y: Float, color: Int = red, filled: Boolean = true) =
+            Stroke(layerID = layer.id, points = ShapePath.points(Tool.Rectangle, Point(x, y), Point(x + 12, y + 12), false),
+                color = color, width = 2f, tool = Tool.Rectangle, filled = filled)
+        val covered = square(4f, 4f, color = 0xff0000ff.toInt())
+        val top = square(4f, 4f)
+        val disconnected = square(32f, 4f)
+        val outline = square(32f, 32f, filled = false)
+        val painted = project.copy(frames = listOf(project.frame.copy(strokes = listOf(covered, top, disconnected, outline)))).validated()
+        val seed = Point(10f, 10f)
+        assertEquals(setOf(top.id), DrawingWand.select(painted, seed, 0, contiguous = true) {})
+        assertEquals(setOf(top.id, disconnected.id, outline.id), DrawingWand.select(painted, seed, 0, contiguous = false) {})
+        assertTrue(DrawingWand.select(painted, Point(38f, 38f), 255, contiguous = false) {}.isEmpty())
+        val above = Layer(name = "Locked cover", lockMode = LayerLockMode.Full)
+        val layered = painted.copy(layers = listOf(above, layer),
+            frames = listOf(painted.frame.copy(strokes = painted.frame.strokes + top.copy(id = newID(), layerID = above.id))))
+        try {
+            DrawingWand.select(layered, seed, 0, contiguous = true) {}
+            fail("Wand selected through a higher painted layer")
+        } catch (error: IllegalArgumentException) {
+            assertTrue(error.message.orEmpty().contains("top painted layer"))
+        }
+        val erased = painted.copy(frames = listOf(painted.frame.copy(strokes = painted.frame.strokes +
+            Stroke(layerID = layer.id, points = listOf(seed), color = red, width = 8f, tool = Tool.Eraser))))
+        try {
+            DrawingWand.select(erased, seed, 0, contiguous = true) {}
+            fail("Wand attributed paint through a dependent eraser operation")
+        } catch (error: IllegalArgumentException) {
+            assertTrue(error.message.orEmpty().contains("eraser"))
+        }
+
+        try {
+            store.save(painted)
+            withContext(Dispatchers.Main) {
+                val models = ViewModelStore()
+                val vm = ViewModelProvider(models, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[StudioViewModel::class.java]
+                try {
+                    vm.open(painted.id)
+                    withTimeout(10_000) { while (vm.busy) delay(10) }
+                    val current = requireNotNull(vm.document)
+                    vm.chooseTool(Tool.Wand)
+                    vm.configureWand(tolerance = 0)
+                    vm.wandAt(current, seed)
+                    assertTrue(vm.wandSelecting)
+                    vm.cancelWand()
+                    assertFalse(vm.wandSelecting)
+                    assertEquals(Tool.Wand, vm.tool)
+                    assertTrue(vm.selectedStrokeIDs.isEmpty())
+                    vm.wandAt(current, seed)
+                    withTimeout(10_000) { while (vm.wandSelecting) delay(10) }
+                    assertEquals(setOf(top.id), vm.selectedStrokeIDs)
+                    assertEquals(Tool.Move, vm.tool)
+                    assertEquals(current, vm.document)
+                    assertFalse(vm.canUndo)
+                } finally {
+                    models.clear()
+                }
+            }
+            assertEquals(painted, store.load(painted.id))
+        } finally {
+            cleanup(painted.id)
+        }
+    }
+
     /** Re-signs a portable root so only the JSON content differs from the fixture. */
     private fun envelope(root: JSONObject): ByteArray {
         val payload = root.toString().toByteArray(Charsets.UTF_8)

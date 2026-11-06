@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Generate and verify docs/control-evidence-map.csv from the real native source (#125).
 
-The map lists every *static* `.accessibilityIdentifier("literal")` in
+The map lists every *static* `.accessibilityIdentifier("literal")` and literal
+identifier argument of the two verified Studio settings wrappers in
 StickDeathInfinity/**/*.swift with the file, enclosing view, a short operation
 summary from the surrounding code, whether the operation reaches the document
 command/undo path, the best-effort issue mapping from docs/STUDIO_* and the
@@ -50,6 +51,7 @@ PREFIX_ISSUES = [
     # delivery issue whose title owns the control family (scratch issue index).
     ("studio.export", "#182 #183 #184 #185", "export issues EX01–EX04"),
     ("studio.storage", "#171 #167", "local storage bounds and the project browser"),
+    ("studio.frame-actions", "#161", "frames, duration, duplication, tweening"),
     ("studio.frame-menu", "#161", "frames, duration, duplication, reordering"),
     ("studio.frame-timing", "#161", "frames, duration, duplication, reordering"),
     ("studio.frames-viewer", "#161", "frames, duration, duplication, reordering"),
@@ -90,6 +92,7 @@ PREFIX_ISSUES = [
     ("profile.projects", "#294", "reference profile"),
     ("profile.identity", "#294", "reference profile"),
     ("profile", "#224", "profile editing and portfolios"),
+    ("admin.support", "#272", "authenticated support queue and private audited status updates"),
     ("admin", "#210 #285", "admin roles, MFA, user directory"),
     ("spattercc", "#210", "admin credentials"),
     ("calendar", "#297", "native Calendar"),
@@ -135,6 +138,8 @@ PREFIX_ISSUES = [
     ("spatter.studio", "#203 #207", "docs/STUDIO_CONTROL_IMPLEMENTATION_INDEX.md Spatter rows"),
     ("spatter.messages", "#203 #207", "docs/STUDIO_CONTROL_IMPLEMENTATION_INDEX.md Spatter rows"),
     ("spatter.selection", "#207", "docs/STUDIO_CONTROL_IMPLEMENTATION_INDEX.md"),
+    ("spatter.artwork.transform-examples", "#204", "docs/SPATTER_STUDIO_CONTROL_REGISTRY.md"),
+    ("spatter.artwork.transform-targets", "#204", "docs/SPATTER_STUDIO_CONTROL_REGISTRY.md"),
     ("spatter", "#203", "docs/STUDIO_CONTROL_IMPLEMENTATION_INDEX.md Spatter rows"),
 ]
 # Identifier segment -> words that may appear in the index table's Control cell.
@@ -425,6 +430,54 @@ def test_function_names(root: Path) -> set[str]:
     return {name for _, name in member_functions(path.read_text(errors="replace"))}
 
 
+def source_mask(text: str) -> str:
+    """Keep source offsets, masking comments/string bodies for delimiter matching."""
+    token = re.compile(r'//[^\n]*|/\*.*?\*/|""".*?"""|"(?:\\.|[^"\\])*"', re.DOTALL)
+    return token.sub(lambda m: "".join("\n" if c == "\n" else " " for c in m.group()), text)
+
+
+def setting_wrapper_identifiers(text: str) -> dict[int, list[str]]:
+    """Known file-private wrappers only; count a literal only when actually forwarded.
+
+    This extends the source map, never the runtime acceptance result. Arbitrary
+    identifier arguments, dynamic IDs and values nested in another call stay out.
+    """
+    masked = source_mask(text)
+    forwarders = {
+        "StudioSettingSegments": r"\bcontrol\.accessibilityIdentifier\s*=\s*identifier\b",
+        "StudioSettingChoice": r"\.accessibilityIdentifier\(\s*identifier\s*\)",
+    }
+    result: dict[int, list[str]] = {}
+    for name, forwarded in forwarders.items():
+        declaration = re.search(r"\bstruct\s+" + name + r"\b[^\{]*\{", masked)
+        if declaration is None:
+            continue
+        depth, end = 1, declaration.end()
+        while end < len(masked) and depth:
+            depth += {"{": 1, "}": -1}.get(masked[end], 0)
+            end += 1
+        if depth or not re.search(forwarded, masked[declaration.end():end - 1]):
+            continue
+        for call in re.finditer(r"\b" + name + r"\s*\(", masked):
+            depth, end = 1, call.end()
+            while end < len(masked) and depth:
+                depth += {"(": 1, ")": -1}.get(masked[end], 0)
+                end += 1
+            if depth:
+                continue
+            body = text[call.end():end]
+            for argument in re.finditer(r'\bidentifier\s*:\s*"([A-Za-z0-9_.-]+)"\s*(?=,|\))', body):
+                absolute = call.end() + argument.start()
+                # Strings/comments were masked; the argument name itself must be code.
+                if not masked[absolute:absolute + len("identifier")].startswith("identifier"):
+                    continue
+                prefix = masked[call.end():absolute]
+                if any(prefix.count(a) != prefix.count(b) for a, b in (("(", ")"), ("[", "]"), ("{", "}"))):
+                    continue
+                result.setdefault(text.count("\n", 0, absolute), []).append(argument.group(1))
+    return result
+
+
 def generate(root: Path) -> tuple[list[dict[str, str]], dict[str, int]]:
     reaches = history_index(root)
     rows_index = index_rows(root)
@@ -432,14 +485,15 @@ def generate(root: Path) -> tuple[list[dict[str, str]], dict[str, int]]:
     dynamic = 0
     for path in swift_files(root):
         text = path.read_text(errors="replace")
-        if "accessibilityIdentifier(" not in text:
+        if "accessibilityIdentifier" not in text:
             continue
         file = relative(root, path)
         lines = text.splitlines()
+        wrapped = setting_wrapper_identifiers(text)
         for i, line in enumerate(lines):
             static = STATIC.findall(line)
             dynamic += len(DYNAMIC.findall(line)) - len(static)
-            for identifier in static:
+            for identifier in static + wrapped.get(i, []):
                 key = (identifier, file)
                 if key in occurrences:
                     continue

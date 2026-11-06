@@ -5,12 +5,70 @@ import VideoToolbox
 import ImageIO
 import CryptoKit
 import Darwin
+import OSLog
 
 /// Animation-only MP4 foundation. The caller captures the entire document,
 /// including retained legacy audio and raster bytes, before starting this work.
 /// No picker, Photos, cloud, publishing, or background-task side effects.
 @MainActor
 final class StudioMovieExportService {
+    private static let encoderLog = Logger(subsystem: "com.willisbmb.StickDeathInfinity", category: "StudioMovieEncoder")
+    /// The same redacted record sent to Unified Logging. Component callers can
+    /// retain the actual failure facts when a simulator log query is incomplete.
+    /// No error descriptions, arbitrary userInfo, source paths or media are exposed.
+    private(set) var lastEncoderFailureDiagnostic: String?
+    private enum EncodingStage: String {
+        case staging, configuration, start, fileOwnership, session, frames, finalization, verification, publication
+    }
+
+    /// Publication diagnostics contain only bounded numeric stages and facts.
+    /// A match is 1/0; -1 means that no identity comparison ran at this stage.
+    @MainActor fileprivate final class PublicationDiagnostics {
+        var substage = 0
+        var fileRole = 0 // 0: directory/set, 1: movie, 2: manifest
+        var systemError: Int32 = 0
+        var identityMatch = -1
+        func begin(_ value: Int, fileRole: Int = 0) {
+            substage = value; self.fileRole = fileRole; systemError = 0; identityMatch = -1
+        }
+        func syscall(_ result: Int32) -> Bool {
+            if result != 0 { systemError = errno }
+            return result == 0
+        }
+        func descriptor(_ result: Int32) -> Bool {
+            if result < 0 { systemError = errno }
+            return result >= 0
+        }
+        func matches(_ value: Bool) -> Bool {
+            identityMatch = value ? 1 : 0
+            return value
+        }
+    }
+
+    private func logEncoderFailure(_ writer: AVAssetWriter, stage: EncodingStage, codec: Codec,
+                                   publication: PublicationDiagnostics) {
+        let error = writer.error.map { $0 as NSError }
+        let underlying = error?.userInfo[NSUnderlyingErrorKey] as? NSError
+        let code = error?.code ?? 0
+        let underlyingCode = underlying?.code ?? 0
+        let status = writer.status.rawValue
+        // Only predefined categories and numeric status codes are logged. AVFoundation's
+        // error text and userInfo can contain private source and staging paths.
+        func category(_ error: NSError?) -> String {
+            switch error?.domain {
+            case AVFoundationErrorDomain: return "AVFoundation"
+            case NSOSStatusErrorDomain: return "OSStatus"
+            case NSCocoaErrorDomain: return "Cocoa"
+            case NSPOSIXErrorDomain: return "POSIX"
+            case nil: return "none"
+            default: return "other"
+            }
+        }
+        let record = "MP4 encoding failed stage=\(stage.rawValue) codec=\(codec.rawValue) writerStatus=\(status) domain=\(category(error)) code=\(code) underlyingDomain=\(category(underlying)) underlyingCode=\(underlyingCode) publicationSubstage=\(publication.substage) fileRole=\(publication.fileRole) systemError=\(publication.systemError) identityMatch=\(publication.identityMatch)"
+        lastEncoderFailureDiagnostic = record
+        Self.encoderLog.error("\(record, privacy: .public)")
+    }
+
     enum Background: String, Codable { case white, transparent }
     /// H.264 is the default; HEVC is offered only where AVAssetWriter accepts it (#182).
     enum Codec: String, Codable, CaseIterable, Hashable {
@@ -35,21 +93,29 @@ final class StudioMovieExportService {
     struct RenderOptions: Codable, Equatable {
         var codec: Codec = .h264
         var preset: RenderPreset = .original
+        /// An authorized cap-fit fallback, captured only when no preset fits.
+        var fitLongEdge: Int? = nil
         /// Free-plan SDI mark burned into every rendered frame. Nil (absent from
         /// older encodings and proofs) means no mark.
         var watermark: Bool? = nil
         init(codec: Codec = .h264, preset: RenderPreset = .original, watermark: Bool = false) {
             self.codec = codec; self.preset = preset; self.watermark = watermark ? true : nil
         }
+        func plan(canvasWidth: Int, canvasHeight: Int) throws -> RenderPlan {
+            try RenderPlan.make(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: preset,
+                                fitLongEdge: fitLongEdge)
+        }
     }
     /// The exact scaling rule recorded in every MP4 manifest (#182/#185):
     /// `scale` = targetShortSide / min(canvasWidth, canvasHeight), or 1 for
-    /// Original. Content size = canvas × scale rounded to the nearest pixel,
+    /// Original. Fit to plan instead scales the long edge down to the even
+    /// encoder limit. Content size = canvas × scale rounded to the nearest pixel,
     /// drawn from the top-left origin. When the content width or height is
     /// odd, one white pixel column (right) or row (bottom) is appended so the
     /// encoder receives even dimensions; nothing is cropped or stretched.
     struct RenderPlan: Codable, Equatable {
         let preset: RenderPreset
+        let fitLongEdge: Int?
         let canvasWidth: Int
         let canvasHeight: Int
         let scale: Double
@@ -59,20 +125,60 @@ final class StudioMovieExportService {
         let paddingBottom: Int
         var outputWidth: Int { contentWidth + paddingRight }
         var outputHeight: Int { contentHeight + paddingBottom }
+        var resolutionLabel: String { fitLongEdge == nil ? preset.label : "Fit to plan" }
         var rule: String {
-            "scale=\(scale) (\(preset.label)); content \(contentWidth)x\(contentHeight) at top-left; white padding right=\(paddingRight) bottom=\(paddingBottom); output \(outputWidth)x\(outputHeight)"
+            "scale=\(scale) (\(resolutionLabel)); content \(contentWidth)x\(contentHeight) at top-left; white padding right=\(paddingRight) bottom=\(paddingBottom); output \(outputWidth)x\(outputHeight)"
         }
-        static func make(canvasWidth: Int, canvasHeight: Int, preset: RenderPreset) throws -> RenderPlan {
+        static func make(canvasWidth: Int, canvasHeight: Int, preset: RenderPreset, fitLongEdge: Int? = nil) throws -> RenderPlan {
             guard canvasWidth > 0, canvasHeight > 0 else { throw ExportError.limitExceeded }
             let scale: Double
-            if let target = preset.targetShortSide { scale = Double(target) / Double(min(canvasWidth, canvasHeight)) } else { scale = 1 }
+            if let fitLongEdge {
+                guard preset == .original, fitLongEdge >= 2 else { throw ExportError.limitExceeded }
+                let evenLimit = min(fitLongEdge, 8192) / 2 * 2
+                scale = min(1, Double(evenLimit) / Double(max(canvasWidth, canvasHeight)))
+            } else if let target = preset.targetShortSide {
+                scale = Double(target) / Double(min(canvasWidth, canvasHeight))
+            } else {
+                scale = 1
+            }
             guard scale.isFinite, scale > 0 else { throw ExportError.limitExceeded }
-            let contentWidth = max(1, Int((Double(canvasWidth) * scale).rounded()))
-            let contentHeight = max(1, Int((Double(canvasHeight) * scale).rounded()))
-            guard contentWidth <= 8192, contentHeight <= 8192 else { throw ExportError.limitExceeded }
-            return RenderPlan(preset: preset, canvasWidth: canvasWidth, canvasHeight: canvasHeight, scale: scale,
+            let roundedWidth = (Double(canvasWidth) * scale).rounded()
+            let roundedHeight = (Double(canvasHeight) * scale).rounded()
+            guard roundedWidth <= 8192, roundedHeight <= 8192 else { throw ExportError.limitExceeded }
+            let contentWidth = max(1, Int(roundedWidth))
+            let contentHeight = max(1, Int(roundedHeight))
+            return RenderPlan(preset: preset, fitLongEdge: fitLongEdge,
+                              canvasWidth: canvasWidth, canvasHeight: canvasHeight, scale: scale,
                               contentWidth: contentWidth, contentHeight: contentHeight,
                               paddingRight: contentWidth % 2, paddingBottom: contentHeight % 2)
+        }
+
+        static func allowedPreset(canvasWidth: Int, canvasHeight: Int, preset: RenderPreset,
+                                  maximumLongEdge: Int?) -> RenderPlan? {
+            guard let plan = try? make(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: preset),
+                  plan.isWithin(maximumLongEdge: maximumLongEdge) else { return nil }
+            return plan
+        }
+
+        /// Preserve the requested preset when it fits, then the existing order
+        /// of smaller presets. A cap-fit output is offered only when none fit.
+        static func resolve(canvasWidth: Int, canvasHeight: Int, requested: RenderPreset,
+                            maximumLongEdge: Int?) throws -> RenderPlan {
+            guard let maximumLongEdge else {
+                return try make(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: requested)
+            }
+            for preset in [requested, .p1080, .p720, .p480, .original] {
+                if let plan = allowedPreset(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: preset,
+                                            maximumLongEdge: maximumLongEdge) {
+                    return plan
+                }
+            }
+            return try make(canvasWidth: canvasWidth, canvasHeight: canvasHeight, preset: .original,
+                            fitLongEdge: maximumLongEdge)
+        }
+
+        func isWithin(maximumLongEdge: Int?) -> Bool {
+            maximumLongEdge.map { max(outputWidth, outputHeight) <= $0 } ?? true
         }
     }
     struct Snapshot {
@@ -268,23 +374,28 @@ final class StudioMovieExportService {
         private let movieFilename: String
 
         init(parent: URL, staging: URL, movieFilename: String, movieDigest: SHA256.Digest,
-             movieBytes: Int, manifestData: Data, original: PublicationIdentity) throws {
+             movieBytes: Int, manifestData: Data, original: PublicationIdentity, diagnostics: PublicationDiagnostics) throws {
+            diagnostics.begin(20)
             guard Set(original.files.keys) == Set([movieFilename, "manifest.json"]) else { throw ExportError.unsafeDestination }
             self.movieFilename = movieFilename
             parentURL = parent; name = staging.lastPathComponent
             var parentInfo = stat()
-            guard lstat(parent.path, &parentInfo) == 0, Self.directory(parentInfo) else { throw ExportError.unsafeDestination }
+            diagnostics.begin(21)
+            guard diagnostics.syscall(lstat(parent.path, &parentInfo)), Self.directory(parentInfo) else { throw ExportError.unsafeDestination }
             let openedParent = Darwin.open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard openedParent >= 0 else { throw ExportError.unsafeDestination }
+            guard diagnostics.descriptor(openedParent) else { throw ExportError.unsafeDestination }
             var parentOpenedInfo = stat()
-            guard fstat(openedParent, &parentOpenedInfo) == 0, Self.directory(parentOpenedInfo),
-                  Identity(parentInfo) == Identity(parentOpenedInfo), CreatedIdentity(parentOpenedInfo) == original.parent else {
+            diagnostics.begin(22)
+            guard diagnostics.syscall(fstat(openedParent, &parentOpenedInfo)), Self.directory(parentOpenedInfo),
+                  diagnostics.matches(Identity(parentInfo) == Identity(parentOpenedInfo)),
+                  diagnostics.matches(CreatedIdentity(parentOpenedInfo) == original.parent) else {
                 _ = Darwin.close(openedParent); throw ExportError.unsafeDestination
             }
+            diagnostics.begin(23)
             let openedDirectory = openat(openedParent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             var directoryInfo = stat()
-            guard openedDirectory >= 0, fstat(openedDirectory, &directoryInfo) == 0, Self.directory(directoryInfo),
-                  CreatedIdentity(directoryInfo) == original.directory else {
+            guard diagnostics.descriptor(openedDirectory), diagnostics.syscall(fstat(openedDirectory, &directoryInfo)), Self.directory(directoryInfo),
+                  diagnostics.matches(CreatedIdentity(directoryInfo) == original.directory) else {
                 if openedDirectory >= 0 { _ = Darwin.close(openedDirectory) }
                 _ = Darwin.close(openedParent); throw ExportError.unsafeDestination
             }
@@ -296,15 +407,17 @@ final class StudioMovieExportService {
                     ("manifest.json", Int64(manifestData.count), SHA256.hash(data: manifestData))
                 ]
                 for (filename, size, digest) in expected {
+                    diagnostics.begin(24, fileRole: filename == movieFilename ? 1 : 2)
                     let fd = openat(directoryFD, filename, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-                    guard fd >= 0 else { throw ExportError.unsafeDestination }
+                    guard diagnostics.descriptor(fd) else { throw ExportError.unsafeDestination }
                     var info = stat()
-                    guard fstat(fd, &info) == 0, Self.regular(info), info.st_nlink == 1, info.st_size == size,
-                          CreatedIdentity(info) == original.files[filename] else {
+                    guard diagnostics.syscall(fstat(fd, &info)), Self.regular(info), info.st_nlink == 1, info.st_size == size,
+                          diagnostics.matches(CreatedIdentity(info) == original.files[filename]) else {
                         _ = Darwin.close(fd); throw ExportError.unsafeDestination
                     }
                     files[filename] = FileRecord(fd: fd, identity: Identity(info), bytes: size, digest: digest)
                 }
+                diagnostics.begin(25)
                 try validateFiles(allowMissing: false)
             } catch {
                 closeDescriptors()
@@ -312,16 +425,20 @@ final class StudioMovieExportService {
             }
         }
 
-        func publish(to destination: URL) throws {
+        func publish(to destination: URL, diagnostics: PublicationDiagnostics) throws {
+            diagnostics.begin(30)
             guard destination.deletingLastPathComponent().standardizedFileURL == parentURL,
                   destination.lastPathComponent != name else { throw ExportError.unsafeDestination }
+            diagnostics.begin(31)
             try validateFiles(allowMissing: false)
             // RENAME_EXCL refuses both an existing file and an existing empty
             // directory; publication never overwrites a collision.
-            guard renameatx_np(parentFD, name, parentFD, destination.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else {
+            diagnostics.begin(32)
+            guard diagnostics.syscall(renameatx_np(parentFD, name, parentFD, destination.lastPathComponent, UInt32(RENAME_EXCL))) else {
                 throw ExportError.unsafeDestination
             }
             name = destination.lastPathComponent
+            diagnostics.begin(33)
             try validateFiles(allowMissing: false)
         }
         func validateForUse() throws {
@@ -521,15 +638,21 @@ final class StudioMovieExportService {
                 throw ExportError.cleanupFailed(stagingURL)
             }
         }
-        private func presentAndOwned(_ name: String, record: FileRecord) throws -> Bool {
+        private func presentAndOwned(_ name: String, record: FileRecord,
+                                     diagnostics: PublicationDiagnostics? = nil) throws -> Bool {
             var current = stat(), opened = stat()
             if fstatat(directoryFD, name, &current, AT_SYMLINK_NOFOLLOW) != 0 {
-                if errno == ENOENT { return false }
+                let systemError = errno
+                diagnostics?.systemError = systemError
+                if systemError == ENOENT { return false }
                 throw ExportError.cleanupFailed(stagingURL)
             }
+            // Retain the same short-circuit ownership checks. The diagnostic
+            // wrappers record their result without granting ownership.
+            let facts = diagnostics ?? PublicationDiagnostics()
             guard current.st_mode & S_IFMT == S_IFREG, current.st_nlink == 1,
-                  Identity(current) == record.identity, fstat(record.fd, &opened) == 0,
-                  Identity(opened) == record.identity else { throw ExportError.cleanupFailed(stagingURL) }
+                  facts.matches(Identity(current) == record.identity), facts.syscall(fstat(record.fd, &opened)),
+                  facts.matches(Identity(opened) == record.identity) else { throw ExportError.cleanupFailed(stagingURL) }
             return true
         }
         private func hasUnknownEntry() throws -> Bool {
@@ -559,20 +682,27 @@ final class StudioMovieExportService {
         /// exclusive manifest creation, then carry those same identities into
         /// the final owner's reopened descriptors. No callback or suspension
         /// occurs during this transfer, and the constructor rechecks identity.
-        func publicationIdentity(movieFilename: String) throws -> PublicationIdentity {
+        func publicationIdentity(movieFilename: String, diagnostics: PublicationDiagnostics) throws -> PublicationIdentity {
+            diagnostics.begin(10)
             try confirmDirectories()
+            diagnostics.begin(11)
             guard Set(files.keys) == Set([movieFilename, "manifest.json"]) else { throw ExportError.cleanupFailed(stagingURL) }
             var parent = stat(), directory = stat()
-            guard fstat(parentFD, &parent) == 0, Identity(parent) == parentIdentity,
-                  fstat(directoryFD, &directory) == 0, Identity(directory) == directoryIdentity else { throw ExportError.cleanupFailed(stagingURL) }
+            diagnostics.begin(12)
+            guard diagnostics.syscall(fstat(parentFD, &parent)), diagnostics.matches(Identity(parent) == parentIdentity),
+                  diagnostics.syscall(fstat(directoryFD, &directory)), diagnostics.matches(Identity(directory) == directoryIdentity) else { throw ExportError.cleanupFailed(stagingURL) }
             var captured: [String: CreatedIdentity] = [:]
             for (name, record) in files {
-                guard try presentAndOwned(name, record: record) else { throw ExportError.cleanupFailed(stagingURL) }
+                let role = name == movieFilename ? 1 : 2
+                diagnostics.begin(13, fileRole: role)
+                guard try presentAndOwned(name, record: record, diagnostics: diagnostics) else { throw ExportError.cleanupFailed(stagingURL) }
                 var info = stat()
-                guard fstat(record.fd, &info) == 0, Identity(info) == record.identity,
+                diagnostics.begin(14, fileRole: role)
+                guard diagnostics.syscall(fstat(record.fd, &info)), diagnostics.matches(Identity(info) == record.identity),
                       info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw ExportError.cleanupFailed(stagingURL) }
                 captured[name] = CreatedIdentity(info)
             }
+            diagnostics.begin(15)
             try confirmDirectories()
             return PublicationIdentity(parent: CreatedIdentity(parent), directory: CreatedIdentity(directory), files: captured)
         }
@@ -665,6 +795,7 @@ final class StudioMovieExportService {
         guard !Self.movieInProgress else { throw ExportError.alreadyExporting }
         Self.movieInProgress = true
         defer { Self.movieInProgress = false }
+        lastEncoderFailureDiagnostic = nil
         let started = ProcessInfo.processInfo.systemUptime
         if let filenameBase { guard StudioExportFilename.isValid(filenameBase) else { throw ExportError.unsafeDestination } }
         let movieFilename = (filenameBase ?? StudioExportFilename.fallback) + ".mp4"
@@ -690,6 +821,8 @@ final class StudioMovieExportService {
         var outputOwnership: OutputOwnership?
         var capturingOutputOwnership = false
         var encodingOwnership: EncodingOwnership?
+        var encodingStage = EncodingStage.staging
+        let publicationDiagnostics = PublicationDiagnostics()
         do {
             let identity = try DirectoryIdentity(staging)
             stagingIdentity = identity
@@ -699,9 +832,12 @@ final class StudioMovieExportService {
             }
             try confirmOwnership()
             let movie = staging.appendingPathComponent(movieFilename)
+            encodingStage = .configuration
             writer = try AVAssetWriter(outputURL: movie, fileType: .mp4)
             writer!.movieTimeScale = CMTimeScale(document.fps * 600)
-            writer!.shouldOptimizeForNetworkUse = true
+            // This is a completed local export. Progressive network playback
+            // layout is optional and is not needed by its file consumers.
+            writer!.shouldOptimizeForNetworkUse = false
             let bitrate = min(12_000_000, max(2_000_000, plan.outputWidth * plan.outputHeight * document.fps * 2))
             var compression: [String: Any] = [AVVideoAverageBitRateKey: bitrate,
                 AVVideoExpectedSourceFrameRateKey: document.fps, AVVideoAllowFrameReorderingKey: false,
@@ -733,11 +869,15 @@ final class StudioMovieExportService {
             let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: bufferAttributes)
             guard writer!.canAdd(input) else { throw ExportError.codecUnavailable }
             writer!.add(input)
+            encodingStage = .start
             guard writer!.startWriting() else { throw ExportError.writerFailed }
+            encodingStage = .fileOwnership
             try encodingOwnership!.captureStartedMovie(named: movieFilename)
+            encodingStage = .session
             writer!.startSession(atSourceTime: .zero)
             guard let pool = adaptor.pixelBufferPool else { throw ExportError.codecUnavailable }
             var formatDescription: CMVideoFormatDescription?
+            encodingStage = .frames
             for (index, frame) in document.frames.enumerated() {
                 try await waitUntilReady(input, writer: writer!, movie: movie, started: started)
                 let buffer = try await pixelBuffer(pool, writer: writer!, movie: movie, started: started)
@@ -779,6 +919,7 @@ final class StudioMovieExportService {
             try checkpoint(started)
             // The end time includes the full last frame, even for one-frame or
             // 1 FPS movies; nothing is duplicated to manufacture that duration.
+            encodingStage = .finalization
             writer!.endSession(atSourceTime: CMTime(value: Int64(document.totalTimelineTicks), timescale: CMTimeScale(document.fps)))
             input.markAsFinished()
             writer!.finishWriting {}
@@ -787,11 +928,23 @@ final class StudioMovieExportService {
                 try checkOutputSize(movie)
                 try await Task.sleep(nanoseconds: 10_000_000)
             }
-            guard writer!.status == .completed else { throw ExportError.writerFailed }
+            guard writer!.status == .completed else {
+                // Small HEVC configurations can be accepted up front and
+                // refused only on finalization. This is not a size preflight.
+                if codec == .hevc, writer!.status == .failed, min(plan.outputWidth, plan.outputHeight) <= 64,
+                   let error = writer!.error.map({ $0 as NSError }),
+                   error.domain == AVFoundationErrorDomain, error.code == AVError.Code.unknown.rawValue,
+                   let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError,
+                   underlying.domain == NSOSStatusErrorDomain, underlying.code == Int(kVTParameterErr) {
+                    throw ExportError.codecUnavailable
+                }
+                throw ExportError.writerFailed
+            }
             try checkpoint(started)
             // Seal the encoder-completed bytes before a caller callback can
             // replace their contents with different but otherwise valid media.
             // The post-verification/publication comparison must match this seal.
+            encodingStage = .verification
             let verifiedBytes = try fingerprint(movie, started: started)
             try progress(Progress(phase: .verifying, completedFrames: document.frames.count, totalFrames: document.frames.count))
             try confirmOwnership()
@@ -829,16 +982,22 @@ final class StudioMovieExportService {
             // Byte verification is insufficient if a caller replaced a file
             // with an identical clone. The final owner must inherit the actual
             // encoder/manifest descriptor identities before it may clean them.
-            let originalIdentity = try encodingOwnership!.publicationIdentity(movieFilename: movieFilename)
+            encodingStage = .publication
+            let originalIdentity = try encodingOwnership!.publicationIdentity(movieFilename: movieFilename, diagnostics: publicationDiagnostics)
             capturingOutputOwnership = true
             let ownership = try OutputOwnership(parent: parent, staging: staging, movieFilename: movieFilename,
-                movieDigest: verifiedBytes, movieBytes: bytes, manifestData: manifestData, original: originalIdentity)
+                movieDigest: verifiedBytes, movieBytes: bytes, manifestData: manifestData, original: originalIdentity,
+                diagnostics: publicationDiagnostics)
             outputOwnership = ownership
-            try ownership.publish(to: destination)
+            try ownership.publish(to: destination, diagnostics: publicationDiagnostics)
+            publicationDiagnostics.begin(34)
             try checkpoint(started)
             return Output(directory: destination, movieURL: destination.appendingPathComponent(movieFilename),
                 manifestURL: destination.appendingPathComponent("manifest.json"), manifest: manifest, ownership: ownership)
         } catch {
+            if let writer, !(error is CancellationError) {
+                logEncoderFailure(writer, stage: encodingStage, codec: codec, publication: publicationDiagnostics)
+            }
             if capturingOutputOwnership {
                 // A failed ownership capture may have found a foreign entry.
                 // Retain it and surface cleanup instead of falling through to
@@ -874,7 +1033,7 @@ final class StudioMovieExportService {
             // Refuse before encoding: an unusable mark or an output too small to
             // carry it legibly never yields an unmarked "channel" copy.
             try StudioExportService.validateChannelMark(mark)
-            let plan = try RenderPlan.make(canvasWidth: snapshot.document.width, canvasHeight: snapshot.document.height, preset: snapshot.render.preset)
+            let plan = try snapshot.render.plan(canvasWidth: snapshot.document.width, canvasHeight: snapshot.document.height)
             _ = try StudioChannelRendition.placement(outputWidth: plan.outputWidth, outputHeight: plan.outputHeight, markWidth: mark.width, markHeight: mark.height)
         }
         if let componentProof {
@@ -886,13 +1045,16 @@ final class StudioMovieExportService {
         try document.validate()
         // Odd canvases are no longer refused (#182): the render plan pads the
         // encoded frame with one white column/row and records that rule.
-        let plan = try RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: snapshot.render.preset)
+        let plan = try snapshot.render.plan(canvasWidth: document.width, canvasHeight: document.height)
         guard plan.outputWidth.isMultiple(of: 2), plan.outputHeight.isMultiple(of: 2), plan.outputWidth >= 2, plan.outputHeight >= 2 else {
             throw ExportError.oddDimensions
         }
         let pixels = plan.outputWidth * plan.outputHeight
         guard document.frames.count <= limits.maximumFrames, pixels <= limits.maximumFramePixels,
               pixels * document.frames.count <= limits.maximumTotalPixels else { throw ExportError.limitExceeded }
+        if snapshot.render.watermark == true, snapshot.channelMark == nil {
+            try StudioExportService.validateWatermarkPlacement(width: plan.outputWidth, height: plan.outputHeight)
+        }
         let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill, .smudge, .blur, .sharpen, .dodge, .burn]
         let blends = Set(StudioLayerBlendMode.allCases.map(\.rawValue))
         func colorValid(_ value: String) -> Bool {
@@ -972,7 +1134,7 @@ final class StudioMovieExportService {
         guard let image = renderer.cgImage, image.width == plan.outputWidth, image.height == plan.outputHeight else { throw ExportError.renderFailed }
         if let failure { throw failure }
         guard watermark else { return image }
-        let marked = try StudioExportService.watermarked(image)
+        let marked = try StudioExportService.watermarked(image, requiresVisibleMark: true)
         guard marked.width == plan.outputWidth, marked.height == plan.outputHeight else { throw ExportError.renderFailed }
         return marked
     }
@@ -1122,6 +1284,7 @@ final class StudioMovieExportService {
     enum ExportError: LocalizedError {
         case alreadyExporting, limitExceeded, unsafeDestination, transparentUnsupported, audioUnsupported, oddDimensions
         case missingRaster, invalidRaster, unsupportedContent, codecUnavailable, renderFailed, writerFailed, verificationFailed, timedOut, outputUnavailable
+        case planChanged
         case cleanupFailed(URL)
         var errorDescription: String? {
             switch self {
@@ -1140,6 +1303,7 @@ final class StudioMovieExportService {
             case .verificationFailed: return "The encoded movie did not pass its frame, timing or decoding checks. No movie was published."
             case .timedOut: return "The movie exporter exceeded its processing limit. No movie was published."
             case .outputUnavailable: return "These movie files are no longer available at their verified location. They were cancelled, removed or changed."
+            case .planChanged: return "This MP4 no longer fits your current plan. Export it again with the current settings."
             case .cleanupFailed: return "Movie files could not be safely removed. Their location or contents may have changed; cleanup can be retried after the conflict is resolved."
             }
         }

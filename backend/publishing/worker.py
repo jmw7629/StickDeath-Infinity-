@@ -16,7 +16,7 @@ from .youtube_withdraw import withdraw
 class JobAPI:
     PREFIX = 'sdi_publish_'
     PERMITTED = frozenset({'claim','renew','finish','progress','uncertain',
-                           'removal_claim','removal_renew','removal_finish'})
+                           'removal_claim','removal_renew','removal_finish','finish_youtube'})
 
     def __init__(self, base_url: str, service_key: str):
         parsed = urllib.parse.urlsplit(base_url)
@@ -96,7 +96,8 @@ class PublishingWorker:
                     if not self.api.call('progress',job=job_id,token=token,provider=result['video_id'],wait_for_processing=True):
                         raise ReconciliationRequired('Processing state could not be recorded.')
                     return {'state':'processing','job':job_id}
-                if not self.api.call('finish',job=job_id,token=token,provider=result['video_id'],url=result['url']):
+                receipt = self._verified_public_receipt(uploader, result, job['digest'])
+                if self.api.call('finish_youtube',job=job_id,token=token,receipt=receipt) is not True:
                     raise ReconciliationRequired('Release result needs reconciliation.')
                 # Final SQL state may be removal_pending if cancellation raced release.
                 return {'state':'release_recorded','job':job_id}
@@ -113,6 +114,43 @@ class PublishingWorker:
                 self.api.call('finish',job=job_id,token=token,provider=None,url=None,
                               failure='Artifact or approval rejected. Refresh status before retry.')
                 return {'state':'failed','job':job_id}
+
+    def _verified_public_receipt(self, uploader: YouTubeUploader, result: dict, digest: str) -> dict:
+        """Verify provider metadata through the existing owner OAuth/lease path.
+
+        No local file or watch URL is evidence of publication. This final read
+        supplies the server-only receipt used by the feed reference transaction.
+        Nonembeddable channel videos may remain published, but cannot enter feed.
+        """
+        import re
+        provider = result.get('video_id')
+        if (not isinstance(self.channel_id, str) or not re.fullmatch(r'UC[A-Za-z0-9_-]{1,126}', self.channel_id)
+                or result.get('state') != 'published' or result.get('digest') != digest
+                or result.get('processing_verified') is not True or result.get('visibility') != 'public'
+                or not isinstance(provider, str) or not re.fullmatch(r'[A-Za-z0-9_-]{11}', provider)
+                or result.get('url') != 'https://www.youtube.com/watch?v=' + provider):
+            raise ReconciliationRequired('Publication receipt does not identify the approved upload.')
+        try:
+            code, _, body = uploader.request('GET',
+                'https://www.googleapis.com/youtube/v3/videos?part=snippet,status,processingDetails&id=' + provider)
+        except (UploadError, urllib.error.URLError, TimeoutError, OSError, RuntimeError):
+            # Publication is already known. A failed lease/auth/transport read
+            # cannot turn that public provider object into an unpublished failure.
+            raise ReconciliationRequired('Final public verification unavailable; reconcile provider state.') from None
+        try:
+            items = json.loads(body).get('items', []) if code == 200 else []
+            item = items[0] if len(items) == 1 else {}
+            status = item.get('status', {})
+            valid = (item.get('id') == provider and item.get('snippet', {}).get('channelId') == self.channel_id
+                     and status.get('privacyStatus') == 'public' and status.get('uploadStatus') == 'processed'
+                     and item.get('processingDetails', {}).get('processingStatus') == 'succeeded')
+        except (ValueError, TypeError, AttributeError, KeyError, IndexError):
+            valid = False
+        if not valid:
+            raise ReconciliationRequired('Public owner-channel publication could not be confirmed.')
+        return {'state': 'published', 'video_id': provider, 'channel_id': self.channel_id, 'digest': digest,
+                'url': 'https://www.youtube.com/watch?v=' + provider, 'visibility': 'public',
+                'processing_verified': True, 'embeddable': status.get('embeddable') is True}
 
     def _acquire_slot(self):
         """Open and lock the first free slot file; None when all are held."""

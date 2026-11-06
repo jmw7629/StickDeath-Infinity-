@@ -19,7 +19,18 @@ data class ArtworkBounds(val left: Float, val top: Float, val right: Float, val 
     }
 }
 
+/** Transient gesture output only; a refusal retains the last valid preview, never changes history. */
+data class ArtworkTransformPreview(val frame: Frame, val refusal: String? = null)
+
 data class ArtworkTransform(val dx: Float = 0f, val dy: Float = 0f, val scale: Float = 1f, val angle: Float = 0f, val heightScale: Float = scale) {
+    /** Keep validation failures inside pointer input. Commit still calls [apply] directly through the
+     * guarded Studio edit path, so a refused resize never clamps or mutates canonical geometry. */
+    fun preview(frame: Frame, ids: Set<String>, bounds: ArtworkBounds, lastValidFrame: Frame = frame): ArtworkTransformPreview =
+        try { ArtworkTransformPreview(apply(frame, ids, bounds)) }
+        catch (refused: IllegalArgumentException) {
+            ArtworkTransformPreview(lastValidFrame, refused.message ?: "Selection preview is unavailable. Nothing changed.")
+        }
+
     fun apply(frame: Frame, ids: Set<String>, bounds: ArtworkBounds): Frame {
         require(listOf(dx,dy,scale,heightScale,angle).all { it.isFinite() } && scale in 0.25f..4f && heightScale in 0.25f..4f && angle in -360f..360f)
         val a = angle * PI / 180
@@ -58,12 +69,70 @@ enum class ArtworkOrder { Forward, Backward, Front, Back }
 enum class SelectionShape { Freehand, Rectangle }
 enum class SelectionMode { Replace, Add, Subtract }
 object ArtworkSelection {
-    fun eligible(frame: Frame, layers: List<Layer>): Set<String> {
-        // Selection drives move/resize/delete, which iOS allows only on free layers.
-        val editable = layers.filter { it.isEditable && it.lockMode.allowsTransform }.map { it.id }.toSet()
-        return frame.strokes.filter { it.layerID in editable && it.tool.isSelectable && it.opacity > 0f && (it.color ushr 24) > 0 }
-            .map { it.id }.toSet()
+    /** Shared positions for the drawn handles and their touch targets; no layout change. */
+    fun transformHandles(bounds: ArtworkBounds, width: Int, height: Int, radius: Float): List<Pair<String, Point>> {
+        fun clipped(x: Float, y: Float) = Point(x.coerceIn(radius, width-radius), y.coerceIn(radius, height-radius))
+        return listOf("rotate" to clipped(bounds.center.x, if (bounds.top > radius*3) bounds.top-radius*2 else bounds.bottom+radius*2),
+            "scale" to clipped(bounds.left,bounds.top), "scale" to clipped(bounds.right,bounds.top),
+            "scale" to clipped(bounds.left,bounds.bottom), "scale" to clipped(bounds.right,bounds.bottom))
     }
+
+    /** Keep a small selection's centre draggable without swallowing actual clamped knobs.
+     * Explicit Rotate wins; interior Move wins only when the centre is at least as close as
+     * the nearest corner target. Ties stay Move for exactly overlapping tiny geometry. */
+    fun transformHandleAt(bounds: ArtworkBounds, width: Int, height: Int, radius: Float, point: Point): String? {
+        val nearest = transformHandles(bounds, width, height, radius)
+            .filter { hypot(it.second.x-point.x,it.second.y-point.y) <= radius }
+            .minByOrNull { hypot(it.second.x-point.x,it.second.y-point.y) } ?: return null
+        if (nearest.first == "rotate") return "rotate"
+        val center = bounds.center
+        if (bounds.contains(point) && abs(point.x-center.x) <= bounds.width/4f &&
+            abs(point.y-center.y) <= bounds.height/4f &&
+            hypot(point.x-center.x,point.y-center.y) <= hypot(nearest.second.x-point.x,nearest.second.y-point.y)) return null
+        return nearest.first
+    }
+
+    private fun Layer.allowsArtworkSelection() = isEditable && lockMode.allowsTransform
+    private fun Stroke.hasSelectableCoverage() = tool.isSelectable && opacity > 0f && (color ushr 24) > 0
+
+    fun eligible(frame: Frame, layers: List<Layer>): Set<String> {
+        val editable = layers.filter { it.allowsArtworkSelection() }.map { it.id }.toSet()
+        return frame.strokes.filter { it.layerID in editable && it.hasSelectableCoverage() }.map { it.id }.toSet()
+    }
+
+    /** The layer at index zero paints last. Within each layer, later marks paint last. */
+    fun topmostAt(frame: Frame, layers: List<Layer>, point: Point): String? {
+        if (!point.x.isFinite() || !point.y.isFinite()) return null
+        val layerOrder = layers.withIndex().filter { it.value.allowsArtworkSelection() }
+            .associate { it.value.id to it.index }
+        var hit: String? = null
+        var hitLayer = layers.size
+        for (stroke in frame.strokes.asReversed()) {
+            val order = layerOrder[stroke.layerID] ?: continue
+            if (order >= hitLayer || !stroke.hasSelectableCoverage()) continue
+            val contains = if (stroke.tool == Tool.Fill) stroke.fillContains(point) else {
+                val box = ArtworkBounds.of(stroke)
+                point.x in (box.left - 6f)..(box.right + 6f) && point.y in (box.top - 6f)..(box.bottom + 6f)
+            }
+            if (contains) {
+                hit = stroke.id
+                hitLayer = order
+                if (order == 0) break
+            }
+        }
+        return hit
+    }
+
+    private fun Stroke.fillContains(point: Point): Boolean {
+        val map = fillGeometryOrIdentity()
+        val dx = point.x.toDouble() - map.tx
+        val dy = point.y.toDouble() - map.ty
+        val determinant = map.a.toDouble() * map.d - map.b.toDouble() * map.c
+        val x = (map.d * dx - map.c * dy) / determinant
+        val y = (map.a * dy - map.b * dx) / determinant
+        return requireNotNull(fill).any { y >= it.y && y < it.y + 1 && x >= it.start && x < it.end }
+    }
+
     fun bounds(frame: Frame, ids: Set<String>): ArtworkBounds? = frame.strokes.filter { it.id in ids }
         .map { ArtworkBounds.of(it) }.reduceOrNull { a,b -> a.union(b) }
     fun enclosed(frame: Frame, layers: List<Layer>, polygon: List<Point>,

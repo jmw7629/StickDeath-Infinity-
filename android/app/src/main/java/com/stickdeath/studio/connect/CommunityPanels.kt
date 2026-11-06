@@ -19,6 +19,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,32 +29,74 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import java.time.Instant
 
-private enum class CommunityTab(val title: String) { War("War Room"), Challenges("Challenges"), Rooms("Shared rooms"), Calendar("Calendar"), Inbox("Notifications"), Data("Account data") }
+/** Existing community screens are separate desktop subjects, never nested Account tabs. */
+enum class CommunitySubject(val key: String, val title: String, val memberOnly: Boolean = true) {
+    Feed("feed", "Feed", false), Profile("profile", "Profile"), WarRoom("war-room", "War Room"),
+    Challenges("challenges", "Challenges"), Calendar("calendar", "Calendar"), Notifications("notifications", "Notifications")
+}
 
-/** War Room, challenges, shared-room sync, notifications and account data for a signed-in member.
- * There is no chat, calling, camera or microphone anywhere in these screens. */
-@Composable fun CommunityFeaturesSection(account: AccountViewModel, community: CommunityViewModel = viewModel()) {
+/** Account-keyed content remains composed while hidden, retaining drafts only for
+ * the same account. Only qualified visible Feed/Profile idle caches load initially. */
+@Composable fun CommunityDesktopSection(
+    subject: CommunitySubject, account: AccountViewModel, community: CommunityViewModel,
+    visible: Boolean, onOpenAccount: () -> Unit,
+) {
     val signedIn = account.state as? AccountState.SignedIn
-    LaunchedEffect(signedIn?.userId) { community.accountChanged(signedIn?.userId) }
-    var tab by remember { mutableStateOf<CommunityTab?>(null) }
-    Row(Modifier.horizontalScroll(rememberScrollState())) {
-        CommunityTab.entries.forEach { entry ->
-            FilterChip(tab == entry, { tab = if (tab == entry) null else entry }, { Text(entry.title) }, modifier = Modifier.padding(end = 4.dp))
+    val member = signedIn?.takeIf { !it.isAnonymous && !account.needsNewPassword }?.userId
+    key(subject.key, signedIn?.userId, signedIn?.isAnonymous, account.needsNewPassword) {
+        var prepared by remember { mutableStateOf(false) }
+        LaunchedEffect(member) { community.accountChanged(member); prepared = true }
+        Text(subject.title, style = MaterialTheme.typography.titleMedium)
+        when {
+            !account.configured -> Text("${subject.title} is unavailable in this build. No request is sent until the public backend is configured.")
+            signedIn == null -> {
+                Text("Open Account to sign in before loading ${subject.title}.")
+                TextButton(onOpenAccount) { Text("Open Account") }
+            }
+            account.needsNewPassword -> {
+                Text("Finish setting your password in Account before using ${subject.title}.")
+                TextButton(onOpenAccount) { Text("Open Account") }
+            }
+            subject.memberOnly && signedIn.isAnonymous -> {
+                Text("${subject.title} needs a full account. Guests can browse Feed; no member request is sent.")
+                TextButton(onOpenAccount) { Text("Open Account") }
+            }
+            !prepared || (subject.memberOnly && community.viewer != signedIn.userId) -> Text("Preparing this account…")
+            else -> {
+                if (subject == CommunitySubject.Feed || subject == CommunitySubject.Profile) {
+                    if (account.notice.isNotEmpty()) Text(account.notice)
+                } else if (community.notice.isNotEmpty()) Text(community.notice)
+                when (subject) {
+                    CommunitySubject.Feed -> FeedDesktopContent(account, visible)
+                    CommunitySubject.Profile -> ProfileDesktopContent(account, visible)
+                    CommunitySubject.WarRoom -> WarRoomSection(community)
+                    CommunitySubject.Challenges -> ChallengesSection(community)
+                    CommunitySubject.Calendar -> CalendarSection(community)
+                    CommunitySubject.Notifications -> NotificationsSection(community)
+                }
+            }
         }
     }
-    if (community.notice.isNotEmpty()) Text(community.notice)
-    if (tab != null && !account.signedInMember) { Text("War Room, challenges, rooms, notifications and account data need a full account. Guests can browse the wall only."); return }
-    when (tab) {
-        CommunityTab.War -> WarRoomSection(community)
-        CommunityTab.Challenges -> ChallengesSection(community)
-        CommunityTab.Rooms -> RoomSyncSection(community)
-        CommunityTab.Calendar -> CalendarSection(community)
-        CommunityTab.Inbox -> NotificationsSection(community)
-        CommunityTab.Data -> AccountDataSection(community)
-        null -> Unit
+}
+
+/** Account retains account-data controls, not community-subject navigation. */
+@Composable fun AccountDataDesktopSection(account: AccountViewModel, community: CommunityViewModel, visible: Boolean) {
+    val signedIn = account.state as? AccountState.SignedIn
+    val member = signedIn?.takeIf { !it.isAnonymous && !account.needsNewPassword }?.userId
+    key(member) {
+        var prepared by remember { mutableStateOf(false) }
+        LaunchedEffect(member) { community.accountChanged(member); prepared = true }
+        when {
+            !account.configured -> Text("Server account data is unavailable in this build.")
+            member == null -> Text("Sign in with a full account and finish password setup to manage server account data.")
+            !prepared || community.viewer != member -> Text("Preparing this account’s data controls…")
+            else -> {
+                if (community.notice.isNotEmpty()) Text(community.notice)
+                AccountDataSection(community, visible && community.accountDataVisible)
+            }
+        }
     }
 }
 
@@ -243,10 +286,20 @@ private enum class CommunityTab(val title: String) { War("War Room"), Challenges
     Row(verticalAlignment = Alignment.CenterVertically) { Switch(value, set); Text(label, Modifier.padding(start = 8.dp)) }
 }
 
-@Composable private fun AccountDataSection(community: CommunityViewModel) {
-    val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { community.saveExport(it) }
-    LaunchedEffect(community.pendingExport) {
-        if (community.pendingExport != null) runCatching { saver.launch(AccountLifecycleClient.exportFileName()) }.onFailure { community.saveExport(null) }
+@Composable private fun AccountDataSection(community: CommunityViewModel, visible: Boolean) {
+    var offeredExport by remember { mutableStateOf<Pair<Long, String>?>(null) }
+    val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        offeredExport?.let { (generation, text) -> community.saveExport(uri, generation, text) }
+        offeredExport = null
+    }
+    LaunchedEffect(community.pendingExport, visible) {
+        val text = community.pendingExport
+        if (visible && text != null && offeredExport == null) {
+            val generation = community.sessionGeneration
+            offeredExport = generation to text
+            runCatching { saver.launch(AccountLifecycleClient.exportFileName()) }
+                .onFailure { community.saveExport(null, generation, text); offeredExport = null }
+        }
     }
     Text("Your account data", style = MaterialTheme.typography.titleMedium)
     Text("Projects and originals stay on this device and are never part of the export or deletion. The export contains the server records about your account (three per day).")

@@ -14,10 +14,11 @@ data class SwiftRoundBrush(val descriptor: String, val pressures: List<Double>) 
     private val settings get() = JSONObject(descriptor)
     val smoothing get() = settings.getDouble("smoothing")
     val pressureEnabled get() = settings.getBoolean("pressureEnabled")
-    fun validate(count: Int) {
+    fun validate(count: Int) = validate(count, settings)
+
+    private fun validate(count: Int, d: JSONObject) {
         require(count in 1..8192)
         require(pressures.size == count && pressures.all { it.isFinite() && it in 0.0..1.0 })
-        val d = settings
         val keys = setOf("version", "family", "seed", "smoothing", "pressureEnabled", "tipAngleDegrees", "texture", "grain", "gradientEndColor", "tiltEnabled")
         require(d.keys().asSequence().all { it in keys || d.isNull(it) })
         require(d.getInt("version") in 1..2 && d.getString("family") == "round")
@@ -25,6 +26,7 @@ data class SwiftRoundBrush(val descriptor: String, val pressures: List<Double>) 
         // unsigned Swift UInt64 values above Long.MAX_VALUE as Double.
         val seed = d.getDouble("seed")
         require(seed.isFinite() && seed >= 0 && seed <= 18446744073709551616.0 && seed == kotlin.math.floor(seed))
+        val smoothing = d.getDouble("smoothing")
         require(smoothing.isFinite() && smoothing in 0.0..10.0)
         require(!d.optBoolean("tiltEnabled") && d.isNull("gradientEndColor"))
         val angle = d.getDouble("tipAngleDegrees")
@@ -33,6 +35,19 @@ data class SwiftRoundBrush(val descriptor: String, val pressures: List<Double>) 
     }
     fun json() = JSONObject().put("descriptor", settings).put("pressures", JSONArray(pressures))
     companion object {
+        /** Native Round pressure uses the existing editable brush envelope. */
+        fun stylus(smoothing: Float, initialPressure: Double): SwiftRoundBrush =
+            SwiftRoundBrush(JSONObject()
+                .put("version", 2)
+                .put("family", "round")
+                .put("seed", 0)
+                .put("smoothing", smoothing.toDouble())
+                .put("pressureEnabled", true)
+                .put("tipAngleDegrees", 45)
+                .put("texture", 0.5)
+                .put("grain", 0.3)
+                .toString(), listOf(initialPressure))
+
         fun decode(j: JSONObject): SwiftRoundBrush {
             val p = j.getJSONArray("pressures")
             require(p.length() in 1..8192)
@@ -42,8 +57,11 @@ data class SwiftRoundBrush(val descriptor: String, val pressures: List<Double>) 
     }
     data class Dab(val x: Double, val y: Double, val pressure: Double)
     /** Direct counterpart of StudioBrushRenderer.geometry's round-family sampling. */
-    fun dabs(stroke: Stroke, check: () -> Unit = {}): List<Dab> {
-        validate(stroke.points.size)
+    fun dabs(stroke: Stroke, check: () -> Unit = {}): List<Dab> = dabs(stroke, settings, check)
+
+    private fun dabs(stroke: Stroke, brushSettings: JSONObject, check: () -> Unit): List<Dab> {
+        validate(stroke.points.size, brushSettings)
+        val usesPressure = brushSettings.getBoolean("pressureEnabled")
         require(stroke.points.all { it.x.isFinite() && it.y.isFinite() })
         val t = stroke.brushTransform
         t.validate()
@@ -52,7 +70,7 @@ data class SwiftRoundBrush(val descriptor: String, val pressures: List<Double>) 
         require(size.isFinite() && size in 0.25..512.0)
         val points = stroke.points.map { t.inverse(Point(it.x - origin.x, it.y - origin.y)) }
         val spacing = max(0.25, size * 0.15)
-        val factor = 1 / (1 + smoothing * 0.4)
+        val factor = 1 / (1 + brushSettings.getDouble("smoothing") * 0.4)
         val filtered = mutableListOf<Dab>()
         var x = points[0].x.toDouble(); var y = points[0].y.toDouble()
         points.forEachIndexed { index, p ->
@@ -69,7 +87,7 @@ data class SwiftRoundBrush(val descriptor: String, val pressures: List<Double>) 
             val a = filtered[i - 1]; val b = filtered[i]
             val length = hypot(b.x - a.x, b.y - a.y)
             require(distance + length <= 8191 * spacing) { "Swift round stroke exceeds the 8,192-dab capacity." }
-            if (length == 0.0 && pressureEnabled && a.pressure != b.pressure) {
+            if (length == 0.0 && usesPressure && a.pressure != b.pressure) {
                 require(dabs.size < 8192); dabs.add(b)
             }
             while (length > 0 && nextDistance <= distance + length) {
@@ -82,13 +100,15 @@ data class SwiftRoundBrush(val descriptor: String, val pressures: List<Double>) 
             distance += length
         }
         val last = filtered.last(); val dab = dabs.last()
-        if (hypot(last.x - dab.x, last.y - dab.y) > 0.000001 || (pressureEnabled && last.pressure != dab.pressure)) {
+        if (hypot(last.x - dab.x, last.y - dab.y) > 0.000001 || (usesPressure && last.pressure != dab.pressure)) {
             require(dabs.size < 8192); dabs.add(last)
         }
         return dabs
     }
     fun draw(canvas: Canvas, stroke: Stroke, paint: Paint, check: () -> Unit) {
-        val dabs = dabs(stroke, check)
+        val brushSettings = settings
+        val usesPressure = brushSettings.getBoolean("pressureEnabled")
+        val dabs = dabs(stroke, brushSettings, check)
         val checkpoint = canvas.save()
         try {
             val origin = stroke.points.first(); val t = stroke.brushTransform
@@ -98,7 +118,7 @@ data class SwiftRoundBrush(val descriptor: String, val pressures: List<Double>) 
             val size = stroke.width / t.meanScale
             dabs.forEachIndexed { index, dab ->
                 if (index % 128 == 0) check()
-                val pressure = if (pressureEnabled) 0.15 + 0.85 * dab.pressure else 1.0
+                val pressure = if (usesPressure) 0.15 + 0.85 * dab.pressure else 1.0
                 path.addCircle(dab.x.toFloat(), dab.y.toFloat(), (size * pressure / 2).toFloat(), Path.Direction.CW)
             }
             paint.style = Paint.Style.FILL

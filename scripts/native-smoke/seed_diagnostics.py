@@ -2,6 +2,7 @@
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -110,12 +111,18 @@ class Result:
     capture_incomplete: bool = False
 
 
-def run_bounded(argv, deadline, stdout_cap=TEXT_BYTES, stderr_cap=TEXT_BYTES, work_deadline=None):
+def run_bounded(argv, deadline, stdout_cap=TEXT_BYTES, stderr_cap=TEXT_BYTES, work_deadline=None,
+                post_exit_drain_seconds=0.05):
     """Drain two pipes without unbounded buffers; retain only this owned child.
 
     deadline includes up to one second reserved to kill/reap a timed-out child.
     No shell, process-group kill, persistent PID, retry, or file-output argument.
     """
+    if (not isinstance(post_exit_drain_seconds, (int, float))
+            or isinstance(post_exit_drain_seconds, bool)
+            or not 0 <= post_exit_drain_seconds <= 1
+            or not math.isfinite(post_exit_drain_seconds)):
+        raise ValueError('Post-exit pipe drain must be finite and between zero and one second')
     started = time.monotonic()
     if deadline <= started:
         return Result(None, True, 0)
@@ -143,7 +150,7 @@ def run_bounded(argv, deadline, stdout_cap=TEXT_BYTES, stderr_cap=TEXT_BYTES, wo
             # A descendant can inherit pipes after the actual command exits.
             # Capture must not turn its successful exit into a false timeout.
             if child.poll() is not None and exit_drain_deadline is None:
-                exit_drain_deadline = min(work_deadline, time.monotonic() + 0.05)
+                exit_drain_deadline = min(work_deadline, time.monotonic() + post_exit_drain_seconds)
             if exit_drain_deadline is not None and time.monotonic() >= exit_drain_deadline:
                 capture_incomplete = bool(selector.get_map())
                 break

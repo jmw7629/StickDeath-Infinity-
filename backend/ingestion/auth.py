@@ -11,15 +11,27 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _backend_base(backend_url: str) -> str:
+    # Only the deployed SDI namespace and the existing root-origin contract.
+    # No decoding/normalization of arbitrary or encoded paths is permitted.
+    if (not isinstance(backend_url, str) or not backend_url or
+            not all(32 < ord(c) < 127 for c in backend_url) or
+            any(c in backend_url for c in ("%", "\\", "?", "#"))):
+        raise ValueError("Configure the authorized HTTPS application backend.")
+    parsed = urllib.parse.urlsplit(backend_url)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None or parsed.password is not None or
+            parsed.netloc.endswith(":") or parsed.port not in (None, 443) or
+            parsed.path not in ("", "/", "/native-review-api", "/native-review-api/")):
+        raise ValueError("Configure the authorized HTTPS application backend.")
+    return backend_url.rstrip("/")
+
+
 class AccountAuthorizer:
     def __init__(self, backend_url: str, publishable_key: str):
-        parsed = urllib.parse.urlsplit(backend_url)
-        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or
-                parsed.query or parsed.fragment or parsed.path not in ("", "/") or parsed.port not in (None,443)):
-            raise ValueError("Configure the authorized HTTPS application backend.")
+        backend = _backend_base(backend_url)
         if not publishable_key or not all(32 < ord(c) < 127 for c in publishable_key):
             raise ValueError("Configured application API key required.")
-        self.base = backend_url.rstrip("/"); self.key = publishable_key
+        self.base = backend; self.key = publishable_key
 
     def __call__(self, authorization: str) -> str:
         if (not authorization.startswith("Bearer ") or not 8 <= len(authorization) <= 16384 or

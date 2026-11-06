@@ -3,7 +3,11 @@ package com.stickdeath.studio.connect
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -16,6 +20,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -23,14 +29,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
-/** Account section of the Account panel: honest connection state, sign-in, the video wall, the
- * member's own records and joining a room by invitation code. No messaging or calls exist here. */
-@Composable fun ConnectedAccountSection(account: AccountViewModel = viewModel()) {
+/** Account authentication only. Community screens have independent desktop hosts. */
+@Composable fun ConnectedAccountSection(account: AccountViewModel) {
     val context = LocalContext.current
     val state = account.state
     Text(state.summary)
@@ -42,8 +48,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
     when (state) {
         is AccountState.RetryableFailure -> Button({ account.retryRestore() }, enabled = !account.working) { Text("Retry") }
         is AccountState.SignedIn -> {
-            TextButton({ account.signOut() }, enabled = !account.working) { Text("Sign out") }
-            if (account.needsNewPassword) NewPasswordForm(account) else CommunitySection(account)
+            TextButton({ account.signOut() }) { Text("Sign out") }
+            if (account.needsNewPassword) key(state.userId) { NewPasswordForm(account) }
         }
         is AccountState.Restoring -> Unit
         else -> SignInForm(account) { provider -> account.beginOAuth(provider)?.let { url ->
@@ -86,7 +92,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
     }
 }
 
-@Composable private fun CommunitySection(account: AccountViewModel) {
+@Composable internal fun FeedDesktopContent(account: AccountViewModel, visible: Boolean) {
+    val canLoad = visible && account.feedImagesAllowed
+    val idle = account.feed is Load.Idle
+    LaunchedEffect(canLoad, idle) {
+        if (canLoad && idle) account.loadFeed()
+    }
     val context = LocalContext.current
     Text("Video wall", style = MaterialTheme.typography.titleMedium)
     Row(Modifier.horizontalScroll(rememberScrollState())) {
@@ -95,24 +106,43 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         }
     }
     Text(account.feedCategory.explanation)
+    TextButton({ account.loadFeed() }) { Text("Refresh videos") }
     when (val feed = account.feed) {
         Load.Idle -> Text("Choose a category to load approved videos.")
         Load.Loading -> Text("Loading…")
         is Load.Failed -> Text(feed.message)
         is Load.Loaded -> {
             if (feed.value.posts.isEmpty()) Text("No approved videos here yet.")
-            feed.value.posts.forEach { post ->
-                FeedPosterImage(post)
-                Text("${post.title.ifBlank { "Untitled" }} — ${post.creatorName}")
-                if (post.caption.isNotBlank()) Text(post.caption, style = MaterialTheme.typography.bodySmall)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ account.toggleLike(post) }, enabled = account.signedInMember) { Text(if (post.liked) "Liked · ${post.likes}" else "Like · ${post.likes}") }
-                    post.safeUrl?.let { url -> TextButton({ runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }) { Text("Watch") } }
-                    TextButton({ account.report(post, FeedReportReason.Abuse) }, enabled = account.signedInMember) { Text("Report") }
+            // The account panel already scrolls vertically. A finite inner viewport
+            // keeps only visible cards/bitmaps composed and avoids infinite constraints.
+            val feedHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.6f).coerceIn(180.dp, 520.dp)
+            if (feed.value.posts.isNotEmpty()) LazyColumn(Modifier.fillMaxWidth().heightIn(max = feedHeight)) {
+                items(feed.value.posts, key = { it.id }) { post ->
+                    Column {
+                        if (visible && account.feedImagesAllowed) FeedPosterImage(post)
+                        Text("${post.title.ifBlank { "Untitled" }} — ${post.creatorName}")
+                        if (post.caption.isNotBlank()) Text(post.caption, style = MaterialTheme.typography.bodySmall)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton({ account.toggleLike(post) }, enabled = account.signedInMember && post.id !in account.pendingFeedLikes) {
+                                Text(if (post.id in account.pendingFeedLikes) "Saving like…" else if (post.liked) "Liked · ${post.likes}" else "Like · ${post.likes}")
+                            }
+                            post.safeUrl?.let { url -> TextButton({ runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }) { Text("Watch") } }
+                            TextButton({ account.report(post, FeedReportReason.Abuse) }, enabled = account.signedInMember) { Text("Report") }
+                        }
+                    }
                 }
             }
             if (feed.value.hasMore) TextButton({ account.loadMoreFeed() }) { Text("Load more") }
         }
+    }
+    if (!account.signedInMember) Text("Guests can browse the wall; likes and reports need a full account.")
+}
+
+@Composable internal fun ProfileDesktopContent(account: AccountViewModel, visible: Boolean) {
+    val canLoad = visible && account.profileReadsAllowed
+    val idle = account.records is Load.Idle
+    LaunchedEffect(canLoad, idle) {
+        if (canLoad && idle) account.loadRecords()
     }
     Text("Records and badges", style = MaterialTheme.typography.titleMedium)
     when (val records = account.records) {
@@ -125,28 +155,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
             Text("Earned badges: ${r.badges?.size ?: 0}")
         }
     }
-    Text("Join a room", style = MaterialTheme.typography.titleMedium)
-    Text("Rooms share one explicitly chosen Studio project. Paste an invitation code; the owner approves every request. There is no chat or calling.")
-    var code by remember { mutableStateOf("") }
-    var consent by remember { mutableStateOf(false) }
-    OutlinedTextField(code, { code = it.take(80) }, label = { Text("Invitation code") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    TextButton({ account.previewInvitation(code) }, enabled = account.signedInMember && RoomInvitationPolicy.isWellFormed(code)) { Text("Review invitation") }
-    when (val preview = account.invitation) {
-        is Load.Loaded -> {
-            Text("Room: ${preview.value.title}")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(consent, { consent = it })
-                Text("I accept this invitation and ask the owner to admit me.")
-            }
-            Button({ account.requestAdmission(code, consent) }, enabled = consent) { Text("Request to join") }
-        }
-        is Load.Failed -> Text(preview.message)
-        Load.Loading -> Text("Checking…")
-        Load.Idle -> Unit
-    }
-    if (!account.signedInMember) Text("Guests can browse the wall; likes, reports, records and rooms need a full account.")
-    Text("Contests, rooms and account", style = MaterialTheme.typography.titleMedium)
-    CommunityFeaturesSection(account)
 }
 
 /** Cloud guidance for the Spatter panel. Replies are text only and never edit the project. */

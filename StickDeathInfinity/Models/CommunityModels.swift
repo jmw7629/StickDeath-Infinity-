@@ -396,8 +396,76 @@ struct FeedPost: Codable, Identifiable, Equatable {
     var score: Int? = nil
     /// Worker-extracted JPEG frame of the hosted copy (#217); nil when none was produced.
     var poster_url: String? = nil
-    var safeURL: URL? { CommunityMediaURL.checked(url) }
+    var playbackSource: FeedPlaybackSource? { FeedPlaybackSource.resolve(url) }
+    var safeURL: URL? { playbackSource?.shareURL }
+    var downloadableURL: URL? { playbackSource?.renditionURL }
     var poster: FeedPoster { FeedPoster.resolve(poster_url) }
+}
+
+/// Playback routing only. A URL never proves approval, channel ownership or
+/// creator consent: those remain server decisions for this exact feed row.
+/// YouTube watch pages must use its embedded player, never AVPlayer or a file
+/// downloader. Only the canonical link emitted by the publishing worker is
+/// accepted; alternate YouTube/CDN URLs fail closed rather than becoming media.
+enum FeedPlaybackSource: Equatable {
+    case rendition(URL)
+    case youtube(YouTubeVideo)
+
+    static func resolve(_ raw: String) -> FeedPlaybackSource? {
+        guard raw.count <= 2048, raw == raw.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              let url = CommunityMediaURL.checked(raw), let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = parts.host?.lowercased() else { return nil }
+        let reservedHost = host.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let youtubeHosts = ["youtube.com", "youtu.be", "youtube-nocookie.com", "googlevideo.com", "ytimg.com"]
+        if youtubeHosts.contains(where: { reservedHost == $0 || reservedHost.hasSuffix("." + $0) }) {
+            guard host == "www.youtube.com", parts.port == nil || parts.port == 443,
+                  parts.percentEncodedPath == "/watch", parts.fragment == nil,
+                  let query = parts.queryItems, query.count == 1, query[0].name == "v",
+                  let id = query[0].value, let video = YouTubeVideo(id: id),
+                  parts.percentEncodedQuery == "v=" + id else { return nil }
+            return .youtube(video)
+        }
+        return .rendition(url)
+    }
+    var shareURL: URL {
+        switch self { case .rendition(let url): return url; case .youtube(let video): return video.watchURL }
+    }
+    var renditionURL: URL? { if case .rendition(let url) = self { return url }; return nil }
+}
+
+struct YouTubeVideo: Equatable {
+    let id: String
+    init?(id: String) {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+        guard id.utf8.count == 11, id.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        self.id = id
+    }
+    var watchURL: URL { URL(string: "https://www.youtube.com/watch?v=" + id)! }
+
+    /// YouTube requires the installed app's actual bundle ID as its HTTPS
+    /// Referer. Missing/invalid identity is unavailable, never a fabricated origin.
+    func embedConfiguration(bundleIdentifier: String?) -> YouTubeEmbedConfiguration? {
+        guard let bundleIdentifier, bundleIdentifier.utf8.count <= 253 else { return nil }
+        let host = bundleIdentifier.lowercased()
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
+        guard labels.count >= 2, labels.allSatisfy({ label in
+            !label.isEmpty && label.utf8.count <= 63 && label.first != "-" && label.last != "-" &&
+                label.unicodeScalars.allSatisfy { allowed.contains($0) }
+        }), let referer = URL(string: "https://" + host) else { return nil }
+        var parts = URLComponents()
+        parts.scheme = "https"; parts.host = "www.youtube.com"; parts.path = "/embed/" + id
+        parts.queryItems = [URLQueryItem(name: "autoplay", value: "0"), URLQueryItem(name: "playsinline", value: "1"),
+                            URLQueryItem(name: "controls", value: "1"), URLQueryItem(name: "origin", value: referer.absoluteString)]
+        guard let url = parts.url else { return nil }
+        return YouTubeEmbedConfiguration(url: url, referer: referer)
+    }
+}
+
+struct YouTubeEmbedConfiguration: Equatable {
+    let url: URL
+    let referer: URL
 }
 
 /// What a feed card shows above the title: the server-recorded poster frame of
@@ -498,11 +566,12 @@ struct FeedTimeline: Equatable {
 enum FeedExportPolicy {
     /// Maximum bytes the client will download for a creator-permitted export.
     static let maximumDownloadBytes: Int64 = 200 * 1024 * 1024
-    enum State: Equatable { case allowed, needsPaidPlan, notPermitted }
+    enum State: Equatable { case allowed, needsPaidPlan, notPermitted, providerDownloadUnavailable }
     /// The creator's permission is checked first; the plan gate is the server's
     /// `can_download` decision (the Free plan cannot download videos, #219).
     static func state(_ post: FeedPost) -> State {
-        guard post.allow_export, post.safeURL != nil else { return .notPermitted }
+        guard post.allow_export, let source = post.playbackSource else { return .notPermitted }
+        if case .youtube = source { return .providerDownloadUnavailable }
         return post.can_download == true ? .allowed : .needsPaidPlan
     }
     static func canExport(_ post: FeedPost) -> Bool { state(post) == .allowed }
@@ -662,12 +731,50 @@ enum RoomInvitationPolicy {
     static let codeLength = 64
     static let lifetime: TimeInterval = 24 * 3600
     static let maximumRedemptions = 20
+    static let maximumSharedTextBytes = 4096
+    enum ImportFailure: LocalizedError {
+        case oversized, unrecognized, ambiguous
+        var errorDescription: String? {
+            switch self {
+            case .oversized: return "This invitation is too long. Paste only its 64-character code."
+            case .unrecognized: return "Paste a 64-character invitation code or the invitation shared from Rooms. Nothing was sent."
+            case .ambiguous: return "This text contains more than one invitation code. Paste only the code you want to review."
+            }
+        }
+    }
     static func normalize(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
     static func isWellFormed(_ raw: String) -> Bool {
         let code = normalize(raw)
         return code.count == codeLength && code.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+    /// Import only a raw code or this app's exact forwardable envelope. Never
+    /// interpret an arbitrary URL, account token or unrelated pasted message.
+    /// This is local parsing only: the server still reviews the code and the
+    /// recipient explicitly consents before making an admission request.
+    static func importedCode(from raw: String) throws -> String {
+        guard raw.utf8.prefix(maximumSharedTextBytes + 1).count <= maximumSharedTextBytes else {
+            throw ImportFailure.oversized
+        }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isWellFormed(text) { return normalize(text) }
+        let prefix = "StickDeath Infinity room invitation for \""
+        let delimiter = "\". Open Rooms, choose Review invitation and paste: "
+        guard text.hasPrefix(prefix), let boundary = text.range(of: delimiter, options: .backwards),
+              boundary.lowerBound >= text.index(text.startIndex, offsetBy: prefix.count) else {
+            throw ImportFailure.unrecognized
+        }
+        let title = String(text[text.index(text.startIndex, offsetBy: prefix.count)..<boundary.lowerBound])
+        let tail = text[boundary.upperBound...]
+        let candidate = String(tail.prefix(codeLength))
+        guard isWellFormed(candidate), shareText(code: candidate, roomTitle: title) == text else {
+            throw ImportFailure.unrecognized
+        }
+        let codes = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .filter { isWellFormed(String($0)) }
+        guard codes.count == 1 else { throw ImportFailure.ambiguous }
+        return normalize(candidate)
     }
     /// Forwardable text: the code is a room admission request credential, not
     /// an account credential, and it never grants access on its own.
@@ -748,13 +855,46 @@ struct WarMatch: Decodable, Identifiable, Equatable {
     let status: String
     let ends_at: Date?
     let left_title: String
-    let left_url: String
+    let left_url: String?
     let right_title: String?
     let right_url: String?
     let left_votes: Int
     let right_votes: Int
     let my_vote: String?
     let outcome: String?
+    var left_video_source: CommunityVideoSource? = nil
+    var right_video_source: CommunityVideoSource? = nil
+    var leftPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(left_video_source, legacyURL: left_url) }
+    var rightPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(right_video_source, legacyURL: right_url) }
+    var hasProviderPlayback: Bool {
+        if case .youtube = leftPlaybackSource { return true }
+        if case .youtube = rightPlaybackSource { return true }
+        return false
+    }
+}
+/// The provider is part of the server contract. A watch link never acquires raw
+/// rendition privileges, and an older raw-only response cannot authorize YouTube.
+struct CommunityVideoSource: Codable, Equatable {
+    enum Provider: String, Codable { case rendition, youtube }
+    let provider: Provider
+    let url: String
+    var expires_at: Date? = nil
+    var playbackSource: FeedPlaybackSource? {
+        guard let source = FeedPlaybackSource.resolve(url) else { return nil }
+        switch (provider, source) {
+        case (.rendition, .rendition), (.youtube, .youtube): return source
+        default: return nil
+        }
+    }
+    static func resolve(_ value: CommunityVideoSource?, legacyURL: String?) -> FeedPlaybackSource? {
+        if let value { return value.playbackSource }
+        guard let legacyURL, case .rendition(let url) = FeedPlaybackSource.resolve(legacyURL) else { return nil }
+        return .rendition(url)
+    }
+}
+struct WarMediaResponse: CommunityResponse {
+    let error: String?
+    let media: [ApprovedMedia]?
 }
 struct WarListResponse: CommunityResponse {
     let error: String?
@@ -770,7 +910,7 @@ struct WarNotice: Decodable, Identifiable, Equatable {
 struct WarNoticesResponse: CommunityResponse {
     let error: String?; let status: String?; let notices: [WarNotice]?
 }
-/// Own approved renditions (`public.sdi_watch_media` filtered by owner).
+/// Own currently eligible media from the authenticated War Room projection.
 struct ApprovedMedia: Decodable, Identifiable, Equatable {
     let id: UUID
     let title: String
@@ -778,6 +918,8 @@ struct ApprovedMedia: Decodable, Identifiable, Equatable {
     var duration: Double? = nil
     var expires_at: Date? = nil
     var approved: Bool? = nil
+    var video_source: CommunityVideoSource? = nil
+    var playbackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(video_source, legacyURL: url) }
 }
 
 enum WarVoteChoice: String { case left, right }
@@ -1199,7 +1341,7 @@ struct AdminStepUpPolicy: Equatable {
     static let sensitiveActions: Set<String> = [
         "admin_permissions.save", "agent.emergency_stop", "agent.pause", "agent.resume", "agent.set_caps",
         "agent.set_permissions", "agent.publish_instructions", "agent.rollback_instructions",
-        "finance.set_product", "finance.configure_annual", "users.suspend", "users.ban", "users.restore", "users.signout", "users.reset_flags",
+        "finance.set_product", "finance.configure_annual", "finance_record.expense", "users.suspend", "users.ban", "users.restore", "users.signout", "users.reset_flags",
         "moderation.remove", "war.remove", "rooms.close", "appeal.accept", "appeal.reject",
     ]
     var stepUpCurrent: Bool?
@@ -1323,6 +1465,50 @@ struct AdminFinanceRequest: Encodable, Equatable {
     var approved: Bool? = nil
     var reason = ""
 }
+/// Records an already-incurred expense only; it never contacts a billing provider.
+/// The operator's reference is retained for a safe duplicate check after an unknown outcome.
+struct AdminExpenseRequest: Encodable, Equatable, Sendable {
+    let action = "expense"
+    let ref: String
+    let amount_minor: Int64
+    let currency: String
+    let occurred_at: Date
+    let note: String
+    let reason: String
+
+    init(reference: String, amount: String, currency: String, occurredAt: Date,
+         note: String, reason: String, now: Date = Date()) throws {
+        let ref = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        let number = amount.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = currency.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...200).contains(ref.unicodeScalars.count),
+              (1...15).contains(number.utf8.count),
+              number.utf8.allSatisfy({ (48...57).contains($0) }),
+              let minor = Int64(number), minor > 0, minor < 1_000_000_000_000_000,
+              code.utf8.count == 3, code.utf8.allSatisfy({ (65...90).contains($0) }),
+              occurredAt.timeIntervalSince1970.isFinite, occurredAt <= now.addingTimeInterval(86_400),
+              note.unicodeScalars.count <= 500, (1...2000).contains(reason.unicodeScalars.count) else {
+            throw CommunityError.server(message: "Use a reference of 1–200 characters, a positive integer amount in minor units, a three-letter currency, the expense date, a note up to 500 characters and a reason up to 2000 characters.", code: nil)
+        }
+        self.ref = ref; self.amount_minor = minor; self.currency = code
+        self.occurred_at = occurredAt; self.note = note; self.reason = reason
+    }
+}
+struct AdminExpenseResponse: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let status: String?
+    let entry: UUID?
+    let ref: String?
+    let possible_duplicate: Bool?
+}
+enum AdminExpenseOutcome: Equatable {
+    case recorded(entry: UUID, possibleDuplicate: Bool)
+    case duplicate(reference: String)
+}
+
 struct AdminBillingProduct: Decodable, Identifiable, Equatable {
     var id: String { product_id }
     let product_id: String; let provider: String; let tier: String; let period: String
@@ -1335,6 +1521,8 @@ struct AdminSubscription: Decodable, Identifiable, Equatable {
 struct AdminLedgerEntry: Decodable, Identifiable, Equatable {
     let id: UUID; let provider: String; let provider_ref: String?; let kind: String
     let amount_minor: Int; let currency: String; let occurred_at: Date; let note: String?
+    /// Preserve provider units without assuming every currency has two decimal places.
+    var amountText: String { "\(currency.uppercased()) \(amount_minor) minor units" }
 }
 struct AdminProviderEvent: Decodable, Identifiable, Equatable {
     let id: UUID; let provider: String; let event_type: String; let occurred_at: Date?
@@ -1344,7 +1532,7 @@ struct AdminFinanceTotal: Decodable, Identifiable, Equatable {
     var id: String { "\(provider):\(currency):\(kind)" }
     let provider: String; let currency: String; let kind: String; let amount_minor: Int; let entries: Int
     /// Provider-reported sums in minor units; never a balance.
-    var amountText: String { String(format: "%@ %.2f", currency.uppercased(), Double(amount_minor) / 100) }
+    var amountText: String { "\(currency.uppercased()) \(amount_minor) minor units" }
 }
 struct AdminFinanceResponse: CommunityCodedResponse {
     let error: String?
@@ -1388,9 +1576,12 @@ struct ModerationAppeal: Decodable, Identifiable, Equatable {
     var state: String? = nil; var reply: String? = nil; let created_at: Date; var decided_at: Date? = nil
     var creator: UUID? = nil; var render_digest: String? = nil; var revision: Int? = nil
     var url: String? = nil; var removal_reason: String? = nil; var removal_state: String? = nil
+    var video_source: CommunityVideoSource? = nil
+    var playbackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(video_source, legacyURL: url) }
 }
-struct ModerationAppealResponse: CommunityResponse {
+struct ModerationAppealResponse: CommunityCodedResponse {
     let error: String?; let status: String?; let appeals: [ModerationAppeal]?
+    var code: String? = nil
 }
 
 struct AdminReviewHistoryRequest: Encodable, Equatable { let page: Int }
@@ -1402,4 +1593,98 @@ struct AdminRenderDecisionRecord: Decodable, Identifiable, Equatable {
 }
 struct AdminReviewHistoryResponse: CommunityResponse {
     let error: String?; let decisions: [AdminRenderDecisionRecord]?
+}
+
+
+// MARK: - Provider-aware room viewing
+
+/// A server-approved room projection. YouTube has no SDI rendition or trusted
+/// duration: it opens the provider's controls independently, never fake shared seek.
+struct WatchRoomMedia: Decodable, Identifiable, Equatable {
+    let id: UUID
+    let title: String
+    let duration: Double?
+    let expires_at: Date?
+    let video_source: CommunityVideoSource
+    var playbackSource: FeedPlaybackSource? {
+        guard let source = video_source.playbackSource else { return nil }
+        switch source {
+        case .rendition: return synchronizedDuration == nil ? nil : source
+        case .youtube: return duration == nil ? source : nil
+        }
+    }
+    var synchronizedDuration: Double? {
+        guard video_source.provider == .rendition, let duration,
+              duration.isFinite, duration > 0, duration <= 3600 else { return nil }
+        return duration
+    }
+    var supportsSharedControls: Bool { synchronizedDuration != nil && video_source.playbackSource?.renditionURL != nil }
+}
+struct WatchRoomPlayback: Decodable, Identifiable, Equatable {
+    let id: UUID
+    let media_id: UUID
+    let position: Double
+    let playing: Bool
+    let revision: Int
+    let updated_at: Date
+    func isValid(for media: WatchRoomMedia) -> Bool {
+        guard media_id == media.id, revision >= 0, position.isFinite,
+              media.playbackSource != nil else { return false }
+        if let duration = media.synchronizedDuration { return position >= 0 && position <= duration }
+        return position == 0 && !playing
+    }
+}
+struct WatchRoomResponse: CommunityResponse {
+    let error: String?
+    let status: String?
+    let media: [WatchRoomMedia]?
+    let video: WatchRoomMedia?
+    let session: WatchRoomPlayback?
+}
+struct WatchRoomRequest: Encodable, Sendable {
+    let action: String
+    let room: UUID
+    var media: UUID? = nil
+    var revision: Int? = nil
+    var position: Double? = nil
+    var playing: Bool? = nil
+}
+
+/// Admits only the latest-issued room refresh. A failed/empty refresh or a
+/// mutation invalidates every outstanding grant; late replies cannot restore a
+/// player. Same-session revisions may advance, but never regress or change the
+/// selected media/state without a new revision. Foundation-only for held-reply
+/// tests; room/account/foreground fencing is also enforced by the view.
+struct WatchPlaybackAdmission {
+    struct Ticket: Equatable {
+        fileprivate let epoch: UUID
+        fileprivate let sequence: UInt64
+    }
+    private var epoch = UUID()
+    private var sequence: UInt64 = 0
+    private var accepted: WatchRoomPlayback?
+    private var source: FeedPlaybackSource?
+    mutating func beginRefresh() -> Ticket {
+        sequence &+= 1
+        return Ticket(epoch: epoch, sequence: sequence)
+    }
+    func isCurrent(_ ticket: Ticket) -> Bool { ticket.epoch == epoch && ticket.sequence == sequence }
+    mutating func invalidatePendingRequests() { sequence &+= 1 }
+    mutating func reset() { self = WatchPlaybackAdmission() }
+    mutating func admit(_ session: WatchRoomPlayback, media: WatchRoomMedia, ticket: Ticket) -> Bool {
+        guard isCurrent(ticket), session.isValid(for: media), let candidate = media.playbackSource else { return false }
+        if let accepted, session.id == accepted.id {
+            guard session.revision >= accepted.revision else { return false }
+            if session.revision == accepted.revision {
+                guard session == accepted && source == candidate else { return false }
+            }
+        }
+        accepted = session; source = candidate
+        return true
+    }
+}
+struct WatchPlaybackGrant {
+    let ticket: WatchPlaybackAdmission.Ticket
+    let session: WatchRoomPlayback
+    let media: WatchRoomMedia
 }

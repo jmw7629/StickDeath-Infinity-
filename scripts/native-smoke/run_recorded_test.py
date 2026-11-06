@@ -5,31 +5,41 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import sys
 import time
 
+from seed_diagnostics import run_bounded
 from seed_image_fixture import seed_verified_fixture, wait_for_command_readiness
 from seed_video_fixture import seed_video_fixture
+from prepare_files_fixture import provision_files_fixture
 from test_budget import build_test_budget, build_shard_budget
 
 
 # Whole-file pin covers test bodies AND shared helpers. Unreviewed source changes
 # retain both mandatory fixtures rather than silently omitting a new dependency.
-FIXTURE_SOURCE_SHA256 = "6af81933a5f09da4d91cdf7ace0f3aa3fe83f685193831abba5228730e231637"
+FIXTURE_SOURCE_SHA256 = "49f83990a82221b88bfe647ed7acc74d213dc1bd9e48522d344c7d4a9b9c052b"
 PHOTO_FIXTURE_CASE = "testPhotoImportUndoPersistenceAndRealPNGExport"
 VIDEO_FIXTURE_CASE = "testRotoscopePhotosActualPlayheadUndoAndColdReopen"
+FILES_FIXTURE_CASE = "testMP4FilesSaveSurvivesReexportAndColdSourceDisposal"
 
 
 def fixture_requirements(source: str, budget: dict, sharded: bool) -> dict:
-    if not sharded or hashlib.sha256(source.encode()).hexdigest() != FIXTURE_SOURCE_SHA256:
-        return {"image": True, "video": True, "reason": "all-tests-or-unreviewed-source"}
-    assigned = set(budget["testNames"])
+    assigned = set(budget.get("testNames", []))
+    files_required = FILES_FIXTURE_CASE in assigned
+    reviewed = hashlib.sha256(source.encode()).hexdigest() == FIXTURE_SOURCE_SHA256
+    if files_required and not reviewed:
+        raise ValueError("The local Files fixture requires the reviewed exact UI source")
+    if not sharded or not reviewed:
+        return {"image": True, "video": True, "files": files_required,
+                "reason": "all-tests-or-unreviewed-source"}
     inventory = set(budget["fullTestNames"])
-    if not assigned or not assigned <= inventory or not {PHOTO_FIXTURE_CASE, VIDEO_FIXTURE_CASE} <= inventory:
+    if not assigned or not assigned <= inventory or not {PHOTO_FIXTURE_CASE, VIDEO_FIXTURE_CASE, FILES_FIXTURE_CASE} <= inventory:
         raise ValueError("Fixture plan requires complete validated test assignment")
     return {"image": PHOTO_FIXTURE_CASE in assigned, "video": VIDEO_FIXTURE_CASE in assigned,
+            "files": files_required,
             "reason": "reviewed-exact-source-assignment"}
 
 
@@ -47,6 +57,63 @@ def stop_owned_process(process: subprocess.Popen, grace_seconds: float = 30) -> 
         except subprocess.TimeoutExpired:
             process.kill()
             return process.wait(timeout=10)
+
+
+_ENCODER_LOG_BYTES = 64 * 1024
+_ENCODER_LOG_RECORDS = 32
+_ENCODER_SUBSYSTEM = "com.willisbmb.StickDeathInfinity"
+_ENCODER_CATEGORY = "StudioMovieEncoder"
+_ENCODER_DOMAIN = r"(?:AVFoundation|OSStatus|Cocoa|POSIX|none|other)"
+_ENCODER_LINE = re.compile(
+    r"MP4 encoding failed stage=(?:staging|configuration|start|fileOwnership|session|frames|finalization|verification|publication)"
+    r" codec=(?:h264|hevc) writerStatus=[0-4]"
+    rf" domain={_ENCODER_DOMAIN} code=-?[0-9]{{1,19}}"
+    rf" underlyingDomain={_ENCODER_DOMAIN} underlyingCode=-?[0-9]{{1,19}}"
+    r"(?: publicationSubstage=(?:0|1[0-5]|2[0-5]|3[0-4]) fileRole=[0-2]"
+    r" systemError=(?P<system_error>0|[1-9][0-9]{0,9}) identityMatch=(?:-1|0|1))?"
+)
+
+
+def movie_encoder_records(raw: bytes) -> tuple[list[str], bool]:
+    """Keep only complete records matching the exact public encoder log schema."""
+    records = []
+    for line in raw[:_ENCODER_LOG_BYTES].split(b"\n")[:-1]:
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict) or (event.get("subsystem"), event.get("category")) != (
+                _ENCODER_SUBSYSTEM, _ENCODER_CATEGORY):
+            continue
+        message = event.get("eventMessage")
+        match = _ENCODER_LINE.fullmatch(message) if isinstance(message, str) else None
+        if match and (match["system_error"] is None or int(match["system_error"]) <= 2**31 - 1):
+            if len(records) == _ENCODER_LOG_RECORDS:
+                return records, True
+            records.append(message)
+    return records, len(raw) > _ENCODER_LOG_BYTES or bool(raw and not raw.endswith(b"\n"))
+
+
+def record_movie_encoder_failure(udid: str, output: pathlib.Path, started_at: int) -> None:
+    predicate = (f'subsystem == "{_ENCODER_SUBSYSTEM}" AND category == "{_ENCODER_CATEGORY}"'
+                 ' AND logType == "error" AND composedMessage BEGINSWITH "MP4 encoding failed "')
+    try:
+        result = run_bounded(["xcrun", "simctl", "spawn", udid, "log", "show",
+                              "--start", f"@{started_at}", "--style", "ndjson", "--no-loss",
+                              "--predicate", predicate],
+                             time.monotonic() + 8, stdout_cap=_ENCODER_LOG_BYTES, stderr_cap=0)
+        records, record_cap = movie_encoder_records(result.stdout)
+        complete = (result.returncode == 0 and not result.timed_out
+                    and result.reaped and not result.capture_incomplete)
+        truncated = record_cap or result.stdout_seen > len(result.stdout)
+        # Raw stdout and stderr remain only in the bounded helper's memory.
+        with (output / "studio-movie-encoder-failures.json").open("x", encoding="utf-8") as stream:
+            json.dump({"complete": complete and not truncated, "truncated": truncated, "records": records}, stream)
+            stream.write("\n")
+    except Exception:
+        # This optional diagnostic must preserve the real UI result even when
+        # the simulator command, output file, or redaction cannot be used.
+        return
 
 
 def main() -> int:
@@ -127,6 +194,16 @@ def main() -> int:
                               "mandatoryGateStillFailed": True, "allUITestsWillRun": args.shard_index is None,
                           "allAssignedUITestsWillRun": True, "shardIndex": args.shard_index}), flush=True)
 
+    files_fixture_error = None
+    if requirements["files"]:
+        try:
+            provision_files_fixture(args.udid, output)
+        except (subprocess.SubprocessError, OSError, ValueError) as error:
+            files_fixture_error = type(error).__name__
+            print(json.dumps({"filesFixtureReady": False, "failureClass": files_fixture_error,
+                              "mandatoryGateStillFailed": True, "allAssignedUITestsWillRun": True,
+                              "shardIndex": args.shard_index}), flush=True)
+
     video = output / "simulator.mp4"
     if video.exists():
         raise ValueError("Do not overwrite a previous recording")
@@ -148,6 +225,7 @@ def main() -> int:
             if recorder.poll() is not None:
                 recording_error = "Recorder exited before UI tests started"
             try:
+                test_started_at = int(time.time())
                 test_process = subprocess.Popen(command, stdout=test_log, stderr=subprocess.STDOUT)
                 test_exit = test_process.wait(timeout=test_timeout_seconds)
             except subprocess.TimeoutExpired:
@@ -173,6 +251,9 @@ def main() -> int:
                     recorder.kill()
                     recording_exit = recorder.wait(timeout=10)
 
+    if test_exit != 0:
+        record_movie_encoder_failure(args.udid, output, test_started_at)
+
     verifier = output / "verify-recording"
     try:
         subprocess.run(["xcrun", "swiftc", "-parse-as-library", str(pathlib.Path(__file__).with_name("VerifyRecording.swift")),
@@ -191,6 +272,9 @@ def main() -> int:
               "videoFixtureSeeded": (video_fixture_error is None) if requirements["video"] else None,
               "videoFixtureStatus": ("passed" if video_fixture_error is None else "failed") if requirements["video"] else "not_required",
               "videoFixtureFailureClass": video_fixture_error,
+              "filesFixtureReady": (files_fixture_error is None) if requirements["files"] else None,
+              "filesFixtureStatus": ("ready" if files_fixture_error is None else "failed") if requirements["files"] else "not_required",
+              "filesFixtureFailureClass": files_fixture_error,
               "fixtureRequirements": requirements}
     (output / "recording-status.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
@@ -198,7 +282,7 @@ def main() -> int:
         return test_exit if test_exit > 0 else 1
     if recording_error:
         return 3
-    return 4 if fixture_error or video_fixture_error else 0
+    return 4 if fixture_error or video_fixture_error or files_fixture_error else 0
 
 
 if __name__ == "__main__":

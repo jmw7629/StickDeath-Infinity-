@@ -9,8 +9,11 @@ import UniformTypeIdentifiers
 
 struct StudioView: View {
     @StateObject private var vm = StudioViewModel.shared
+    @State private var libraryPresentation = StudioLibraryPresentation()
     @Environment(\.dismiss) var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @ObservedObject private var roomAuth = AuthService.shared
     @EnvironmentObject private var authVM: AuthViewModel
     @State private var spatterExportRequest: (projectID: UUID, revision: Int, accountID: String?)?
     
@@ -27,10 +30,10 @@ struct StudioView: View {
     var body: some View {
         Group {
             if vm.isEditing { editorBody }
-            else { StudioProjectLibrary(vm: vm) }
+            else { StudioProjectLibrary(vm: vm, presentation: $libraryPresentation) }
         }
-        .confirmationDialog("Delete this frame's image?", isPresented: $showingBottomImageDeletion,
-            titleVisibility: .visible, presenting: bottomImageDeletion) { capture in
+        .alert("Delete this frame's image?", isPresented: $showingBottomImageDeletion,
+            presenting: bottomImageDeletion) { capture in
             Button("Delete image", role: .destructive) { _ = vm.deleteBottomImage(capture) }
             Button("Cancel", role: .cancel) { }
         } message: { _ in
@@ -42,6 +45,11 @@ struct StudioView: View {
             }
             await vm.loadProjects()
         }
+        .onAppear { updateRoomAvailability() }
+        .onChange(of: subjectWindowVisible) { _, _ in updateRoomAvailability() }
+        .onChange(of: roomAuth.userId) { _, _ in updateRoomAvailability() }
+        .onChange(of: roomAuth.isAuthenticated) { _, _ in updateRoomAvailability() }
+        .onChange(of: roomAuth.communityIdentityRevision) { _, _ in updateRoomAvailability() }
         .onChange(of: authVM.userId) { _ in
             vm.cancelMenuHandoff(); menuRequest = nil
             // Even switching away and back invalidates the original authority.
@@ -49,11 +57,26 @@ struct StudioView: View {
             bottomImageDeletion = nil; showingBottomImageDeletion = false
         }
         .onChange(of: scenePhase) { phase in
+            updateRoomAvailability()
             if phase != .active { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); BackgroundTaskScope.run("studio.flush") { await vm.flush() } }
         }
-        .onChange(of: vm.document.id) { _ in vm.cancelMenuHandoff(); menuRequest = nil }
-        .onChange(of: vm.isEditing) { editing in if !editing { vm.cancelMenuHandoff(); menuRequest = nil } }
-        .onDisappear { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); Task { await vm.flush() } }
+        .onChange(of: vm.document.id) { _ in
+            vm.cancelMenuHandoff(); menuRequest = nil
+            if let handoff = RoomSessionCoordinator.shared.handoff, handoff.projectID != vm.document.id {
+                RoomSessionCoordinator.shared.finishHandoff(); StudioRoomBridge.shared.stop()
+            }
+        }
+        .onChange(of: vm.isEditing) { editing in
+            if !editing {
+                vm.cancelMenuHandoff(); menuRequest = nil
+                RoomSessionCoordinator.shared.finishHandoff(); StudioRoomBridge.shared.stop()
+            } else { updateRoomAvailability() }
+        }
+        .onDisappear { StudioRoomBridge.shared.updateAvailability(foreground: false, visible: false); vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); Task { await vm.flush() } }
+    }
+    private func updateRoomAvailability() {
+        StudioRoomBridge.shared.updateAvailability(foreground: scenePhase == .active && UIApplication.shared.applicationState == .active,
+                                                   visible: subjectWindowVisible)
     }
 
     private var editorBody: some View {
@@ -181,14 +204,21 @@ struct StudioEditorWorkspace: View {
     var body: some View {
         GeometryReader { geometry in
             let compact = geometry.size.width > geometry.size.height && geometry.size.height < 500
+            // Keep the same timeline/audio owner and action row while reclaiming
+            // one row of height inside short landscape desktop windows.
+            let footerLayout = compact
+                ? AnyLayout(HStackLayout(spacing: 0))
+                : AnyLayout(VStackLayout(spacing: 0))
             VStack(spacing: 0) {
                 if vm.showToolbar {
                     StudioHeaderBar(vm: vm, onDismiss: onDismiss)
                 }
                 canvasStage(compactHeight: compact)
                 if vm.showToolbar {
-                    StudioTimeline(vm: vm)
-                    StudioBottomBar(vm: vm, onImageDelete: onImageDelete)
+                    footerLayout {
+                        StudioTimeline(vm: vm)
+                        StudioBottomBar(vm: vm, onImageDelete: onImageDelete)
+                    }
                 }
             }
             // The status banner floats over the stage so showing or clearing a
@@ -209,6 +239,17 @@ struct StudioEditorWorkspace: View {
                 vm.activePanel = .none
             }
         }
+        .onChange(of: vm.showToolbar) { _, isVisible in
+            guard !isVisible else { return }
+            dragOrigin = nil
+            selectedToolFrame = nil
+            // Keep an unfinished text draft reachable when Show Tools restores the editor.
+            if vm.activePanel == .toolSettings, vm.textDraft == nil { vm.activePanel = .none }
+        }
+        .onChange(of: vm.activePanel) { _, panel in
+            // A canvas Text tap or accessibility action can request the popup.
+            if panel == .toolSettings && !vm.showToolbar { vm.showToolbar = true }
+        }
     }
 
     private func canvasStage(compactHeight: Bool) -> some View {
@@ -216,41 +257,50 @@ struct StudioEditorWorkspace: View {
             let top: CGFloat = vm.showToolbar ? 0 : min(44, geometry.size.height)
             let bounds = CGRect(x: 0, y: top, width: geometry.size.width, height: max(0, geometry.size.height - top))
             let placement = toolbar.placement(in: bounds, compactHeight: compactHeight)
-            let railFrame = dragOrigin.map { toolbar.draggingFrame(from: $0, translation: dragTranslation, in: bounds) } ?? placement.frame
-            let popupFrame = StudioToolbarLayout.settingsFrame(in: bounds, toolbar: placement,
-                                                               anchor: dragOrigin == nil ? selectedToolFrame : nil)
-            let canvasFrame = StudioToolbarLayout.canvasFrame(in: bounds, toolbar: placement)
+            let canvasFrame = vm.showToolbar ? StudioToolbarLayout.canvasFrame(in: bounds, toolbar: placement) : bounds
             ZStack(alignment: .topLeading) {
                 StudioCanvasView(vm: vm)
                     .frame(width: canvasFrame.width, height: canvasFrame.height)
                     .position(x: canvasFrame.midX, y: canvasFrame.midY)
 
-                StudioToolStrip(vm: vm, axis: placement.vertical ? .vertical : .horizontal,
-                    handleGesture: AnyGesture(DragGesture(minimumDistance: 5, coordinateSpace: .named("studio.toolbar.stage"))
-                        .updating($dragTranslation) { value, state, _ in state = value.translation }
-                        .onChanged { _ in if dragOrigin == nil { dragOrigin = placement.frame } }
-                        .onEnded { value in
-                            let origin = dragOrigin ?? placement.frame
-                            toolbar.finishDrag(release: value.location,
-                                proposedCenter: CGPoint(x: origin.midX + value.translation.width, y: origin.midY + value.translation.height),
-                                in: bounds)
+                if vm.showToolbar {
+                    let railFrame = dragOrigin.map { toolbar.draggingFrame(from: $0, translation: dragTranslation, in: bounds) } ?? placement.frame
+                    StudioToolStrip(vm: vm, axis: placement.vertical ? .vertical : .horizontal,
+                        handleGesture: AnyGesture(DragGesture(minimumDistance: 5, coordinateSpace: .named("studio.toolbar.stage"))
+                            .updating($dragTranslation) { value, state, _ in state = value.translation }
+                            .onChanged { _ in
+                                if vm.showToolbar && dragOrigin == nil { dragOrigin = placement.frame }
+                            }
+                            .onEnded { value in
+                                guard vm.showToolbar, let origin = dragOrigin else { return }
+                                toolbar.finishDrag(release: value.location,
+                                    proposedCenter: CGPoint(x: origin.midX + value.translation.width, y: origin.midY + value.translation.height),
+                                    in: bounds)
+                                dragOrigin = nil
+                            }),
+                        onDock: { dock in
+                            guard vm.showToolbar else { return }
+                            toolbar.choose(dock, in: bounds)
                             dragOrigin = nil
-                        }),
-                    onDock: { dock in toolbar.choose(dock, in: bounds); dragOrigin = nil })
-                    .frame(width: railFrame.width, height: railFrame.height)
-                    .position(x: railFrame.midX, y: railFrame.midY)
-                    .onPreferenceChange(StudioSelectedToolFrameKey.self) { frame in
-                        // The rail clips scrolled-out tools; only a button that still
-                        // overlaps the visible rail anchors the popup.
-                        selectedToolFrame = frame.flatMap { $0.intersects(railFrame) ? $0 : nil }
-                    }
+                        })
+                        .frame(width: railFrame.width, height: railFrame.height)
+                        .position(x: railFrame.midX, y: railFrame.midY)
+                        .onPreferenceChange(StudioSelectedToolFrameKey.self) { frame in
+                            guard vm.showToolbar else { return }
+                            // The rail clips scrolled-out tools; only a button that still
+                            // overlaps the visible rail anchors the popup.
+                            selectedToolFrame = frame.flatMap { $0.intersects(railFrame) ? $0 : nil }
+                        }
 
-                if vm.activePanel == .toolSettings && FloatingToolSettingsPanel.hasSettings(vm.selectedTool) {
-                    FloatingToolSettingsPanel(vm: vm,
-                        alignToBottom: !placement.vertical && popupFrame.maxY <= placement.frame.minY)
-                        .frame(width: popupFrame.width, height: popupFrame.height)
-                        .position(x: popupFrame.midX, y: popupFrame.midY)
-                        .transition(.opacity)
+                    if vm.activePanel == .toolSettings && FloatingToolSettingsPanel.hasSettings(vm.selectedTool) {
+                        let popupFrame = StudioToolbarLayout.settingsFrame(in: bounds, toolbar: placement,
+                                                                           anchor: dragOrigin == nil ? selectedToolFrame : nil)
+                        FloatingToolSettingsPanel(vm: vm,
+                            alignToBottom: !placement.vertical && popupFrame.maxY <= placement.frame.minY)
+                            .frame(width: popupFrame.width, height: popupFrame.height)
+                            .position(x: popupFrame.midX, y: popupFrame.midY)
+                            .transition(.opacity)
+                    }
                 }
             }
             .coordinateSpace(name: "studio.toolbar.stage")
@@ -345,14 +395,14 @@ struct StudioBottomBar: View {
                 ZStack(alignment: .topTrailing) {
                     VStack(spacing: 2) {
                         Image(systemName: "square.3.layers.3d")
-                            .font(.system(size: 14))
+                            .font(.system(size: 19, weight: .semibold))
                         Text("LAYER")
-                            .font(.specialElite(7)).fontWeight(.bold)
+                            .font(.specialElite(9.5)).fontWeight(.bold)
                     }
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(.white.opacity(0.95))
                     
                     Text("\(vm.studioLayers.count)")
-                        .font(.specialElite(7)).fontWeight(.bold)
+                        .font(.specialElite(9.5)).fontWeight(.bold)
                         .foregroundColor(.white)
                         .padding(2)
                         .background(Color.red)
@@ -381,11 +431,11 @@ struct BottomBarButton: View {
         Button(action: action) {
             VStack(spacing: 2) {
                 Image(systemName: icon)
-                    .font(.system(size: 14))
+                    .font(.system(size: 19, weight: .semibold))
                 Text(label)
-                    .font(.specialElite(7)).fontWeight(.bold)
+                    .font(.specialElite(9.5)).fontWeight(.bold)
             }
-            .foregroundColor(enabled ? .white.opacity(0.5) : .white.opacity(0.2))
+            .foregroundColor(enabled ? .white.opacity(0.95) : .white.opacity(0.45))
             .frame(maxWidth: .infinity, minHeight: 44)
             .contentShape(Rectangle())
         }
@@ -648,69 +698,114 @@ struct StudioMenuSheet: View {
     
     var body: some View {
         ZStack {
-            Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            ScrollView {
+            StudioMenuDesktopStyle.paper.ignoresSafeArea()
+
             VStack(spacing: 0) {
-                // Drag handle
-                HStack {
-                    Spacer()
-                    RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.2)).frame(width: 36, height: 4)
-                    Spacer()
-                }.frame(height: 44).overlay(alignment: .trailing) {
-                    Button(action: { dismiss() }) { Image(systemName: "xmark").frame(width: 44, height: 44) }
-                        .accessibilityLabel("Close Studio menu").accessibilityIdentifier("studio.menu.close")
+                HStack(spacing: 8) {
+                    StudioMenuTitleStripes().frame(width: 24, height: 24).accessibilityHidden(true)
+                    Text("STUDIO DESK")
+                        .font(.specialElite(15, relativeTo: .headline))
+                        .foregroundStyle(StudioMenuDesktopStyle.ink)
+                    StudioMenuTitleStripes().frame(maxWidth: .infinity).frame(height: 24).accessibilityHidden(true)
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(StudioMenuDesktopStyle.ink)
+                    .accessibilityLabel("Close Studio menu").accessibilityIdentifier("studio.menu.close")
                 }
-                
+                .padding(.horizontal, 12)
+                .overlay(alignment: .bottom) { Rectangle().fill(StudioMenuDesktopStyle.ink).frame(height: 2) }
+
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(vm.projectName).font(.specialElite(13, relativeTo: .body)).lineLimit(2)
+                    Spacer(minLength: 4)
+                    Text("\(vm.document.width) × \(vm.document.height) · \(vm.fps) FPS")
+                        .font(.specialElite(10, relativeTo: .caption)).multilineTextAlignment(.trailing)
+                }
+                .foregroundStyle(StudioMenuDesktopStyle.ink)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+
+                ScrollView {
+            VStack(spacing: 0) {
                 // PROJECT section
                 SectionLabel(text: "PROJECT")
                 
-                MenuSheetRow(icon: "⚙️", label: "Project Settings") {
+                MenuSheetRow(icon: "gearshape", label: "Project Settings") {
                     onNavigate(.projectSettings)
                 }
                 
-                Divider().background(Color.white.opacity(0.06)).padding(.horizontal, 16)
+                Rectangle().fill(StudioMenuDesktopStyle.ink.opacity(0.25)).frame(height: 1).padding(.horizontal, 16)
                 
                 // TOOLS section
                 SectionLabel(text: "TOOLS")
                 
-                MenuSheetRow(icon: "🎬", label: "Frames Viewer") {
+                MenuSheetRow(icon: "film.stack", label: "Frames Viewer") {
                     onNavigate(.framesViewer)
                 }
                 
-                MenuSheetToggleRow(icon: "🧅", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin, onEdit: { showingOnionSettings.toggle() })
-                if showingOnionSettings { StudioOnionSettingsControls(vm: vm) }
-                MenuSheetToggleRow(icon: "📐", label: "Grid", hasEdit: true, isOn: $vm.gridEnabled, onEdit: { showingGridSettings.toggle() })
-                if showingGridSettings { StudioGridSettingsControls(vm: vm) }
-                
-                MenuSheetRow(icon: "✨", label: "Magic Cut") {
+                MenuSheetToggleRow(icon: "square.stack.3d.up", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin, onEdit: { showingOnionSettings.toggle() })
+                if showingOnionSettings {
+                    StudioOnionSettingsControls(vm: vm)
+                        .padding(.vertical, 8).background(Color(hex: "0E0E10"))
+                }
+                MenuSheetToggleRow(icon: "square.grid.3x3", label: "Grid", hasEdit: true, isOn: $vm.gridEnabled, onEdit: { showingGridSettings.toggle() })
+                if showingGridSettings {
+                    StudioGridSettingsControls(vm: vm)
+                        .padding(.vertical, 8).background(Color(hex: "0E0E10"))
+                }
+
+                MenuSheetRow(icon: "wand.and.stars", label: "Magic Cut") {
                     onNavigate(.magicCut)
                 }
                 
-                MenuSheetRow(icon: "🖼️", label: "Background Library") {
+                MenuSheetRow(icon: "photo.on.rectangle", label: "Background Library") {
                     onNavigate(.backgroundLibrary)
                 }
                 
-                MenuSheetRow(icon: "🎬", label: "Rotoscope / Video") {
+                MenuSheetRow(icon: "film", label: "Rotoscope / Video") {
                     onNavigate(.rotoscope)
                 }
                 
-                MenuSheetRow(icon: "🖼️", label: "Add Picture") {
+                MenuSheetRow(icon: "photo.badge.plus", label: "Add Picture") {
                     onNavigate(.addImage)
                 }
                 
-                MenuSheetRow(icon: "🗣️", label: "Voice Maker") {
+                MenuSheetRow(icon: "waveform", label: "Voice Maker") {
                     onNavigate(.aiVoice)
                 }
                 
-                MenuSheetRow(icon: "🎨", label: "Spatter AI", accent: true) {
+                MenuSheetRow(icon: "paintbrush.pointed", label: "Spatter AI", accent: true) {
                     onNavigate(.spatterAI)
                 }
                 .accessibilityIdentifier("studio.spatter.open")
                 
-                Spacer()
+                Spacer(minLength: 16)
             }
             }.accessibilityIdentifier("studio.menu.scroll")
+            }
+        }
+    }
+}
+
+private enum StudioMenuDesktopStyle {
+    static let paper = Color(hex: "EFEAE0")
+    static let ink = Color(hex: "101011")
+    static let accent = Color(hex: "A4121A")
+}
+
+private struct StudioMenuTitleStripes: View {
+    var body: some View {
+        Canvas { context, size in
+            var lines = Path()
+            for y in stride(from: CGFloat(2), through: size.height, by: CGFloat(4)) {
+                lines.move(to: CGPoint(x: 0, y: y))
+                lines.addLine(to: CGPoint(x: size.width, y: y))
+            }
+            context.stroke(lines, with: .color(StudioMenuDesktopStyle.ink), lineWidth: 1)
         }
     }
 }
@@ -719,8 +814,8 @@ struct SectionLabel: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(.specialElite(10)).fontWeight(.bold)
-            .foregroundColor(.white.opacity(0.3))
+            .font(.specialElite(10, relativeTo: .caption)).fontWeight(.bold)
+            .foregroundColor(StudioMenuDesktopStyle.ink.opacity(0.65))
             .tracking(2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
@@ -738,18 +833,23 @@ struct MenuSheetRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Text(icon).font(.system(size: 18))
+                Image(systemName: icon).font(.system(size: 18)).frame(width: 24).accessibilityHidden(true)
                 Text(label)
-                    .font(.specialElite(14))
-                    .foregroundColor(accent ? .red : .white)
+                    .font(.specialElite(14, relativeTo: .body))
+                    .foregroundColor(accent ? StudioMenuDesktopStyle.accent : StudioMenuDesktopStyle.ink)
                 Spacer()
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.2))
+                    .foregroundColor(StudioMenuDesktopStyle.ink.opacity(0.5))
             }
+            .foregroundStyle(StudioMenuDesktopStyle.ink)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 }
 
@@ -762,18 +862,19 @@ struct MenuSheetToggleRow: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            Text(icon).font(.system(size: 18))
+            Image(systemName: icon).font(.system(size: 18)).frame(width: 24)
+                .foregroundStyle(StudioMenuDesktopStyle.ink).accessibilityHidden(true)
             Text(label)
-                .font(.specialElite(14))
-                .foregroundColor(.white)
+                .font(.specialElite(14, relativeTo: .body))
+                .foregroundColor(StudioMenuDesktopStyle.ink)
             Spacer()
             if hasEdit, let onEdit {
                 Button("Edit", action: onEdit)
                     .frame(minWidth: 44, minHeight: 44)
                     .accessibilityLabel("Edit " + label)
                     .accessibilityIdentifier("studio.menu.edit." + label.lowercased())
-                    .font(.specialElite(12)).fontWeight(.bold)
-                    .foregroundColor(.red)
+                    .font(.specialElite(12, relativeTo: .callout)).fontWeight(.bold)
+                    .foregroundColor(StudioMenuDesktopStyle.accent)
             }
             Toggle(label, isOn: $isOn)
                 .labelsHidden()

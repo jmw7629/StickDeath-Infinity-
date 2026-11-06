@@ -795,6 +795,7 @@ private final class NetworkTrap: URLProtocol {
                 if SpatterImageRotationInstruction.isInstruction(text) { hits.append("imageRotation") }
                 if SpatterImageCropInstruction.isInstruction(text) { hits.append("imageCrop") }
                 if SpatterImagePlacementInstruction.isInstruction(text) { hits.append("imagePlacement") }
+                if SpatterTextCreateInstruction.isInstruction(text) { hits.append("textCreate") }
                 if SpatterTextUpdateInstruction.isInstruction(text) { hits.append("textUpdate") }
                 if SpatterImageReflectionInstruction.isInstruction(text) { hits.append("imageReflection") }
                 if SpatterAudioTrackInstruction.isInstruction(text) { hits.append("audioTrack") }
@@ -803,7 +804,7 @@ private final class NetworkTrap: URLProtocol {
                 return hits
             }
             for grammar in SpatterInstructionCatalog.grammars where ["selectionTranslate", "selectionTransform", "selectionReflect",
-                "imageRotation", "imageCrop", "imagePlacement", "textUpdate", "imageReflection", "audioTrack"].contains(grammar.name) {
+                "imageRotation", "imageCrop", "imagePlacement", "textCreate", "textUpdate", "imageReflection", "audioTrack"].contains(grammar.name) {
                 for example in grammar.examples {
                     try require(classifiers(example) == [grammar.name], "Catalog example \(example) classified as \(classifiers(example))")
                 }
@@ -814,7 +815,7 @@ private final class NetworkTrap: URLProtocol {
                     try require(SpatterInstructionRouter.classify(example)?.rawValue == grammar.name, "Router classified \(grammar.name) example as \(String(describing: SpatterInstructionRouter.classify(example)))")
                 }
             }
-            try require(SpatterInstructionCatalog.grammars.count == 44 && SpatterInstructionCatalog.version == 5, "Catalog size drifted")
+            try require(SpatterInstructionCatalog.grammars.count == 52 && SpatterInstructionCatalog.version == 14 && SpatterInstructionCatalog.names.contains("artworkTransform") && SpatterInstructionCatalog.commandNames.contains("transformSelectedArtwork"), "Catalog size drifted")
             try require(try SpatterTweenInstruction.parse(SpatterTweenInstruction.example) == .init(inbetweens: 4, firstFrame: 1, easing: .easeInOut), "Tween capture wrong")
             try require(try SpatterProjectSettingsInstruction.parse(SpatterProjectSettingsInstruction.bothExample) == .init(width: 640, height: 480, fps: 24), "Settings capture wrong")
             try require(try SpatterBrushStrokeInstruction.parse(SpatterBrushStrokeInstruction.gradientExample).endColor == "#0000FF", "Gradient end color lost")

@@ -1,0 +1,139 @@
+name: SDI Android Room Storage
+on:
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'Tests/SDIFixtures/**'
+      - '.github/workflows/android-room-storage.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sdi-android-room-storage-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  room-project-storage:
+    # Standard public-repository runner only; no larger/paid runner fallback.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record exact source and fixture identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          sha256sum android/app/src/androidTest/java/com/stickdeath/studio/RoomProjectImportTest.kt
+          python3 -I Tests/SDIFixtures/verify_fixtures.py
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@07d1f8453baaff67fb503883367f8b13e6158a54
+        with:
+          gradle-version: '8.9'
+          cache-provider: basic
+          cache-disabled: true
+      - name: Enable the ephemeral runner's KVM device
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Run real Android project-store and optional-image cases
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          cores: 2
+          ram-size: 2048M
+          disk-size: 3G
+          avd-name: sdi-room-store
+          emulator-boot-timeout: 300
+          disable-linux-hw-accel: false
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none
+          # The action invokes each script line through sh. Keep this sequence
+          # in one explicit Bash process so failure and shell options are real.
+          script: |
+            bash -euo pipefail -c 'test -n "${ANDROID_HOME:-}"; "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;34.0.0"; timeout 18m gradle --project-dir android --no-daemon --max-workers=2 --console=plain :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.stickdeath.studio.RoomProjectImportTest,com.stickdeath.studio.OptionalImagePacksTest'
+      - name: Require six storage and ten optional-image cases with bounded results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, subprocess, xml.etree.ElementTree as ET
+          expected = {
+              'completeManagedBackupImportsFreshReopensByteIdenticalAndReceiptRetryReusesCopy',
+              'corruptForeignCancelledAndCollidingImportsNeverOverwriteAnExistingProject',
+              'initialLedgerSyncOrUnpublishedRenameFailureStopsBeforeAnyProjectCommit',
+              'interruptedOwnedStagingAndPublishedCopiesConvergeOnOneIdIncludingCancellation',
+              'stagedRetryNeverOverwritesUnknownFinalOrAtomicFileRecoveryEntries',
+              'mixedCaseSwiftProjectReferenceStillImportsTheExistingVectorSubsetLosslessly',
+          }
+          expected_images = {
+              'canonicalDescriptorsRetainSixPacksAndAllBundledImages',
+              'realPinnedPackPublishesReopensImportsAndRemovalPreservesProjectCopy',
+              'croppedPNGAndSelfConsistentReceiptCannotClaimVerifiedWrongPixelsOrDimensions',
+              'foreignFileAddedAfterVerificationIsNeverAdoptedOrDeletedByRemoval',
+              'changedArchiveNeverPublishesOrDeletesExistingData',
+              'cancellationAfterActualImageWriteRemovesOnlyOwnedStage',
+              'replacementOfCacheBeforeCommitPreservesForeignTree',
+              'symlinkedCacheIsRefusedWithoutFollowingOrDeletingTarget',
+              'signedPublisherRouteRejectsForeignExpiredAndExpandedScope',
+              'rawPremultipliedRGBAContractPreservesPartialAlpha',
+          }
+          root = Path('android/app/build/outputs/androidTest-results/connected')
+          reports = sorted(root.rglob('TEST-*.xml'))
+          assert 0 < len(reports) <= 8, 'Actual Android test reports missing'
+          cases = []
+          image_cases = []
+          total = 0
+          for report in reports:
+              raw = report.read_bytes()
+              total += len(raw)
+              assert total <= 1024 * 1024, 'Android reports exceed bound'
+              for case in ET.fromstring(raw).iter('testcase'):
+                  classname = case.attrib.get('classname')
+                  if classname == 'com.stickdeath.studio.RoomProjectImportTest':
+                      selected = cases
+                  elif classname == 'com.stickdeath.studio.OptionalImagePacksTest':
+                      selected = image_cases
+                  else:
+                      continue
+                  selected.append({
+                      'name': case.attrib['name'],
+                      'seconds': float(case.attrib.get('time', '0')),
+                      'failed': case.find('failure') is not None or case.find('error') is not None,
+                      'skipped': case.find('skipped') is not None,
+                  })
+          result = {
+              'source': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'deviceScope': 'API35 x86_64 AOSP emulator; actual app-private storage',
+              'expected': sorted(expected),
+              'actual': cases,
+              'liveBackendVerified': False,
+              'UIJourneyVerified': False,
+          }
+          print('SDI_ROOM_STORAGE_RESULT=' + json.dumps(result, sort_keys=True))
+          assert len(cases) == 6 and {c['name'] for c in cases} == expected, 'Missing or repeated storage case'
+          assert not any(c['failed'] or c['skipped'] for c in cases), 'Storage case failed or skipped'
+          image_result = {
+              'source': result['source'],
+              'deviceScope': 'API35 x86_64 AOSP emulator; actual Android codecs/private storage/JNI',
+              'expected': sorted(expected_images),
+              'actual': image_cases,
+              'livePublisherVerified': False,
+              'UIJourneyVerified': False,
+          }
+          print('SDI_OPTIONAL_IMAGE_PACKS_RESULT=' + json.dumps(image_result, sort_keys=True))
+          assert len(image_cases) == 10 and {c['name'] for c in image_cases} == expected_images, 'Missing or repeated optional-image case'
+          assert not any(c['failed'] or c['skipped'] for c in image_cases), 'Optional-image case failed or skipped'
+          PY

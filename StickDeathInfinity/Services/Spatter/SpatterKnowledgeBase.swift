@@ -1997,7 +1997,7 @@ struct SpatterInstructionGrammar: Equatable {
 }
 
 enum SpatterInstructionCatalog {
-    static let version = 5
+    static let version = 14
     static let grammars: [SpatterInstructionGrammar] = [
         .init(name: "multiClauseBrief", examples: ["A red stick figure walks left to right for 1 second, then punches, then falls; 3 seconds.",
                                                    "A red stick figure runs left to right, then kicks; a blue stick figure ducks, then jumps; 2.5 seconds.",
@@ -2010,6 +2010,23 @@ enum SpatterInstructionCatalog {
               commands: ["copyFrame", "pasteFrame"], summary: "Copy a frame to the frame clipboard and/or paste an editable copy after a frame."),
         .init(name: "projectSettings", examples: ["Set project size to 640 by 480 pixels.", "Set project frame rate to 24 FPS.", "Set project size to 640 by 480 pixels at 24 FPS."],
               commands: ["updateProjectSettings"], summary: "Canvas size 16–4096 px and frame rate 1–60 FPS; artwork coordinates are kept."),
+        .init(name: "pixelEffect", examples: ["Apply smudge along (20%, 40%), (50%, 50%), (80%, 60%), size 24 px, strength 50%, opacity 80%.",
+            "Apply blur along (20%, 40%), (80%, 60%), size 32 px, hardness 50%, radius 4 px, strength 80%.",
+            "Apply sharpen along (20%, 40%), (80%, 60%), size 32 px, hardness 50%, radius 2 px, amount 100%, threshold 2%, opacity 80%.",
+            "Apply dodge along (20%, 40%), (80%, 60%), size 32 px, hardness 50%, exposure 25%, range midtones, protect tones on, opacity 80%.",
+            "Apply burn along (20%, 40%), (80%, 60%), size 32 px, hardness 50%, exposure 25%, range midtones, protect tones on, opacity 80%."],
+              commands: ["commitPixelEffect"], summary: "One editable native Smudge/Blur/Sharpen/Dodge/Burn gesture with explicit 2–32-point geometry and tagged tool-specific settings. Changes existing pixels through the same touch factories/engine/selection coverage; real no-op detection and one Undo; visible Free layer required."),
+        .init(name: "gradientFill", examples: ["Apply a linear gradient from (10%, 20%) to (90%, 80%) in #FF0000 to #0000FF, opacity 80%, interpolation linear-light, dither on.",
+            "Apply a radial gradient from (50%, 50%) to (80%, 50%) in #FF0000 to transparent, opacity 70%, interpolation sRGB, dither off."],
+              commands: ["commitGradient"], summary: "Editable native canvas Gradient (not a brush): explicit linear/radial geometry, colors or transparent fade, opacity, interpolation and dither. Uses current drawing/Wand coverage or the full active Free layer; real pixel change, one Undo; no remembered settings changed."),
+        .init(name: "librarySound", examples: ["Add library sound 65535d26ae55af5319a98c0ea3acf56b5d2e8bafe847beceb81d54ec1ca6ef39 to track 2 at 0 seconds."],
+              commands: ["attachImportedAudio"], summary: "Verify a licensed bundled sound by its catalogue SHA-256 ID, then attach its real audio bytes to track 1–4 at an explicit time, as one Undo step. No URL/path import or cloud request."),
+        .init(name: "shape", examples: ["Draw a line from (10%, 20%) to (90%, 70%) in #FF0000, size 6 px, opacity 100%.",
+                                        "Draw a rectangle from (20%, 20%) to (80%, 70%) in #000000, size 3 px, opacity 100%, fill #FF0000, radius 8 px.",
+                                        "Draw a circle centered at (50%, 50%), radius 20 px, in #000000, size 3 px, opacity 100%, fill #FF0000."],
+              commands: ["draw"], summary: "One editable line, rectangle or true circle on the active frame/layer, with explicit geometry, color, size and opacity; optional rectangle/circle fill and rectangle corner radius. No new frames."),
+        .init(name: "freehandStroke", examples: SpatterFreehandInstruction.tools.map { SpatterFreehandInstruction.example($0) },
+              commands: ["draw"], summary: "One editable native Pencil/Pen/Marker/Crayon stroke along an explicit 2–32-point canvas path. Family, smoothing, color, size and opacity are explicit; rough pen texture, grain texture/grain or calligraphy angle are validated by family. Uses the manual touch capture/brush engine; no live tool preferences, pressure/tilt, mirror or ruler state."),
         .init(name: "brushStroke", examples: ["Draw a round brush line from (10%, 20%) to (90%, 20%) in #000000, size 6 px, opacity 100%.",
                                               "Draw a gradient brush line from (10%, 40%) to (90%, 40%) in #FF0000 to #0000FF, size 8 px, opacity 100%."],
               commands: ["draw"], summary: "One straight stroke on the active frame/layer in any brush family (round, stipple, grain, rough pen, calligraphy, dip pen, halftone, hatch right/left, gradient, airbrush, watercolor, neon)."),
@@ -2047,6 +2064,8 @@ enum SpatterInstructionCatalog {
               commands: ["eraseSelectedElements"], summary: "Straight-path erasure masks on selected drawings."),
         .init(name: "drawingDuplicate", examples: ["Duplicate selected drawings."], commands: ["duplicateElements"], summary: "Editable copies of the selected drawings."),
         .init(name: "artworkOrder", examples: ["Bring selected artwork forward.", "Send selected artwork backward."], commands: ["orderSelectedArtwork"], summary: "Reorder selected drawings, an image or mixed artwork within layers."),
+        .init(name: "artworkTransform", examples: SpatterArtworkTransformInstruction.examples,
+              commands: ["transformSelectedArtwork"], summary: "Move, uniformly scale, rotate or flip an explicit whole-object selection: drawings, one image, or mixed artwork. Uses the manual group transaction and one Undo; pixel-region/Wand selections are refused."),
         .init(name: "selectionTranslate", examples: ["Move selected drawings by (10%, -5%)."], commands: ["translateElements"], summary: "Move the selected drawings by canvas percentages."),
         .init(name: "selectionTransform", examples: ["Scale selected drawings to 150% and rotate 45 degrees.", "Scale selected drawings to 50%.", "Rotate selected drawings 90 degrees."],
               commands: ["transformElements"], summary: "Scale 10–1,000% and/or rotate −180…180° around the selection center."),
@@ -2056,6 +2075,7 @@ enum SpatterInstructionCatalog {
         .init(name: "imageCrop", examples: ["Crop selected image to (10%, 10%, 80%, 80%)."], commands: ["cropImage"], summary: "Crop the selected image to a source rectangle (x, y, width, height percentages)."),
         .init(name: "imagePlacement", examples: ["Place selected image at (10%, 20%) with size (40%, 30%).", "Place selected image at (10%, 20%) with size (40%, 30%) and angle 25 degrees."],
               commands: ["updateImagePlacement"], summary: "Position, size and angle of the selected image in canvas percentages."),
+        .init(name: "textCreate", examples: ["Create text \"SDI\" at (12.5%, 25%), box 96 by 48 px, font Special Elite, size 24 px, color #FF0000, opacity 100%.", "Create text \"SDI\\nSTUDIO\" at (12.5%, 25%), box 96 by 48 px, font monospaced, size 16 px, color #0000FF, opacity 80%, align center, bold on, italic off, rotation 10 degrees."], commands: ["draw"], summary: "Create one native editable text box on the active Free layer: explicit canvas origin, box pixels, font, size, color and opacity; optional alignment, bold, italic and rotation use Text defaults. JSON-escaped quoted content stays literal; one Undo. The entire rotated box must fit the canvas; no remembered tool settings change."),
         .init(name: "textUpdate", examples: ["Set selected text to \"Hello\".", "Set selected text to \"Hello\" in #FF0000."], commands: ["updateText"], summary: "Replace the selected text box's content and optionally its color."),
         .init(name: "audioClip", examples: ["Set selected audio clip volume to 40%.", "Mute selected audio clip.", "Unmute selected audio clip.", "Fade selected audio clip in over 0.05 seconds and out over 0.10 seconds.", "Clear selected audio clip fades.", "Move selected audio clip to 1.25 seconds on track 2.", "Trim selected audio clip from source 0.10 seconds for 0.50 seconds.", "Duplicate selected audio clip.", "Repeat selected audio clip with 4 additional copies.", "Split selected audio clip at 0.5 timeline seconds.", "Delete selected audio clip."],
               commands: ["updateAudioClip", "duplicateAudioClip", "splitAudioClip", "deleteAudioClip"], summary: "Selected clip volume, mute, linear fades, placement, trim, duplicate, repeat, split and delete."),
@@ -2063,8 +2083,8 @@ enum SpatterInstructionCatalog {
               commands: ["updateAudioTrack"], summary: "Track 1–4 volume, mute, pan L100–R100 and solo."),
         .init(name: "fill", examples: ["Fill at (50%, 50%) with #FF0000.", "Fill at (25%, 75%) with #00FF00, opacity 80%, tolerance 16, all layers."],
               commands: ["fillAtPoint"], summary: "Bucket fill on the active frame and layer at a canvas point given in percent, with #RRGGBB color, opacity 0–100%, tolerance 0–128 and active-layer or all-layer sampling. Studio's Fill tool computes the region."),
-        .init(name: "selectByID", examples: ["Select drawings \"stroke-1\", \"stroke-2\".", "Clear drawing selection."],
-              commands: ["selectElements"], summary: "Select 1–64 drawings on the active frame by their quoted IDs, or clear the drawing selection. Selection never changes the project."),
+        .init(name: "selectByID", examples: ["Select drawings \"stroke-1\", \"stroke-2\".", "Clear drawing selection.", "Select all drawings.", "Invert drawing selection."],
+              commands: ["selectElements"], summary: "Select 1–64 drawings on the active frame by quoted ID, or clear selection. All and Invert use Lasso's visible Free-layer, nontransparent, non-eraser, on-canvas drawings; clear image/Wand selections first. At most 64 resulting drawings; use native Lasso for more. All/Invert require live Studio outside batches. Selection changes no project, save or Undo history."),
         .init(name: "sourceReference", examples: ["Record source https://example.com/reference-clip as licensed reference.", "Record source https://example.com/reference-clip as creator-confirmed reference with note \"Permission email 2026-10-07\".", "Clear source reference."],
               commands: ["setSourceReference"], summary: "Record an https reference source with its rights basis (licensed, owner-authorized, creator-confirmed or unknown) and time, or clear it. Nothing is downloaded; with a source recorded, only 20–60 s briefs on an allowed basis generate."),
         // Catalog v5 (#204): Lasso and Wand selection, Image Library pictures and direct export.
@@ -2074,6 +2094,9 @@ enum SpatterInstructionCatalog {
               commands: ["selectElements"], summary: "Run the Wand on the active drawing layer at a canvas point (tolerance 0–128, active-layer or all-layer sampling, no feather) and select the drawings its color region touches. Effects then use those drawings' own pixels. Selection never changes the project."),
         .init(name: "libraryPicture", examples: ["Add library picture \"Cloud A\".", "Add library picture \"kenney.scribble-platformer.effect_blast\"."],
               commands: ["attachImportedImage"], summary: "Add one bundled Image Library picture, by its unique title or ID, to the active frame on a new layer behind the drawings, with verified bytes and its CC0 license record, in one Undo step. Files, Photos and links stay in Add Picture; no picker opens."),
+        .init(name: "imagePack", examples: SpatterImagePackInstruction.Action.allCases.map { SpatterImagePackInstruction.example($0) },
+              commands: ["verifyImagePack", "installImagePack", "removeImagePack", "cancelImagePack"],
+              summary: "Explicit Check/Install/Remove/Cancel for one of six release-pinned optional image pack IDs. Shared manual/Spatter owner, real verification and cancellation receipts. Library copies only: no project edits, Undo, automatic adding, URLs or provider-prose execution."),
         .init(name: "projectExport", examples: ["Export project as MP4.", "Export project as GIF."],
               commands: ["directMovieExport", "directGIFExport"], summary: "Start Studio's direct MP4 or GIF export of the saved current revision to a file on this device. The project does not change, and nothing is uploaded, shared or published.")
     ]

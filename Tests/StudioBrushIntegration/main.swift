@@ -392,6 +392,27 @@ private func rejects(_ operation: () throws -> Void) throws {
                         "Rejected brush mutated document or discarded draft")
             try require(!vm.commandScreenContext.canApplyCommands, "Pending draft still advertises command availability")
             try rejects { try vm.applyStudioCommands(Data()) }
+            let otherFrameIndex = vm.frames.firstIndex { $0.id != prior.activeFrameID }
+            let otherLayerIndex = vm.layers.firstIndex { $0.id != prior.activeLayerID }
+            try require(otherFrameIndex != nil && otherLayerIndex != nil, "Rejected-draft fixture needs distinct frame and layer targets")
+            let blockedDraftActions: [(String, () -> Void)] = [
+                ("delete captured frame", { vm.deleteFrame(prior.activeFrameID) }),
+                ("undo", { vm.undo() }),
+                ("add frame", { vm.addFrame() }),
+                ("lock captured layer", { vm.setLayerLockMode(prior.activeLayerID, mode: .full) }),
+                ("select another frame", { vm.currentFrameIndex = otherFrameIndex! }),
+                ("select another layer", { vm.currentLayerIndex = otherLayerIndex! }),
+                ("start playback", { vm.togglePlayback() })
+            ]
+            for (name, action) in blockedDraftActions {
+                vm.message = nil
+                action()
+                try require(vm.document == prior && !vm.isPlaying && vm.pendingBrushStroke?.element == invalid
+                    && vm.pendingBrushStroke?.frameID == prior.activeFrameID,
+                    "Manual action changed a rejected draft's original context: \(name)")
+                try require(vm.message?.contains("Retry or discard") == true,
+                    "Blocked manual action did not explain how to recover the rejected draft: \(name)")
+            }
             await vm.backToProjects(); try require(vm.isEditing && vm.pendingBrushStroke != nil, "Leaving discarded pending draft")
             let pendingSave = await vm.save(); try require(!pendingSave && vm.isDirty, "Save falsely claimed rejected draft persisted")
             vm.strokeWidth = 8; vm.brushFamily = .round; vm.retryRejectedBrush()
@@ -402,6 +423,78 @@ private func rejects(_ operation: () throws -> Void) throws {
             vm.retryRejectedBrush(); try require(vm.pendingBrushStroke != nil, "Incomplete rejected capture was silently committed")
             vm.discardRejectedBrush(); try require(vm.pendingBrushStroke == nil, "Explicit discard failed")
             print("PASS rejected draft retry/undo/explicit discard and save/close/command gates")
+
+            let recoveryStorage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("draft-recovery-documents"),
+                cachesDirectory: root.appendingPathComponent("draft-recovery-cache"))
+            let recoveryVM = StudioViewModel(storage: recoveryStorage)
+            let recoveryCreated = await recoveryVM.createProject(name: "Explicit draft recovery", width: 64, height: 64, fps: 12)
+            try require(recoveryCreated, "Rejected-draft recovery project creation failed")
+            recoveryVM.addLayer(); recoveryVM.addFrame()
+            let recoveryLayerID = recoveryVM.activeLayerID, recoveryFrameID = recoveryVM.currentFrame.id
+            guard let unrelatedLayerID = recoveryVM.layers.first(where: { $0.id != recoveryLayerID })?.id else {
+                throw Failure(message: "Recovery fixture needs a distinct unrelated layer")
+            }
+            recoveryVM.setLayerLockMode(unrelatedLayerID, mode: .full)
+            recoveryVM.setLayerLockMode(recoveryLayerID, mode: .alpha)
+            recoveryVM.setLayerOpacity(recoveryLayerID, opacity: 0)
+            let recoveryLocked = recoveryVM.document
+            let recoveryStroke = stroke(recoveryLayerID, id: "retained-alpha-recovery", width: 8)
+            try require(recoveryVM.beginStrokeInput(id: recoveryStroke.id), "Recovery stroke did not acquire real input ownership")
+            try require(!recoveryVM.commitElement(recoveryStroke, frameID: recoveryFrameID)
+                && recoveryVM.pendingBrushStroke?.element == recoveryStroke && recoveryVM.document == recoveryLocked,
+                "Valid stroke was not retained after rejection by its Alpha-locked zero-opacity layer")
+            recoveryVM.message = nil
+            recoveryVM.setLayerLockMode(recoveryLayerID, mode: .free)
+            try require(recoveryVM.document == recoveryLocked && recoveryVM.activeStrokeID == recoveryStroke.id
+                && recoveryVM.pendingBrushStroke?.element == recoveryStroke
+                && recoveryVM.message?.contains("Finish the current touch stroke") == true,
+                "Explicit Free bypassed live input ownership while a rejected draft was retained")
+            recoveryVM.finishStrokeInput(id: recoveryStroke.id)
+            recoveryVM.message = nil
+            recoveryVM.setLayerLockMode(unrelatedLayerID, mode: .free)
+            try require(recoveryVM.document == recoveryLocked && recoveryVM.pendingBrushStroke?.element == recoveryStroke
+                && recoveryVM.message?.contains("Retry or discard") == true,
+                "Retained draft authorized unlocking an unrelated layer")
+            try rejects {
+                _ = try recoveryVM.applyStudioCommands(.init(requestID: UUID(), projectID: recoveryLocked.id,
+                    expectedRevision: recoveryLocked.revision,
+                    action: .apply([.updateLayer(.init(layer: .id(recoveryLayerID), settings: .init(lock: .free)))])))
+            }
+            try require(recoveryVM.document == recoveryLocked && recoveryVM.pendingBrushStroke?.element == recoveryStroke,
+                "Typed unlock changed the retained draft's document")
+            recoveryVM.setLayerLockMode(recoveryLayerID, mode: .free)
+            let recoveryUnlocked = recoveryVM.document
+            var expectedUnlocked = recoveryLocked
+            let recoveredLayerIndex = expectedUnlocked.layers.firstIndex { $0.id == recoveryLayerID }!
+            expectedUnlocked.layers[recoveredLayerIndex].lockMode = "free"
+            expectedUnlocked.layers[recoveredLayerIndex].locked = false
+            try require(recoveryUnlocked.layers == expectedUnlocked.layers && recoveryUnlocked.frames == recoveryLocked.frames
+                && recoveryUnlocked.activeFrameID == recoveryFrameID && recoveryUnlocked.activeLayerID == recoveryLayerID
+                && recoveryUnlocked.revision == recoveryLocked.revision + 1
+                && recoveryVM.pendingBrushStroke?.element == recoveryStroke,
+                "Explicit Free did not change only the retained stroke's captured layer lock in one edit")
+            recoveryVM.strokeWidth = 8; recoveryVM.brushFamily = .round
+            recoveryVM.retryRejectedBrush()
+            try require(recoveryVM.pendingBrushStroke == nil && recoveryVM.currentFrame.id == recoveryFrameID
+                && recoveryVM.activeLayerID == recoveryLayerID
+                && recoveryVM.currentFrame.elements.last?.id == recoveryStroke.id
+                && recoveryVM.currentFrame.elements.last?.layerID == recoveryLayerID,
+                "Explicit Free then Retry did not commit the same captured stroke identity and context")
+            recoveryVM.undo()
+            try require(recoveryVM.document.frames == recoveryUnlocked.frames && recoveryVM.document.layers == recoveryUnlocked.layers,
+                "Undo after recovered Retry changed the explicit unlock or failed to remove its stroke")
+            recoveryVM.setLayerOpacity(recoveryLayerID, opacity: 1)
+            try require(recoveryVM.beginTextEditing(), "Text admission fixture did not open an actual text draft")
+            let recoveryTextDocument = recoveryVM.document, recoveryTextDraft = recoveryVM.textDraft
+            recoveryVM.retainRejectedBrush(recoveryStroke, frameID: recoveryFrameID, reason: "Admission regression fixture")
+            recoveryVM.message = nil
+            recoveryVM.setLayerLockMode(recoveryLayerID, mode: .free)
+            try require(recoveryVM.document == recoveryTextDocument && recoveryVM.textDraft == recoveryTextDraft
+                && recoveryVM.pendingBrushStroke?.element == recoveryStroke
+                && recoveryVM.message?.contains("Apply or cancel the text draft") == true,
+                "Explicit Free bypassed the text-draft guard when retained-draft recovery context matched")
+            recoveryVM.cancelTextEditing(); recoveryVM.discardRejectedBrush()
+            print("PASS actual rejected Alpha-lock brush recovers only through explicit captured-layer Free then Retry, preserves live/text guards, rejects unrelated/typed unlock and supports Undo")
 
             var lifecycle = StudioStrokeInput(id: "lifecycle", frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
                 tool: .brush, color: "#FF0000", width: 7, opacity: 0.5,

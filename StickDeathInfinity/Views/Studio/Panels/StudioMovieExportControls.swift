@@ -11,8 +11,12 @@ struct StudioMovieExportControls: View {
     var directRequest: StudioMoviePanelState.DirectRequest? = nil
     var onDirectRequestConsumed: () -> Void = {}
     var onReady: () -> Void = {}
+    var quickShareRequest: StudioQuickShareHandoff? = nil
+    var onQuickShareHandled: (UUID, String?) -> Void = { _, _ in }
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @ObservedObject private var stripe = StripeService.shared
     @ObservedObject private var shareLifetime = StudioMovieShareLifetime.shared
     @StateObject private var presentationScope = StudioMoviePresentationScope()
     @StateObject private var preview = StudioMoviePreviewState()
@@ -25,45 +29,62 @@ struct StudioMovieExportControls: View {
     @State private var normalizeAudio = false
     @State private var shareAccountID: String?
     @State private var shareRequest: StudioMovieExportSession.ShareRequest?
+    @State private var shareHandoff: StudioQuickShareHandoff?
+    @State private var handledQuickShareID: UUID?
+    @State private var shareStartError: String?
     @State private var saveRequest: StudioMovieExportSession.ShareRequest?
     @State private var reviewExport: SDIRenderUploadExport?
 
     private var scope: StudioMovieExportSession.Scope {
-        .init(isStudioVisible: isVisible && vm.isEditing && vm.activePanel == .export,
+        .init(isStudioVisible: isVisible && subjectWindowVisible && vm.isEditing && vm.activePanel == .export,
               isForeground: scenePhase == .active, accountID: authVM.userId)
     }
     private var session: StudioMovieExportSession { movie.session }
     private func refreshScope() {
         presentationScope.value = scope
+        presentationScope.subjectWindowVisible = subjectWindowVisible
         session.refreshScope(scope)
     }
 
     var body: some View {
+        let gate = vm.planLimits
+        let width = vm.document.width
+        let height = vm.document.height
+        let plan = try? StudioMovieExportService.RenderPlan.resolve(canvasWidth: width, canvasHeight: height,
+            requested: preset, maximumLongEdge: gate.maxExportLongEdge)
+        let allowedPresets = StudioMovieExportService.RenderPreset.allCases.filter { candidate in
+            gate.maxExportLongEdge == nil || StudioMovieExportService.RenderPlan.allowedPreset(
+                canvasWidth: width, canvasHeight: height, preset: candidate, maximumLongEdge: gate.maxExportLongEdge) != nil
+        }
+        let needsReexport = session.output != nil && !session.hasCurrentPlanAuthorization
+        let exportError = needsReexport ? StudioMovieExportService.ExportError.planChanged.localizedDescription
+            : (session.errorMessage ?? shareStartError)
         VStack(alignment: .leading, spacing: 16) {
             Text("VIDEO QUALITY").font(.specialElite(9)).foregroundColor(.white.opacity(0.4)).tracking(1)
             Text("Original canvas · \(vm.document.width) × \(vm.document.height)")
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-            Picker("MP4 resolution", selection: $preset) {
-                if presetAllowed(.original) {
-                    Text("Original").tag(StudioMovieExportService.RenderPreset.original)
+                .font(.specialElite(12)).bold()
+            if let plan, plan.fitLongEdge != nil {
+                Text(plan.resolutionLabel)
+                    .font(.specialElite(12))
+                    .accessibilityIdentifier("studio.export.movie.resolution")
+            } else if !allowedPresets.isEmpty {
+                Picker("MP4 resolution", selection: Binding(get: { plan?.preset ?? preset }, set: { preset = $0 })) {
+                    ForEach(allowedPresets, id: \.self) { Text($0.label).tag($0) }
                 }
-                ForEach(ExportQuality.allCases.filter { presetAllowed(.init(quality: $0)) }, id: \.rawValue) { quality in
-                    Text(quality.resolution).tag(StudioMovieExportService.RenderPreset(quality: quality))
-                }
+                .pickerStyle(.segmented).disabled(movie.isBusy)
+                .accessibilityIdentifier("studio.export.movie.resolution")
             }
-            .pickerStyle(.segmented).disabled(movie.isBusy)
-            .accessibilityIdentifier("studio.export.movie.resolution")
-            if let limit = vm.planLimits.maxExportLongEdge {
-                Label("Up to \(limit) px on the longest edge" + (vm.planLimits.exportWatermark ? ", with the SDI mark" : "") + ". " + vm.planLimits.upgradeNote,
+            if let limit = gate.maxExportLongEdge {
+                Label("Up to \(limit) px on the longest edge" + (gate.exportWatermark ? ", with the SDI mark" : "") + ". " + gate.upgradeNote,
                       systemImage: "lock.fill")
                     .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
-            } else if vm.planLimits.exportWatermark {
-                Label("Exports carry the SDI mark. " + vm.planLimits.upgradeNote, systemImage: "lock.fill")
+            } else if gate.exportWatermark {
+                Label("Exports carry the SDI mark. " + gate.upgradeNote, systemImage: "lock.fill")
                     .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
             }
-            if let plan = try? StudioMovieExportService.RenderPlan.make(canvasWidth: vm.document.width, canvasHeight: vm.document.height, preset: preset) {
+            if let plan {
                 Text("Output \(plan.outputWidth) × \(plan.outputHeight)" + (plan.paddingRight + plan.paddingBottom > 0 ? " · 1 white pixel added on the \(plan.paddingRight > 0 ? "right" : "")\(plan.paddingRight > 0 && plan.paddingBottom > 0 ? " and " : "")\(plan.paddingBottom > 0 ? "bottom" : "") so the encoder gets even dimensions" : "") + (plan.scale != 1 ? String(format: " · scaled ×%.3f", plan.scale) : ""))
-                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
+                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.7))
                     .accessibilityIdentifier("studio.export.movie.output-size")
             }
             Picker("MP4 codec", selection: $codec) {
@@ -96,12 +117,12 @@ struct StudioMovieExportControls: View {
                 Text(error).foregroundColor(Color(hex: "#FF8888"))
                     .accessibilityIdentifier("studio.export.movie.direct-error")
             }
-            if let provenance = movie.directArtifactDescription {
+            if !needsReexport, let provenance = movie.directArtifactDescription {
                 Text(provenance).font(.specialElite(10))
                     .accessibilityIdentifier("studio.export.movie.spatter-receipt")
             }
-            if let error = session.errorMessage {
-                Text(error).foregroundColor(Color(hex: "#FF8888"))
+            if let exportError {
+                Text(exportError).foregroundColor(Color(hex: "#FF8888"))
                     .font(.specialElite(11))
                     .accessibilityIdentifier("studio.export.status")
             } else if let notice = session.notice {
@@ -137,21 +158,21 @@ struct StudioMovieExportControls: View {
                     .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                     .accessibilityIdentifier("studio.export.movie.source")
             }
-            if let output = session.output, !output.isCleaned {
+            if let output = session.output, !output.isCleaned, !needsReexport {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(session.needsCleanup ? "MP4 needs recovery" : "MP4 ready on this device").font(.specialElite(9)).foregroundColor(.white.opacity(0.5)).tracking(1)
-                    Text(output.movieURL.lastPathComponent).font(.system(size: 12, weight: .bold, design: .monospaced))
+                    Text(output.movieURL.lastPathComponent).font(.specialElite(12)).bold()
                         .accessibilityIdentifier("studio.export.movie.filename")
                     Text("\(output.manifest.width) × \(output.manifest.height) · \(output.manifest.frameIDs.count) frames · \(output.manifest.fps) fps · revision \(output.manifest.documentRevision)")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.export.movie.receipt")
                     if let rule = output.manifest.renderRule, output.manifest.renderPlan.map({ $0.scale != 1 || $0.paddingRight + $0.paddingBottom > 0 }) == true {
-                        Text(rule).font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                        Text(rule).font(.specialElite(9)).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("studio.export.movie.render-rule")
                     }
                     if let gain = output.audioAppliedGain {
                         Text(String(format: "Audio normalized to −1 dBFS · gain ×%.3f recorded in manifest", gain))
-                            .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                            .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("studio.export.movie.normalized")
                     }
                     if let credits = output.manifest.imageCredits, !credits.isEmpty {
@@ -172,7 +193,7 @@ struct StudioMovieExportControls: View {
                             .accessibilityIdentifier("studio.export.movie.sound-credits.notice")
                     }
                     Text("\(output.manifest.encodedBytes) encoded bytes · \(output.manifest.codec) · white · \(output.manifest.audioIncluded ? "stereo audio" : "no audio")")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                         .accessibilityIdentifier("studio.export.movie.media")
                     if let player = preview.player {
                         StudioMoviePreviewSurface(player: player)
@@ -203,7 +224,7 @@ struct StudioMovieExportControls: View {
                                 .accessibilityLabel("Movie preview position")
                                 .accessibilityIdentifier("studio.export.movie.preview.seek")
                             Text(String(format: "%.2f / %.2f s", preview.currentTime, preview.duration))
-                                .font(.system(size: 9, design: .monospaced)).monospacedDigit()
+                                .font(.specialElite(9)).monospacedDigit()
                                 .accessibilityIdentifier("studio.export.movie.preview.time")
                         }
                         Text(preview.didFinish ? "Playback finished" : preview.isPlaying ? "Playing rendered MP4" : preview.isWaiting ? "Preparing playback…" : preview.isReady ? "Preview ready" : "Loading rendered MP4…")
@@ -211,11 +232,13 @@ struct StudioMovieExportControls: View {
                             .accessibilityIdentifier("studio.export.movie.preview.status")
                     }
                     Button {
-                        shareAccountID = scope.accountID
-                        shareRequest = session.beginSharing(scope: scope)
+                        shareStartError = beginNativeShare()
                     } label: {
-                        Label("Share MP4 / Save to Files", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        Label {
+                            Text("Share MP4 / Save to Files").font(.specialElite(12)).bold()
+                        } icon: {
+                            Image(systemName: "square.and.arrow.up").font(.system(size: 12, weight: .bold, design: .monospaced))
+                        }
                             .frame(maxWidth: .infinity).padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                     }
@@ -224,8 +247,11 @@ struct StudioMovieExportControls: View {
                     Button {
                         saveRequest = session.beginSharing(scope: scope)
                     } label: {
-                        Label("Save to Files", systemImage: "folder")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        Label {
+                            Text("Save to Files").font(.specialElite(12)).bold()
+                        } icon: {
+                            Image(systemName: "folder").font(.system(size: 12, weight: .bold, design: .monospaced))
+                        }
                             .frame(maxWidth: .infinity).padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                     }
@@ -275,12 +301,23 @@ struct StudioMovieExportControls: View {
                 let projectID = session.source?.projectID
                 let accountID = shareAccountID
                 let capturedSession = session
-                StudioMovieSharePresenter(request: request, session: capturedSession, isAllowed: { [weak vm, weak authVM, weak capturedSession] in
+                let handoff = shareHandoff
+                StudioMovieSharePresenter(request: request, session: capturedSession,
+                    onOfferedToUIKit: { holder.offeredRequestIDs.insert(request.id) }, isAllowed: { [weak vm, weak authVM, weak capturedSession] in
                     guard let vm, let authVM, let capturedSession else { return false }
-                    return !capturedSession.isClosed && holder.value.isStudioVisible && holder.value.isForeground
+                    return !capturedSession.isClosed && capturedSession.hasCurrentPlanAuthorization
+                        && holder.value.isStudioVisible && holder.value.isForeground
+                        && (holder.subjectWindowVisible || holder.offeredRequestIDs.contains(request.id))
                         && vm.isEditing && vm.activePanel == .export && vm.document.id == projectID
                         && authVM.userId == accountID
+                        && (handoff.map { expected in
+                            expected.file == .mp4 && expected.accepts(vm.exportFormat)
+                                && expected.accountID == authVM.userId && expected.projectID == vm.document.id
+                                && expected.revision == vm.document.revision && expected.sessionID == ObjectIdentifier(capturedSession)
+                                && capturedSession.output?.movieURL == expected.outputURL
+                        } ?? true)
                 }) { id in
+                    holder.offeredRequestIDs.remove(id)
                     if binding.wrappedValue?.id == id { binding.wrappedValue = nil }
                 }
                 .id(request.id)
@@ -290,33 +327,39 @@ struct StudioMovieExportControls: View {
                 let holder = presentationScope
                 let projectID = session.source?.projectID
                 let capturedSession = session
-                StudioFilesSavePresenter(request: request, isAllowed: { [weak vm, weak capturedSession] in
+                StudioFilesSavePresenter(request: request,
+                    onOfferedToUIKit: { holder.offeredRequestIDs.insert(request.id) }, isAllowed: { [weak vm, weak capturedSession] in
                     guard let vm, let capturedSession else { return false }
+                    // The request checks the plan just before handing over URLs.
+                    // A later plan change must not release a picker already copying them.
                     return !capturedSession.isClosed && holder.value.isStudioVisible && holder.value.isForeground
+                        && (holder.subjectWindowVisible || holder.offeredRequestIDs.contains(request.id))
                         && vm.isEditing && vm.activePanel == .export && vm.document.id == projectID
                 }) { id in
+                    holder.offeredRequestIDs.remove(id)
                     if binding.wrappedValue?.id == id { binding.wrappedValue = nil }
                 }
                 .id(request.id)
             }
         }
         .onAppear {
-            isVisible = true; refreshScope()
-            clampPresetToPlan()
+            isVisible = subjectWindowVisible; refreshScope()
+            if let plan, plan.fitLongEdge == nil { preset = plan.preset }
             if let request = directRequest {
                 _ = movie.start(request, from: vm, scope: scope)
                 onDirectRequestConsumed()
             }
             refreshPreview()
+            consumeQuickShare()
         }
-        .onDisappear {
-            preview.stop()
-            // A full-screen native activity may cover this section without
-            // removing it. Actual removal invokes the presenter's dismantle,
-            // which closes the owner but keeps files until the actual share callback.
-            if !session.isSharing { isVisible = false; refreshScope(); session.close() }
+        .onChange(of: quickShareRequest?.id) { _, _ in consumeQuickShare() }
+        .onDisappear { suspendPresentation() }
+        .onChange(of: subjectWindowVisible) { _, visible in
+            if !visible { suspendPresentation() }
+            else { isVisible = true; refreshScope(); refreshPreview() }
         }
         .onChange(of: scenePhase) { _, _ in refreshScope(); refreshPreview() }
+        .onChange(of: gate) { _, _ in refreshScope(); refreshPreview() }
         .onChange(of: authVM.userId) {
             reviewExport?.close(); reviewExport = nil
             refreshScope(); session.close(); shareRequest = nil; saveRequest = nil
@@ -325,27 +368,67 @@ struct StudioMovieExportControls: View {
         .onChange(of: vm.isEditing) { refreshScope() }
         .onChange(of: vm.activePanel) { refreshScope() }
         .onChange(of: session.output?.movieURL) { _, output in
+            shareStartError = nil
             if output != nil { onReady() }
             refreshPreview()
         }
         .onChange(of: session.isRunning) { _, _ in refreshPreview() }
-        .onChange(of: session.isSharing) { _, _ in refreshPreview() }
+        .onChange(of: session.isSharing) { _, sharing in
+            if !sharing && !subjectWindowVisible { suspendPresentation() }
+            else { refreshPreview() }
+        }
     }
-    /// A size the plan allows (always true without a size cap).
-    private func presetAllowed(_ candidate: StudioMovieExportService.RenderPreset) -> Bool {
-        guard vm.planLimits.maxExportLongEdge != nil else { return true }
-        guard let plan = try? StudioMovieExportService.RenderPlan.make(canvasWidth: vm.document.width,
-            canvasHeight: vm.document.height, preset: candidate) else { return false }
-        return vm.planLimits.allowsExport(width: plan.contentWidth, height: plan.contentHeight)
+
+    /// Both the Share button and a ready-file shortcut enter this same owned
+    /// request/presenter route. No export or provider request is started here.
+    private func beginNativeShare(expected: StudioQuickShareHandoff? = nil) -> String? {
+        guard scope.isStudioVisible, scope.isForeground, vm.exportFormat == .mp4,
+              !movie.isBusy, !session.isClosed, !session.needsCleanup,
+              !shareLifetime.isReserved, shareRequest == nil, saveRequest == nil, reviewExport == nil else {
+            return "The MP4 is not ready to share. Finish the current export or share, then try again."
+        }
+        if let expected, !matchesQuickShare(expected) {
+            return "The project or rendered MP4 changed. Export the current revision before sharing."
+        }
+        guard let request = session.beginSharing(scope: scope) else {
+            return session.errorMessage ?? "The MP4 could not be shared in the current Studio state. Export it again before retrying."
+        }
+        if let expected, !matchesQuickShare(expected) {
+            request.finish(completed: false, error: nil)
+            return "Studio changed before MP4 sharing could start. Nothing was shared."
+        }
+        shareAccountID = scope.accountID
+        shareHandoff = expected
+        shareRequest = request
+        return nil
     }
-    private func clampPresetToPlan() {
-        guard !presetAllowed(preset) else { return }
-        if let allowed = [StudioMovieExportService.RenderPreset.p1080, .p720, .p480].first(where: presetAllowed) { preset = allowed }
+
+    private func matchesQuickShare(_ expected: StudioQuickShareHandoff) -> Bool {
+        guard expected.file == .mp4, expected.accepts(vm.exportFormat), expected.accountID == scope.accountID,
+              expected.projectID == vm.document.id, expected.revision == vm.document.revision,
+              expected.sessionID == ObjectIdentifier(session), let output = session.output, !output.isCleaned else { return false }
+        return output.movieURL == expected.outputURL && output.manifest.projectID == expected.projectID
+            && output.manifest.documentRevision == expected.revision
+    }
+
+    private func consumeQuickShare() {
+        guard let request = quickShareRequest, request.file == .mp4, handledQuickShareID != request.id else { return }
+        handledQuickShareID = request.id
+        let failure = beginNativeShare(expected: request)
+        shareStartError = failure
+        onQuickShareHandled(request.id, failure)
+    }
+    private func suspendPresentation() {
+        // Match disappearance: stop the decoder immediately, but retain a
+        // genuine consumer's file lease until its existing completion callback.
+        preview.stop()
+        presentationScope.subjectWindowVisible = false
+        if !session.isSharing { isVisible = false; refreshScope(); session.close() }
     }
     private func refreshPreview() {
         guard scope.isStudioVisible, scope.isForeground, !session.isClosed,
               !session.isRunning, !session.isSharing, !session.isRecovering,
-              !session.needsCleanup, session.output != nil else { preview.stop(); return }
+              !session.needsCleanup, session.output != nil, session.hasCurrentPlanAuthorization else { preview.stop(); return }
         if preview.player == nil { _ = preview.load(session: session, scope: scope) }
     }
     private var progressText: String {
@@ -362,6 +445,10 @@ struct StudioMovieExportControls: View {
 
 @MainActor
 private final class StudioMoviePresentationScope: ObservableObject {
+    // A queued request is not yet a consumer. Once UIKit receives its URLs,
+    // hiding the retained Studio keeps that existing lease until completion.
+    var subjectWindowVisible = false
+    var offeredRequestIDs: Set<UUID> = []
     var value = StudioMovieExportSession.Scope(isStudioVisible: false, isForeground: false, accountID: nil)
 }
 

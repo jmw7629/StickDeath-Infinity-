@@ -99,7 +99,7 @@ import CryptoKit
         // The encoded size comes from the render plan (preset scale plus even
         // padding), so odd canvases are captured instead of rejected (#182).
         let plan: StudioMovieExportService.RenderPlan
-        do { plan = try StudioMovieExportService.RenderPlan.make(canvasWidth: doc.width, canvasHeight: doc.height, preset: snapshot.render.preset) }
+        do { plan = try snapshot.render.plan(canvasWidth: doc.width, canvasHeight: doc.height) }
         catch { throw CaptureError.unsupportedSnapshot }
         // Frame and pixel caps follow the streaming movie exporter (#182); the
         // audio side stays within one 120-second mix (5,760,000 frames at 48 kHz).

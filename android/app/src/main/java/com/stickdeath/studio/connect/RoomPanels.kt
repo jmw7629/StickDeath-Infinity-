@@ -1,6 +1,8 @@
 package com.stickdeath.studio.connect
 
 import android.content.Intent
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,6 +14,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,10 +35,118 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
+/** A full-account-only desktop subject. Opening or restoring it never starts a request. */
+@Composable fun RoomsDesktopSection(
+    studio: StudioViewModel, account: AccountViewModel, community: CommunityViewModel,
+    visible: Boolean, onOpenAccount: () -> Unit, onOpenStudio: () -> Unit,
+) {
+    val signedIn = account.state as? AccountState.SignedIn
+    key(signedIn?.userId) {
+        var prepared by remember { mutableStateOf(false) }
+        LaunchedEffect(signedIn?.userId) {
+            community.accountChanged(signedIn?.userId)
+            prepared = true
+        }
+        Text("Rooms", style = MaterialTheme.typography.titleMedium)
+        // Structured branches retain all gates without labelled returns from inline key.
+        when {
+            !account.configured -> Text("Rooms are unavailable in this build. No room request is sent until the owner configures the public backend.")
+            signedIn == null || signedIn.isAnonymous -> {
+                Text("Sign in with a full account to create or join rooms. Guests send no Rooms requests.")
+                TextButton(onOpenAccount) { Text("Open Account") }
+            }
+            account.needsNewPassword -> {
+                Text("Finish setting your account password in Account before using Rooms.")
+                TextButton(onOpenAccount) { Text("Open Account") }
+            }
+            !prepared || community.viewer != signedIn.userId -> Text("Preparing this account’s Rooms…")
+            else -> {
+                Text("Share a chosen project reference with members you approve. There is no chat or calling.")
+                if (community.notice.isNotEmpty()) Text(community.notice)
+                CreateRoomForm(studio, community, visible, onOpenStudio)
+                JoinRoomForm(community, visible)
+                RoomSyncSection(community, studio, visible)
+            }
+        }
+
+    }
+}
+
+@Composable private fun CreateRoomForm(studio: StudioViewModel, community: CommunityViewModel, visible: Boolean, onOpenStudio: () -> Unit) {
+    Text("Create a room", style = MaterialTheme.typography.titleMedium)
+    val pending = community.pendingRoomShare
+    if (pending != null) {
+        Text("Room ${pending.room} was created. Its intended project share is not confirmed. Check that existing room instead of creating it again.")
+        Text("Intended share: ${pending.share.title} · ${pending.share.permissions.joinToString()}", style = MaterialTheme.typography.bodySmall)
+        (community.roomCreation as? RoomCreationOutcome.CreatedWithoutProject)?.let { Text(it.problem, style = MaterialTheme.typography.bodySmall) }
+        Button({ community.finishPendingRoomShare() }, enabled = !community.roomsBusy) { Text("Check and finish this room’s share") }
+        TextButton({ community.dismissPendingRoomShare() }, enabled = !community.roomsBusy) { Text("Dismiss draft (keep room)") }
+        return
+    }
+    val document = studio.document
+    if (document == null) {
+        Text("Open a local Studio project to choose what this room shares.")
+        TextButton(onOpenStudio) { Text("Open Studio") }
+        return
+    }
+    key(document.id) {
+        var title by remember { mutableStateOf("") }
+        var sharedTitle by remember { mutableStateOf(document.name.take(100)) }
+        var editing by remember { mutableStateOf(false) }
+        var consent by remember { mutableStateOf(false) }
+        LaunchedEffect(visible) { if (!visible) consent = false }
+        OutlinedTextField(title, { title = it.take(100); consent = false }, label = { Text("Room name") },
+            enabled = !community.roomsBusy, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text("Chosen local project: ${document.name}", style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(sharedTitle, { sharedTitle = it.take(100); consent = false }, label = { Text("Shared project title") },
+            enabled = !community.roomsBusy, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(editing, { editing = it; consent = false }, enabled = !community.roomsBusy)
+            Text("Allow accepted members to edit (otherwise view only)")
+        }
+        Text("Creating the room records only this project’s reference, shared title and permissions. After creation you can separately consent to send a full Android project copy, including its managed media. Synchronisation is a separate choice.", style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(consent, { consent = it }, enabled = !community.roomsBusy)
+            Text("I agree to share this project reference, title and chosen permissions with members I approve.")
+        }
+        Button({
+            if (studio.document?.id == document.id) {
+                community.createRoom(title, RoomProjectShareDraft(document.id, sharedTitle, editing), consent)
+                consent = false
+            }
+        }, enabled = consent && title.trim().isNotEmpty() && sharedTitle.trim().isNotEmpty() && !community.roomsBusy) { Text("Create room and share reference") }
+    }
+}
+
+@Composable private fun JoinRoomForm(community: CommunityViewModel, visible: Boolean) {
+    Text("Join by invitation", style = MaterialTheme.typography.titleMedium)
+    var code by remember { mutableStateOf("") }
+    var consent by remember { mutableStateOf(false) }
+    LaunchedEffect(visible) { if (!visible) consent = false }
+    Text("Use a room’s expiring invitation code, never an account sign-in token. The owner must approve your request.")
+    OutlinedTextField(code, {
+        code = it.take(80); consent = false; community.clearRoomInvitationPreview()
+    }, enabled = !community.roomsBusy, label = { Text("Room invitation code") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    TextButton({ consent = false; community.previewRoomInvitation(code) },
+        enabled = !community.roomsBusy && RoomInvitationPolicy.isWellFormed(code)) { Text("Review invitation") }
+    when (val preview = community.roomPreview) {
+        is Load.Loaded -> {
+            Text("Room: ${preview.value.title}")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(consent, { consent = it }, enabled = !community.roomsBusy)
+                Text("I accept this reviewed invitation and ask its owner to admit me.")
+            }
+            Button({ community.requestRoomAdmission(code, consent); consent = false }, enabled = consent && !community.roomsBusy) { Text("Request to join") }
+        }
+        is Load.Failed -> Text(preview.message)
+        Load.Loading -> Text("Checking this invitation…")
+        Load.Idle -> Unit
+    }
+}
+
 /** Shared rooms: membership, owner tools and Studio synchronisation for one explicitly shared project.
  * There is no chat, calling, camera, microphone or screen sharing here. */
-@Composable internal fun RoomSyncSection(community: CommunityViewModel) {
-    val studio: StudioViewModel = viewModel()
+@Composable internal fun RoomSyncSection(community: CommunityViewModel, studio: StudioViewModel = viewModel(), visible: Boolean = true) {
     @Suppress("UNUSED_VARIABLE") val version = community.roomSessionVersion // re-read session counters
     Text("Shared rooms", style = MaterialTheme.typography.titleMedium)
     Text("Rooms share one explicitly chosen Studio project with members the owner approves. Edits travel as fenced commands; overlapping edits are held for your decision, never overwritten.")
@@ -55,14 +168,15 @@ import java.time.format.FormatStyle
             TextButton({
                 if (expanded == room.id) expanded = null else { expanded = room.id; community.openRoom(room) }
             }) { Text(if (expanded == room.id) "Hide room" else "Open room") }
-            if (expanded == room.id) RoomDetailSection(community, studio, room, owner)
+            if (expanded == room.id) RoomDetailSection(community, studio, room, owner, visible)
         }
     }
     if (community.roomStatus.isNotEmpty()) Text(community.roomStatus, style = MaterialTheme.typography.bodySmall)
 }
 
-@Composable private fun RoomDetailSection(community: CommunityViewModel, studio: StudioViewModel, room: RoomSummary, owner: Boolean) {
+@Composable private fun RoomDetailSection(community: CommunityViewModel, studio: StudioViewModel, room: RoomSummary, owner: Boolean, visible: Boolean) {
     val session = community.roomSession
+    DisposableEffect(room.id) { onDispose { community.cancelProjectHandoff() } }
     community.roomDetails[room.id]?.let { load ->
         LoadState(load, "") { detail ->
             Text("Shared project: ${detail.projectTitle ?: "none yet"}")
@@ -70,6 +184,7 @@ import java.time.format.FormatStyle
                 style = MaterialTheme.typography.bodySmall)
             Text("Project revision ${detail.projectRevision ?: 0} · edit stream revision ${detail.commandRevision ?: 0} · ${detail.members ?: 0} accepted member(s)",
                 style = MaterialTheme.typography.bodySmall)
+            RoomProjectCopySection(community, studio, room, detail, owner, visible)
             StudioSyncControls(community, studio, room, detail)
         }
     }
@@ -87,7 +202,64 @@ import java.time.format.FormatStyle
         Checkbox(confirm, { confirm = it })
         Text(if (owner) "Close this room for everyone (members lose access; nobody's device project is deleted)" else "Leave this room (anything already on your device stays yours)")
     }
-    Button({ community.closeOrLeave(room, owner); confirm = false }, enabled = confirm && !community.busy) { Text(if (owner) "Close room" else "Leave room") }
+    Button({ community.closeOrLeave(room, owner); confirm = false }, enabled = confirm && !community.roomsBusy) { Text(if (owner) "Close room" else "Leave room") }
+}
+
+@Composable private fun RoomProjectCopySection(community: CommunityViewModel, studio: StudioViewModel,
+    room: RoomSummary, detail: RoomDetail, owner: Boolean, visible: Boolean) {
+    Text("Project copy", style = MaterialTheme.typography.titleSmall)
+    Text("Sending and importing are separate choices. Copies expire on the server within 72 hours, or sooner when withdrawn or every current member has imported one. A member's imported copy stays theirs.", style = MaterialTheme.typography.bodySmall)
+    Text("Android sends its full editable Android backup with all stored images, sounds and credits; iPhone/iPad cannot read that format yet. Android can read the existing Swift vector-only portable subset, and rejects unsupported Swift artwork or media without importing a partial project.", style = MaterialTheme.typography.bodySmall)
+    TextButton({ community.checkRoomProjectCopy(room) }, enabled = !community.roomsBusy && visible) { Text("Check sent project copy") }
+    val copy = (community.roomSnapshots[room.id] as? Load.Loaded<RoomProjectSnapshot?>)?.value
+    copy?.let {
+        Text("${it.title} · ${it.byteSize} bytes · ${it.state} · expires ${shortTime(it.expiresAt.toString())}", style = MaterialTheme.typography.bodySmall)
+        Text("SHA-256 ${it.sha256}", style = MaterialTheme.typography.bodySmall)
+    }
+    if (owner) {
+        val open = studio.document
+        when {
+            open == null || open.id != detail.projectID -> Text("Open the owner's shared project in Studio before sending its copy.", style = MaterialTheme.typography.bodySmall)
+            else -> key(room.id, detail.projectRevision, open.id, open.revision) {
+                var consent by remember { mutableStateOf(false) }
+                LaunchedEffect(visible) { if (!visible) consent = false }
+                Text("Chosen version: ${open.name}, local revision ${open.revision}. Sending reads the current editor snapshot, including unsaved edits, without closing it. Files not stored by the editor are not included.", style = MaterialTheme.typography.bodySmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(consent, { consent = it }, enabled = !community.roomsBusy && visible)
+                    Text("I agree to send this complete Android project to this room's approved members.")
+                }
+                Button({ community.sendRoomProjectCopy(room, studio, open, consent); consent = false }, enabled = consent && !community.roomsBusy && visible) {
+                    Text(if (copy == null) "Send project copy" else "Send this version (replace sent copy)")
+                }
+            }
+        }
+        if (copy?.mine == true) key(copy.id) {
+            var withdraw by remember { mutableStateOf(false) }
+            LaunchedEffect(visible) { if (!visible) withdraw = false }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(withdraw, { withdraw = it }, enabled = !community.roomsBusy && visible)
+                Text("Withdraw this server copy; already imported projects remain on members' devices.")
+            }
+            TextButton({ community.withdrawRoomProjectCopy(room, copy, withdraw); withdraw = false }, enabled = withdraw && !community.roomsBusy && visible) { Text("Withdraw sent copy") }
+        }
+    } else if (copy != null && !copy.mine && copy.state == "available") key(copy.id, copy.sha256, detail.projectRevision) {
+        var consent by remember { mutableStateOf(false) }
+        LaunchedEffect(visible) { if (!visible) consent = false }
+        val pending = community.pendingProjectReceipt?.takeIf { it.room == room.id && it.snapshot == copy }
+        if (pending != null) {
+            Text("A verified copy is already in Studio Projects. Its server receipt is pending; retrying does not import another project.", style = MaterialTheme.typography.bodySmall)
+            TextButton({ community.retryRoomProjectReceipt(room) }, enabled = !community.roomsBusy && visible) { Text("Retry import receipt") }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(consent, { consent = it }, enabled = !community.roomsBusy && visible)
+                Text("I consent to download this exact copy and save a new editable project on this device.")
+            }
+            Button({ community.receiveRoomProjectCopy(room, studio, copy, consent); consent = false }, enabled = consent && !community.roomsBusy && visible) { Text("Import independent project copy") }
+        }
+    }
+    if (community.projectHandoffBusy) TextButton({ community.cancelProjectHandoff() }) { Text("Cancel project handoff") }
+    if (community.projectHandoffStatus.isNotEmpty()) Text(community.projectHandoffStatus, style = MaterialTheme.typography.bodySmall)
+    Text("Imported copies appear in Studio Projects and never replace or close the open project. They are independent: live command sync is not automatically attached because the sent copy has no captured edit-stream starting position.", style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable private fun StudioSyncControls(community: CommunityViewModel, studio: StudioViewModel, room: RoomSummary, detail: RoomDetail) {
@@ -137,8 +309,8 @@ import java.time.format.FormatStyle
     val clipboard = LocalClipboardManager.current
     Text("Invitations", style = MaterialTheme.typography.titleSmall)
     Row {
-        TextButton({ community.mintInvitation(room) }, enabled = !community.busy) { Text("Create 24-hour invite") }
-        TextButton({ community.revokeInvitations(room) }, enabled = !community.busy) { Text("Revoke invites and pending requests") }
+        TextButton({ community.mintInvitation(room) }, enabled = !community.roomsBusy) { Text("Create 24-hour invite") }
+        TextButton({ community.revokeInvitations(room) }, enabled = !community.roomsBusy) { Text("Revoke invites and pending requests") }
     }
     val code = community.invitation?.takeIf { it.first == room.id }?.second ?: return
     SelectionContainer { Text(code, style = MaterialTheme.typography.bodySmall) }
@@ -160,16 +332,16 @@ import java.time.format.FormatStyle
     if (!owner || member.revoked || me) return
     Row(Modifier.padding(bottom = 4.dp)) {
         if (member.awaitsApproval) {
-            TextButton({ community.approveMember(room, member.userId) }, enabled = !community.busy) { Text("Approve") }
-            TextButton({ community.declineMember(room, member.userId) }, enabled = !community.busy) { Text("Decline") }
+            TextButton({ community.approveMember(room, member.userId) }, enabled = !community.roomsBusy) { Text("Approve") }
+            TextButton({ community.declineMember(room, member.userId) }, enabled = !community.roomsBusy) { Text("Decline") }
         }
         if (member.isActive) {
             val editor = member.role == RoomRole.Editor.wire
             TextButton({ community.setRole(room, member.userId, if (editor) RoomRole.Viewer else RoomRole.Editor) },
-                enabled = !community.busy && (editor || room.sharesEdit)) { Text(if (editor) "Make viewer" else "Make editor") }
-            TextButton({ community.removeMember(room, member.userId) }, enabled = !community.busy) { Text("Remove") }
+                enabled = !community.roomsBusy && (editor || room.sharesEdit)) { Text(if (editor) "Make viewer" else "Make editor") }
+            TextButton({ community.removeMember(room, member.userId) }, enabled = !community.roomsBusy) { Text("Remove") }
         }
-        TextButton({ community.blockMember(room, member.userId) }, enabled = !community.busy) { Text("Block") }
+        TextButton({ community.blockMember(room, member.userId) }, enabled = !community.roomsBusy) { Text("Block") }
     }
 }
 
@@ -233,7 +405,7 @@ private fun localInstant(text: String): Instant? = runCatching {
     val month = community.calendarMonth
     Text("Calendar", style = MaterialTheme.typography.titleMedium)
     Text("Challenge milestones and your own War Room voting deadlines, from the server, in this device's time zone. Read only; nothing is kept offline on Android, so without a connection the calendar says so.")
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
         TextButton({ community.loadCalendar(month.minusMonths(1)) }) { Text("Previous") }
         Text(month.format(DateTimeFormatter.ofPattern("MMMM yyyy")))
         TextButton({ community.loadCalendar(month.plusMonths(1)) }) { Text("Next") }

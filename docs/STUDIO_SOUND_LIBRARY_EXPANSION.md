@@ -1,5 +1,17 @@
 # Expanded offline sound library
 
+## Music Jingles source extension — 2026-11-03
+
+The prepared shared catalogue now contains **2,212 distinct sounds in 22 categories**, including 85 new **Music & Jingles** clips from [Kenney Music Jingles](https://kenney.nl/assets/music-jingles). The official pack page and embedded License.txt identify CC0; redistribution and commercial use are permitted. Original license text is retained as `Resources/StudioSounds/KenneyMusicJingles-License.txt`. The exact archive SHA-256 is `b729ba57959bd58793d2c5cafa348aaf2655d354f3da35ec4729e03ec77197b8` (1,239,525 bytes). Full per-file origin/output/PCM hashes and bounds are in `docs/assets/music-jingles-provenance.json`; the combined Preview.ogg is excluded, not counted as an extra sound.
+
+All original 2,127 records/audio bytes remain unchanged. Five truthful music families (8-bit, hit, pizzicato, saxophone, steel) contribute 17 distinct decoded clips each. The 85 signed16-bit PCM WAVs total11,441,488 bytes and last0.275–1.758 seconds; they were decoded from the publisher's Ogg files with the existing local FFmpeg tool. Shipped file names/IDs are their actual SHA-256. Original/shipped hashes have no overlap with the old catalogue, and all85decoded PCM identities are distinct. No private historical corpus or generated substitute audio is used.
+
+The 256-bin peaks come from actual shipped PCM samples, with exact Float32 round-trip checks after nine-significant-digit serialization. RMS was measured in the same pass but is omitted from shared metadata to preserve the existing strict Android16-field contract. The7,929,423-byte catalogue remains within the original Android8MiB and native16MiB caps. Categories/search/preview/add/credits derive from existing catalogue paths; no second library or toolbar is introduced. Native expected counts/categories and Android catalogue/APK count guards change only to reflect the85real additions; all memory/format limits remain.
+
+Apple afinfo recognizes all85shipped files and matches rate/channels/frame count/duration. This is media-file inspection, not a native importer, UI preview/add/Undo/persistence, full application build, APK packaging or Android device pass. Those integration checks remain deferred to the coordinator. This fills one actual music-content gap under#191; ambience/comedy expansion and optional downloadable-pack workflow remain unfinished.
+
+## Historical 2,127-sound expansion evidence
+
 The candidate catalogue contains 2,127 real CC0 sound effects in 21 categories. All 88 existing sound IDs, files and metadata are preserved. The new assets come from the verified Kenney and OpenGameArt publisher packs, with author, source URL, original and shipped SHA256, licence, duration, format and measured waveform metadata retained per sound. Recovered legacy corpus is not included.
 
 The audio files total 98,538,127 bytes; the production JSON manifest is 7,535,180 bytes, within the existing 16 MiB cap. The production importer decoded every file and reproduced all 256 measured peaks, sample rate, channel count and duration. Newly added AAC audio was auditioned, attached twice as separate editable clips, undone/redone, saved and reopened with project-owned bytes. Integrity failures cannot attach audio or invent a receipt.

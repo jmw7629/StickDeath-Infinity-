@@ -1,5 +1,6 @@
 import SwiftUI
 import ImageIO
+import UIKit
 
 // ═══════════════════════════════════════════════════════════════════
 // Floating Tool Settings Panel — positioned over canvas
@@ -92,6 +93,7 @@ struct FloatingToolSettingsPanel: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+                .allowsHitTesting(false)
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("studio.tool-settings")
@@ -119,8 +121,8 @@ struct FloatingToolSettingsPanel: View {
         } message: { capture in
             Text("All artwork on these \(capture.layerIDs.count) layers will be locked across every frame, including unselected artwork. Undo restores all locks in one step, or unlock them in Layers.")
         }
-        .confirmationDialog("Delete this frame's image?", isPresented: $showingImageDeletion,
-            titleVisibility: .visible, presenting: imageDeletion) { capture in
+        .alert("Delete this frame's image?", isPresented: $showingImageDeletion,
+            presenting: imageDeletion) { capture in
             // SwiftUI dismisses the dialog. Keep its immutable presenting data
             // alive through action dispatch; the next request replaces it.
             Button("Delete image", role: .destructive) { _ = vm.deleteImage(capture) }
@@ -175,11 +177,14 @@ struct FloatingToolSettingsPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             toolSpecificSettings(def, compactHeight: compactHeight)
             if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text, .fill, .gradient, .move, .lasso, .wand].contains(def.tool) {
-                Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
-                    .font(.specialElite(10))
-                    .foregroundColor(.sdStudioSecondaryText)
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("studio.tool-settings.reset")
+                Button { vm.resetCurrentDrawingToolPreferences() } label: {
+                    Text("Reset this tool")
+                        .font(.specialElite(10))
+                        .foregroundColor(.sdStudioSecondaryText)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier("studio.tool-settings.reset")
             }
             if let warning = vm.toolPreferencesWarning {
                 Text(warning).font(.specialElite(9)).foregroundColor(.orange)
@@ -193,23 +198,29 @@ struct FloatingToolSettingsPanel: View {
         // ── BRUSH / PENCIL / PEN ──
         case .pencil, .pen, .brush, .marker, .crayon:
             VStack(alignment: .leading, spacing: 8) {
-                mirrorSettings
-                lineRulerSettings
+                // Keep the everyday controls immediately reachable. Mirror,
+                // rulers and the brush library remain in this same popup below.
+                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: " steps", accent: .green)
                 Button { showBrushLibrary.toggle() } label: {
                     HStack {
                         Text("Brush Library: " + vm.brushFamily.title)
                             .font(.specialElite(12))
                         Spacer()
                         Image(systemName: showBrushLibrary ? "chevron.up" : "chevron.down")
-                    }.foregroundColor(.white)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .foregroundColor(.white)
                 }
                 .accessibilityIdentifier("studio.brush-library")
+                .accessibilityValue(showBrushLibrary ? "Expanded" : "Collapsed")
                 if showBrushLibrary {
                     StudioBrushLibraryView(vm: vm) { showBrushLibrary = false }
                 }
-                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
-                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: " steps", accent: .green)
+                mirrorSettings
+                lineRulerSettings
                 if vm.brushFamily == .calligraphy {
                     SettingsSlider(label: "Tip Angle", value: $vm.brushTipAngle, range: 0...179, unit: "°", accent: accentColor)
                     SettingsToggle(label: "Pencil Tilt", isOn: $vm.pencilTiltEnabled, accent: accentColor)
@@ -264,10 +275,9 @@ struct FloatingToolSettingsPanel: View {
         // ── GRADIENT (#149) ──
         case .gradient:
             VStack(alignment: .leading, spacing: 8) {
-                Picker("Shape", selection: $vm.gradientShape) {
-                    Text("Linear").tag(StudioGradientDescriptor.Shape.linear)
-                    Text("Radial").tag(StudioGradientDescriptor.Shape.radial)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.gradient.shape")
+                StudioSettingSegments(title: "Shape", selection: $vm.gradientShape,
+                    choices: [.linear, .radial], choiceTitle: { $0 == .linear ? "Linear" : "Radial" },
+                    identifier: "studio.gradient.shape").frame(height: 44)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsToggle(label: "Fade to transparent", isOn: $vm.gradientFadeToTransparent, accent: accentColor)
                     .accessibilityIdentifier("studio.gradient.fade")
@@ -285,10 +295,9 @@ struct FloatingToolSettingsPanel: View {
                     .accessibilityLabel("Gradient end color")
                     .accessibilityValue(vm.brushGradientEndColorHex.uppercased())
                 }
-                Picker("Blend colors", selection: $vm.gradientInterpolation) {
-                    Text("Classic").tag(StudioGradientDescriptor.Interpolation.sRGB)
-                    Text("Linear light").tag(StudioGradientDescriptor.Interpolation.linearLight)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.gradient.interpolation")
+                StudioSettingSegments(title: "Blend colors", selection: $vm.gradientInterpolation,
+                    choices: [.sRGB, .linearLight], choiceTitle: { $0 == .sRGB ? "Classic" : "Linear light" },
+                    identifier: "studio.gradient.interpolation").frame(height: 44)
                 SettingsToggle(label: "Dither (reduces banding)", isOn: $vm.gradientDither, accent: accentColor)
                     .accessibilityIdentifier("studio.gradient.dither")
                 Text(vm.selectedElementIDs.isEmpty
@@ -412,13 +421,11 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Hardness", value: Binding(get: { vm.dodgeBurnHardness * 100 }, set: { vm.dodgeBurnHardness = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Exposure", value: Binding(get: { vm.dodgeBurnExposure * 100 }, set: { vm.dodgeBurnExposure = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
-                Picker("Tonal range", selection: $vm.dodgeBurnRange) {
-                    ForEach(StudioDodgeBurn.TonalRange.allCases, id: \.self) { range in
-                        Text(range.rawValue.capitalized).tag(range)
-                    }
-                }.pickerStyle(.menu).accessibilityIdentifier("studio.dodge-burn.range")
-                    .accessibilityLabel("Tonal range")
-                    .accessibilityValue(vm.dodgeBurnRange.rawValue.capitalized)
+                StudioSettingChoice(title: "Tonal range", selection: $vm.dodgeBurnRange,
+                    choices: StudioDodgeBurn.TonalRange.allCases,
+                    choiceTitle: { $0.rawValue.capitalized }, identifier: "studio.dodge-burn.range",
+                    showsTitle: true)
+                    .id(vm.selectedTool)
                 Toggle("Protect tones", isOn: $vm.dodgeBurnProtectTones)
                     .accessibilityIdentifier("studio.dodge-burn.protect-tones")
                 Text(vm.selectedTool == .dodge
@@ -453,13 +460,13 @@ struct FloatingToolSettingsPanel: View {
                             .accessibilityIdentifier("studio.text.keyboard-done")
                     }.frame(minHeight: 44)
                 }
-                Picker("Font", selection: $vm.textStyle.font) {
-                    ForEach(StudioTextFont.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.accessibilityIdentifier("studio.text.font")
+                StudioSettingChoice(title: "Font", selection: $vm.textStyle.font,
+                    choices: StudioTextFont.allCases, choiceTitle: { $0.title },
+                    identifier: "studio.text.font", showsTitle: true)
                 SettingsSlider(label: "Font Size", value: $vm.textStyle.size, range: 8...240, unit: "px", accent: accentColor)
-                Picker("Alignment", selection: $vm.textStyle.alignment) {
-                    ForEach(StudioTextAlignment.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.text.alignment")
+                StudioSettingSegments(title: "Alignment", selection: $vm.textStyle.alignment,
+                    choices: StudioTextAlignment.allCases, choiceTitle: { $0.rawValue.capitalized },
+                    identifier: "studio.text.alignment").frame(height: 44)
                 HStack {
                     Toggle("Bold", isOn: $vm.textStyle.bold).accessibilityIdentifier("studio.text.bold")
                     Toggle("Italic", isOn: $vm.textStyle.italic).accessibilityIdentifier("studio.text.italic")
@@ -482,20 +489,17 @@ struct FloatingToolSettingsPanel: View {
                 mirrorSettings
                 SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                Picker("Arrowheads", selection: $vm.lineArrowEnds) {
-                    Text("None").tag(StudioArrowEnds.none); Text("Start").tag(StudioArrowEnds.start)
-                    Text("End").tag(StudioArrowEnds.end); Text("Both").tag(StudioArrowEnds.both)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.line.arrowheads")
+                StudioSettingSegments(title: "Arrowheads", selection: $vm.lineArrowEnds,
+                    choices: [.none, .start, .end, .both], choiceTitle: { $0.rawValue.capitalized },
+                    identifier: "studio.line.arrowheads").frame(height: 44)
                 if vm.lineArrowEnds != .none {
                     SettingsSlider(label: "Head Length", value: $vm.lineArrowLength, range: 1...100, unit: "px", accent: accentColor)
                         .accessibilityIdentifier("studio.line.arrow-length")
                 }
-                Picker("Angle snap", selection: $vm.lineAngleSnap) {
-                    Text("Free").tag(0.0)
-                    Text("15°").tag(15.0)
-                    Text("45°").tag(45.0)
-                    Text("90°").tag(90.0)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.line.angle-snap")
+                StudioSettingSegments(title: "Angle snap", selection: $vm.lineAngleSnap,
+                    choices: [0.0, 15.0, 45.0, 90.0],
+                    choiceTitle: { $0 == 0 ? "Free" : "\(Int($0))°" },
+                    identifier: "studio.line.angle-snap").frame(height: 44)
                     .disabled(vm.lineRulerEnabled)
                 lineRulerSettings
                 Text("Drag from the line's start. Angle snapping is measured in canvas coordinates.")
@@ -748,9 +752,9 @@ struct FloatingToolSettingsPanel: View {
                 }
                 Divider().background(Color.white.opacity(0.08))
                 Text("POSITION").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
-                Picker("Nudge distance", selection: $vm.selectionNudgeDistance) {
-                    Text("1 px").tag(1.0); Text("10 px").tag(10.0); Text("100 px").tag(100.0)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.selection.nudge-distance")
+                StudioSettingSegments(title: "Nudge distance", selection: $vm.selectionNudgeDistance,
+                    choices: [1.0, 10.0, 100.0], choiceTitle: { "\(Int($0)) px" },
+                    identifier: "studio.selection.nudge-distance").frame(height: 44)
                 HStack {
                     Button("←") { _ = vm.positionSelected(dx: -vm.selectionNudgeDistance) }.accessibilityLabel("Move selection left")
                     Button("→") { _ = vm.positionSelected(dx: vm.selectionNudgeDistance) }.accessibilityLabel("Move selection right")
@@ -815,15 +819,14 @@ struct FloatingToolSettingsPanel: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Image pixels").font(.specialElite(16))
                 Text("Select an image layer, close this popup and tap its visible pixels. Sample the image colors or the visible canvas. Only the active image’s pixels are edited; other layers remain untouched. The active image layer must be normal and fully opaque, without drawings or effects.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
-                Picker("Region", selection: $vm.wandMode) {
-                    ForEach(StudioImageRegionService.Mode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.wand.mode")
+                StudioSettingSegments(title: "Region", selection: $vm.wandMode,
+                    choices: StudioImageRegionService.Mode.allCases, choiceTitle: { $0.rawValue },
+                    identifier: "studio.wand.mode").frame(height: 44)
                 HStack { Text("Tolerance"); Slider(value: $vm.wandTolerance, in: 0...128, step: 1); Text("\(Int(vm.wandTolerance))") }
                     .accessibilityIdentifier("studio.wand.tolerance")
-                Picker("Sample colors", selection: $vm.wandSampleVisibleCanvas) {
-                    Text("Active image").tag(false)
-                    Text("Visible canvas").tag(true)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.wand.sampling")
+                StudioSettingSegments(title: "Sample colors", selection: $vm.wandSampleVisibleCanvas,
+                    choices: [false, true], choiceTitle: { $0 ? "Visible canvas" : "Active image" },
+                    identifier: "studio.wand.sampling").frame(height: 44)
                 Toggle("Connected pixels only", isOn: $vm.wandContiguous).accessibilityIdentifier("studio.wand.contiguous")
                 HStack {
                     Button("Select all pixels") { Task { await vm.changeImageRegionMembership(.all) } }
@@ -897,24 +900,10 @@ struct FloatingToolSettingsPanel: View {
             }
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
-                Menu {
-                    Picker("Selection target", selection: $vm.areaSelectionTarget) {
-                        ForEach(StudioViewModel.AreaSelectionTarget.allCases, id: \.self) { target in
-                            Text(target.label).tag(target)
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(vm.areaSelectionTarget.label).font(.specialElite(12))
-                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 11))
-                    }
-                    .foregroundColor(.sdStudioActionText)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Selection target")
-                .accessibilityValue(vm.areaSelectionTarget.label)
-                .accessibilityIdentifier("studio.selection.target")
+                StudioSettingChoice(title: "Selection target", selection: $vm.areaSelectionTarget,
+                    choices: StudioViewModel.AreaSelectionTarget.allCases,
+                    choiceTitle: { $0.label }, identifier: "studio.selection.target")
+                    .id(vm.selectedTool)
                 Text(areaSelectionGuidance)
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 Text(areaSelectionCount)
@@ -1012,13 +1001,11 @@ struct FloatingToolSettingsPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("SAMPLE SIZE")
                     .font(.specialElite(8)).foregroundColor(.sdStudioSecondaryText).tracking(2)
-                Picker("Sample size", selection: $vm.eyedropperSampleSize) {
-                    ForEach(StudioColorSamplingService.sampleSizes, id: \.self) { size in
-                        Text(size == 1 ? "Point" : "\(size)×\(size)").tag(size)
-                    }
-                }
-                .pickerStyle(.menu).tint(.white)
-                .accessibilityIdentifier("studio.eyedropper.sample-size")
+                StudioSettingChoice(title: "Sample size", selection: $vm.eyedropperSampleSize,
+                    choices: StudioColorSamplingService.sampleSizes,
+                    choiceTitle: { $0 == 1 ? "Point" : "\($0)×\($0)" },
+                    identifier: "studio.eyedropper.sample-size", labelColor: .white)
+                    .id(vm.selectedTool)
                 SettingsToggle(label: "Sample active layer only", isOn: $vm.eyedropperActiveLayerOnly, accent: accentColor)
                     .accessibilityIdentifier("studio.eyedropper.active-layer")
                 Text("Point samples one composited pixel of the visible artwork. Larger sizes average the block around the tap, clipped to the canvas. Active-layer sampling reads that layer over the white canvas. Saved per tool.")
@@ -1064,9 +1051,11 @@ struct FloatingToolSettingsPanel: View {
 
     private var mirrorSettings: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Picker("Mirror", selection: $vm.mirrorMode) {
-                ForEach(StudioMirrorMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
-            }.accessibilityIdentifier("studio.drawing.mirror")
+            StudioSettingChoice(title: "Mirror", selection: $vm.mirrorMode,
+                choices: StudioMirrorMode.allCases, choiceTitle: { $0.title },
+                identifier: "studio.drawing.mirror", labelSize: 11, horizontalPadding: 12,
+                compactGrid: true)
+                .id(vm.selectedTool)
             if vm.mirrorMode != .off {
                 if vm.mirrorMode != .horizontal {
                     mirrorAxisSlider("Vertical line", value: $vm.mirrorAxisX, identifier: "studio.drawing.mirror.axis-x",
@@ -1140,6 +1129,196 @@ struct FloatingToolSettingsPanel: View {
             get: { vm.toolOpacity * 100 },
             set: { vm.toolOpacity = $0 / 100 }
         )
+    }
+}
+
+/// Keep native segmented-control accessibility and each original value binding,
+/// while giving only these Studio controls the bundled typewriter font. No
+/// application-wide UIKit appearance is changed.
+private struct StudioSettingSegments<Selection: Hashable>: UIViewRepresentable {
+    let title: String
+    @Binding var selection: Selection
+    let choices: [Selection]
+    let choiceTitle: (Selection) -> String
+    let identifier: String
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeCoordinator() -> StudioSettingSegmentCoordinator {
+        StudioSettingSegmentCoordinator()
+    }
+
+    func makeUIView(context: Context) -> UISegmentedControl {
+        let control = UISegmentedControl(items: choices.map(choiceTitle))
+        control.addTarget(context.coordinator,
+                          action: #selector(StudioSettingSegmentCoordinator.changed(_:)),
+                          for: .valueChanged)
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return control
+    }
+
+    func updateUIView(_ control: UISegmentedControl, context: Context) {
+        let titles = choices.map(choiceTitle)
+        if control.numberOfSegments != titles.count ||
+            titles.indices.contains(where: { control.titleForSegment(at: $0) != titles[$0] }) {
+            control.removeAllSegments()
+            for (index, text) in titles.enumerated() {
+                control.insertSegment(withTitle: text, at: index, animated: false)
+            }
+        }
+        control.selectedSegmentIndex = choices.firstIndex(of: selection) ?? UISegmentedControl.noSegment
+        control.isEnabled = isEnabled
+        control.accessibilityLabel = title
+        control.accessibilityIdentifier = identifier
+        let baseFont = UIFont(name: "SpecialElite-Regular", size: 11) ?? UIFont.systemFont(ofSize: 11)
+        let font = UIFontMetrics(forTextStyle: .caption1)
+            .scaledFont(for: baseFont, compatibleWith: control.traitCollection)
+        control.setTitleTextAttributes([.font: font, .foregroundColor: UIColor.white.withAlphaComponent(0.85)], for: .normal)
+        control.setTitleTextAttributes([.font: font, .foregroundColor: UIColor.white], for: .selected)
+        control.setTitleTextAttributes([.font: font, .foregroundColor: UIColor.white.withAlphaComponent(0.35)], for: .disabled)
+        control.selectedSegmentTintColor = UIColor(Color.sdRed)
+        context.coordinator.choose = { index in
+            guard isEnabled, choices.indices.contains(index) else { return }
+            selection = choices[index]
+        }
+    }
+}
+
+private final class StudioSettingSegmentCoordinator: NSObject {
+    var choose: (Int) -> Void = { _ in }
+    @objc func changed(_ control: UISegmentedControl) {
+        guard control.isEnabled else { return }
+        choose(control.selectedSegmentIndex)
+    }
+}
+
+/// Native menu rows ignore the Studio font. Keep these preference choices in
+/// SwiftUI so both the trigger and the actual selectable rows use Special Elite.
+/// The caller retains the original binding; choosing a row dismisses only this
+/// anchored choice list, leaving the existing tool settings panel in place.
+private struct StudioSettingChoice<Selection: Hashable>: View {
+    let title: String
+    @Binding var selection: Selection
+    let choices: [Selection]
+    let choiceTitle: (Selection) -> String
+    let identifier: String
+    var labelSize: CGFloat = 12
+    var showsTitle = false
+    var horizontalPadding: CGFloat = 0
+    var labelColor: Color = .sdStudioActionText
+    var compactGrid = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @State private var showingChoices = false
+
+    // Keep the four Mirror choices together in a short anchored popup.
+    // Other tool menus and larger accessibility text retain their vertical list.
+    private var usesCompactGrid: Bool {
+        compactGrid && !dynamicTypeSize.isAccessibilitySize
+    }
+    private var choiceListHeight: CGFloat {
+        let rows = usesCompactGrid ? (choices.count + 1) / 2 : choices.count
+        return min(CGFloat(rows) * 44 + (usesCompactGrid ? CGFloat(max(0, rows - 1)) * 4 : 0), 220)
+    }
+    private func choiceButton(_ choice: Selection) -> some View {
+        Button {
+            guard scenePhase == .active, subjectWindowVisible else { return }
+            selection = choice
+            showingChoices = false
+        } label: {
+            HStack(spacing: usesCompactGrid ? 4 : 8) {
+                Text(choiceTitle(choice)).font(.specialElite(13))
+                    .lineLimit(usesCompactGrid ? 1 : nil)
+                    .minimumScaleFactor(usesCompactGrid ? 0.9 : 1)
+                Spacer(minLength: usesCompactGrid ? 0 : 8)
+                if selection == choice {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+            }
+            .foregroundColor(selection == choice ? .sdStudioActionText : .white.opacity(0.9))
+            .padding(.horizontal, usesCompactGrid ? 8 : 12)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(Color.white.opacity(selection == choice ? 0.06 : 0),
+                in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(choiceTitle(choice))
+        .accessibilityAddTraits(selection == choice ? .isSelected : [])
+        .accessibilityIdentifier(identifier + ".choice." + choiceTitle(choice))
+    }
+
+    var body: some View {
+        Button {
+            guard scenePhase == .active, subjectWindowVisible else { return }
+            showingChoices = true
+        } label: {
+            HStack(spacing: 6) {
+                if showsTitle {
+                    Text(title).font(.specialElite(labelSize))
+                    Spacer(minLength: 8)
+                }
+                Text(choiceTitle(selection)).font(.specialElite(labelSize))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11)).accessibilityHidden(true)
+            }
+            .foregroundColor(labelColor)
+            .padding(.horizontal, horizontalPadding)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(choiceTitle(selection))
+        .accessibilityIdentifier(identifier)
+        .popover(isPresented: $showingChoices, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(title).font(.specialElite(13)).foregroundColor(.white.opacity(0.9))
+                    Spacer(minLength: 0)
+                    Button { showingChoices = false } label: {
+                        Text("✕").font(.specialElite(14))
+                            .foregroundColor(.sdStudioSecondaryText)
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close " + title + " choices")
+                    .accessibilityIdentifier(identifier + ".choices.close")
+                }
+                .padding(.leading, 12)
+                Divider().background(Color.white.opacity(0.08))
+                ScrollView {
+                    if usesCompactGrid {
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)], spacing: 4) {
+                            ForEach(choices, id: \.self) { choice in choiceButton(choice) }
+                        }
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(choices, id: \.self) { choice in choiceButton(choice) }
+                        }
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(height: choiceListHeight)
+            }
+            .padding(6)
+            .frame(width: 240)
+            .background(Color(hex: "1A1A24"))
+            .presentationBackground(Color(hex: "1A1A24"))
+            .presentationCompactAdaptation(.popover)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(identifier + ".choices")
+        }
+        .onChange(of: selection) { _, _ in showingChoices = false }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { showingChoices = false }
+        }
+        .onChange(of: subjectWindowVisible) { _, visible in
+            if !visible { showingChoices = false }
+        }
+        .onDisappear { showingChoices = false }
     }
 }
 
@@ -1238,21 +1417,168 @@ private struct ToolSettingsContentLayout<Content: View>: View {
     @State private var contentHeight: CGFloat?
 
     var body: some View {
-        ScrollView {
+        ToolSettingsScrollContainer {
             content().fixedSize(horizontal: false, vertical: true)
                 .background(GeometryReader { geometry in
                     Color.clear.preference(key: ToolSettingsContentHeight.self, value: geometry.size.height)
                 })
+                .onPreferenceChange(ToolSettingsContentHeight.self) { height in
+                    // Measurement stays in the hosted SwiftUI tree. A zero
+                    // during presentation must never collapse the viewport.
+                    if height.isFinite && height > 0 && contentHeight != height {
+                        contentHeight = height
+                    }
+                }
         }
-        .scrollBounceBehavior(.basedOnSize)
         .accessibilityIdentifier("studio.tool-settings.scroll")
         .frame(height: min(maximumHeight, contentHeight ?? maximumHeight))
-        .onPreferenceChange(ToolSettingsContentHeight.self) { height in
-            // A transient/default zero preference is not the content's size.
-            // Accepting it collapses the viewport and prevents measurement from
-            // recovering. Keep the last positive size (or initial bound) instead.
-            if height.isFinite && height > 0 { contentHeight = height }
+    }
+}
+
+/// A local UIKit scrolling boundary keeps vertical drags over native controls
+/// available to the popup. No global appearance/proxy or app-wide gesture changes.
+/// The existing SwiftUI controls, FocusState bindings and environment are retained.
+private struct ToolSettingsScrollContainer<Content: View>: UIViewControllerRepresentable {
+    @ViewBuilder let content: () -> Content
+
+    func makeUIViewController(context: Context) -> ToolSettingsScrollController {
+        ToolSettingsScrollController(rootView: hostedContent(environment: context.environment))
+    }
+
+    func updateUIViewController(_ controller: ToolSettingsScrollController, context: Context) {
+        controller.host.rootView = hostedContent(environment: context.environment)
+        controller.host.view.invalidateIntrinsicContentSize()
+    }
+
+    private func hostedContent(environment: EnvironmentValues) -> AnyView {
+        // Forward visibility/scene phase, enabled state, type size, color scheme
+        // and the rest of the caller's environment through this hosting boundary.
+        AnyView(content().environment(\.self, environment))
+    }
+
+    static func dismantleUIViewController(_ controller: ToolSettingsScrollController, coordinator: ()) {
+        controller.stopObservingEditing()
+        controller.scroll.setContentOffset(controller.scroll.contentOffset, animated: false)
+        controller.host.rootView = AnyView(EmptyView())
+    }
+}
+
+private final class ToolSettingsScrollController: UIViewController, UIScrollViewDelegate {
+    let scroll = ToolSettingsVerticalScrollView()
+    let host: UIHostingController<AnyView>
+    private weak var lastEditor: UIView?
+    private var lastViewport = CGSize.zero
+    private var needsFocusReveal = false
+
+    init(rootView: AnyView) {
+        host = UIHostingController(rootView: rootView)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func loadView() {
+        view = scroll
+        scroll.backgroundColor = .clear
+        scroll.isOpaque = false
+        scroll.isDirectionalLockEnabled = true
+        scroll.alwaysBounceVertical = false
+        scroll.alwaysBounceHorizontal = false
+        scroll.canCancelContentTouches = true
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.accessibilityIdentifier = "studio.tool-settings.scroll"
+        host.sizingOptions = [.intrinsicContentSize]
+        addChild(host)
+        host.view.backgroundColor = .clear
+        host.view.isOpaque = false
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            host.view.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
+        ])
+        host.didMove(toParent: self)
+        scroll.delegate = self
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(editingBegan(_:)),
+                           name: UITextField.textDidBeginEditingNotification, object: nil)
+        center.addObserver(self, selector: #selector(editingBegan(_:)),
+                           name: UITextView.textDidBeginEditingNotification, object: nil)
+        center.addObserver(self, selector: #selector(keyboardFrameChanged(_:)),
+                           name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+    }
+
+    func stopObservingEditing() {
+        NotificationCenter.default.removeObserver(self)
+        scroll.delegate = nil
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func editingBegan(_ notification: Notification) {
+        guard let editor = notification.object as? UIView, editor.isDescendant(of: host.view) else { return }
+        needsFocusReveal = true
+        view.setNeedsLayout()
+    }
+
+    @objc private func keyboardFrameChanged(_ notification: Notification) {
+        guard isViewLoaded, view.window != nil, focusedEditor(in: host.view) != nil else { return }
+        // The surrounding SwiftUI geometry performs keyboard avoidance. Reveal
+        // the existing responder after that geometry has laid out the viewport.
+        needsFocusReveal = true
+        view.setNeedsLayout()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let editor = focusedEditor(in: host.view)
+        let changed = scroll.bounds.size != lastViewport || editor !== lastEditor
+        lastViewport = scroll.bounds.size
+        lastEditor = editor
+        guard let editor, view.window != nil, needsFocusReveal || changed else { return }
+        // Preserve deliberate user scrolling; finish a pending reveal afterward.
+        guard !scroll.isTracking, !scroll.isDragging, !scroll.isDecelerating else { needsFocusReveal = true; return }
+        needsFocusReveal = false
+        let rect: CGRect
+        if let field = editor as? UITextField, let selection = field.selectedTextRange {
+            rect = field.caretRect(for: selection.end)
+        } else if let text = editor as? UITextView, let selection = text.selectedTextRange {
+            rect = text.caretRect(for: selection.end)
+        } else { rect = editor.bounds }
+        scroll.scrollRectToVisible(editor.convert(rect, to: scroll).insetBy(dx: 0, dy: -8), animated: false)
+    }
+
+    private func focusedEditor(in root: UIView) -> UIView? {
+        if root.isFirstResponder && (root is UITextField || root is UITextView) { return root }
+        for child in root.subviews { if let editor = focusedEditor(in: child) { return editor } }
+        return nil
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if needsFocusReveal && !decelerate { view.setNeedsLayout() }
+    }
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        if needsFocusReveal { view.setNeedsLayout() }
+    }
+}
+
+private final class ToolSettingsVerticalScrollView: UIScrollView {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === panGestureRecognizer {
+            let velocity = panGestureRecognizer.velocity(in: self)
+            // Horizontal drags belong to sliders, crop handles and segmented
+            // choices. Only a vertical drag can cancel their active touch.
+            guard abs(velocity.y) > abs(velocity.x) else { return false }
         }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+
+    override func touchesShouldCancel(in view: UIView) -> Bool {
+        if view is UIControl && !(view is UITextField) { return true }
+        return super.touchesShouldCancel(in: view)
     }
 }
 

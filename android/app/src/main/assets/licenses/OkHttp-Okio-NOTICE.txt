@@ -1,0 +1,30 @@
+OkHttp 4.12.1 and Okio 3.6.0
+
+OkHttp: Copyright 2019 Square, Inc.
+Okio: Copyright 2013 Square, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use these components except in compliance with the License.
+The complete, unmodified Apache License 2.0 text already bundled in this
+same directory is SpecialElite-Apache-2.0.txt. It is the identical standard
+license text supplied upstream for OkHttp; the filename reflects the
+pre-existing font distribution and does not limit the license's use here.
+You may also obtain a copy at https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Upstream source:
+https://github.com/square/okhttp/tree/parent-4.12.1
+https://github.com/square/okio/tree/parent-3.6.0
+
+The unmodified OkHttp JAR also retains this upstream notice:
+
+Note that publicsuffixes.gz is compiled from The Public Suffix List:
+https://publicsuffix.org/list/public_suffix_list.dat
+
+It is subject to the terms of the Mozilla Public License, v. 2.0:
+https://mozilla.org/MPL/2.0/

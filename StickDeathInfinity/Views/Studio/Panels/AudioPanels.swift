@@ -1,5 +1,10 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 struct SoundLibraryPanel: View {
     @ObservedObject var vm: StudioViewModel
@@ -10,6 +15,163 @@ struct AudioTimelinePanel: View {
     var body: some View { StudioAudioWorkspace(vm: vm, opensLibrary: false) }
 }
 
+/// A cache operation belongs to one visible project/frame/account context.
+private struct StudioSoundPackPanelScope: Hashable {
+    let accountID: String?
+    let projectID: UUID
+    let revision: Int
+    let frameID: String
+    let visible: Bool
+}
+private struct StudioSoundLibraryLoadRequest: Hashable {
+    let id: UUID
+    let scope: StudioSoundPackPanelScope
+    let mutating: Bool
+}
+private struct StudioSoundPackPanelLoadRequest: Hashable {
+    let scope: StudioSoundPackPanelScope
+    let expanded: Bool
+}
+
+/// Owns this panel's tasks only. Cancellation never targets the shared actor or
+/// another panel; controls stay busy until this panel's cancelled task returns.
+@MainActor
+private final class StudioSoundPackPanelSession: ObservableObject {
+    typealias Descriptor = StudioSoundPackCache.Descriptor
+    typealias Status = StudioSoundPackCache.Status
+    enum Action: Equatable { case download, remove }
+    struct Operation {
+        let packID: String
+        let title: String
+        let action: Action
+    }
+    @Published private(set) var descriptors: [Descriptor] = []
+    @Published private(set) var statuses: [String: Status] = [:]
+    @Published private(set) var statusProblems: [String: String] = [:]
+    @Published private(set) var listProblem: String?
+    @Published private(set) var isLoading = false
+    @Published private(set) var operation: Operation?
+    @Published private(set) var isCancelling = false
+    @Published private(set) var notice: String?
+    @Published private(set) var failedOperation: Operation?
+    var isMutating: Bool { operation != nil }
+    private var scope: StudioSoundPackPanelScope?
+    private var generation = UUID()
+    private var refreshTask: Task<Void, Never>?
+    private var operationTask: Task<Void, Never>?
+    private var operationID: UUID?
+    private var stillCurrent: (() -> Bool)?
+    private var libraryChanged: (() -> Void)?
+
+    func activate(scope: StudioSoundPackPanelScope, stillCurrent: @escaping () -> Bool, libraryChanged: @escaping () -> Void) {
+        close()
+        self.scope = scope; self.stillCurrent = stillCurrent; self.libraryChanged = libraryChanged
+        notice = nil; failedOperation = nil
+        if operation == nil { refresh() }
+    }
+    func close() {
+        scope = nil; stillCurrent = nil; libraryChanged = nil; generation = UUID()
+        refreshTask?.cancel(); refreshTask = nil; isLoading = false
+        cancelOperation()
+    }
+    func cancelOperation() {
+        guard operationTask != nil else { return }
+        isCancelling = true
+        operationTask?.cancel()
+    }
+    private func accepts(_ token: UUID, scope captured: StudioSoundPackPanelScope) -> Bool {
+        generation == token && scope == captured && captured.visible && stillCurrent?() == true
+    }
+    func refresh(reloadLibrary: Bool = false) {
+        guard operation == nil, let captured = scope, captured.visible, stillCurrent?() == true else { return }
+        refreshTask?.cancel()
+        let token = UUID(); generation = token
+        isLoading = true; listProblem = nil; statuses = [:]; statusProblems = [:]
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.accepts(token, scope: captured) { self.isLoading = false; self.refreshTask = nil }
+            }
+            do {
+                try Task.checkCancellation()
+                let trusted = try StudioSoundPackCache.descriptors()
+                guard self.accepts(token, scope: captured), !Task.isCancelled else { return }
+                self.descriptors = trusted
+                var loaded: [String: Status] = [:]
+                var problems: [String: String] = [:]
+                for descriptor in trusted {
+                    do {
+                        let status = try await StudioSoundPackCache.shared.status(descriptor)
+                        try Task.checkCancellation()
+                        loaded[descriptor.id] = status
+                    } catch is CancellationError { throw CancellationError() }
+                    catch StudioSoundPackCache.PackError.busy {
+                        problems[descriptor.id] = "Another sound-pack operation is in progress. Refresh its status when that operation finishes."
+                    } catch { problems[descriptor.id] = error.localizedDescription }
+                    guard self.accepts(token, scope: captured), !Task.isCancelled else { return }
+                }
+                guard self.accepts(token, scope: captured), !Task.isCancelled else { return }
+                self.statuses = loaded; self.statusProblems = problems
+                if reloadLibrary && problems.isEmpty { self.libraryChanged?() }
+            } catch is CancellationError {
+                // A collapsed/dismissed or superseded panel publishes nothing.
+            } catch {
+                guard self.accepts(token, scope: captured), !Task.isCancelled else { return }
+                self.descriptors = []; self.listProblem = error.localizedDescription
+            }
+        }
+    }
+    func perform(_ action: Action, descriptor: Descriptor) {
+        guard operation == nil, !isLoading, descriptors.contains(descriptor),
+              let captured = scope, captured.visible, stillCurrent?() == true,
+              let status = statuses[descriptor.id] else { return }
+        switch (action, status) {
+        case (.download, .notInstalled), (.remove, .installed), (.remove, .corrupt): break
+        default: return
+        }
+        refreshTask?.cancel(); refreshTask = nil
+        let token = UUID(); generation = token
+        let id = UUID(); operationID = id
+        let pending = Operation(packID: descriptor.id, title: descriptor.title, action: action)
+        operation = pending
+        isCancelling = false; notice = nil; failedOperation = nil
+        operationTask = Task { [weak self] in
+            guard let self else { return }
+            var reloadLibrary = true
+            defer { self.finishOperation(id, reloadLibrary: reloadLibrary) }
+            do {
+                try Task.checkCancellation()
+                guard self.accepts(token, scope: captured) else { reloadLibrary = false; return }
+                switch action {
+                case .download: _ = try await StudioSoundPackCache.shared.install(descriptor)
+                case .remove: try await StudioSoundPackCache.shared.remove(descriptor)
+                }
+                try Task.checkCancellation()
+                guard self.accepts(token, scope: captured) else { return }
+                self.notice = action == .download ? "Pack downloaded and verified." : "Pack removed from the cache. Project audio is unchanged."
+            } catch is CancellationError {
+                if self.accepts(token, scope: captured) { self.notice = "Cancellation requested. Checking the current cache." }
+            } catch StudioSoundPackCache.PackError.busy {
+                reloadLibrary = false
+                if self.accepts(token, scope: captured) { self.notice = "Another sound-pack operation is in progress. Refresh status and try again when it finishes." }
+            } catch {
+                if self.accepts(token, scope: captured), !Task.isCancelled {
+                    self.notice = error.localizedDescription; self.failedOperation = pending
+                }
+            }
+        }
+    }
+    private func finishOperation(_ id: UUID, reloadLibrary: Bool) {
+        guard operationID == id else { return }
+        operationTask = nil; operationID = nil; operation = nil; isCancelling = false
+        // The old response is fenced; re-read the current context if it reopened
+        // while cancellation was finishing. No old catalogue is handed to it.
+        guard scope?.visible == true, stillCurrent?() == true else { return }
+        if reloadLibrary { libraryChanged?() }
+        refresh()
+    }
+}
+
 private struct StudioAudioWorkspace: View {
     @ObservedObject var vm: StudioViewModel
     let opensLibrary: Bool
@@ -17,11 +179,26 @@ private struct StudioAudioWorkspace: View {
     @StateObject private var timeline = StudioAudioTimelineSession()
     /// Short real-mix grains while the ruler is tapped or dragged (#180).
     @StateObject private var scrubAudio = StudioAudioScrubAudition()
+    @StateObject private var soundPacks = StudioSoundPackPanelSession()
+    @ObservedObject private var soundPackAuth = AuthService.shared
+    @State private var showingSoundPacks = false
     @AppStorage("studio.audio.audible-scrub") private var audibleScrub = true
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @State private var resourcesSuspended = false
+    @State private var resourceAccountID: String?
+    private var resourcesAllowed: Bool {
+        subjectWindowVisible && !resourcesSuspended && scenePhase == .active && resourceAccountID == soundPackAuth.userId
+    }
     @State private var showingLibrary = false
     private var canOpenLibrary: Bool { vm.planLimits.soundLibrary || vm.planLimits.audioImport }
     private func openLibrary() { if vm.requirePlan(canOpenLibrary) { showingLibrary = true } }
+    private func closeLibrary() {
+        soundPacks.close()
+        audio.stopCataloguePreview()
+        timeline.stopLibraryPreview()
+        showingLibrary = false
+    }
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     @State private var category: String?
@@ -45,6 +222,10 @@ private struct StudioAudioWorkspace: View {
     private let selectionMemory = StudioAudioSelectionMemory()
     @State private var searchMemo = StudioSoundSearchMemo()
     private let background = Color(hex: "0D0D12")
+    private var soundPackScope: StudioSoundPackPanelScope {
+        .init(accountID: soundPackAuth.userId, projectID: vm.document.id, revision: vm.document.revision,
+              frameID: vm.document.activeFrameID, visible: showingLibrary && vm.isEditing && resourcesAllowed)
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -103,24 +284,47 @@ private struct StudioAudioWorkspace: View {
             // The library holds the sound catalogue and audio import; a plan
             // that locks both shows the upgrade note instead of opening it.
             showingLibrary = opensLibrary && vm.requirePlan(canOpenLibrary)
+            resourceAccountID = soundPackAuth.userId
+            resourcesSuspended = !subjectWindowVisible || scenePhase != .active
             restoreProjectAudioState()
         }
-        .task(id: catalogueLoadID) {
-            guard catalogue == nil else { return }
+        .task(id: StudioSoundLibraryLoadRequest(id: catalogueLoadID, scope: soundPackScope, mutating: soundPacks.isMutating)) {
+            let request = catalogueLoadID, target = soundPackScope
+            guard catalogue == nil, target.visible, !soundPacks.isMutating else { return }
             catalogueError = nil
             do {
-                let loaded = try await StudioSoundCatalogue.loadBundled()
+                let loaded = try await StudioSoundCatalogue.loadAvailable()
                 try Task.checkCancellation()
+                guard request == catalogueLoadID, target == soundPackScope, !soundPacks.isMutating else { return }
                 catalogue = loaded
                 favoriteSounds = StudioSoundFavorites(allowedIDs: Set(loaded.sounds.map(\.id))).ids
             } catch is CancellationError {
                 // The panel disappeared; do not show a stale loading error.
             } catch {
-                if !Task.isCancelled { catalogueError = error.localizedDescription }
+                if !Task.isCancelled, request == catalogueLoadID, target == soundPackScope, !soundPacks.isMutating { catalogueError = error.localizedDescription }
             }
         }
+        .task(id: StudioSoundPackPanelLoadRequest(scope: soundPackScope, expanded: showingSoundPacks)) {
+            let target = soundPackScope
+            if showingSoundPacks && target.visible {
+                soundPacks.activate(scope: target, stillCurrent: { resourcesAllowed && showingSoundPacks && target == soundPackScope }, libraryChanged: {
+                    catalogue = nil; catalogueError = nil; catalogueLoadID = UUID()
+                })
+            } else { soundPacks.close() }
+        }
         .onChange(of: search) { if search.count > 256 { search = String(search.prefix(256)) } }
-        .onDisappear { audio.close(); timeline.close(); scrubAudio.close(); vm.stopPlayback(); fadeCapture = nil }
+        .onDisappear { resourcesSuspended = true; closeAudioResources(); fadeCapture = nil }
+        .onChange(of: subjectWindowVisible) { _, visible in
+            resourcesSuspended = !visible || scenePhase != .active
+            if resourcesSuspended { closeAudioResources() }
+            else { restoreProjectAudioState() }
+        }
+        .onChange(of: soundPackAuth.userId) { _, _ in
+            resourcesSuspended = true; closeAudioResources()
+            resourceAccountID = soundPackAuth.userId
+            resourcesSuspended = !subjectWindowVisible || scenePhase != .active
+            if resourcesAllowed { restoreProjectAudioState() }
+        }
         .onChange(of: vm.document.id) { _, _ in
             audio.close(); timeline.close(); scrubAudio.close(); trimCapture = nil; fadeCapture = nil; pendingDeleteClipID = nil; mixerTrack = nil
             restoreProjectAudioState()
@@ -137,8 +341,13 @@ private struct StudioAudioWorkspace: View {
             if let id { selectionMemory.remember(id, for: vm.document.id) }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { audio.close(); timeline.close(); scrubAudio.close(); vm.stopPlayback(); fadeCapture = nil }
+            resourcesSuspended = phase != .active || !subjectWindowVisible
+            if resourcesSuspended { closeAudioResources(); fadeCapture = nil }
+            else { restoreProjectAudioState() }
         }
+    }
+    private func closeAudioResources() {
+        soundPacks.close(); audio.close(); timeline.close(); scrubAudio.close(); vm.stopPlayback()
     }
     /// Reopen state for the current project: the remembered clip selection and
     /// every measured waveform (from the persistent cache first) (#177, #192, #193).
@@ -152,7 +361,7 @@ private struct StudioAudioWorkspace: View {
     }
     private func restoreWaveforms() {
         let project = vm.document.id
-        _ = audio.restoreMeasurements(for: vm.projectAudioTracks, stillCurrent: { vm.isEditing && vm.document.id == project })
+        _ = audio.restoreMeasurements(for: vm.projectAudioTracks, stillCurrent: { resourcesAllowed && vm.isEditing && vm.document.id == project })
     }
     private var overlappingClipIDs: Set<String> {
         StudioAudioClipOverlap.overlappingIDs(vm.audioClips.map {
@@ -222,6 +431,7 @@ private struct StudioAudioWorkspace: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text("♫ Audio Timeline").font(.specialElite(16))
+                .lineLimit(1).minimumScaleFactor(0.85)
             Text("\(vm.audioClips.count) clips").font(.specialElite(10))
                 .padding(5).background(Color.white.opacity(0.05)).clipShape(Capsule())
                 .accessibilityIdentifier("studio.audio.clip-count")
@@ -234,14 +444,14 @@ private struct StudioAudioWorkspace: View {
                     .accessibilityLabel("\(overlapping) clips overlap another clip on the same track and play mixed together")
                     .accessibilityIdentifier("studio.audio.overlap-count")
             }
-            if audio.restoredFromCacheCount > 0 {
-                Text("\(audio.restoredFromCacheCount) waveforms from cache").font(.specialElite(9))
-                    .foregroundColor(.sdStudioSecondaryText)
-                    .accessibilityIdentifier("studio.audio.waveforms-restored")
-            }
             Spacer(minLength: 0)
-            Button(vm.snapEnabled ? "Snap: ON" : "Snap: OFF") { vm.snapEnabled.toggle() }
-                .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
+            Button { vm.snapEnabled.toggle() } label: {
+                Text(vm.snapEnabled ? "Snap: ON" : "Snap: OFF")
+                    .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+                .buttonStyle(.plain)
                 .accessibilityIdentifier("studio.audio.snap")
                 .accessibilityHint("Snap to frames, the playhead and other clip edges while dragging or trimming.")
             Button { openLibrary() } label: {
@@ -253,7 +463,7 @@ private struct StudioAudioWorkspace: View {
                 .font(.specialElite(12)).padding(.horizontal, 12).padding(.vertical, 9)
                 .background(Color.sdRed).clipShape(Capsule())
                 .accessibilityIdentifier("studio.audio.library.open")
-            Button { audio.close(); timeline.close(); scrubAudio.close(); vm.activePanel = .none } label: {
+            Button { soundPacks.close(); audio.close(); timeline.close(); scrubAudio.close(); vm.activePanel = .none } label: {
                 Image(systemName: "xmark").font(.system(size: 10)).frame(width: 44, height: 44)
             }.accessibilityLabel("Close audio workspace").accessibilityIdentifier("studio.audio.close")
         }.padding(.leading, 12)
@@ -272,8 +482,10 @@ private struct StudioAudioWorkspace: View {
                 .contextMenu {
                     Toggle("Loop playback", isOn: $vm.playbackLoops)
                         .accessibilityIdentifier("studio.audio.loop")
+                        .menuActionDismissBehavior(.enabled)
                     Toggle("Audible scrubbing", isOn: $audibleScrub)
                         .accessibilityIdentifier("studio.audio.audible-scrub")
+                        .menuActionDismissBehavior(.enabled)
                 }
             Button { seek(vm.audioDuration) } label: { Image(systemName: "forward.end.fill").frame(width: 44, height: 44) }
                 .accessibilityLabel("Audio end")
@@ -294,27 +506,28 @@ private struct StudioAudioWorkspace: View {
     /// real-mix grain at the new playhead when audible scrubbing is on (#180).
     private func scrub(_ time: Double) {
         seek(time)
-        guard audibleScrub, !audio.isBusy else { return }
+        guard resourcesAllowed, audibleScrub, !audio.isBusy else { return }
         let id = vm.document.id
         scrubAudio.scrub(document: vm.document, tracks: vm.projectAudioTracks, timelineDuration: vm.audioDuration,
-            at: vm.audioPlayheadTime, stillCurrent: { vm.isEditing && vm.document.id == id })
+            at: vm.audioPlayheadTime, stillCurrent: { resourcesAllowed && vm.isEditing && vm.document.id == id })
     }
     private func togglePlayback() {
+        guard resourcesAllowed else { return }
         if timeline.isPlaying { timeline.stop(); return }
         audio.stop(); vm.stopPlayback()
         // A scrub grain may still hold the shared offline mixer; play once it is free.
         scrubAudio.stop { startTimelinePlayback() }
     }
     private func startTimelinePlayback() {
-        guard !timeline.isPlaying, !timeline.isPreparing else { return }
+        guard resourcesAllowed, !timeline.isPlaying, !timeline.isPreparing else { return }
         let id = vm.document.id, revision = vm.document.revision
         let start = vm.audioPlayheadTime < vm.audioDuration ? vm.audioPlayheadTime : 0
         _ = timeline.play(document: vm.document, tracks: vm.projectAudioTracks,
             duration: vm.audioDuration, from: start, loop: vm.playbackLoops,
             frameClock: StudioAudioTransport.FrameClock(fps: vm.fps, frameTicks: vm.document.frames.map(\.durationTicks)),
-            stillCurrent: { vm.isEditing && vm.document.id == id && vm.document.revision == revision },
+            stillCurrent: { resourcesAllowed && vm.isEditing && vm.document.id == id && vm.document.revision == revision },
             onTime: { time, playing in
-                guard vm.document.id == id, vm.document.revision == revision else { return }
+                guard resourcesAllowed, vm.document.id == id, vm.document.revision == revision else { return }
                 vm.displayAudioPlaybackTime(min(vm.audioDuration, StudioAudioTransport.floorSafeSeconds(time, fps: vm.fps)), playing: playing)
             })
     }
@@ -324,7 +537,7 @@ private struct StudioAudioWorkspace: View {
                 if category != nil || browseAllSounds { Button("‹") { category = nil; browseAllSounds = false; search = ""; soundDuration = .any; soundSort = .catalogue }.frame(width: 32, height: 44).accessibilityLabel("All sound categories") }
                 Text(category ?? "Sound Library").font(.specialElite(16))
                 Spacer()
-                Button { showingLibrary = false } label: {
+                Button { closeLibrary() } label: {
                     Image(systemName: "xmark").font(.system(size: 10)).frame(width: 44, height: 44)
                 }.accessibilityLabel("Close sound library")
                     .accessibilityIdentifier("studio.audio.library.close")
@@ -340,6 +553,7 @@ private struct StudioAudioWorkspace: View {
             ScrollView {
                 VStack(spacing: 0) {
                 Self.scrollMarker("studio.audio.library.start")
+                soundPacksSection
                 VStack(spacing: 10) {
                     // Stable section IDs reorder these stateful controls without
                     // recreating import drafts or the active clip audition.
@@ -393,7 +607,7 @@ private struct StudioAudioWorkspace: View {
                             .font(.specialElite(12)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
                             .accessibilityIdentifier("studio.audio.catalogue.retry")
                     } else {
-                        ProgressView("Loading sound library…")
+                        ProgressView(soundPacks.isMutating ? "Updating sound packs…" : "Loading sound library…")
                             .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).tint(.sdRed).padding(16)
                             .accessibilityIdentifier("studio.audio.catalogue.loading")
                     }
@@ -414,10 +628,128 @@ private struct StudioAudioWorkspace: View {
             }
         }
     }
+    /// Optional downloads live inside the existing library, never a second
+    /// toolbar or a separate preview/import path.
+    private var soundPacksSection: some View {
+        DisclosureGroup(isExpanded: $showingSoundPacks) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Download packs into this library. Removing a pack keeps audio already added to your projects.")
+                    .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2))
+                    .foregroundColor(.sdStudioSecondaryText)
+                if soundPacks.isLoading {
+                    ProgressView("Checking sound packs…").tint(.sdRed)
+                        .font(.specialElite(12, relativeTo: .caption))
+                        .accessibilityIdentifier("studio.audio.packs.loading")
+                }
+                if let problem = soundPacks.listProblem {
+                    Text(problem).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.sdStudioActionText)
+                        .accessibilityIdentifier("studio.audio.packs.error")
+                } else if !soundPacks.isLoading && soundPacks.descriptors.isEmpty && !soundPacks.isMutating {
+                    Text("No downloadable sound packs are included in this build. Bundled sounds and Files import remain available.")
+                        .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.sdStudioSecondaryText)
+                        .accessibilityIdentifier("studio.audio.packs.empty")
+                }
+                ForEach(soundPacks.descriptors) { descriptor in soundPackRow(descriptor) }
+                if let operation = soundPacks.operation {
+                    HStack(spacing: 10) {
+                        ProgressView().tint(.sdRed)
+                        Text(soundPacks.isCancelling ? "Cancelling…" : (operation.action == .download ? "Downloading and verifying \(operation.title)…" : "Removing \(operation.title)…"))
+                            .font(.specialElite(12, relativeTo: .caption))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Cancel") { soundPacks.cancelOperation() }
+                            .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.sdStudioActionText)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .disabled(soundPacks.isCancelling)
+                            .accessibilityLabel("Cancel this sound-pack operation")
+                            .accessibilityIdentifier("studio.audio.packs.cancel")
+                    }
+                    .accessibilityIdentifier("studio.audio.packs.operation")
+                }
+                if let notice = soundPacks.notice {
+                    Text(notice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.sdStudioActionText)
+                        .accessibilityIdentifier("studio.audio.packs.notice")
+                }
+                Button("Refresh pack status") { soundPacks.refresh(reloadLibrary: true) }
+                    .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.sdStudioActionText)
+                    .frame(minHeight: 44)
+                    .disabled(soundPacks.isLoading || soundPacks.isMutating)
+                    .accessibilityIdentifier("studio.audio.packs.refresh")
+            }
+            .padding(.bottom, 8)
+        } label: {
+            Label("Sound Packs", systemImage: "shippingbox")
+                .font(.specialElite(13, relativeTo: .body))
+                .frame(minHeight: 44)
+        }
+        .tint(.sdStudioActionText)
+        .padding(.horizontal, 16)
+        .accessibilityIdentifier("studio.audio.packs")
+    }
+    private func soundPackRow(_ descriptor: StudioSoundPackCache.Descriptor) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(descriptor.title).font(.specialElite(14, relativeTo: .headline))
+                .fixedSize(horizontal: false, vertical: true)
+            Text("\(descriptor.soundCount) sounds · \(soundPackBytes(descriptor.totalAudioBytes)) of audio")
+                .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+            if let status = soundPacks.statuses[descriptor.id] {
+                switch status {
+                case .notInstalled:
+                    Text("Not downloaded").font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+                    soundPackAction(.download, descriptor: descriptor)
+                case .installed(let count, let bytes):
+                    Text("Downloaded · \(count) sounds · \(soundPackBytes(bytes)) cached")
+                        .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+                    soundPackAction(.remove, descriptor: descriptor)
+                case .corrupt:
+                    Text("This download could not be verified. Remove it, then download again.")
+                        .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.sdStudioActionText)
+                    soundPackAction(.remove, descriptor: descriptor)
+                }
+            } else if let problem = soundPacks.statusProblems[descriptor.id] {
+                Text(problem).font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.sdStudioActionText)
+                    .accessibilityIdentifier("studio.audio.packs.status-error." + descriptor.id)
+            } else {
+                Text(soundPacks.isLoading ? "Checking cache…" : "Cache status unavailable. Refresh to try again.")
+                    .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("studio.audio.packs.item." + descriptor.id)
+    }
+    private func soundPackAction(_ action: StudioSoundPackPanelSession.Action, descriptor: StudioSoundPackCache.Descriptor) -> some View {
+        let retry = soundPacks.failedOperation?.packID == descriptor.id && soundPacks.failedOperation?.action == action
+        let title = action == .download ? (retry ? "Retry download" : "Download") : (retry ? "Retry removal" : "Remove download")
+        return Button {
+            guard !audio.isBusy, !timeline.isPreparing, !vm.isSaving, vm.isEditing else { return }
+            if action == .download, !vm.requirePlan(vm.planLimits.soundLibrary) { return }
+            audio.stop()
+            soundPacks.perform(action, descriptor: descriptor)
+            if soundPacks.isMutating {
+                // Fence in-flight loads and remove stale cache-backed rows.
+                // Existing project-owned audio and import sessions are untouched.
+                catalogue = nil; catalogueError = nil; catalogueLoadID = UUID()
+            }
+        } label: {
+            Label(title, systemImage: action == .download ? (vm.planLimits.soundLibrary ? "arrow.down.circle" : "lock.fill") : "trash")
+                .frame(minHeight: 44)
+        }
+        .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.sdStudioActionText)
+        .disabled(soundPacks.isLoading || soundPacks.isMutating || audio.isBusy || timeline.isPreparing || vm.isSaving || !vm.isEditing)
+        .accessibilityLabel(title + " " + descriptor.title)
+        .accessibilityHint(action == .download ? "Downloads and verifies this pack before its sounds enter the library." : "Removes only this downloaded pack. Audio already added to projects stays on this device.")
+        .accessibilityIdentifier("studio.audio.packs." + (action == .download ? "download." : "remove.") + descriptor.id)
+    }
+    private func soundPackBytes(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
     private var projectAudioSources: some View {
         VStack(spacing: 10) {
-            AudioFilesImportControls(vm: vm, audio: audio, stopPlayback: { timeline.stop(); audio.stop(); vm.stopPlayback() })
-            AudioProjectClips(vm: vm, audio: audio, timeline: timeline)
+            AudioFilesImportControls(vm: vm, audio: audio, isResourceCurrent: { resourcesAllowed }, stopPlayback: { timeline.stop(); audio.stop(); vm.stopPlayback() })
+            AudioProjectClips(vm: vm, audio: audio, timeline: timeline, isResourceCurrent: { resourcesAllowed })
         }
     }
     /// Result lists up to this size lay out eagerly. A LazyVStack whose few rows
@@ -461,15 +793,28 @@ private struct StudioAudioWorkspace: View {
                         if audio.playingClipID == sound.id { audio.stop(); return }
                         let project = vm.document.id, revision = vm.document.revision
                         _ = audio.useCatalogueSound(sound, catalogue: catalogue,
-                            stillCurrent: { vm.isEditing && vm.document.id == project && vm.document.revision == revision })
+                            stillCurrent: { resourcesAllowed && vm.isEditing && vm.document.id == project && vm.document.revision == revision })
                     } label: {
                         Image(systemName: audio.playingClipID == sound.id ? "stop.fill" : "play.fill")
                             .frame(width: 44, height: 44).background(Color.white.opacity(0.06)).clipShape(Circle())
-                    }.disabled(audio.isBusy || timeline.isPreparing)
+                    }.disabled(audio.isBusy || timeline.isPreparing || soundPacks.isMutating)
                         .accessibilityLabel((audio.playingClipID == sound.id ? "Stop preview " : "Preview ") + sound.title)
                         .accessibilityIdentifier("studio.audio.catalogue.preview." + sound.id)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(sound.title).font(.specialElite(14)).lineLimit(1)
+                            .contextMenu {
+                                Button("Copy Spatter instruction") {
+                                    let instruction = SpatterLibrarySoundInstruction(assetID: sound.id, track: libraryTrack,
+                                        startSeconds: vm.audioPlayheadTime)
+                                    guard let text = instruction.instructionText else { return }
+                                    #if canImport(UIKit)
+                                    UIPasteboard.general.string = text
+                                    #elseif canImport(AppKit)
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(text, forType: .string)
+                                    #endif
+                                }
+                            }
                         HStack {
                             Text(String(format: "%.2fs", sound.duration)).font(.specialElite(11))
                             MeasuredAudioWaveform(peaks: sound.waveformPeaks, rms: sound.waveformRMS ?? []).frame(width: 56, height: 14)
@@ -499,14 +844,14 @@ private struct StudioAudioWorkspace: View {
                         let target = AudioImportLease(projectID: vm.document.id, revision: vm.document.revision,
                             frameID: vm.document.activeFrameID, track: libraryTrack, playhead: vm.audioPlayheadTime)
                         _ = audio.useCatalogueSound(sound, catalogue: catalogue,
-                            stillCurrent: { target.isCurrent(vm) }, attach: { imported in
+                            stillCurrent: { resourcesAllowed && target.isCurrent(vm) }, attach: { imported in
                                 try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
                                     expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track, atPlayhead: target.playhead)
                             })
                     } label: {
                         Image(systemName: vm.planLimits.soundLibrary ? "plus" : "lock.fill").foregroundColor(.sdStudioActionText).frame(width: 44, height: 44)
                             .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.sdRed.opacity(0.35)))
-                    }.disabled(audio.isBusy || timeline.isPreparing || vm.isSaving)
+                    }.disabled(audio.isBusy || timeline.isPreparing || vm.isSaving || soundPacks.isMutating)
                         .accessibilityLabel("Add " + sound.title)
                         .accessibilityIdentifier("studio.audio.catalogue.add." + sound.id)
                 }.padding(.horizontal, 16)
@@ -674,14 +1019,11 @@ private struct StudioAudioWorkspace: View {
             }
             HStack {
                 Text(clip.soundName).font(.specialElite(12)).lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Button { apply(.mute(!clip.isMuted), clip: clip) } label: {
                     Image(systemName: clip.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 44, height: 44)
                 }.accessibilityLabel(clip.isMuted ? "Unmute selected clip" : "Mute selected clip")
                     .accessibilityIdentifier("studio.audio.clip-mute")
-                StudioAudioClipVolumeControl(vm: vm, clip: clip) {
-                    timeline.stop(); audio.stop(); vm.stopPlayback()
-                }
-                .id("\(vm.document.id):\(vm.document.revision):\(clip.id)")
                 // Deleting a clip is reversible through Undo but still asks first
                 // (#178): the sheet names the clip and nothing changes on Cancel.
                 Button("Delete") { timeline.stop(); audio.stop(); vm.stopPlayback(); pendingDeleteClipID = clip.id }
@@ -703,17 +1045,25 @@ private struct StudioAudioWorkspace: View {
                         Text("The saved sound stays in the project library; only this placement is removed. Undo restores it.")
                     }
             }
+            // Give the native slider its own row so a long sound title and the
+            // mute/delete buttons cannot squeeze its usable adjustment range.
+            StudioAudioClipVolumeControl(vm: vm, clip: clip) {
+                timeline.stop(); audio.stop(); vm.stopPlayback()
+            }
+            .id("\(vm.document.id):\(vm.document.revision):\(clip.id)")
             if let id = clip.assetID, let measurement = audio.measurements[id] {
                 MeasuredAudioWaveform(peaks: measurement.peaks, rms: measurement.rms, sourceDuration: measurement.duration,
                     sourceOffset: clip.sourceOffset, duration: clip.duration).frame(height: 28)
-                    .accessibilityValue(measurement.restoredFromCache ? "Measured earlier and restored from the waveform cache" : "Measured from the decoded audio")
+                    .accessibilityValue(measurement.restoredFromCache
+                        ? "Restored measured waveform; \(audio.restoredFromCacheCount) waveform\(audio.restoredFromCacheCount == 1 ? "" : "s") restored"
+                        : "Measured from the decoded audio")
                     .accessibilityIdentifier("studio.audio.selected-waveform")
             } else if let id = clip.assetID, let track = vm.audioTrack(forAssetID: id) {
                 Button("Load measured waveform") {
                     timeline.stop(); audio.stop(); vm.stopPlayback()
                     let project = vm.document.id
                     _ = audio.analyze(track, stillCurrent: {
-                        vm.isEditing && vm.document.id == project && vm.audioTrack(forAssetID: id)?.audioData == track.audioData
+                        resourcesAllowed && vm.isEditing && vm.document.id == project && vm.audioTrack(forAssetID: id)?.audioData == track.audioData
                     })
                 }.disabled(audio.isBusy || timeline.isPreparing)
                     .font(.specialElite(11)).frame(minHeight: 44)
@@ -845,7 +1195,9 @@ private struct StudioAudioClipVolumeControl: View {
         volume = vm.document.audioClips.first(where: { $0.id == clip.id })?.volume ?? clip.volume
     }
     var body: some View {
-        HStack {
+        HStack(spacing: 10) {
+            Text("Clip volume").font(.specialElite(10))
+                .foregroundColor(.sdStudioSecondaryText)
             Slider(value: $volume, in: 0...1, onEditingChanged: { editing in
                 if editing {
                     stopPlayback()
@@ -866,9 +1218,9 @@ private struct StudioAudioClipVolumeControl: View {
                 .accessibilityLabel("Selected clip volume")
                 .accessibilityValue("\(Int((volume * 100).rounded())) percent")
             Text("\(Int((volume * 100).rounded()))%")
-                .font(.specialElite(11)).frame(width: 30)
+                .font(.specialElite(11)).frame(width: 38, alignment: .trailing)
                 .accessibilityIdentifier("studio.audio.clip-volume-value")
-        }
+        }.frame(minHeight: 44)
         .onDisappear { discardDraft() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { discardDraft() } }
     }
@@ -1181,32 +1533,37 @@ private struct StudioAudioTimelineClip: View {
     @State private var trimmingLeading: Bool?
     @GestureState private var trimTranslation: CGFloat = 0
     @GestureState private var translation: CGSize = .zero
+    private var hasTrimHandles: Bool { clip.duration * pointsPerSecond >= 88 }
+    private func selectClip() { stop(); vm.selectedAudioClip = clip }
     @ViewBuilder private var clipAppearance: some View {
         let visible = trimPreview ?? clip
         let width = visible.duration * pointsPerSecond
         let radius = min(14.0, width / 2)
         HStack(spacing: 0) {
-            if clip.duration * pointsPerSecond >= 88 { handle(leading: true) }
-            VStack(alignment: .leading, spacing: 3) {
-                if width >= 44 {
-                    Text(clip.soundName).lineLimit(1).font(.specialElite(11))
-                    Text(String(format: "%.2fs", visible.duration)).font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
-                    if let measurement {
-                        MeasuredAudioWaveform(peaks: measurement.peaks, rms: measurement.rms, sourceDuration: measurement.duration,
-                            sourceOffset: visible.sourceOffset, duration: visible.duration)
-                            .frame(height: 14).allowsHitTesting(false)
+            if hasTrimHandles { handle(leading: true) }
+            Button(action: selectClip) {
+                VStack(alignment: .leading, spacing: 3) {
+                    if width >= 44 {
+                        Text(clip.soundName).lineLimit(1).font(.specialElite(11))
+                        Text(String(format: "%.2fs", visible.duration)).font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                        if let measurement {
+                            MeasuredAudioWaveform(peaks: measurement.peaks, rms: measurement.rms, sourceDuration: measurement.duration,
+                                sourceOffset: visible.sourceOffset, duration: visible.duration)
+                                .frame(height: 14).allowsHitTesting(false)
+                        }
+                    } else if width >= 12 {
+                        Image(systemName: "waveform").font(.system(size: 10))
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Color.clear
                     }
-                } else if width >= 12 {
-                    Image(systemName: "waveform").font(.system(size: 10))
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Color.clear
-                }
-            }.frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .clipped()
-                .contentShape(Rectangle()).onTapGesture { stop(); vm.selectedAudioClip = clip }
-                .gesture(moveGesture)
-            if clip.duration * pointsPerSecond >= 88 { handle(leading: false) }
+                }.frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .clipped()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(moveGesture)
+            if hasTrimHandles { handle(leading: false) }
         }.frame(width: width, height: 58)
             .background(Color(hex: StudioCraftAudio.trackColor(clip.track)).opacity(clip.isMuted || !vm.document.isAudioTrackAudible(clip.track) ? 0.08 : 0.30))
             .clipShape(RoundedRectangle(cornerRadius: radius))
@@ -1223,11 +1580,16 @@ private struct StudioAudioTimelineClip: View {
     }
     var body: some View {
         clipAppearance
-            .accessibilityElement(children: .contain)
+            // A short clip has no trim children. Expose its real selection
+            // action as one button even when its temporal width fits no icon.
+            // Wider clips retain the independently accessible trim handles.
+            .accessibilityElement(children: hasTrimHandles ? .contain : .ignore)
+            .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("studio.audio.clip.\(clip.id)")
             .accessibilityLabel("\(clip.soundName), track \(clip.track), start \(clip.startTime.formatted()) seconds, duration \(clip.duration.formatted()) seconds")
             .accessibilityValue(overlaps ? "Overlaps another clip on this track; both play mixed together" : "")
-            .accessibilityAction(named: "Select clip") { stop(); vm.selectedAudioClip = clip }
+            .accessibilityAction { selectClip() }
+            .accessibilityAction(named: "Select clip") { selectClip() }
             .accessibilityAction(named: "Move earlier one frame") {
                 accessibleEdit(.place(start: max(0, clip.startTime - 1 / Double(vm.fps)), track: clip.track))
             }
@@ -1364,7 +1726,10 @@ private struct AudioImportLease {
 private struct AudioFilesImportControls: View {
     @ObservedObject var vm: StudioViewModel
     @ObservedObject var audio: StudioAudioPreviewSession
+    let isResourceCurrent: () -> Bool
     let stopPlayback: () -> Void
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
+    @ObservedObject private var auth = AuthService.shared
     @State private var showingFiles = false
     @State private var lease: AudioImportLease?
     @State private var track = 1
@@ -1378,7 +1743,7 @@ private struct AudioFilesImportControls: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Button {
-                    guard vm.requirePlan(vm.planLimits.audioImport) else { return }
+                    guard isResourceCurrent(), vm.requirePlan(vm.planLimits.audioImport) else { return }
                     stopPlayback()
                     lease = .init(projectID: vm.document.id, revision: vm.document.revision,
                                   frameID: vm.document.activeFrameID, track: track, playhead: vm.audioPlayheadTime)
@@ -1430,11 +1795,15 @@ private struct AudioFilesImportControls: View {
 
         }
         .padding(.horizontal, 14)
+        .onChange(of: subjectWindowVisible) { _, visible in
+            if !visible { showingFiles = false; lease = nil; capturedMovieMapping = nil }
+        }
+        .onChange(of: auth.userId) { _, _ in showingFiles = false; lease = nil; capturedMovieMapping = nil }
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: movieAudio ? [.mpeg4Movie, .quickTimeMovie] : [.audio], allowsMultipleSelection: false) { result in
             switch result {
             case .failure(let error): audio.pickerFailed(error)
             case .success(let urls):
-                guard let url = urls.first, let target = lease else { return }
+                guard isResourceCurrent(), let url = urls.first, let target = lease else { return }
                 let mapping = capturedMovieMapping
                 let prepare: StudioAudioPreviewSession.AudioPreparation? = mapping.map { captured in
                     { progress in try await StudioVideoAudioImportService.shared.extract(from: url, mapping: captured, progress: progress).audio }
@@ -1442,7 +1811,7 @@ private struct AudioFilesImportControls: View {
                 // The clip persists the exact trim/speed mapping it was cut with (#201).
                 let persisted = mapping.map { StudioVideoSourceMapping(sourceStartSeconds: $0.sourceStartSeconds,
                     sourceEndSeconds: $0.sourceEndSeconds, projectStartSeconds: $0.projectStartSeconds, speed: $0.speed) }
-                _ = audio.importFile(url, prepare: prepare, stillCurrent: { target.isCurrent(vm) }, attach: { imported in
+                _ = audio.importFile(url, prepare: prepare, stillCurrent: { isResourceCurrent() && target.isCurrent(vm) }, attach: { imported in
                     try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
                         expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track, atPlayhead: target.playhead,
                         videoMapping: persisted)
@@ -1457,12 +1826,14 @@ private struct AudioProjectClips: View {
     @ObservedObject var vm: StudioViewModel
     @ObservedObject var audio: StudioAudioPreviewSession
     @ObservedObject var timeline: StudioAudioTimelineSession
+    let isResourceCurrent: () -> Bool
     @State private var auditionID: String?
     var body: some View {
         LazyVStack(spacing: 8) {
             ForEach(vm.audioClips) { clip in
                 HStack {
                     Button {
+                        guard isResourceCurrent() else { return }
                         let wasAuditioning = auditionID == clip.id && (timeline.isPlaying || timeline.isPreparing)
                         audio.stop(); timeline.stop(); vm.stopPlayback(); vm.selectedAudioClip = clip
                         auditionID = nil
@@ -1472,7 +1843,8 @@ private struct AudioProjectClips: View {
                         let project = vm.document.id, revision = vm.document.revision
                         auditionID = clip.id
                         let accepted = timeline.play(document: solo, tracks: [track], duration: clip.duration, from: 0,
-                            stillCurrent: { vm.isEditing && vm.document.id == project && vm.document.revision == revision },
+                            purpose: .libraryPreview,
+                            stillCurrent: { isResourceCurrent() && vm.isEditing && vm.document.id == project && vm.document.revision == revision },
                             onTime: { _, playing in if !playing { auditionID = nil } })
                         if !accepted { auditionID = nil }
                     } label: {

@@ -106,10 +106,10 @@ begin
  perform sdi_test.login(reporter);
  r:=sdi_private.moderation_appeal('submit',media,'Not mine.');
  perform sdi_test.check(r->>'error' is not null,'only the owner can appeal');
- perform sdi_test.login(mod1,'aal2');
+ perform sdi_test.login(mod1,'aal2',60);
  r:=sdi_private.moderation_appeal('accept',null,'',appeal,1,'Restoring.');
  perform sdi_test.check(r->>'error' like 'Another uninvolved%','removing admin cannot decide the appeal');
- perform sdi_test.login(mod2,'aal2');
+ perform sdi_test.login(mod2,'aal2',60);
  r:=sdi_private.moderation_appeal('queue');
  perform sdi_test.check(jsonb_array_length(r->'appeals')=1 and r->'appeals'->0->>'removal_state'='pending','queue shows removal state');
  r:=sdi_private.moderation_appeal('accept',null,'',appeal,1,'Ownership evidence accepted.');

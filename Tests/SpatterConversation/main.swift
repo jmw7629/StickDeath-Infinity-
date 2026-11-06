@@ -264,7 +264,7 @@ private final class NetworkTrap: URLProtocol {
                 var calls = 0
                 let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
                 for (question, facts) in [
-                    ("Download thousands of pictures from the image library", ["207 pictures", "1818 more", "2025 pictures", "all six verified packs", "not a claim that your device has installed", "not an installation"]),
+                    ("Download thousands of pictures from the image library", ["243 pictures", "1818 more", "2061 pictures", "all six verified packs", "not a claim that your device has installed", "not an installation", "separate local instruction panel", "Only explicit Apply", "do not add pictures to projects"]),
                     ("Remove my downloaded image pack", ["Remove download", "pictures already added to projects are kept", "cannot see whether"]),
                     ("Can Spatter memory learn from my history?", ["off by default", "fixed choices", "each account and guest", "does not learn from conversation history", "not automatically sent to cloud"]),
                     ("Import and export my personal preferences", ["Import preference JSON", "Save is required", "version 1", "at most 2 KB", "no extra fields", "no account identity or conversation"])
@@ -283,11 +283,11 @@ private final class NetworkTrap: URLProtocol {
                 let context = try unwrap(SpatterContext.studio(studio.commandScreenContext))
                 for question in ["Can I use Micro Roguelike offline?", "Where is Monochrome RPG?",
                                  "How do I install 1-Bit Characters and Props?", "I cancelled 1-Bit Platformer; are its pictures installed?",
-                                 "Smoke and Explosions says verification failed", "Which packs bring the image library to 2025 pictures?"] {
+                                 "Smoke and Explosions says verification failed", "Which packs bring the image library to 2061 pictures?"] {
                     try require(chat.submit(question,context:context), "Named pack question rejected")
                     try await idle(chat)
                     let answer = chat.messages.last!.content
-                    try require(answer.contains("2025 pictures") && answer.contains("Micro Roguelike (160)") &&
+                    try require(answer.contains("2061 pictures") && answer.contains("Micro Roguelike (160)") &&
                         answer.contains("Download 178 KB") && answer.contains("Already verified pictures can be used offline") &&
                         answer.contains("not an installation") && answer.contains("cannot see whether"), "Named pack help omitted actual state boundaries")
                     try require(!answer.contains("665 total") && !answer.contains("not thousands") && !answer.contains("download complete"),
@@ -512,10 +512,17 @@ private final class NetworkTrap: URLProtocol {
             try await test("account and rooms guidance states current limits without inventing access") {
                 var calls = 0
                 let vm = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
+                let before = studio.document
+                let networkAttempts = NetworkTrap.count
                 for (question, expected) in [
-                    ("How do I delete my account?", ["Apple, Google, GitHub or Microsoft", "not available yet", "cannot delete"]),
+                    ("How do I delete my account?", ["Apple, Google, GitHub or Microsoft", "Profile → Settings", "Account deletion", "Delete account", "Request deletion", "server-side request", "seven-day cooling-off period", "cannot delete"]),
+                    ("How do I export my account data?", ["After signing in", "Your data", "Export my account data", "unavailable if the server is not configured", "displayed status or error", "Contact support"]),
+                    ("Cancel my account deletion now", ["While a request is pending", "Cancel deletion", "I cannot delete an account, request or cancel deletion", "from this conversation"]),
                     ("Can I sign in with Microsoft and keep guest projects?", ["separate guest scope", "does not merge"]),
                     ("How do room invites work?", ["revocable, expiring code", "never an account sign-in token", "no chat, direct messaging"]),
+                    ("How do I edit a shared project in a room?", ["When room services are configured and you are signed in", "Review invitation", "Request admission", "owner uses Approve", "Make editor", "Open shared project in Studio", "Download shared project", "not a verified live connection"]),
+                    ("Why is my room unavailable?", ["not-configured, unavailable or connection error", "not proof of an active shared session", "Read the room and Studio synchronisation status"]),
+                    ("Create a room and send an invite for me", ["I cannot create rooms, send invites, approve members, inspect membership or perform room editing", "from this conversation"]),
                     ("Can we chat or call inside a collaboration room?", ["have been removed", "Watch Together"]),
                     ("Is Watch Together a video call?", ["it is not a call"])
                 ] {
@@ -523,16 +530,25 @@ private final class NetworkTrap: URLProtocol {
                     try await idle(vm)
                     let answer = vm.messages.last!.content
                     try require(expected.allSatisfy { answer.contains($0) } && answer.contains("Guidance only"), "Account/rooms guidance missing fact: \(question)")
+                    try require(vm.status == .localGuide && vm.messages.last?.origin == .local,
+                        "Account/rooms guidance claimed a cloud result or executed action")
+                    try require(!answer.contains("In-app account deletion is not available yet") && !answer.contains("screen does not offer a delete button"),
+                        "Account guidance denied the implemented Profile controls")
+                    try require(!answer.contains("Connected room editing of a shared project is not available yet")
+                        && !answer.contains("connected rooms are not available yet") && !answer.contains("Collaboration rooms are planned"),
+                        "Rooms guidance denied implemented conditional controls")
                 }
+                try require(studio.document == before && NetworkTrap.count == networkAttempts,
+                    "Account/rooms guidance edited the project or attempted a network action")
                 try require(calls == 0 && SpatterAIViewModel.currentGuideVersion == "2026-10-13.1", "Guide used cloud or version was not bumped")
-                for fact in ["catalog v\(SpatterInstructionCatalog.version)", "selectionTranslate", "imagePlacement", "textUpdate", "pan L100–R100 and solo",
-                             "SHA-256", "In-app account deletion is not available yet", "revocable, expiring code",
+                for fact in ["catalog v\(SpatterInstructionCatalog.version)", "selectionTranslate", "imagePlacement", "textCreate", "textUpdate", "pan L100–R100 and solo",
+                             "SHA-256", "Under Account deletion, choose Delete account, then Request deletion", "revocable, expiring code",
                              "multiClauseBrief", "tween", "frameClipboard", "projectSettings", "brushStroke", "batch",
                              "USD 4.99 per month (Creator), USD 9.99 per month (Pro) and USD 19.99 per month (Unlimited)", "Preview plan", "Revert Spatter edit",
                              "areaSelection", "wandSelection", "libraryPicture", "projectExport"] {
                     try require(SpatterAIViewModel.currentStudioCapabilities.contains(fact), "Capability text missing: \(fact)")
                 }
-                try require(SpatterInstructionCatalog.version == 5 && SpatterInstructionCatalog.grammars.count == 44 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                try require(SpatterInstructionCatalog.version == 14 && SpatterInstructionCatalog.grammars.count == 52 && SpatterInstructionCatalog.names.contains("artworkTransform") && SpatterInstructionCatalog.commandNames.contains("transformSelectedArtwork") && SpatterInstructionCatalog.commandNames.contains("translateElements")
                     && SpatterInstructionCatalog.commandNames.contains("fillAtPoint") && SpatterInstructionCatalog.commandNames.contains("selectElements")
                     && SpatterInstructionCatalog.commandNames.contains("setSourceReference")
                     && SpatterInstructionCatalog.commandNames.contains("updateText") && SpatterInstructionCatalog.commandNames.contains("appendFrames")

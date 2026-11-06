@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 from .draft_queue import PLAN_FPS, Plan, RenderResult, quality_record_problem
+from .draft_rpc_transport import RPC_WALL_SECONDS, reap_reserve, terminate_owned_child
 
 ENV_CLI = "SDI_DRAFT_RENDERER_CLI"
 ENV_OUTPUT = "SDI_DRAFT_RENDER_DIR"
@@ -41,11 +42,11 @@ ENV_FPS = "SDI_DRAFT_RENDER_FPS"
 RECEIPT_SCHEMA = "sdi_spatter_draft_render_receipt"
 RECEIPT_VERSION = 1
 MAX_RECEIPT_BYTES = 4 * 1024 * 1024
-# The job lease is 15 minutes and is renewed by every heartbeat; one render must
-# finish well inside it even if a heartbeat is lost.
+# The production draft lease is 15 minutes. Leave time for service checks
+# and receipt handling around the renderer process.
 MAX_TIMEOUT_SECONDS = 840
 DEFAULT_TIMEOUT_SECONDS = 600
-HEARTBEAT_SECONDS = 60
+HEARTBEAT_SECONDS = 60 - 2 * RPC_WALL_SECONDS
 PREVIEW_NOT_CONFIGURED = ("Private preview storage is not configured (OWNER-GATED). The draft renderer needs a private HTTPS "
                           "preview publisher before a render can reach the owner's review queue; nothing was uploaded or published.")
 _SHA = re.compile(r"[a-f0-9]{64}")
@@ -55,6 +56,10 @@ PreviewPublisher = Callable[[Path, str, Plan], Any]  # URL, or (URL, aware datet
 
 class RendererError(RuntimeError):
     """Public-safe render failure; draft_queue records the message as the job error."""
+
+
+class _UnreapedRenderer(RendererError):
+    """The renderer may still own files in its private scratch directory."""
 
 
 def _sha256_file(path: Path) -> tuple[str, int]:
@@ -86,7 +91,8 @@ class CLIRenderer:
             raise ValueError(f"Render timeout must be 1–{MAX_TIMEOUT_SECONDS} seconds with a shorter heartbeat interval.")
         self.executable, self.output_root, self.publish_preview = executable, output_root, publish_preview
         self.fps, self.width, self.height = fps, width, height
-        self.timeout, self.heartbeat_interval = float(timeout), float(heartbeat_interval)
+        self.timeout = float(timeout)
+        self.heartbeat_interval = float(min(heartbeat_interval, HEARTBEAT_SECONDS))
         self._popen, self._clock = popen, clock
 
     def job(self, plan: Plan) -> dict:
@@ -105,31 +111,44 @@ class CLIRenderer:
             job_path.write_text(json.dumps(self.job(plan), sort_keys=True))
             os.chmod(job_path, 0o600)
             receipt = self._run(job_path, run_dir, heartbeat)
-            result = self._validate(receipt, plan, run_dir)
+            result = self._validate(receipt, plan, run_dir, heartbeat)
             keep = True  # the private draft stays on disk for the owner's review
             return result
+        except _UnreapedRenderer:
+            keep = True
+            raise
         finally:
             if not keep:
                 shutil.rmtree(run_dir, ignore_errors=True)
 
     def _run(self, job_path: Path, run_dir: Path, heartbeat: Callable[[], None]) -> Mapping[str, Any]:
         command = [str(self.executable), "--job", str(job_path), "--output-dir", str(run_dir)]
+        timeout_message = f"The draft renderer exceeded its {int(self.timeout)} s limit. No draft was submitted."
         heartbeat()
         with tempfile.TemporaryFile(dir=run_dir) as out, tempfile.TemporaryFile(dir=run_dir) as err:
+            deadline = self._clock() + self.timeout
+            work_deadline = deadline - reap_reserve(self.timeout)
             process = self._popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err, cwd=str(run_dir),
                                   env={"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": str(run_dir), "TMPDIR": str(run_dir)}, close_fds=True)
-            deadline = self._clock() + self.timeout
-            while True:
-                remaining = deadline - self._clock()
-                if remaining <= 0:
-                    process.kill()
-                    process.wait()
-                    raise RendererError(f"The draft renderer exceeded its {int(self.timeout)} s limit and was stopped. No draft was submitted.")
-                try:
-                    code = process.wait(timeout=min(self.heartbeat_interval, remaining))
-                    break
-                except subprocess.TimeoutExpired:
-                    heartbeat()
+            try:
+                while True:
+                    remaining = work_deadline - self._clock()
+                    if remaining <= 0:
+                        raise RendererError(timeout_message)
+                    try:
+                        code = process.wait(timeout=min(self.heartbeat_interval, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        # Leave room for the full production RPC deadline before
+                        # calling while a child is live. The final heartbeat runs
+                        # after reaping it, before consuming its output.
+                        if self._clock() < work_deadline - RPC_WALL_SECONDS or self.timeout <= RPC_WALL_SECONDS:
+                            heartbeat()
+            finally:
+                if not terminate_owned_child(process, deadline, clock=self._clock):
+                    raise _UnreapedRenderer("Renderer exit could not be confirmed. Private scratch was retained. No draft was submitted.") from None
+            if self._clock() > deadline:
+                raise RendererError(timeout_message)
             heartbeat()
             out.seek(0)
             raw = out.read(MAX_RECEIPT_BYTES + 1)
@@ -161,7 +180,7 @@ class CLIRenderer:
             raise RendererError(f"The receipt's {label} digest does not match the file on disk.")
         return resolved, actual
 
-    def _validate(self, receipt: Mapping[str, Any], plan: Plan, run_dir: Path) -> RenderResult:
+    def _validate(self, receipt: Mapping[str, Any], plan: Plan, run_dir: Path, heartbeat: Callable[[], None]) -> RenderResult:
         def fail(detail: str):
             raise RendererError("The draft renderer receipt was rejected: " + detail)
         if receipt.get("schema") != RECEIPT_SCHEMA or receipt.get("version") != RECEIPT_VERSION:
@@ -206,6 +225,7 @@ class CLIRenderer:
             quality.update(passes=False, failures=failures)
         preview_url, preview_expires_at, artifact = "", None, None
         if quality["passes"]:
+            heartbeat()
             published = self.publish_preview(movie_path, movie_sha, plan)
             # A publisher returns the URL; (URL, expiry) for a bounded signed link; or a
             # draft_preview.PublishedPreview, which also names the retained copy.

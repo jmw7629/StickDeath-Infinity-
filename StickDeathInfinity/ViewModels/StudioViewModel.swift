@@ -1189,13 +1189,25 @@ final class StudioViewModel: ObservableObject {
     @discardableResult
     func createProject(name: String, width: Int, height: Int, fps: Int) async -> Bool {
         guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil, textDraft == nil else { message = "Finish or discard any drawing draft, then save and return to projects before creating another animation."; return false }
+        guard !isSaving, !isManagingProjects else { message = "Another project operation is running."; return false }
         do {
-            editor = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
+            let candidate = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
+            let snapshot = candidate.document
+            let project = try storageProject(snapshot, rasters: [:], audioTracks: [], videoSources: [:],
+                                             includeCurrentThumbnail: false)
+            // The new identity must be durably selected before the library
+            // can route into its editor. A failed first save leaves the form open.
+            try storage.saveNewAnimation(project)
             projectThumbnailData = nil
             imageClipboard = nil; imageClipboardEditorVersion = nil; copiedImageLayer = nil; retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll(); managedVideoSources.removeAll()
-            savedRevision = nil; lastSaveTime = nil; resetSession(); isEditing = true
-            return await save()
-        } catch { message = error.localizedDescription; return false }
+            editor = candidate; savedRevision = snapshot.revision; lastSaveTime = Date()
+            resetSession(); isEditing = true
+            await loadProjects()
+            return true
+        } catch {
+            message = "Project could not be saved: \(DeviceStorageManager.userMessage(for: error))"
+            return false
+        }
     }
     @discardableResult
     func openProject(_ metadata: AnimationMetadata) async -> Bool {
@@ -1414,8 +1426,9 @@ final class StudioViewModel: ObservableObject {
             _ = await self.save()
         }
     }
-    private func command(_ operation: (inout StudioDocumentEditor) throws -> Void) {
-        guard allowDocumentEditDuringInput() else { return }
+    private func command(unlockingRejectedDraftLayerID: String? = nil,
+                         _ operation: (inout StudioDocumentEditor) throws -> Void) {
+        guard allowDocumentEditDuringInput(unlockingRejectedDraftLayerID: unlockingRejectedDraftLayerID) else { return }
         do {
             var candidate = editor
             try operation(&candidate)
@@ -1425,9 +1438,21 @@ final class StudioViewModel: ObservableObject {
             editor = candidate; pruneManagedAudio(); scheduleSave()
         } catch { message = error.localizedDescription }
     }
-    private func allowDocumentEditDuringInput() -> Bool {
+    private func allowDocumentEditDuringInput(unlockingRejectedDraftLayerID: String? = nil) -> Bool {
         guard textDraft == nil else { message = "Apply or cancel the text draft before changing the document."; return false }
         guard activeStrokeID == nil else { message = "Finish the current touch stroke before changing the document."; return false }
+        if let pending = pendingBrushStroke {
+            // The existing explicit Free control may recover this exact draft's
+            // locked layer without allowing any other document operation.
+            guard let layerID = unlockingRejectedDraftLayerID,
+                  isEditing, !isPlaying, !isSaving, pending.projectID == document.id,
+                  pending.frameID == document.activeFrameID, pending.element.layerID == layerID,
+                  document.activeLayerID == layerID,
+                  frames.contains(where: { $0.id == pending.frameID }),
+                  layers.contains(where: { $0.id == layerID }) else {
+                message = "Retry or discard the rejected drawing draft before changing the document."; return false
+            }
+        }
         return true
     }
     private func change(_ operation: (inout StudioDocument) throws -> Void) { command { try $0.change(operation) } }
@@ -1965,10 +1990,11 @@ final class StudioViewModel: ObservableObject {
         }
         return bounds.isNull ? nil : bounds
     }
-    private func captureArtworkSelection() -> SelectionHandleCapture? {
-        guard isEditing, !isPlaying, !isSaving, !isMovingImageOnCanvas, selectionMode != .subtract,
+    private func captureArtworkSelection(includeImageOnly: Bool = false) -> SelectionHandleCapture? {
+        let imageOnly = includeImageOnly && selectedElementIDs.isEmpty && currentImageMoveCapture() != nil
+        guard isEditing, !isPlaying, !isSaving, (!isMovingImageOnCanvas || imageOnly), selectionMode != .subtract,
               activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
-              (!selectedElementIDs.isEmpty || isSelectingMixedArtwork), selectedElementIDs.count <= 1024 else { return nil }
+              (!selectedElementIDs.isEmpty || isSelectingMixedArtwork || imageOnly), selectedElementIDs.count <= 1024 else { return nil }
         let elements = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
         guard elements.count == selectedElementIDs.count else { return nil }
         for element in elements {
@@ -1978,8 +2004,10 @@ final class StudioViewModel: ObservableObject {
                   rect.width > 0, rect.height > 0,
                   [rect.minX,rect.minY,rect.maxX,rect.maxY].allSatisfy({ $0.isFinite && abs($0) <= 100_000 }) else { return nil }
         }
-        let image = isSelectingMixedArtwork ? validSelectedArtworkImage : nil
-        guard !isSelectingMixedArtwork || image != nil, let bounds = selectedArtworkBounds(in: currentFrame) else { return nil }
+        let image = isSelectingMixedArtwork || imageOnly ? validSelectedArtworkImage : nil
+        let imageBounds = image.map { StudioImageRotationGeometry(placement: $0.placement, degrees: $0.angle).bounds }
+        guard !(isSelectingMixedArtwork || imageOnly) || image != nil,
+              let bounds = imageOnly ? imageBounds : selectedArtworkBounds(in: currentFrame) else { return nil }
         return .init(preservesAspect: image != nil || selectionPreservesAspect,
             projectID: document.id, revision: document.revision,
             frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode, bounds: bounds,
@@ -2003,11 +2031,43 @@ final class StudioViewModel: ObservableObject {
         if beginSelectionHandle() == nil { return "Finish the current edit or select the artwork again to transform it." }
         return nil
     }
+    /// Local assistant admission is whole-object only. A Wand/pixel selection
+    /// must never silently become a request to transform its complete objects.
+    func beginSpatterArtworkTransform() -> SelectionHandleCapture? {
+        guard selectedTool == .move, areaSelectionTarget != .imagePixels,
+              !wandWorking, !hasDrawingWandSelection, imageRegionSelection == nil else { return nil }
+        // A stale image target remains a refusal sentinel; never transform only
+        // its drawings if the explicit image or its source becomes unavailable.
+        if imageMoveTarget != nil, !isSelectingMixedArtwork {
+            guard selectedElementIDs.isEmpty, currentImageMoveCapture() != nil else { return nil }
+        }
+        guard let capture = captureArtworkSelection(includeImageOnly: true) else { return nil }
+        if let image = capture.image, currentFrame.rasterInstance(on: image.layerID)?.regionMask != nil { return nil }
+        return capture
+    }
+    /// Uses exactly the manual group request/commit/selection-retention path.
+    /// The caller's context check is repeated throughout the staged transaction.
+    func applySpatterArtworkTransform(_ capture: SelectionHandleCapture,
+        dx: Double = 0, dy: Double = 0, scale: Double = 1, rotation: Double = 0,
+        flipHorizontal: Bool = false, flipVertical: Bool = false, requestID: UUID,
+        checkCancellation: () throws -> Void) throws -> StudioCommandReceipt {
+        guard beginSpatterArtworkTransform() == capture else { throw StudioCommandError.staleRevision }
+        let request = try artworkRequest(capture, dx: dx, dy: dy, scale: scale,
+            rotation: rotation, flipHorizontal: flipHorizontal, flipVertical: flipVertical,
+            requestID: requestID)
+        let receipt = try applyStudioCommands(request, checkCancellation: {
+            try checkCancellation()
+            guard self.beginSpatterArtworkTransform() == capture else { throw StudioCommandError.staleRevision }
+        })
+        retainArtworkSelection(capture)
+        return receipt
+    }
     private func artworkRequest(_ capture: SelectionHandleCapture, dx: Double = 0, dy: Double = 0,
                                 scale: Double = 1, rotation: Double = 0,
-                                flipHorizontal: Bool = false, flipVertical: Bool = false) throws -> StudioCommandRequest {
-        guard captureArtworkSelection() == capture else { throw StudioCommandError.staleRevision }
-        return .init(requestID: UUID(), projectID: capture.projectID, expectedRevision: capture.revision,
+                                flipHorizontal: Bool = false, flipVertical: Bool = false,
+                                requestID: UUID = UUID()) throws -> StudioCommandRequest {
+        guard captureArtworkSelection(includeImageOnly: true) == capture else { throw StudioCommandError.staleRevision }
+        return .init(requestID: requestID, projectID: capture.projectID, expectedRevision: capture.revision,
             action: .apply([.transformSelectedArtwork(.init(frame: .id(capture.frameID), elementIDs: capture.ids.sorted(),
                 image: capture.image.map { .init(assetID: $0.assetID, layerID: $0.layerID) },
                 dx: dx, dy: dy, scale: scale, rotation: rotation, flipHorizontal: flipHorizontal, flipVertical: flipVertical))]))
@@ -2323,6 +2383,25 @@ final class StudioViewModel: ObservableObject {
                 "This selection cannot be transformed. Select visible artwork on an unlocked layer."
         }
     }
+    /// Shared by native All/Invert and Spatter's equivalent drawing-only
+    /// route. Inspect the current frame without selecting or editing anything.
+    func visibleEditableDrawingIDs(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Set<String> {
+        let eligible = Set(layers.filter {
+            $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
+        }.map(\.id))
+        let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
+        var ids = Set<String>()
+        for element in currentFrame.elements {
+            try checkCancellation()
+            guard let layer = element.layerID, eligible.contains(layer), element.opacity > 0,
+                  element.tool != .eraser,
+                  let bounds = try StudioSelectionRegion.drawingBounds(element),
+                  !bounds.intersection(canvas).isNull else { continue }
+            ids.insert(element.id)
+        }
+        try checkCancellation()
+        return ids
+    }
     /// All/Invert operate on visible editable artwork only. They never create
     /// document history and never select an invisible or fully locked layer.
     @discardableResult
@@ -2333,19 +2412,7 @@ final class StudioViewModel: ObservableObject {
             // remain available there without allowing new lasso gestures in Move.
             let capturedTool = selectedTool
             guard ![.image, .imagePixels].contains(areaSelectionTarget), let capture = areaSelectionCapture(allowMove: true), textDraft == nil else { return false }
-            let eligible = Set(layers.filter {
-                $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
-            }.map(\.id))
-            let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
-            var ids = Set<String>()
-            for element in currentFrame.elements {
-                try checkCancellation()
-                guard let layer = element.layerID, eligible.contains(layer), element.opacity > 0,
-                      element.tool != .eraser,
-                      let bounds = try StudioSelectionRegion.drawingBounds(element),
-                      !bounds.intersection(canvas).isNull else { continue }
-                ids.insert(element.id)
-            }
+            let ids = try visibleEditableDrawingIDs(checkCancellation: checkCancellation)
             try checkCancellation()
             guard selectedTool == capturedTool, areaSelectionCapture(allowMove: true) == capture, textDraft == nil else { throw StudioCommandError.staleRevision }
             editor.selectedElementIDs = inverting ? ids.subtracting(capture.selectedIDs) : ids
@@ -2894,7 +2961,9 @@ final class StudioViewModel: ObservableObject {
     func toggleLayerVisibility(_ id: String) { command { try $0.updateLayer(id) { $0.visible.toggle() } } }
     func toggleLayerLock(_ id: String) { command { try $0.updateLayer(id) { layer in layer.locked.toggle(); layer.lockMode = layer.locked ? "full" : "free" } } }
     func setLayerLockMode(_ id: String, mode: LayerLockMode) {
-        command { try $0.updateLayer(id) { $0.lockMode = mode.rawValue; $0.locked = mode == .full } }
+        command(unlockingRejectedDraftLayerID: mode == .free ? id : nil) {
+            try $0.updateLayer(id) { $0.lockMode = mode.rawValue; $0.locked = mode == .full }
+        }
     }
     struct LayerSliderCapture: Equatable {
         let projectID: UUID
@@ -3089,11 +3158,14 @@ final class StudioViewModel: ObservableObject {
                               height: canvasOffset.height + (anchor.y - viewport.height / 2) * delta)
         canvasScale = scale
     }
-    /// The Files session must decode with StudioAudioImportService first. These
+    /// Files and Sound Library callers must decode with StudioAudioImportService first. These
     /// are ownership/metadata checks, not an independent codec validation claim.
+    /// An explicit timeline time shares the same atomic publication and may
+    /// additionally require that the user has not scrubbed since capture.
     @discardableResult
     func attachImportedAudio(_ track: AudioTrack, expectedProjectID: UUID, expectedRevision: Int,
                              frameID: String, trackNumber: Int, atPlayhead: Double? = nil,
+                             atTime: Double? = nil, expectedPlayhead: Double? = nil,
                              videoMapping: StudioVideoSourceMapping? = nil,
                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
         try checkCancellation()
@@ -3123,7 +3195,17 @@ final class StudioViewModel: ObservableObject {
                 throw StudioDocumentError.unavailable("The audio playhead changed. Add the sound again at the current position.")
             }
         }
-        let insertionTime = atPlayhead ?? Double(document.startTick(ofFrame: frame)) / Double(fps)
+        if let atTime {
+            guard atPlayhead == nil, atTime.isFinite, (0...1000).contains(atTime), videoMapping == nil else {
+                throw StudioDocumentError.invalid("The explicit audio placement is invalid. No audio was added.")
+            }
+        }
+        if let expectedPlayhead {
+            guard expectedPlayhead.isFinite, (0...1000).contains(expectedPlayhead), audioPlayheadTime == expectedPlayhead else {
+                throw StudioDocumentError.unavailable("The audio playhead changed. Add the sound again in the current editor.")
+            }
+        }
+        let insertionTime = atTime ?? atPlayhead ?? Double(document.startTick(ofFrame: frame)) / Double(fps)
         let clipboardVersion = editor.clipboardVersion, selectedIDs = editor.selectedElementIDs
         let selectedClipID = selectedAudioClip?.id
         let clip = AudioClip(id: UUID().uuidString, soundName: track.name, track: trackNumber,
@@ -3148,7 +3230,8 @@ final class StudioViewModel: ObservableObject {
               document.id == expectedProjectID, document.revision == expectedRevision,
               document.activeFrameID == frameID, editor.clipboardVersion == clipboardVersion,
               editor.selectedElementIDs == selectedIDs, selectedAudioClip?.id == selectedClipID,
-              atPlayhead == nil || audioPlayheadTime == atPlayhead else {
+              atPlayhead == nil || audioPlayheadTime == atPlayhead,
+              expectedPlayhead == nil || audioPlayheadTime == expectedPlayhead else {
             throw StudioDocumentError.unavailable("The editor changed before the audio could be attached. No audio was added.")
         }
         // Publish the bytes and the single undoable document edit together.
@@ -4271,6 +4354,7 @@ final class StudioViewModel: ObservableObject {
     /// filled shapes and transformed fills a bounded sweep of their visible box.
     private func drawingWandCandidates(frame: AnimationFrame, layerID: String) throws -> DrawingWandCandidates {
         var result = DrawingWandCandidates()
+        var capturedAlphaPixels = 0
         let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
         for element in frame.elements where element.layerID == layerID {
             guard element.opacity > 0, element.tool != .eraser, element.eraser == nil, !element.hasPixelEffect else { continue }
@@ -4286,7 +4370,32 @@ final class StudioViewModel: ObservableObject {
                 continue
             }
             if element.fillMask == nil, [.pencil, .pen, .brush, .marker, .crayon, .line].contains(element.tool), !element.points.isEmpty {
-                result.strokes.append(.init(id: element.id, points: element.points.map { placed($0.x, $0.y) }, radius: radius))
+                if element.tool == .line, element.shape == nil, element.brush == nil {
+                    // The native plain-line renderer draws only its first two points
+                    // with butt caps. Clip the existing probe disks to that source
+                    // shaft through the exact inverse affine placement, including
+                    // nonuniform scale, shear, translation and reflection.
+                    guard element.points.count >= 2 else { continue }
+                    let a = element.points[0], b = element.points[1]
+                    let dx = Double(b.x - a.x), dy = Double(b.y - a.y), length = hypot(dx, dy)
+                    guard length > 0 else { continue } // A zero-length butt shaft paints nothing.
+                    let ux = dx / length, uy = dy / length
+                    // Only inverse directions are used below. Inverting the
+                    // placement's translation could reject a valid visible line
+                    // when its unused inverse origin exceeds document limits.
+                    let linearPlacement = StudioElementTransform(a: placement.a, b: placement.b, c: placement.c, d: placement.d)
+                    let inverse = try linearPlacement.invertedForErasure(), start = placed(a.x, a.y)
+                    let shaft = StudioSelectionElementHitTest.ButtStroke(startX: start.x, startY: start.y,
+                        alongX: ux * inverse.a + uy * inverse.b, alongY: ux * inverse.c + uy * inverse.d,
+                        acrossX: -uy * inverse.a + ux * inverse.b, acrossY: -uy * inverse.c + ux * inverse.d,
+                        length: length, halfWidth: Double(element.width) / 2)
+                    let transverseScale = hypot(-uy * placement.a + ux * placement.c, -uy * placement.b + ux * placement.d)
+                    let shaftRadius = min(512, max(0.5, Double(element.width) * transverseScale / 2))
+                    result.strokes.append(.init(id: element.id, points: [start, placed(b.x, b.y)],
+                        radius: shaftRadius, buttStroke: shaft))
+                } else {
+                    result.strokes.append(.init(id: element.id, points: element.points.map { placed($0.x, $0.y) }, radius: radius))
+                }
                 continue
             }
             let filled = element.shape?.fillColor != nil || element.fillColor != nil
@@ -4305,6 +4414,15 @@ final class StudioViewModel: ObservableObject {
                 result.strokes.append(.init(id: element.id, points: outline, radius: radius))
                 continue
             }
+            if StudioFillService.wandRequiresAlphaCoverage(element) {
+                let alpha = try StudioFillService.wandElementCoverage(document: document,
+                    frame: frame, element: element,
+                    maximumPixels: StudioSelectionMask.maximumElementProbes - capturedAlphaPixels)
+                guard let alpha else { continue } // No visible source pixels on this canvas.
+                capturedAlphaPixels += alpha.width * alpha.height
+                result.strokes.append(.init(id: element.id, points: [], radius: 0, alphaCoverage: alpha))
+                continue
+            }
             guard let bounds = element.selectionBounds?.intersection(canvas), !bounds.isNull, !bounds.isEmpty else { continue }
             var sweep: [(x: Double, y: Double)] = []
             var y = Double(bounds.minY) + 0.5, row = 0
@@ -4316,6 +4434,30 @@ final class StudioViewModel: ObservableObject {
             if !sweep.isEmpty { result.strokes.append(.init(id: element.id, points: sweep, radius: 0.5)) }
         }
         return result
+    }
+
+    /// Visible sampling reads displayed colors only where the active layer has
+    /// actual paint. One extra bounded layer render per gesture, never per object.
+    private func drawingWandSample(frame: AnimationFrame, layerID: String, point: CGPoint,
+                                   tolerance: Int, contiguous: Bool, sampleAllLayers: Bool) throws
+        -> (sample: StudioFillService.Capture, eligibility: Data?) {
+        let sources = rasterSources(for: frame), raster = rasterData(frame.rasterAssetID)
+        let settings = StudioFillRegion.Settings(tolerance: tolerance, contiguous: contiguous,
+            expand: 0, gapClose: 0, antiAlias: false)
+        let sample = try StudioFillService.capture(document: document, frameID: frame.id, layerID: layerID,
+            point: point, color: "#000000", opacity: 1, settings: settings,
+            sampleAllLayers: sampleAllLayers, rasterData: raster, rasterDataByID: sources)
+        guard sampleAllLayers else { return (sample, nil) }
+        let paint = try StudioFillService.capture(document: document, frameID: frame.id, layerID: layerID,
+            point: point, color: "#000000", opacity: 1, settings: settings,
+            sampleAllLayers: false, rasterData: raster, rasterDataByID: sources)
+        var eligibility = Data(count: paint.width * paint.height)
+        for index in 0..<eligibility.count {
+            if index % 4096 == 0 { try Task.checkCancellation() }
+            // Eligibility is binary; even source alpha1 remains fully eligible.
+            eligibility[index] = paint.rgba[paint.rgba.startIndex + index * 4 + 3] > 0 ? 255 : 0
+        }
+        return (sample, eligibility)
     }
 
     /// Wand on a drawing layer (#153): selects the color region under the tap
@@ -4347,10 +4489,9 @@ final class StudioViewModel: ObservableObject {
             let frame = currentFrame
             // Fill's canonical renderer supplies the pixels; no Fill command or
             // document change is issued. Active-layer samples keep transparency.
-            let sample = try StudioFillService.capture(document: document, frameID: capture.frameID, layerID: capture.layerID,
-                point: point, color: "#000000", opacity: 1,
-                settings: .init(tolerance: tolerance, contiguous: contiguous, expand: 0, gapClose: 0, antiAlias: false),
-                sampleAllLayers: sampleAll, rasterData: rasterData(frame.rasterAssetID), rasterDataByID: rasterSources(for: frame))
+            let sampled = try drawingWandSample(frame: frame, layerID: capture.layerID, point: point,
+                tolerance: tolerance, contiguous: contiguous, sampleAllLayers: sampleAll)
+            let sample = sampled.sample, eligibility = sampled.eligibility
             let candidates = try drawingWandCandidates(frame: frame, layerID: capture.layerID)
             let settings = StudioWandRegion.Settings(tolerance: tolerance, contiguous: contiguous, feather: feather,
                                                      mode: mode, rejectTransparentSeed: !sampleAll)
@@ -4358,7 +4499,7 @@ final class StudioViewModel: ObservableObject {
             wandWorking = true
             let worker = Task.detached(priority: .userInitiated) { () throws -> DrawingWandResult in
                 try Self.drawingWandResult(rgba: rgba, width: width, height: height, x: x, y: y,
-                                           settings: settings, previous: previous, candidates: candidates)
+                                           settings: settings, previous: previous, eligibility: eligibility, candidates: candidates)
             }
             drawingWandWorker = worker
             defer { drawingWandWorker = nil; wandWorking = imageRegionWorker != nil }
@@ -4392,16 +4533,33 @@ final class StudioViewModel: ObservableObject {
 
     /// The Wand's region and drawing hit test, off the main actor.
     private nonisolated static func drawingWandResult(rgba: Data, width: Int, height: Int, x: Int, y: Int,
-                                                      settings: StudioWandRegion.Settings, previous: [UInt8]?,
+                                                      settings: StudioWandRegion.Settings, previous: [UInt8]?, eligibility: Data?,
                                                       candidates: DrawingWandCandidates) throws -> DrawingWandResult {
         let coverage = try StudioWandRegion.select(rgba: rgba, width: width, height: height, x: x, y: y,
-                                                   settings: settings, previous: previous)
-        var ids = try StudioSelectionElementHitTest.elements(intersecting: coverage, width: width, height: height,
-                                                            candidates: candidates.strokes)
-        for fill in candidates.fills where !ids.contains(fill.id) {
-            if try fill.touches(coverage, width: width, height: height) { ids.append(fill.id) }
+                                                   settings: settings, previous: previous, eligibility: eligibility)
+        func hitIDs(in mask: [UInt8]) throws -> [String] {
+            var ids = try StudioSelectionElementHitTest.elements(intersecting: mask, width: width, height: height,
+                                                                candidates: candidates.strokes)
+            for fill in candidates.fills where !ids.contains(fill.id) {
+                if try fill.touches(mask, width: width, height: height) { ids.append(fill.id) }
+            }
+            return ids
         }
-        return .init(coverage: coverage, ids: ids)
+
+        let ids = try hitIDs(in: coverage)
+        guard ids.isEmpty, settings.mode == .replace, previous == nil, settings.feather > 0,
+              let eligibility, coverage[y * width + x] > 0 else {
+            return .init(coverage: coverage, ids: ids)
+        }
+
+        // A narrow painted seed can feather below the drawing hit threshold.
+        // Recover drawing membership from its connected hard region and keep the soft mask for effects.
+        var seedSettings = settings
+        seedSettings.contiguous = true
+        seedSettings.feather = 0
+        let seedCoverage = try StudioWandRegion.select(rgba: rgba, width: width, height: height, x: x, y: y,
+            settings: seedSettings, previous: nil, eligibility: eligibility)
+        return .init(coverage: coverage, ids: try hitIDs(in: seedCoverage))
     }
 
     /// Wand drawing selection for Spatter's typed instruction (#204): the same
@@ -4418,10 +4576,9 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.unavailable("Wand selects drawings on a visible drawing layer whose lock is Free or Position. Nothing was selected.")
         }
         let frame = currentFrame, layerID = activeLayerID
-        let sample = try StudioFillService.capture(document: document, frameID: frame.id, layerID: layerID,
-            point: point, color: "#000000", opacity: 1,
-            settings: .init(tolerance: tolerance, contiguous: true, expand: 0, gapClose: 0, antiAlias: false),
-            sampleAllLayers: sampleAllLayers, rasterData: rasterData(frame.rasterAssetID), rasterDataByID: rasterSources(for: frame))
+        let sampled = try drawingWandSample(frame: frame, layerID: layerID, point: point,
+            tolerance: tolerance, contiguous: true, sampleAllLayers: sampleAllLayers)
+        let sample = sampled.sample, eligibility = sampled.eligibility
         let candidates = try drawingWandCandidates(frame: frame, layerID: layerID)
         let settings = StudioWandRegion.Settings(tolerance: tolerance, contiguous: true, feather: 0,
                                                  mode: .replace, rejectTransparentSeed: !sampleAllLayers)
@@ -4429,7 +4586,7 @@ final class StudioViewModel: ObservableObject {
         try checkCancellation()
         let worker = Task.detached(priority: .userInitiated) { () throws -> DrawingWandResult in
             try Self.drawingWandResult(rgba: rgba, width: width, height: height, x: x, y: y,
-                                       settings: settings, previous: nil, candidates: candidates)
+                                       settings: settings, previous: nil, eligibility: eligibility, candidates: candidates)
         }
         let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
         try checkCancellation()
@@ -4471,14 +4628,22 @@ final class StudioViewModel: ObservableObject {
         let projectID: UUID, revision: Int, frameID: String, layerID: String
         let width: Int, height: Int
         let selection: Set<String>
+        let tool: DrawingTool
+        let selectionGeneration: UUID
+        let imageSelectionID: UUID?
+        let imagePixelsSelected: Bool
     }
-    func captureGradient() -> GradientCapture? {
-        guard isEditing, !isPlaying, !isSaving, selectedTool == .gradient, activeStrokeID == nil,
+    /// Typed requests capture the current tool instead of changing it to
+    /// Gradient. Physical drags still require Gradient and may own a stroke.
+    func captureGradient(requiringGradientTool: Bool = true, ownedStroke: String? = nil) -> GradientCapture? {
+        guard isEditing, !isPlaying, !isSaving, (!requiringGradientTool || selectedTool == .gradient), activeStrokeID == ownedStroke,
               pendingBrushStroke == nil, textDraft == nil,
               let layer = layers.first(where: { $0.id == activeLayerID }), layer.visible, layer.opacity > 0,
               !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
         return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
-                     layerID: activeLayerID, width: canvasWidth, height: canvasHeight, selection: selectedElementIDs)
+                     layerID: activeLayerID, width: canvasWidth, height: canvasHeight, selection: selectedElementIDs,
+                     tool: selectedTool, selectionGeneration: imageRegionGeneration,
+                     imageSelectionID: imageMoveTarget?.selectionID, imagePixelsSelected: imageRegionSelection != nil)
     }
     /// The editable gradient element for a drag, before any pixel work.
     func gradientElement(_ capture: GradientCapture, from start: CGPoint, to end: CGPoint,
@@ -4490,19 +4655,113 @@ final class StudioViewModel: ObservableObject {
         let descriptor = StudioGradientDescriptor(shape: gradientShape, interpolation: gradientInterpolation, dither: gradientDither,
             stops: [.init(location: 0, color: .init(red: first.red, green: first.green, blue: first.blue, alpha: 1)),
                     .init(location: 1, color: .init(red: last.red, green: last.green, blue: last.blue, alpha: last.alpha))])
-        // A selection limits the gradient; otherwise it covers the whole layer.
+        guard activeStrokeID == nil || activeStrokeID == id else { throw StudioCommandError.staleRevision }
+        return try gradientElement(capture, from: start, to: end, descriptor: descriptor, color: strokeColorHex,
+            opacity: strokeOpacity, id: id, ownedStroke: activeStrokeID)
+    }
+    /// Shared editable element factory for touch and explicit Spatter settings.
+    /// It never mutates the selected tool, paint colors or remembered options.
+    func gradientElement(_ capture: GradientCapture, from start: CGPoint, to end: CGPoint,
+                         descriptor: StudioGradientDescriptor, color: String, opacity: Double, id: String,
+                         requiringGradientTool: Bool = true, ownedStroke: String? = nil,
+                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> DrawnElement {
+        try checkCancellation()
+        guard captureGradient(requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke) == capture,
+              !id.isEmpty, id.count <= 128, opacity.isFinite, opacity > 0, opacity <= 1 else { throw StudioCommandError.staleRevision }
+        _ = try StudioBrushGeometryCache.color(color)
+        // A drawing/Wand selection limits the gradient. Never silently widen a
+        // nonempty but unrenderable selection to the whole layer.
         let coverage: StudioFillMask
-        if let selected = try effectSelectionMask() { coverage = selected }
-        else {
+        if !capture.selection.isEmpty {
+            guard let selected = try effectSelectionMask() else {
+                throw StudioDocumentError.unavailable("This selection has no drawable gradient coverage. Deselect or select visible drawings; nothing changed.")
+            }
+            coverage = selected
+        } else {
             coverage = StudioFillMask(width: capture.width, height: capture.height,
                 spans: (0..<capture.height).map { .init(row: $0, start: 0, end: capture.width, alpha: 255) })
         }
         let element = DrawnElement(id: id, tool: .fill,
             points: [.init(x: start.x, y: start.y), .init(x: end.x, y: end.y)],
-            color: strokeColorHex, width: 1, opacity: strokeOpacity, layerID: capture.layerID,
+            color: color, width: 1, opacity: opacity, layerID: capture.layerID,
             fillMask: coverage, gradient: descriptor)
         try descriptor.validate(element: element, width: capture.width, height: capture.height)
+        try checkCancellation()
+        guard captureGradient(requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke) == capture else { throw StudioCommandError.staleRevision }
         return element
+    }
+
+    func capturePixelEffect(ownedStroke: String? = nil) -> GradientCapture? {
+        captureGradient(requiringGradientTool: false, ownedStroke: ownedStroke)
+    }
+    func preparePixelEffect(_ input: DrawnElement, capture: GradientCapture, ownedStroke: String? = nil,
+                            checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> DrawnElement {
+        try checkCancellation()
+        guard planAllowsTool(input.tool) else { throw StudioDocumentError.unavailable(planLimits.upgradeNote) }
+        guard capturePixelEffect(ownedStroke: ownedStroke) == capture, input.layerID == capture.layerID,
+              capture.imageSelectionID == nil, !capture.imagePixelsSelected,
+              ownedStroke == nil || input.id == ownedStroke else { throw StudioCommandError.staleRevision }
+        var element = input
+        if !capture.selection.isEmpty {
+            guard let mask = try effectSelectionMask() else {
+                throw StudioDocumentError.unavailable("The selection has no drawable effect coverage. Nothing changed.")
+            }
+            element.selectionMask = mask
+        } else { element.selectionMask = nil }
+        try StudioPixelEffectSettings.validate(element, width: capture.width, height: capture.height)
+        try checkCancellation()
+        guard capturePixelEffect(ownedStroke: ownedStroke) == capture else { throw StudioCommandError.staleRevision }
+        return element
+    }
+    @discardableResult
+    func commitPixelEffect(_ element: DrawnElement, capture: GradientCapture, requestID: UUID = UUID(),
+                           ownedStroke: String? = nil,
+                           checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandReceipt {
+        guard planAllowsTool(element.tool) else { throw StudioDocumentError.unavailable(planLimits.upgradeNote) }
+        try StudioPixelEffectSettings.validate(element, width: capture.width, height: capture.height)
+        return try commitEditablePixelEffect(element, capture: capture, requestID: requestID,
+            requiringGradientTool: false, ownedStroke: ownedStroke, checkCancellation: checkCancellation)
+    }
+
+    /// The same canonical editor commit as a touch gradient, with fresh context
+    /// and clipboard fences around preflight. The gradient remains an editable
+    /// descriptor and mask, never a flattened replacement for the original art.
+    @discardableResult
+    func commitGradient(_ element: DrawnElement, capture: GradientCapture, requestID: UUID = UUID(),
+                        requiringGradientTool: Bool = true, ownedStroke: String? = nil,
+                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandReceipt {
+        guard element.gradient != nil else { throw StudioGradientDescriptor.Failure.invalid }
+        return try commitEditablePixelEffect(element, capture: capture, requestID: requestID,
+            requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke, checkCancellation: checkCancellation)
+    }
+    private func commitEditablePixelEffect(_ element: DrawnElement, capture: GradientCapture, requestID: UUID,
+                                          requiringGradientTool: Bool, ownedStroke: String?,
+                                          checkCancellation: () throws -> Void) throws -> StudioCommandReceipt {
+        try checkCancellation()
+        guard planAllowsTool(element.tool) else { throw StudioDocumentError.unavailable(planLimits.upgradeNote) }
+        guard captureGradient(requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke) == capture,
+              ownedStroke == nil || element.id == ownedStroke,
+              element.layerID == capture.layerID else { throw StudioCommandError.staleRevision }
+        if let descriptor = element.gradient { _ = try descriptor.validate(element: element, width: capture.width, height: capture.height) }
+        else { try StudioPixelEffectSettings.validate(element, width: capture.width, height: capture.height) }
+        let clipboard = editor.clipboardVersion, selectedClip = selectedAudioClip?.id, before = editor.document
+        var candidate = editor
+        try candidate.commit(element, frameID: capture.frameID)
+        try preflightRasterDocument(candidate.document)
+        try checkCancellation()
+        guard planAllowsTool(element.tool) else { throw StudioDocumentError.unavailable(planLimits.upgradeNote) }
+        guard captureGradient(requiringGradientTool: requiringGradientTool, ownedStroke: ownedStroke) == capture,
+              editor.document == before, editor.clipboardVersion == clipboard, selectedAudioClip?.id == selectedClip else {
+            throw StudioCommandError.staleRevision
+        }
+        editor = candidate
+        let after = candidate.document
+        StudioEditObservers.elementsCommitted?(before, after, capture.frameID)
+        pruneManagedAudio(); scheduleSave()
+        return StudioCommandReceipt(requestID: requestID, projectID: after.id, previousRevision: before.revision,
+            revision: after.revision, outcome: .applied, created: [:], createdFrameIDs: [], deletedFrameIDs: [],
+            createdLayerIDs: [], deletedLayerIDs: [], createdElementIDs: [element.id], deletedElementIDs: [], changedAudioClipIDs: [],
+            clipboardElementCount: 0, clipboardID: nil)
     }
 
     enum ImageRegionAction { case copy, cut, delete, move, lift }
@@ -4617,7 +4876,8 @@ final class StudioViewModel: ObservableObject {
     }
     private func storageProject(_ snapshot: StudioDocument, rasters: [String: StoredAnimationFrame],
                                 audioTracks: [AudioTrack]? = nil,
-                                videoSources: [UUID: StoredVideoSource]? = nil) throws -> AnimationProject {
+                                videoSources: [UUID: StoredVideoSource]? = nil,
+                                includeCurrentThumbnail: Bool = true) throws -> AnimationProject {
         for frame in snapshot.frames {
             for instance in frame.rasterLayerInstances {
                 if let mask = instance.regionMask {
@@ -4647,7 +4907,8 @@ final class StudioViewModel: ObservableObject {
         }
         let metadata = AnimationMetadata(id: snapshot.id, title: snapshot.name, fps: snapshot.fps,
             canvasWidth: snapshot.width, canvasHeight: snapshot.height, frameCount: snapshot.frames.count,
-            layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt, thumbnailData: projectThumbnailData)
+            layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt,
+            thumbnailData: includeCurrentThumbnail ? projectThumbnailData : nil)
         // Movies follow the saved document only; history-only copies stay in memory.
         let videoIDs = snapshot.referencedVideoSourceIDs
         let videos = (videoSources ?? managedVideoSources).values.filter { videoIDs.contains($0.id) }
@@ -5145,8 +5406,24 @@ struct StudioSelectionHandleGeometry {
     }
     func hit(_ point: CGPoint) -> Kind? {
         guard point.x.isFinite, point.y.isFinite else { return nil }
-        return handles.filter { hypot($0.point.x-point.x,$0.point.y-point.y) <= hitRadius }
-            .min { hypot($0.point.x-point.x,$0.point.y-point.y) < hypot($1.point.x-point.x,$1.point.y-point.y) }?.kind
+        guard let handle = handles.filter({ hypot($0.point.x-point.x,$0.point.y-point.y) <= hitRadius })
+            .min(by: { hypot($0.point.x-point.x,$0.point.y-point.y) < hypot($1.point.x-point.x,$1.point.y-point.y) }) else { return nil }
+        let sx = viewport.width / documentSize.width, sy = viewport.height / documentSize.height
+        let body = CGRect(x: bounds.minX * sx, y: bounds.minY * sy,
+                          width: bounds.width * sx, height: bounds.height * sy)
+        // Clamping the minimum-size handles at a canvas edge can put their
+        // enlarged touch areas over a tiny object's entire body. Reserve the
+        // central half for Move only where the actual selection center is at
+        // least as close as the nearest handle. Oversized selections can put
+        // every clamped corner inside that central half, so preserve their
+        // genuine knob centers. A tiny clamped corner can coincide with the
+        // object's center, where scaling has a zero start vector: ties belong
+        // to Move. Keep visual geometry unchanged and Rotate explicit.
+        let moveBody = body.insetBy(dx: body.width / 4, dy: body.height / 4)
+        if handle.kind != .rotate, point.x > moveBody.minX, point.x < moveBody.maxX,
+           point.y > moveBody.minY, point.y < moveBody.maxY,
+           hypot(point.x-body.midX, point.y-body.midY) <= hypot(point.x-handle.point.x, point.y-handle.point.y) { return nil }
+        return handle.kind
     }
     func values(kind: Kind, start: CGPoint, current: CGPoint, preservesAspect: Bool = true) throws -> Values {
         guard [start.x,start.y,current.x,current.y].allSatisfy(\.isFinite) else { throw StudioElementTransform.Failure.settings }

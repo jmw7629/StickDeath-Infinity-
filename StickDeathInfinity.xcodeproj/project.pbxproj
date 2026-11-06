@@ -110,6 +110,7 @@
 				CA7723B81F084B54A333C011 /* StudioVideoAudioImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA7723B81F084B54A333C012 /* StudioVideoAudioImportService.swift */; };
 		56219F44EBDC7EC5A4102518 /* StudioBrushLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BDAFE81D26269CA6C85DA47 /* StudioBrushLibraryView.swift */; };
 		9625F0E7F0F535C0CCBC456D /* SpatterMotionRecipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D55B9BB2295236FE2D381EE /* SpatterMotionRecipe.swift */; };
+		21292FA20892DF8D37EE6F4F /* SpatterFreehandInstruction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 076C33CE391DC12A13458297 /* SpatterFreehandInstruction.swift */; };
 		E78451B6A27000224D3946FD /* SpatterStudioEditSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9DC412B6FFD10B8F66C1987 /* SpatterStudioEditSession.swift */; };
 		C78931511F16777575D84DF0 /* SpatterMotionRecipePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E14BAC8AF4FCFE2BC956AF /* SpatterMotionRecipePanel.swift */; };
 		788E9845D52D63843CBDC6A3 /* StudioRasterImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32C31B16D9B360A025087287 /* StudioRasterImage.swift */; };
@@ -212,6 +213,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		86C15CBA2C1094034295E61A /* AdminProviderHealthSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CB674439D891170F920A0AF /* AdminProviderHealthSection.swift */; };
 		F2DCD53E449052CB0DBAE469 /* StudioVideoFraming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */; };
 		94531CF7ECA8D1C404FEAEBA /* FeedPosterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D94A7E702172A69FAED3A451 /* FeedPosterView.swift */; };
+		B51A94600469B9BA30C63590 /* SpatterOnDevicePlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0389E443F966896D5C71A6E2 /* SpatterOnDevicePlan.swift */; };
+		C1C1CD5BBD956513825B6827 /* SpatterOnDeviceGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D588B3F3A212A9CEB05426E2 /* SpatterOnDeviceGenerator.swift */; };
+		5DEB243D5742911ABBD292D7 /* SpatterOnDeviceComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86283C088E7F1F1C80B8C1BD /* SpatterOnDeviceComposer.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -331,6 +335,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				CA7723B81F084B54A333C012 /* StudioVideoAudioImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioVideoAudioImportService.swift; sourceTree = SOURCE_ROOT; };
 		4BDAFE81D26269CA6C85DA47 /* StudioBrushLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift; sourceTree = SOURCE_ROOT; };
 		4D55B9BB2295236FE2D381EE /* SpatterMotionRecipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Models/SpatterMotionRecipe.swift; sourceTree = SOURCE_ROOT; };
+		076C33CE391DC12A13458297 /* SpatterFreehandInstruction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Models/SpatterFreehandInstruction.swift; sourceTree = SOURCE_ROOT; };
 		A9DC412B6FFD10B8F66C1987 /* SpatterStudioEditSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift; sourceTree = SOURCE_ROOT; };
 		D2E14BAC8AF4FCFE2BC956AF /* SpatterMotionRecipePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift; sourceTree = SOURCE_ROOT; };
 		32C31B16D9B360A025087287 /* StudioRasterImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioRasterImage.swift"; sourceTree = SOURCE_ROOT; };
@@ -433,6 +438,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		0CB674439D891170F920A0AF /* AdminProviderHealthSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Admin/AdminProviderHealthSection.swift"; sourceTree = SOURCE_ROOT; };
 		648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioVideoFraming.swift"; sourceTree = SOURCE_ROOT; };
 		D94A7E702172A69FAED3A451 /* FeedPosterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Home/FeedPosterView.swift"; sourceTree = SOURCE_ROOT; };
+		0389E443F966896D5C71A6E2 /* SpatterOnDevicePlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/SpatterOnDevicePlan.swift"; sourceTree = SOURCE_ROOT; };
+		D588B3F3A212A9CEB05426E2 /* SpatterOnDeviceGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/Spatter/SpatterOnDeviceGenerator.swift"; sourceTree = SOURCE_ROOT; };
+		86283C088E7F1F1C80B8C1BD /* SpatterOnDeviceComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/SpatterAI/SpatterOnDeviceComposer.swift"; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -538,9 +546,11 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		31B4F99131B295EC586BBC18 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				0389E443F966896D5C71A6E2 /* SpatterOnDevicePlan.swift */,
 				648FA5AAFCB20440CDE9B69F /* StudioVideoFraming.swift */,
 				735BEA1269807500EC232221 /* CommunityModels.swift */,
 				4D55B9BB2295236FE2D381EE /* SpatterMotionRecipe.swift */,
+				076C33CE391DC12A13458297 /* SpatterFreehandInstruction.swift */,
 				8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */,
 				BC83D8E81EBA4936AF0E9ED4 /* StudioCommands.swift */,
 				3A825FFE562998F1F6A18B6E /* StudioDocument.swift */,
@@ -734,6 +744,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		45135823BC2869CE1BB1BFE8 /* Spatter */ = {
 			isa = PBXGroup;
 			children = (
+				D588B3F3A212A9CEB05426E2 /* SpatterOnDeviceGenerator.swift */,
 				DC3D6C201847F52AF56AA2C7 /* SpatterReviewEvidence.swift */,
 				7C9AE369F9CBA7681A03D193 /* SpatterOwnKeyKeychain.swift */,
 				6ED4E67E4308938A88BCC035 /* SpatterOwnKey.swift */,
@@ -848,6 +859,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		1AD27C8A90E16660B76EF216 /* SpatterAI */ = {
 			isa = PBXGroup;
 			children = (
+				86283C088E7F1F1C80B8C1BD /* SpatterOnDeviceComposer.swift */,
 				7C24E7F66CB174D3CD9A63A2 /* SpatterPlanControls.swift */,
 				40CCBD912D57DE195DF6744A /* SpatterChatView.swift */,
 				631F5447686554DCC9B91D18 /* SpatterOrbView.swift */,
@@ -1119,6 +1131,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5DEB243D5742911ABBD292D7 /* SpatterOnDeviceComposer.swift in Sources */,
+				C1C1CD5BBD956513825B6827 /* SpatterOnDeviceGenerator.swift in Sources */,
+				B51A94600469B9BA30C63590 /* SpatterOnDevicePlan.swift in Sources */,
 				94531CF7ECA8D1C404FEAEBA /* FeedPosterView.swift in Sources */,
 				F2DCD53E449052CB0DBAE469 /* StudioVideoFraming.swift in Sources */,
 				86C15CBA2C1094034295E61A /* AdminProviderHealthSection.swift in Sources */,
@@ -1174,6 +1189,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				C78931511F16777575D84DF0 /* SpatterMotionRecipePanel.swift in Sources */,
 				E78451B6A27000224D3946FD /* SpatterStudioEditSession.swift in Sources */,
 				9625F0E7F0F535C0CCBC456D /* SpatterMotionRecipe.swift in Sources */,
+				21292FA20892DF8D37EE6F4F /* SpatterFreehandInstruction.swift in Sources */,
 				6AC1BB20EC1C813B2E328E30 /* StudioBrushRenderer.swift in Sources */,
 				7E34DF01A5F1E9C233CD945F /* StudioBrush.swift in Sources */,
 				CABECC98F5424855AEA769E9 /* StudioCommands.swift in Sources */,
@@ -1436,6 +1452,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		466FF5C578258EF7C698071A /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				OTHER_LDFLAGS = ("$(inherited)", "-weak_framework", FoundationModels,);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = StickDeathInfinity/StickDeathInfinity.entitlements;
@@ -1456,6 +1473,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDI_OAUTH_PROVIDERS = "";
+				SUPABASE_PUBLISHABLE_KEY = sb_publishable_ESTaBouCYQb8AzPKGfS_5w_GNWI-otv;
+				SUPABASE_URL = "https://gwcqlbjdvxebkxizfxsx.supabase.co";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1465,6 +1485,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		453C6B7BD08FE4B5E203AE95 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				OTHER_LDFLAGS = ("$(inherited)", "-weak_framework", FoundationModels,);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = StickDeathInfinity/StickDeathInfinity.entitlements;
@@ -1485,7 +1506,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.willisbmb.StickDeathInfinity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDI_OAUTH_PROVIDERS = "google,github";
+				SDI_OAUTH_PROVIDERS = "";
 				SDI_STOREKIT_PLAN_19_99_PRODUCT_ID = com.willisbmb.StickDeathInfinity.unlimited.monthly;
 				SDI_STOREKIT_PLAN_4_99_PRODUCT_ID = com.willisbmb.StickDeathInfinity.creator.monthly;
 				SDI_STOREKIT_PLAN_9_99_PRODUCT_ID = com.willisbmb.StickDeathInfinity.pro.monthly;
@@ -1591,8 +1612,8 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/supabase-community/supabase-swift.git";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.0;
+				kind = exactVersion;
+				version = 2.55.6;
 			};
 		};
 		/* End XCRemoteSwiftPackageReference section */

@@ -41,6 +41,40 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
     #"{"id":"\#(id.uuidString)","review_id":"\#(target.uuidString)","actor":"\#(actor.uuidString)","owner_at_decision":true,"render_title":"T","source_revision":"r1","rights_summary":"ok","render_digest":"\#(String(repeating: "a", count: 64))","review_version":1,"consent_version":"v1","destinations":["feed"],"decision":"approved","note":"","created_at":"\#(iso)"}"#
 }
 
+private func supportItem(_ id: UUID = UUID(), status: String = "open", revision: Int64 = 7, subject: String = "Export stops") -> String {
+    let value: [String: Any] = ["id": id.uuidString, "user_id": actor.uuidString, "receipt": "SDI-ABCDEFGHIJ",
+        "category": "studio", "platform": "ios", "app_version": "1.0", "subject": subject,
+        "body": "The rendered movie did not finish.", "status": status, "admin_note": "Prior private triage note",
+        "revision": revision, "created_at": "2026-11-03T08:00:00Z", "updated_at": "2026-11-03T08:01:00Z"]
+    return String(data: try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)!
+}
+
+private func previewFixture(_ target: AdminPreviewTarget, revision: Int? = nil,
+                            video: CommunityVideoSource? = nil, typed: Bool = true, count: Int = 1) throws -> String {
+    let descriptor = try JSONSerialization.jsonObject(with: CommunityCoding.encoder().encode(video ?? target.video))
+    var row: [String: Any] = ["id": target.record.uuidString, "created_at": "2026-11-05T08:00:00Z",
+                              "revision": revision ?? target.revision]
+    let key: String
+    switch target.queue {
+    case .feedReports:
+        key = "reports"
+        row.merge(["reason": "rights", "version": revision ?? target.revision, "caption": "Exact video",
+                   "creator": actor.uuidString, "title": "Video", "url": "", "render_digest": "digest"]) { _, new in new }
+        if typed { row["video_source"] = descriptor }
+    case .feedAppeals:
+        key = "appeals"
+        row.merge(["media_id": other.uuidString, "title": "Video", "explanation": "Review removal", "url": ""]) { _, new in new }
+        if typed { row["video_source"] = descriptor }
+    case .warReports, .warAppeals:
+        key = target.queue == .warReports ? "reports" : "appeals"
+        row.merge(["match_id": other.uuidString, "reason": "rights", "status": "removed", "left_title": "First",
+                   "right_title": "Second", "left_url": "", "right_url": "", "explanation": "Review matchup",
+                   "decision_reason": "Review", "previous_status": "completed", "left_digest": "left", "right_digest": "right"]) { _, new in new }
+        if typed { row["left_video_source"] = descriptor; row["right_video_source"] = descriptor }
+    }
+    return String(data: try JSONSerialization.data(withJSONObject: [key: Array(repeating: row, count: count)]), encoding: .utf8)!
+}
+
 @main @MainActor struct CommunityAdminTests {
     static func main() async {
         setvbuf(stdout, nil, _IONBF, 0)
@@ -122,6 +156,60 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
             try require(try await client.agentRuns("spatter_daily_video").first?.state == "running", "runs decoded")
         }
 
+        await test("expense drafts validate installed bounds and local MFA blocks transport") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let draft = try AdminExpenseRequest(reference: " host-2026-10 ", amount: "2500", currency: "usd",
+                occurredAt: now, note: " Hosting ", reason: " Invoice ", now: now)
+            try require(draft.ref == "host-2026-10" && draft.amount_minor == 2500 && draft.currency == "USD" && draft.note == "Hosting" && draft.reason == "Invoice", "expense fields were not normalized")
+            for amount in ["0", "-1", "1.25", "1e3", "1000000000000000"] {
+                do { _ = try AdminExpenseRequest(reference: "ref", amount: amount, currency: "USD", occurredAt: now, note: "", reason: "r", now: now)
+                    throw Failure(description: "invalid expense amount accepted: \(amount)")
+                } catch CommunityError.server {}
+            }
+            do { _ = try AdminExpenseRequest(reference: "", amount: "1", currency: "USD", occurredAt: now, note: "", reason: "r", now: now); throw Failure(description: "empty reference accepted") } catch CommunityError.server {}
+            do { _ = try AdminExpenseRequest(reference: "ref", amount: "1", currency: "US", occurredAt: now, note: "", reason: "r", now: now); throw Failure(description: "invalid currency accepted") } catch CommunityError.server {}
+            do { _ = try AdminExpenseRequest(reference: "ref", amount: "1", currency: "USD", occurredAt: now.addingTimeInterval(86_401), note: "", reason: "r", now: now); throw Failure(description: "future expense accepted") } catch CommunityError.server {}
+            do { _ = try await client.recordExpense(draft); throw Failure(description: "expense sent before step-up") } catch CommunityError.server {}
+            try require(transport.calls.isEmpty, "invalid or unverified expense reached transport")
+        }
+
+        await test("expense outcome retry keeps the exact reference and distinguishes recorded from duplicate") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            client.recordVerification()
+            let draft = try AdminExpenseRequest(reference: "host-2026-10", amount: "2500", currency: "USD",
+                occurredAt: now, note: "Invoice", reason: "Recorded receipt", now: now)
+            transport.replies = [.failure(CommunityError.transport("Reply lost after submission"))]
+            do { _ = try await client.recordExpense(draft); throw Failure(description: "uncertain reply reported success") } catch CommunityError.transport {}
+            transport.replies = [.success(#"{"status":"duplicate","ref":"host-2026-10"}"#)]
+            try require(try await client.recordExpense(draft) == .duplicate(reference: draft.ref), "same-reference duplicate was not recognized")
+            try require(transport.calls.count == 2 && transport.calls.allSatisfy { $0.name == "sdi_finance_record" && $0.params["ref"] as? String == draft.ref }, "uncertain retry changed reference or endpoint")
+            try require(NSDictionary(dictionary: transport.calls[0].params).isEqual(to: transport.calls[1].params), "uncertain retry changed submitted values")
+            let wire = transport.calls[0].params
+            try require(Set(wire.keys) == Set(["action", "ref", "amount_minor", "currency", "occurred_at", "note", "reason"]) && wire["action"] as? String == "expense" && (wire["amount_minor"] as? NSNumber)?.int64Value == 2500 && wire["currency"] as? String == "USD", "installed expense RPC fields changed")
+            transport.replies = [.success(#"{"status":"recorded","entry":"\#(review.uuidString)","possible_duplicate":true}"#)]
+            try require(try await client.recordExpense(draft) == .recorded(entry: review, possibleDuplicate: true), "recorded id and possible-duplicate warning were lost")
+        }
+
+        await test("expense client rejects incomplete success wrong duplicate reference and server step-up refusal") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            client.recordVerification()
+            let draft = try AdminExpenseRequest(reference: "invoice", amount: "10", currency: "USD", occurredAt: now, note: "", reason: "Receipt", now: now)
+            for json in [#"{"status":"recorded"}"#, #"{"status":"recorded","entry":"\#(review.uuidString)"}"#, #"{"status":"duplicate","ref":"another-invoice"}"#, #"{"status":"confirmed"}"#] {
+                transport.replies = [.success(json)]
+                do { _ = try await client.recordExpense(draft); throw Failure(description: "unconfirmed expense response accepted") } catch CommunityError.invalidResponse {}
+            }
+            transport.replies = [.success(#"{"error":"Re-verify your second factor.","code":"step_up_required"}"#)]
+            do { _ = try await client.recordExpense(draft); throw Failure(description: "server refusal accepted") }
+            catch let error as CommunityError {
+                _ = client.noteRefusal(error)
+                try require(error.isStepUpRequired, "coded MFA refusal was lost")
+            }
+            try require(client.stepUpPrompt(for: "finance_record.expense") != nil, "server refusal did not reset expense step-up")
+        }
+
         await test("finance reads show provider-reported records only and mutations confirm or fail") {
             let transport = FakeTransport()
             let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
@@ -130,7 +218,11 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
             try require(products.products?.first?.approved == true && products.approved_offers?.contains("4.99") == true, "products decoded with the approved offers note")
             transport.replies = [.success(#"{"totals":[{"provider":"stripe","currency":"usd","kind":"charge","amount_minor":1998,"entries":2}],"label":"Sums of provider-reported entries; estimates and cash are not shown here.","entitled_accounts":2}"#)]
             let summary = try await client.finance(AdminFinanceRequest(action: "summary"))
-            try require(summary.totals?.first?.amountText == "USD 19.98" && summary.entitled_accounts == 2, "totals formatted from minor units")
+            try require(summary.totals?.first?.amountText == "USD 1998 minor units" && summary.entitled_accounts == 2, "totals formatted from minor units")
+            let yen = AdminLedgerEntry(id: review, provider: "stripe", provider_ref: nil, kind: "charge", amount_minor: 1000, currency: "jpy", occurred_at: now, note: nil)
+            try require(yen.amountText == "JPY 1000 minor units", "zero-decimal currency was incorrectly divided by 100")
+            let dinar = AdminFinanceTotal(provider: "stripe", currency: "kwd", kind: "charge", amount_minor: 1234, entries: 1)
+            try require(dinar.amountText == "KWD 1234 minor units", "three-decimal currency was incorrectly divided by 100")
             transport.replies = [.success(#"{"ledger":[]}"#)]
             try require(try await client.finance(AdminFinanceRequest(action: "ledger")).ledger?.isEmpty == true, "empty ledger is a real empty state")
             transport.replies = [.success(#"{"subscriptions":null}"#)]
@@ -162,6 +254,144 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
             try require(transport.calls.last?.params["action"] as? String == "reject" && transport.calls.last?.params["note"] as? String == "Rights unresolved", "reject payload")
             transport.replies = [.success(#"{"appeals":[]}"#)]
             try require(try await client.myAppeals().isEmpty, "member appeals empty state")
+        }
+
+        await test("moderation previews require a matching typed provider and preserve legacy raw renditions") {
+            let raw = "https://cdn.example/moderation.mp4"
+            let youtube = "https://www.youtube.com/watch?v=abcdefghijk"
+            let json = #"{"id":"\#(review.uuidString)","reason":"rights","version":1,"created_at":"2026-10-12T20:00:00Z","caption":"Exact video","creator":"\#(actor.uuidString)","title":"V","url":"","render_digest":"digest","video_source":{"provider":"youtube","url":"\#(youtube)"}}"#
+            var report = try CommunityCoding.decoder().decode(ModerationReport.self, from: Data(json.utf8))
+            try require(report.url.isEmpty && report.playbackSource == .youtube(YouTubeVideo(id: "abcdefghijk")!), "provider source does not populate raw URL")
+            try require(report.playbackSource?.renditionURL == nil, "provider preview cannot acquire raw download authority")
+            report.video_source = CommunityVideoSource(provider: .rendition, url: youtube)
+            try require(report.playbackSource == nil, "mismatched typed provider refuses playback")
+            report.video_source = CommunityVideoSource(provider: .youtube, url: raw)
+            try require(report.playbackSource == nil, "provider label cannot authorize arbitrary rendition")
+            let legacy = json.replacingOccurrences(of: "\"url\":\"\",", with: "\"url\":\"" + raw + "\",")
+            var legacyReport = try CommunityCoding.decoder().decode(ModerationReport.self, from: Data(legacy.utf8))
+            legacyReport.video_source = nil
+            try require(legacyReport.playbackSource?.renditionURL?.absoluteString == raw, "legacy raw admin reply remains playable")
+            let untyped = json.replacingOccurrences(of: "\"url\":\"\",", with: "\"url\":\"" + youtube + "\",")
+            var untypedReport = try CommunityCoding.decoder().decode(ModerationReport.self, from: Data(untyped.utf8))
+            untypedReport.video_source = nil
+            try require(untypedReport.playbackSource == nil, "untyped provider address never becomes legacy AVPlayer input")
+        }
+
+        await test("appeal queue decodes typed provider preview without changing decision or raw authority") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            transport.replies = [.success(#"{"appeals":[{"id":"\#(review.uuidString)","media_id":"\#(other.uuidString)","title":"V","explanation":"e","created_at":"2026-10-12T20:00:00Z","revision":3,"url":"","video_source":{"provider":"youtube","url":"https://www.youtube.com/watch?v=abcdefghijk"}}]}"#)]
+            let appeal = try await client.appealQueue()[0]
+            try require(appeal.url == "" && appeal.playbackSource?.renditionURL == nil && appeal.playbackSource != nil, "metadata-only appeal preview is usable without raw URL")
+            transport.replies = [.success(#"{"error":"The exact YouTube publication is no longer eligible."}"#)]
+            do { try await client.decideAppeal(appeal, accept: true, note: "Exact video reviewed"); throw Failure(description: "ineligible restoration reported success") } catch CommunityError.server {}
+            try require(transport.calls.last?.params["revision"] as? Int == 3 && transport.calls.last?.params["action"] as? String == "accept", "restoration keeps current revision and existing server decision endpoint")
+        }
+
+        await test("War Room admin report and appeal sources bind each side independently") {
+            let raw = "https://cdn.example/right.mp4"
+            let fields = #""id":"\#(review.uuidString)","match_id":"\#(other.uuidString)","reason":"rights","revision":1,"created_at":"2026-10-12T20:00:00Z","status":"removed","left_title":"Provider","right_title":"Rendition","left_url":"","right_url":"\#(raw)","left_video_source":{"provider":"youtube","url":"https://www.youtube.com/watch?v=abcdefghijk"}"#
+            let report = try CommunityCoding.decoder().decode(AdminWarReport.self, from: Data(("{" + fields + "}").utf8))
+            try require(report.leftPlaybackSource == .youtube(YouTubeVideo(id: "abcdefghijk")!) && report.rightPlaybackSource?.renditionURL?.absoluteString == raw, "mixed provider and raw report preview")
+            let appealFields = #", "explanation":"Restore matchup","decision_reason":"Review","previous_status":"completed","left_digest":"exact-left","right_digest":"exact-right""#
+            var appeal = try CommunityCoding.decoder().decode(AdminWarAppeal.self, from: Data(("{" + fields + appealFields + "}").utf8))
+            try require(appeal.leftPlaybackSource?.renditionURL == nil && appeal.rightPlaybackSource?.renditionURL?.absoluteString == raw, "appeal preserves exact side routing")
+            appeal.right_video_source = CommunityVideoSource(provider: .youtube, url: raw)
+            try require(appeal.rightPlaybackSource == nil, "invalid typed source cannot fall back to legacy raw field")
+        }
+
+        await test("every admin preview obtains its own current typed server row before admission") {
+            for queue in [AdminPreviewTarget.Queue.feedReports, .feedAppeals, .warReports, .warAppeals] {
+                let transport = FakeTransport()
+                let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+                let video = CommunityVideoSource(provider: queue == .feedReports ? .rendition : .youtube,
+                    url: queue == .feedReports ? "https://cdn.example/preview.mp4" : "https://www.youtube.com/watch?v=abcdefghijk")
+                let target = AdminPreviewTarget(queue: queue, record: review, revision: 4,
+                    side: queue == .warReports || queue == .warAppeals ? .right : .single, video: video)
+                let context = AdminPreviewAdmission.Context(account: actor.uuidString, sessionMarker: "session-A", active: true)
+                var admission = AdminPreviewAdmission()
+                let ticket = admission.begin(target, context: context, uptime: 100)!
+                try require(admission.source == nil && !admission.isValid(target, context: context, uptime: 100), "a queue selection is not a playback grant")
+                transport.replies = [.success(try previewFixture(target))]
+                let fresh = try await client.refreshPreview(target)
+                try require(admission.accept(fresh, ticket: ticket, context: context, serverNow: now, uptime: 101), "fresh matching authorized queue row admits")
+                try require(admission.isValid(target, context: context, uptime: 114.9) && !admission.isValid(target, context: context, uptime: 115), "grant is bounded from request start, not reply arrival")
+                let expected = queue == .feedReports ? "sdi_moderation_action" : queue == .feedAppeals ? "sdi_moderation_appeal" : queue == .warReports ? "sdi_war_moderate" : "sdi_war_appeal_admin"
+                try require(transport.calls.count == 1 && transport.calls[0].name == expected, "preview must re-enter the existing live authorization endpoint")
+            }
+        }
+
+        await test("preview grant fences reject changed sessions scenes selections revisions sources expiry and late completions") {
+            let video = CommunityVideoSource(provider: .youtube, url: "https://www.youtube.com/watch?v=abcdefghijk")
+            let target = AdminPreviewTarget(queue: .feedReports, record: review, revision: 4, side: .single, video: video)
+            let context = AdminPreviewAdmission.Context(account: actor.uuidString, sessionMarker: "session-A", active: true)
+            let changed = [AdminPreviewAdmission.Context(account: other.uuidString, sessionMarker: "session-A", active: true),
+                           .init(account: actor.uuidString, sessionMarker: "session-B", active: true),
+                           .init(account: actor.uuidString, sessionMarker: "session-A", active: false)]
+            for changedContext in changed {
+                var policy = AdminPreviewAdmission(); let ticket = policy.begin(target, context: context, uptime: 100)!
+                try require(!policy.accept(target, ticket: ticket, context: changedContext, serverNow: now, uptime: 101) && policy.source == nil, "changed local auth/scene cannot admit an old reply")
+            }
+            let candidates = [AdminPreviewTarget(queue: .feedReports, record: other, revision: 4, side: .single, video: video),
+                              .init(queue: .feedReports, record: review, revision: 5, side: .single, video: video),
+                              .init(queue: .feedReports, record: review, revision: 4, side: .single, video: .init(provider: .youtube, url: "https://www.youtube.com/watch?v=Abc_123-xyz")),
+                              .init(queue: .feedReports, record: review, revision: 4, side: .single, video: .init(provider: .youtube, url: video.url, expires_at: now.addingTimeInterval(30)))]
+            for candidate in candidates {
+                var policy = AdminPreviewAdmission(); let ticket = policy.begin(target, context: context, uptime: 100)!
+                try require(!policy.accept(candidate, ticket: ticket, context: context, serverNow: now, uptime: 101) && policy.source == nil, "changed record/revision/source/expiry invalidates admission")
+            }
+            var policy = AdminPreviewAdmission(); let cancelled = policy.begin(target, context: context, uptime: 100)!
+            policy.invalidate()
+            try require(!policy.accept(target, ticket: cancelled, context: context, serverNow: now, uptime: 101), "cancelled selection cannot resurrect")
+            let older = policy.begin(target, context: context, uptime: 102)!
+            let newer = policy.begin(target, context: context, uptime: 103)!
+            try require(policy.accept(target, ticket: newer, context: context, serverNow: now, uptime: 104), "latest request admits")
+            try require(!policy.accept(target, ticket: older, context: context, serverNow: now, uptime: 105), "out-of-order completion cannot replace a current grant")
+            let slow = policy.begin(target, context: context, uptime: 106)!
+            try require(!policy.accept(target, ticket: slow, context: context, serverNow: now, uptime: 121) && policy.source == nil, "slow replies do not create a new authorization window")
+        }
+
+        await test("a hung or failed preview renewal cannot extend playback and exact media expiry wins") {
+            let context = AdminPreviewAdmission.Context(account: actor.uuidString, sessionMarker: "session-A", active: true)
+            let video = CommunityVideoSource(provider: .rendition, url: "https://cdn.example/preview.mp4", expires_at: now.addingTimeInterval(12))
+            let target = AdminPreviewTarget(queue: .feedAppeals, record: review, revision: 3, side: .single, video: video)
+            var policy = AdminPreviewAdmission(); let ticket = policy.begin(target, context: context, uptime: 100)!
+            try require(policy.accept(target, ticket: ticket, context: context, serverNow: now, uptime: 100), "fresh raw preview admits")
+            let renewal = policy.begin(target, context: context, uptime: 110)!
+            try require(policy.isValid(target, context: context, uptime: 111.9) && !policy.isValid(target, context: context, uptime: 112), "pending network renewal does not extend media expiry")
+            var delayed = policy
+            try require(!delayed.accept(target, ticket: renewal, context: context, serverNow: now, uptime: 112) && delayed.source == nil, "a renewal finishing after the previous lease expired cannot reopen it")
+            policy.refuse(renewal)
+            try require(policy.source == nil && !policy.accept(target, ticket: renewal, context: context, serverNow: now, uptime: 111), "failed/cancelled refresh closes and cannot later succeed")
+            let expired = AdminPreviewTarget(queue: .feedAppeals, record: review, revision: 3, side: .single,
+                video: .init(provider: .rendition, url: video.url, expires_at: now))
+            let expiredTicket = policy.begin(expired, context: context, uptime: 120)!
+            try require(!policy.accept(expired, ticket: expiredTicket, context: context, serverNow: now, uptime: 120), "expired raw and provider metadata cannot produce a grant")
+        }
+
+        await test("fresh preview RPC rejects removed duplicate changed untyped expired and denied queue rows") {
+            for queue in [AdminPreviewTarget.Queue.feedReports, .feedAppeals, .warReports, .warAppeals] {
+                let transport = FakeTransport(); let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+                let target = AdminPreviewTarget(queue: queue, record: review, revision: 4,
+                    side: queue == .warReports || queue == .warAppeals ? .left : .single,
+                    video: .init(provider: .youtube, url: "https://www.youtube.com/watch?v=abcdefghijk"))
+                for reply in [try previewFixture(target, count: 0), try previewFixture(target, count: 2),
+                              try previewFixture(target, revision: 5), try previewFixture(target, typed: false),
+                              try previewFixture(target, video: .init(provider: .youtube, url: "https://www.youtube.com/watch?v=Abc_123-xyz")),
+                              #"{"error":"Current admin MFA session required.","code":"forbidden"}"#] {
+                    transport.replies = [.success(reply)]
+                    do { _ = try await client.refreshPreview(target); throw Failure(description: "stale or unauthorized preview admitted") }
+                    catch is CommunityError {}
+                }
+                let expired = AdminPreviewTarget(queue: queue, record: review, revision: 4, side: target.side,
+                    video: .init(provider: .youtube, url: target.video.url, expires_at: Date(timeIntervalSince1970: 1)))
+                transport.replies = [.success(try previewFixture(expired))]
+                do { _ = try await client.refreshPreview(expired); throw Failure(description: "expired fresh preview admitted") } catch is CommunityError {}
+                transport.hasSession = false
+                let calls = transport.calls.count
+                do { _ = try await client.refreshPreview(target); throw Failure(description: "signed-out preview refreshed") } catch CommunityError.signedOut {}
+                try require(transport.calls.count == calls, "no RPC sent after local session loss")
+            }
         }
 
         await test("decision history filters by render and reports how many pages were searched") {
@@ -363,6 +593,92 @@ private func decision(_ id: UUID, review target: UUID, at iso: String) -> String
             let q = AdminReviewEvidence.qualityLines(quality)
             try require(q.first == "Quality gates FAILED." && q.contains("• 1 blank frame(s); limit 0.") && q.contains("Decoded movie: 36/36 frames, 3/3 s.") && q.contains("Not measured: audioOffsetSeconds."), "quality lines: \(q)")
             try require(AdminReviewEvidence.qualityLines(.string("ok")) == ["Quality report: unrecognized format (not shown)."], "malformed quality")
+        }
+
+        await test("support queue uses real status/page filters and the server pagination flag") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let rows = (0..<50).map { _ in supportItem() }.joined(separator: ",")
+            transport.replies = [.success("{\"requests\":[\(rows)],\"has_more\":true}")]
+            let page = try await client.supportQueue(status: .inProgress, page: 2)
+            try require(page.items.count == 50 && page.page == 2 && page.hasMore, "server pagination decoded")
+            try require(page.items.first?.body == "The rendered movie did not finish." && page.items.first?.admin_note == "Prior private triage note"
+                && page.items.first?.receipt == "SDI-ABCDEFGHIJ", "real content and private note retained")
+            try require(transport.calls.last?.name == "sdi_support_action" && transport.calls.last?.params["action"] as? String == "list"
+                && transport.calls.last?.params["status"] as? String == "in_progress" && transport.calls.last?.params["page"] as? Int == 2, "bounded queue payload")
+            transport.replies = [.success("{\"requests\":[\(rows)],\"has_more\":false}")]
+            try require(try await client.supportQueue().hasMore == false, "must not infer has_more from fifty rows")
+            transport.replies = [.success(#"{"requests":[],"has_more":false}"#)]
+            let empty = try await client.supportQueue()
+            try require(empty.items.isEmpty && !empty.hasMore && transport.calls.last?.params["status"] == nil, "all-status empty queue is factual")
+        }
+
+        await test("support queue rejects missing pagination duplicate IDs invalid content and server refusals") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            let duplicate = supportItem(review)
+            for bad in [#"{"requests":[]}"#, #"{"requests":[],"has_more":true}"#,
+                "{\"requests\":[\(duplicate),\(duplicate)],\"has_more\":false}",
+                "{\"requests\":[\(supportItem(subject: String(repeating: "x", count: 121)))],\"has_more\":false}",
+                "{\"requests\":[\(supportItem(revision: 0))],\"has_more\":false}"] {
+                transport.replies = [.success(bad)]
+                do { _ = try await client.supportQueue(); throw Failure(description: "invalid queue accepted") } catch CommunityError.invalidResponse {}
+            }
+            let count = transport.calls.count
+            for page in [-1, 200] {
+                do { _ = try await client.supportQueue(page: page); throw Failure(description: "invalid page sent") } catch CommunityError.invalidResponse {}
+            }
+            try require(transport.calls.count == count, "out-of-range pages must not make a request")
+            transport.replies = [.success(#"{"error":"Current administrator MFA session required.","code":"forbidden"}"#)]
+            do { _ = try await client.supportQueue(); throw Failure(description: "MFA refusal accepted") } catch CommunityError.server {}
+        }
+
+        await test("support status mutation binds selected UUID revision status and private note to a confirmed next revision") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            transport.replies = [.success("{\"requests\":[\(supportItem(review))],\"has_more\":false}")]
+            let item = try await client.supportQueue().items[0]
+            transport.replies = [.success(#"{"status":"confirmed","revision":8}"#)]
+            try require(try await client.updateSupport(item, to: .resolved, note: "  Reproduced; fixed in the next build.  ") == 8, "confirmed next revision")
+            let call = transport.calls.last!
+            try require(call.name == "sdi_support_action" && call.params["action"] as? String == "update_status"
+                && (call.params["request"] as? String)?.lowercased() == review.uuidString.lowercased()
+                && (call.params["revision"] as? NSNumber)?.int64Value == 7 && call.params["status"] as? String == "resolved"
+                && call.params["note"] as? String == "Reproduced; fixed in the next build.", "exact immutable target payload")
+            try require(Set(call.params.keys) == ["action", "request", "revision", "status", "note"], "no account token email project or attachment fields")
+            for bad in [#"{}"#, #"{"status":"confirmed"}"#, #"{"status":"confirmed","revision":7}"#,
+                #"{"status":"confirmed","revision":9}"#, #"{"status":"pending","revision":8}"#] {
+                transport.replies = [.success(bad)]
+                do { _ = try await client.updateSupport(item, to: .inProgress, note: "Checking"); throw Failure(description: "ambiguous status result accepted") } catch CommunityError.invalidResponse {}
+            }
+            transport.replies = [.success(#"{"error":"Request changed or closed. Refresh the queue."}"#)]
+            do { _ = try await client.updateSupport(item, to: .inProgress, note: "Checking"); throw Failure(description: "stale revision refusal accepted") } catch CommunityError.server {}
+        }
+
+        await test("support withdrawn records and invalid notes never send a status mutation") {
+            let transport = FakeTransport()
+            let client = AdminOperationsClient(gateway: CommunityGateway(transport: transport))
+            transport.replies = [.success("{\"requests\":[\(supportItem(review, status: "withdrawn")),\(supportItem(other))],\"has_more\":false}")]
+            let rows = try await client.supportQueue().items
+            let before = transport.calls.count
+            do { _ = try await client.updateSupport(rows[0], to: .open, note: "Reopen"); throw Failure(description: "withdrawn mutation sent") } catch CommunityError.server {}
+            do { _ = try await client.updateSupport(rows[1], to: .withdrawn, note: "Withdraw"); throw Failure(description: "admin withdrawal sent") } catch CommunityError.server {}
+            for note in [" \n ", String(repeating: "x", count: 2001), String(repeating: "🇺🇸", count: 1001)] {
+                do { _ = try await client.updateSupport(rows[1], to: .resolved, note: note); throw Failure(description: "invalid private note sent") } catch CommunityError.server {}
+            }
+            try require(transport.calls.count == before && !rows[0].canUpdate, "all invalid actions denied before transport")
+            try require(AdminOperationsClient.supportNoteIsValid(String(repeating: "🇺🇸", count: 1000)), "bounds count PostgreSQL code points")
+        }
+
+        await test("support context invalidates results and confirmations on account session scene or generation change") {
+            let generation = UUID()
+            let context = AdminSupportContext(accountID: actor.uuidString, generation: generation)
+            try require(context.admits(accountID: actor.uuidString, authenticated: true, active: true, generation: generation), "current context admitted")
+            try require(!context.admits(accountID: other.uuidString, authenticated: true, active: true, generation: generation)
+                && !context.admits(accountID: nil, authenticated: true, active: true, generation: generation)
+                && !context.admits(accountID: actor.uuidString, authenticated: false, active: true, generation: generation)
+                && !context.admits(accountID: actor.uuidString, authenticated: true, active: false, generation: generation)
+                && !context.admits(accountID: actor.uuidString, authenticated: true, active: true, generation: UUID()), "stale context must never publish private data or a success receipt")
         }
 
         print("COMMUNITY_ADMIN_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed) passed \(failed) failed")

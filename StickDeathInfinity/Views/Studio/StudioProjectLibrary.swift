@@ -2,8 +2,21 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+/// Session-only library position, retained while the library itself unmounts
+/// for editing so its existing transfer/creation cancellation still runs.
+struct StudioLibraryPresentation {
+    enum ProjectSort: String, CaseIterable, Identifiable {
+        case modified = "Recently edited", title = "Name", frames = "Frame count"
+        var id: String { rawValue }
+    }
+    var search = ""
+    var sort: ProjectSort = .modified
+    var visibleProjectID: UUID?
+}
+
 struct StudioProjectLibrary: View {
     @ObservedObject var vm: StudioViewModel
+    @Binding var presentation: StudioLibraryPresentation
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var transferContext = StudioPortableTransferContext()
@@ -37,17 +50,11 @@ struct StudioProjectLibrary: View {
     @State private var creationTask: Task<Void, Never>?
     @State private var creationBusy = false
     @State private var libraryIsVisible = false
-    @State private var search = ""
     @FocusState private var searchFocused: Bool
-    @State private var sort: ProjectSort = .modified
-    private enum ProjectSort: String, CaseIterable, Identifiable {
-        case modified = "Recently edited", title = "Name", frames = "Frame count"
-        var id: String { rawValue }
-    }
     private var matchingProjects: [AnimationMetadata] {
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = presentation.search.trimmingCharacters(in: .whitespacesAndNewlines)
         return vm.savedProjects.filter { query.isEmpty || $0.title.localizedStandardContains(query) }.sorted { left, right in
-            switch sort {
+            switch presentation.sort {
             case .modified:
                 if left.modifiedAt != right.modifiedAt { return left.modifiedAt > right.modifiedAt }
             case .title:
@@ -57,6 +64,26 @@ struct StudioProjectLibrary: View {
                 if left.frameCount != right.frameCount { return left.frameCount > right.frameCount }
             }
             return left.id.uuidString < right.id.uuidString
+        }
+    }
+    private var matchingProjectIDs: [UUID] { matchingProjects.map(\.id) }
+    private var scrollProjectID: Binding<UUID?> {
+        Binding(get: {
+            guard let id = presentation.visibleProjectID, matchingProjectIDs.contains(id) else { return nil }
+            return id
+        }, set: { id in
+            // An editor transition removes this ScrollView; its final nil or
+            // layout update must not overwrite the row saved for the return.
+            guard libraryIsVisible, !vm.isEditing else { return }
+            if let id, !matchingProjectIDs.contains(id) { return }
+            // Nil while the live header is visible is a real top-of-library position.
+            presentation.visibleProjectID = id
+        })
+    }
+    private func validateScrollAnchor() {
+        guard !vm.isEditing else { return }
+        if let id = presentation.visibleProjectID, !matchingProjectIDs.contains(id) {
+            presentation.visibleProjectID = nil
         }
     }
 
@@ -106,26 +133,26 @@ struct StudioProjectLibrary: View {
                 if let message = vm.message { Text(message).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.red).accessibilityIdentifier("studio.status") }
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass").foregroundColor(.gray)
-                    TextField("Search projects", text: $search)
+                    TextField("Search projects", text: $presentation.search)
                         .font(.specialElite(14))
                         .foregroundColor(.white).textInputAutocapitalization(.never)
                         .autocorrectionDisabled().accessibilityIdentifier("studio.library.search")
                         .focused($searchFocused).submitLabel(.search)
                         .onSubmit { searchFocused = false }
-                    if !search.isEmpty {
-                        Button { search = ""; searchFocused = false } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.gray) }
+                    if !presentation.search.isEmpty {
+                        Button { presentation.search = ""; searchFocused = false } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.gray) }
                             .accessibilityLabel("Clear project search")
                     }
                     Menu {
-                        Picker("Sort projects", selection: $sort) {
-                            ForEach(ProjectSort.allCases) { choice in Text(choice.rawValue).tag(choice) }
+                        Picker("Sort projects", selection: $presentation.sort) {
+                            ForEach(StudioLibraryPresentation.ProjectSort.allCases) { choice in Text(choice.rawValue).tag(choice) }
                         }
                     } label: {
                         Image(systemName: "arrow.up.arrow.down").foregroundColor(.red).frame(width: 44, height: 44)
-                    }.accessibilityLabel("Sort projects: " + sort.rawValue)
+                    }.accessibilityLabel("Sort projects: " + presentation.sort.rawValue)
                         .accessibilityIdentifier("studio.library.sort")
                 }.padding(.horizontal, 12).background(Color(hex: "17171F")).cornerRadius(12)
-                Text("\(matchingProjects.count) of \(vm.savedProjects.count) projects · \(sort.rawValue)")
+                Text("\(matchingProjects.count) of \(vm.savedProjects.count) projects · \(presentation.sort.rawValue)")
                     .font(.specialElite(12)).foregroundColor(.gray).accessibilityIdentifier("studio.library.count")
                 HStack {
                     Button { importGeneration = transferContext.generation; showingImport = true } label: {
@@ -206,12 +233,15 @@ struct StudioProjectLibrary: View {
                             .accessibilityIdentifier("studio.project-actions.\(project.id.uuidString)")
                             .padding(12)
                             }
+                            .id(project.id)
                         }
                     }
+                    .scrollTargetLayout()
                 }
             }.padding(20).padding(.bottom, 32).frame(maxWidth: 760).frame(maxWidth: .infinity)
                 .disabled(vm.isManagingProjects)
             }.scrollDismissesKeyboard(.interactively)
+                .scrollPosition(id: scrollProjectID, anchor: .top)
                 .refreshable { if !creationBusy { await vm.loadProjects() } }
                 .accessibilityIdentifier("studio.library.scroll")
         }
@@ -271,8 +301,15 @@ struct StudioProjectLibrary: View {
                 transferNotice = isPickerCancellation(error) ? "Backup cancelled. Original preserved." : error.localizedDescription
             }
         }
-        .onAppear { libraryIsVisible = true; transferContext.update(active: scenePhase == .active, accountID: authVM.userId) }
+        .onAppear { validateScrollAnchor(); libraryIsVisible = true; transferContext.update(active: scenePhase == .active, accountID: authVM.userId) }
         .onDisappear { libraryIsVisible = false; if !vm.isEditing { creationTask?.cancel() }; invalidateTransfers() }
+        .onChange(of: matchingProjectIDs) { _, _ in validateScrollAnchor() }
+        .onChange(of: presentation.search) { _, _ in
+            if !vm.isEditing { presentation.visibleProjectID = nil }
+        }
+        .onChange(of: presentation.sort) { _, _ in
+            if !vm.isEditing { presentation.visibleProjectID = nil }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { invalidateTransfers(); creationTask?.cancel() }
             transferContext.update(active: phase == .active, accountID: authVM.userId)
@@ -626,10 +663,9 @@ private struct StudioStorageSheet: View {
             .accessibilityIdentifier("studio.storage.list")
             .navigationTitle("Device Storage")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { cleanup.cancel(); dismiss() } } }
-            .confirmationDialog(confirmingCleanup ? "Permanently remove these older saved versions?" : "Clear regenerable working cache?",
-                                isPresented: Binding(get: { confirmingClear || confirmingCleanup },
-                                    set: { if !$0 { confirmingClear = false; confirmingCleanup = false } }),
-                                titleVisibility: .visible) {
+            .alert(confirmingCleanup ? "Permanently remove these older saved versions?" : "Clear regenerable working cache?",
+                   isPresented: Binding(get: { confirmingClear || confirmingCleanup },
+                       set: { if !$0 { confirmingClear = false; confirmingCleanup = false } })) {
                 if confirmingCleanup {
                     Button("Remove reviewed old versions", role: .destructive) { performCleanup() }
                         .accessibilityIdentifier("studio.storage.confirm-remove-revisions")

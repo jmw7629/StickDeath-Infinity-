@@ -17,11 +17,7 @@ PUBLIC_SETTINGS = (
 )
 
 
-def prepare(source: pathlib.Path, destination: pathlib.Path, commit: str) -> dict:
-    if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise ValueError("An exact source commit is required")
-    if source.resolve() == destination.resolve() or destination.exists():
-        raise ValueError("Use a new profile output path; do not overwrite the generated profile")
+def _validated_products(source: pathlib.Path):
     document = plistlib.loads(source.read_bytes())
     targets = [(target.get("BlueprintName"), target) for config in document.get("TestConfigurations", [])
                for target in config.get("TestTargets", [])]
@@ -52,6 +48,20 @@ def prepare(source: pathlib.Path, destination: pathlib.Path, commit: str) -> dic
     configured = [key for key in PUBLIC_SETTINGS if str(info.get(key, "")).strip()]
     if configured:
         raise ValueError("Offline smoke requires empty public build settings: " + ", ".join(configured))
+    return document, target, app, info
+
+
+def validated_app(source: pathlib.Path) -> pathlib.Path:
+    """Return only the same isolated, identity/config-validated test target app."""
+    return _validated_products(source)[2]
+
+
+def prepare(source: pathlib.Path, destination: pathlib.Path, commit: str) -> dict:
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("An exact source commit is required")
+    if source.resolve() == destination.resolve() or destination.exists():
+        raise ValueError("Use a new profile output path; do not overwrite the generated profile")
+    document, target, app, info = _validated_products(source)
     target.setdefault("EnvironmentVariables", {}).update({
         "SDI_SMOKE_OFFLINE_PREFLIGHT": "1", "SDI_SMOKE_SOURCE_COMMIT": commit,
     })

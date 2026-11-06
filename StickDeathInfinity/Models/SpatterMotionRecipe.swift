@@ -1591,6 +1591,84 @@ private enum SpatterGrammarSupport {
     static let percent = #"([^\s%,()]+)\s*%"#
 }
 
+/// Whole-object selection only. “Drawings” and “image” instructions retain their
+/// existing meanings; this explicit artwork grammar may transform their group.
+struct SpatterArtworkTransformInstruction: Equatable {
+    enum Action: Equatable {
+        case move(Double, Double)
+        case transform(scalePercent: Double, rotation: Double)
+        case reflect(StudioReflectionAxis)
+    }
+    let action: Action
+    static let moveExample = "Move selected artwork by (10%, -5%)."
+    static let transformExample = "Scale selected artwork to 150% and rotate 45 degrees."
+    static let scaleExample = "Scale selected artwork to 50%."
+    static let rotateExample = "Rotate selected artwork 90 degrees."
+    static let horizontalExample = "Flip selected artwork horizontally."
+    static let verticalExample = "Flip selected artwork vertically."
+    static let examples = [moveExample, transformExample, scaleExample, rotateExample, horizontalExample, verticalExample]
+    static let help = "Select whole artwork with Move: drawings, one image, or an explicit Drawings + image Lasso selection. Show every selected layer with Free lock and stop playback. Pixel-region/Wand selections are unavailable here. Offsets are -100–100% of the canvas, scale 10–1,000%, rotation -180–180 degrees. One complete instruction runs on its own."
+    enum Failure: LocalizedError {
+        case syntax, selection
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use \(SpatterArtworkTransformInstruction.moveExample) or \(SpatterArtworkTransformInstruction.transformExample) or \(SpatterArtworkTransformInstruction.horizontalExample) \(SpatterArtworkTransformInstruction.help) Nothing changed."
+            case .selection: return "\(SpatterArtworkTransformInstruction.help) Select the whole artwork again before opening Spatter. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return ["move", "scale", "rotate", "flip"].contains(words.first.map(String.init) ?? "") && words.contains("artwork")
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        // Reuse the proven, strict scalar grammars after replacing this exact
+        // noun. The original text must contain it once; suffixes still reject.
+        let noun = #"\bselected\s+artwork\b"#
+        let regex = try NSRegularExpression(pattern: noun, options: .caseInsensitive)
+        let range = NSRange(text.startIndex..., in: text)
+        guard regex.numberOfMatches(in: text, range: range) == 1 else { throw Failure.syntax }
+        let drawingText = regex.stringByReplacingMatches(in: text, range: range, withTemplate: "selected drawings")
+        do {
+            let words = text.lowercased().split { !$0.isLetter }
+            switch words.first.map(String.init) {
+            case "move":
+                let value = try SpatterSelectionTranslateInstruction.parse(drawingText)
+                return .init(action: .move(value.dxPercent, value.dyPercent))
+            case "scale", "rotate":
+                let value = try SpatterSelectionTransformInstruction.parse(drawingText)
+                return .init(action: .transform(scalePercent: value.scalePercent, rotation: value.rotationDegrees))
+            case "flip": return .init(action: .reflect(try SpatterSelectionReflectInstruction.parse(drawingText).axis))
+            default: throw Failure.syntax
+            }
+        } catch { throw Failure.syntax }
+    }
+    struct Values: Equatable {
+        var dx: Double = 0, dy: Double = 0, scale: Double = 1, rotation: Double = 0
+        var flipHorizontal = false, flipVertical = false
+    }
+    func values(width: Int, height: Int) throws -> Values {
+        guard (16...4096).contains(width), (16...4096).contains(height) else { throw Failure.syntax }
+        switch action {
+        case .move(let x, let y):
+            guard x.isFinite, y.isFinite, (-100...100).contains(x), (-100...100).contains(y) else { throw Failure.syntax }
+            return .init(dx: x * Double(width) / 100, dy: y * Double(height) / 100)
+        case .transform(let scale, let angle):
+            guard scale.isFinite, angle.isFinite, (10...1000).contains(scale), (-180...180).contains(angle) else { throw Failure.syntax }
+            return .init(scale: scale / 100, rotation: angle)
+        case .reflect(let axis): return .init(flipHorizontal: axis == .horizontal, flipVertical: axis == .vertical)
+        }
+    }
+    var summary: String {
+        switch action {
+        case .move(let x, let y): return "move the selected artwork by (\(String(format: "%.6g", x))%, \(String(format: "%.6g", y))%) of the canvas"
+        case .transform(let scale, let rotation): return "scale the selected artwork to \(String(format: "%.6g", scale))% and rotate \(String(format: "%.6g", rotation))° around its combined center"
+        case .reflect(let axis): return "flip the selected artwork \(axis == .horizontal ? "horizontally" : "vertically") around its combined bounds"
+        }
+    }
+}
+
 /// "Move selected drawings by (10%, -5%)." Percentages of the canvas width/height.
 struct SpatterSelectionTranslateInstruction: Equatable {
     let dxPercent: Double
@@ -1829,6 +1907,109 @@ struct SpatterImagePlacementInstruction: Equatable {
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
             action: .apply([.updateImagePlacement(.init(frame: .id(frameID), assetID: assetID,
                 placement: placement(canvasWidth: context.width, canvasHeight: context.height), rotationDegrees: angleDegrees, layer: .id(layerID)))]))
+    }
+}
+
+/// Creates one native editable text box, never rendered/flattened substitute art.
+/// Geometry, font, size, color and opacity are explicit. Optional text-specific
+/// settings start at StudioTextStyle's defaults, never the current brush/tool.
+struct SpatterTextCreateInstruction: Equatable {
+    let content: String
+    let origin: SpatterMotionRecipe.PercentPoint
+    let style: StudioTextStyle
+    let colorHex: String
+    let opacity: Double
+    static let example = "Create text \"SDI\" at (12.5%, 25%), box 96 by 48 px, font Special Elite, size 24 px, color #FF0000, opacity 100%."
+    static let styledExample = "Create text \"SDI\\nSTUDIO\" at (12.5%, 25%), box 96 by 48 px, font monospaced, size 16 px, color #0000FF, opacity 80%, align center, bold on, italic off, rotation 10 degrees."
+    var summary: String {
+        func n(_ value: Double) -> String { String(format: "%.6g", value) }
+        return "text box at (\(n(origin.x))%, \(n(origin.y))%), \(n(style.boxWidth)) × \(n(style.boxHeight)) px, "
+            + "\(style.font.title) \(n(style.size)) px, \(colorHex), opacity \(n(opacity * 100))%, "
+            + "align \(style.alignment.rawValue), bold \(style.bold ? "on" : "off"), italic \(style.italic ? "on" : "off"), rotation \(n(style.rotation))°"
+    }
+    enum Failure: LocalizedError {
+        case syntax, layer, geometry
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use: \(SpatterTextCreateInstruction.example) Font: system, monospaced, serif or Special Elite; size 8–240 px, box 16–4096 px, color #RRGGBB and opacity 0–100%. Optional suffixes in order: align left/center/right, bold on/off, italic on/off, rotation −180…180 degrees. Omitted suffixes use Text defaults (left, off, off, 0°). JSON quotes/\\n are literal text, never commands; maximum instruction 1,024 UTF-8 bytes. Nothing changed."
+            case .layer: return "Show the active frame's layer and set its lock to Free before creating text. Nothing changed."
+            case .geometry: return "The whole text box, including rotation, must fit inside this canvas. Its origin is the unrotated box's top-left corner in canvas percentages. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*create\s+text\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let number = #"([0-9]+(?:\.[0-9]+)?)"#
+        let quoted = #"("(?:[^"\\\x00-\x1F]|\\(?:["\\/bfnrt]|u[0-9a-f]{4}))*")"#
+        let pattern = #"\A\s*create\s+text\s+"# + quoted
+            + #"\s+at\s*\(\s*"# + number + #"\s*%\s*,\s*"# + number + #"\s*%\s*\)\s*,\s*box\s+"#
+            + number + #"\s+by\s+"# + number + #"\s+px\s*,\s*font\s+(system|monospaced|serif|special\s+elite)\s*,\s*size\s+"#
+            + number + #"\s+px\s*,\s*color\s+(#[0-9a-f]{6})\s*,\s*opacity\s+"# + number
+            + #"\s*%(?:\s*,\s*align\s+(left|center|right))?(?:\s*,\s*bold\s+(on|off))?(?:\s*,\s*italic\s+(on|off))?(?:\s*,\s*rotation\s+(-?[0-9]+(?:\.[0-9]+)?)\s+degrees)?\.?\s*\z"#
+        guard let (_, values) = try SpatterGrammarSupport.captures(text, patterns: [pattern]),
+              let content = try? JSONDecoder().decode(String.self, from: Data(values[0].utf8)),
+              let x = SpatterGrammarSupport.number(values[1], in: 0...100), let y = SpatterGrammarSupport.number(values[2], in: 0...100),
+              let width = SpatterGrammarSupport.number(values[3], in: 16...4096), let height = SpatterGrammarSupport.number(values[4], in: 16...4096),
+              let size = SpatterGrammarSupport.number(values[6], in: 8...240), let opacity = SpatterGrammarSupport.number(values[8], in: 0...100),
+              !content.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0.value != 10 }) else { throw Failure.syntax }
+        let fontName = values[5].lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let font: StudioTextFont
+        switch fontName {
+        case "system": font = .system
+        case "monospaced": font = .monospaced
+        case "serif": font = .serif
+        case "special elite": font = .specialElite
+        default: throw Failure.syntax
+        }
+        var style = StudioTextStyle()
+        style.font = font; style.size = size; style.boxWidth = width; style.boxHeight = height
+        if !values[9].isEmpty {
+            guard let alignment = StudioTextAlignment(rawValue: values[9].lowercased()) else { throw Failure.syntax }
+            style.alignment = alignment
+        }
+        if !values[10].isEmpty { style.bold = values[10].lowercased() == "on" }
+        if !values[11].isEmpty { style.italic = values[11].lowercased() == "on" }
+        if !values[12].isEmpty {
+            guard let rotation = SpatterGrammarSupport.number(values[12], in: -180...180) else { throw Failure.syntax }
+            style.rotation = rotation
+        }
+        let instruction = Self(content: content, origin: .init(x: x, y: y), style: style, colorHex: values[7].uppercased(), opacity: opacity / 100)
+        _ = try instruction.stroke(at: .zero, id: "text-validation", layerID: "text-validation")
+        return instruction
+    }
+    /// Descriptor validation is also applied to directly constructed instructions;
+    /// parsing is never the only trust boundary.
+    private func stroke(at point: CGPoint, id: String, layerID: String) throws -> StudioCommandStroke {
+        guard !content.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0.value != 10 }) else { throw Failure.syntax }
+        let descriptor = StudioTextDescriptor(content: content, style: style)
+        let element = DrawnElement(id: id, tool: .text, points: [.init(x: point.x, y: point.y)], color: colorHex,
+            width: 1, opacity: opacity, layerID: layerID, text: descriptor)
+        do { try descriptor.validate(element: element) } catch { throw Failure.syntax }
+        return .init(id: id, tool: .text, points: element.points, color: colorHex, width: 1, opacity: opacity, text: descriptor)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard context.width > 0, context.height > 0, context.width <= 4096, context.height <= 4096,
+              [origin.x, origin.y].allSatisfy({ $0.isFinite && (0...100).contains($0) }) else { throw Failure.geometry }
+        guard context.frames.contains(where: { $0.id == context.activeFrameID }), context.supportedTools.contains(.text),
+              let layer = context.layers.first(where: { $0.id == context.activeLayerID }), layer.visible, layer.opacity > 0,
+              !layer.isFullyLocked, layer.lockMode == "free" else { throw Failure.layer }
+        let point = CGPoint(x: origin.x * Double(context.width) / 100, y: origin.y * Double(context.height) / 100)
+        let stroke = try stroke(at: point, id: "text-\(requestID.uuidString)", layerID: context.activeLayerID)
+        let bounds = style.bounds(at: point)
+        // Native sine/cosine at 90°/180° can put an edge a few representable
+        // steps outside zero. Admit only that roundoff, never a pixel of spill.
+        let tolerance = Double(max(context.width, context.height)).ulp * 8
+        guard Double(bounds.minX) >= -tolerance, Double(bounds.minY) >= -tolerance,
+              Double(bounds.maxX) <= Double(context.width) + tolerance,
+              Double(bounds.maxY) <= Double(context.height) + tolerance else { throw Failure.geometry }
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.draw(.init(frame: .id(context.activeFrameID), layer: .id(context.activeLayerID), strokes: [stroke]))]))
     }
 }
 
@@ -2865,6 +3046,129 @@ struct SpatterBrushStrokeInstruction: Equatable {
     }
 }
 
+/// Single-frame vector shapes use exactly the canonical Draw command used by
+/// the canvas. Circle radius is in document pixels, so it stays circular on a
+/// portrait canvas instead of silently becoming an ellipse.
+struct SpatterShapeInstruction: Equatable {
+    enum Kind: String, CaseIterable {
+        case line, rectangle, circle
+        var tool: DrawingTool {
+            switch self { case .line: return .line; case .rectangle: return .rectangle; case .circle: return .circle }
+        }
+    }
+    let kind: Kind
+    /// Start corner for a line/rectangle; center for a circle.
+    let start: SpatterMotionRecipe.PercentPoint
+    let end: SpatterMotionRecipe.PercentPoint?
+    let radius: Double?
+    let color: String
+    let size: Double
+    let opacity: Double
+    let fillColor: String?
+    let cornerRadius: Double
+
+    static let lineExample = "Draw a line from (10%, 20%) to (90%, 70%) in #FF0000, size 6 px, opacity 100%."
+    static let rectangleExample = "Draw a rectangle from (20%, 20%) to (80%, 70%) in #000000, size 3 px, opacity 100%, fill #FF0000, radius 8 px."
+    static let circleExample = "Draw a circle centered at (50%, 50%), radius 20 px, in #000000, size 3 px, opacity 100%, fill #FF0000."
+    static func example(_ kind: Kind) -> String {
+        switch kind { case .line: return lineExample; case .rectangle: return rectangleExample; case .circle: return circleExample }
+    }
+    var summary: String {
+        func n(_ value: Double) -> String { String(format: "%.6g", value) }
+        let geometry: String
+        if kind == .circle, let radius {
+            geometry = "circle centered at (\(n(start.x))%, \(n(start.y))%), radius \(n(radius)) px"
+        } else if let end {
+            geometry = "\(kind.rawValue) from (\(n(start.x))%, \(n(start.y))%) to (\(n(end.x))%, \(n(end.y))%)"
+        } else { geometry = kind.rawValue }
+        return geometry + ", stroke \(color), size \(n(size)) px, opacity \(n(opacity * 100))%"
+            + (fillColor.map { ", fill \($0)" } ?? ", no fill")
+            + (kind == .rectangle ? ", corner radius \(n(cornerRadius)) px" : "")
+    }
+    enum Failure: LocalizedError {
+        case syntax, layer, geometry
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use: \(SpatterShapeInstruction.lineExample) Or \(SpatterShapeInstruction.rectangleExample) Or \(SpatterShapeInstruction.circleExample) Size 1–50 px, opacity 0–100%; fill is optional for rectangles/circles and corner radius 0–50 px is rectangle-only. Nothing changed."
+            case .layer: return "Select a visible active layer with Free or Alpha lock before drawing a shape. Nothing changed."
+            case .geometry: return "The shape must have a nonzero size and fit inside this canvas. Circle radius is in canvas pixels. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        var words = text.lowercased().split { !$0.isLetter }
+        guard words.first == "draw" else { return false }
+        words.removeFirst()
+        if words.first == "a" || words.first == "an" { words.removeFirst() }
+        return words.first.flatMap { Kind(rawValue: String($0)) } != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let p = SpatterGrammarSupport.percent
+        let bounds = #"\A\s*draw\s+a\s+(line|rectangle)\s+from\s*\(\s*"# + p + #"\s*,\s*"# + p
+            + #"\s*\)\s+to\s*\(\s*"# + p + #"\s*,\s*"# + p
+            + #"\s*\)\s+in\s+(#[0-9a-f]{6})\s*,\s*size\s+([0-9]+(?:\.[0-9]+)?)\s+px\s*,\s*opacity\s+([0-9]+(?:\.[0-9]+)?)\s*%(?:\s*,\s*fill\s+(#[0-9a-f]{6}))?(?:\s*,\s*radius\s+([0-9]+(?:\.[0-9]+)?)\s+px)?\.?\s*\z"#
+        let circle = #"\A\s*draw\s+a\s+circle\s+centered\s+at\s*\(\s*"# + p + #"\s*,\s*"# + p
+            + #"\s*\)\s*,\s*radius\s+([0-9]+(?:\.[0-9]+)?)\s+px\s*,\s*in\s+(#[0-9a-f]{6})\s*,\s*size\s+([0-9]+(?:\.[0-9]+)?)\s+px\s*,\s*opacity\s+([0-9]+(?:\.[0-9]+)?)\s*%(?:\s*,\s*fill\s+(#[0-9a-f]{6}))?\.?\s*\z"#
+        guard let (index, values) = try SpatterGrammarSupport.captures(text, patterns: [bounds, circle]) else { throw Failure.syntax }
+        if index == 0 {
+            guard let kind = Kind(rawValue: values[0].lowercased()),
+                  let x0 = SpatterGrammarSupport.number(values[1], in: 0...100), let y0 = SpatterGrammarSupport.number(values[2], in: 0...100),
+                  let x1 = SpatterGrammarSupport.number(values[3], in: 0...100), let y1 = SpatterGrammarSupport.number(values[4], in: 0...100),
+                  let size = SpatterGrammarSupport.number(values[6], in: 1...50), let opacity = SpatterGrammarSupport.number(values[7], in: 0...100),
+                  x0 != x1 || y0 != y1 else { throw Failure.syntax }
+            if kind == .line && (!values[8].isEmpty || !values[9].isEmpty) { throw Failure.syntax }
+            let corner: Double? = values[9].isEmpty ? 0 : SpatterGrammarSupport.number(values[9], in: 0...50)
+            guard let corner, kind != .rectangle || (x0 != x1 && y0 != y1) else { throw Failure.syntax }
+            return .init(kind: kind, start: .init(x: x0, y: y0), end: .init(x: x1, y: y1), radius: nil,
+                color: values[5].uppercased(), size: size, opacity: opacity / 100,
+                fillColor: values[8].isEmpty ? nil : values[8].uppercased(), cornerRadius: corner)
+        }
+        guard let x = SpatterGrammarSupport.number(values[0], in: 0...100), let y = SpatterGrammarSupport.number(values[1], in: 0...100),
+              let radius = SpatterGrammarSupport.number(values[2], in: 0.5...2048),
+              let size = SpatterGrammarSupport.number(values[4], in: 1...50), let opacity = SpatterGrammarSupport.number(values[5], in: 0...100) else { throw Failure.syntax }
+        return .init(kind: .circle, start: .init(x: x, y: y), end: nil, radius: radius,
+            color: values[3].uppercased(), size: size, opacity: opacity / 100,
+            fillColor: values[6].isEmpty ? nil : values[6].uppercased(), cornerRadius: 0)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard [start.x, start.y].allSatisfy({ $0.isFinite && (0...100).contains($0) }),
+              end.map({ [$0.x, $0.y].allSatisfy { $0.isFinite && (0...100).contains($0) } }) ?? true,
+              size.isFinite, (1...50).contains(size), opacity.isFinite, (0...1).contains(opacity),
+              cornerRadius.isFinite, (0...50).contains(cornerRadius),
+              SpatterBrushStrokeInstruction.brushColor(color) != nil,
+              fillColor.map({ SpatterBrushStrokeInstruction.brushColor($0) != nil }) ?? true,
+              kind != .line || (fillColor == nil && cornerRadius == 0),
+              kind == .rectangle || cornerRadius == 0,
+              kind != .circle || (end == nil && radius.map { $0.isFinite && (0.5...2048).contains($0) } == true),
+              kind == .circle || (end != nil && radius == nil) else { throw Failure.syntax }
+        guard context.frames.contains(where: { $0.id == context.activeFrameID }), context.supportedTools.contains(kind.tool),
+              let layer = context.layers.first(where: { $0.id == context.activeLayerID }), layer.visible, layer.opacity > 0,
+              !layer.isFullyLocked, layer.lockMode == "free" || layer.lockMode == "alpha" else { throw Failure.layer }
+        let width = Double(context.width), height = Double(context.height)
+        let x = SpatterGeometry.quantized(start.x * width / 100), y = SpatterGeometry.quantized(start.y * height / 100)
+        let a: StrokePoint, b: StrokePoint
+        if kind == .circle, let radius {
+            a = .init(x: CGFloat(x - radius), y: CGFloat(y - radius))
+            b = .init(x: CGFloat(x + radius), y: CGFloat(y + radius))
+        } else if let end {
+            a = .init(x: CGFloat(x), y: CGFloat(y))
+            b = .init(x: CGFloat(SpatterGeometry.quantized(end.x * width / 100)), y: CGFloat(SpatterGeometry.quantized(end.y * height / 100)))
+        } else { throw Failure.geometry }
+        guard [a, b].allSatisfy({ $0.x.isFinite && $0.y.isFinite && (0...width).contains(Double($0.x)) && (0...height).contains(Double($0.y)) }),
+              a.x != b.x || a.y != b.y,
+              kind == .line || (a.x != b.x && a.y != b.y) else { throw Failure.geometry }
+        let descriptor = kind == .line ? nil : StudioShapeDescriptor(fillColor: fillColor, cornerRadius: cornerRadius)
+        if let descriptor { try descriptor.validate(tool: kind.tool) }
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.draw(.init(frame: .id(context.activeFrameID), layer: .id(context.activeLayerID), strokes: [
+                .init(id: "shape-\(requestID.uuidString)", tool: kind.tool, points: [a, b], color: color, width: size, opacity: opacity, shape: descriptor)]))]))
+    }
+}
+
 // MARK: - Router, batches and plan preview (#205)
 
 /// Classification shared by the batch grammar, the plan preview and tests. The
@@ -2931,22 +3235,36 @@ struct SpatterFillInstruction: Equatable {
 /// "Select drawings "id-1", "id-2"." or "Clear drawing selection." Explicit
 /// stable IDs on the active frame; the executor applies the canvas selection rules.
 struct SpatterSelectByIDInstruction: Equatable {
+    enum Mode: Equatable { case explicitIDs, all, invert }
     let elementIDs: [String]
+    var mode: Mode = .explicitIDs
     static let example = "Select drawings \"stroke-1\", \"stroke-2\"."
     static let clearExample = "Clear drawing selection."
+    static let allExample = "Select all drawings."
+    static let invertExample = "Invert drawing selection."
     static let maximumIDs = 64
     enum Failure: LocalizedError, Equatable {
-        case syntax
+        case syntax, selectionContext, limit
         var errorDescription: String? {
-            "Use: \(SpatterSelectByIDInstruction.example) with 1–64 quoted drawing IDs from the active frame, or \(SpatterSelectByIDInstruction.clearExample) Nothing changed."
+            switch self {
+            case .syntax: return "Use: \(SpatterSelectByIDInstruction.example) with 1–64 quoted drawing IDs, \(SpatterSelectByIDInstruction.clearExample) \(SpatterSelectByIDInstruction.allExample) or \(SpatterSelectByIDInstruction.invertExample) Nothing changed."
+            case .selectionContext: return "All and Invert need the current Studio frame's visible editable drawings. Use one instruction outside a batch. Nothing was selected."
+            case .limit: return "This selection would include more than 64 drawings. Use Lasso's Select all or Invert, or select a smaller group. Nothing was selected."
+            }
         }
     }
     static func isInstruction(_ text: String) -> Bool {
-        text.range(of: #"\A\s*(?:select\s+drawings?\s+"|clear\s+drawing\s+selection\b)"#, options: [.regularExpression, .caseInsensitive]) != nil
+        text.range(of: #"\A\s*(?:select\s+drawings?\s+"|select\s+all\s+drawings?\b|(?:clear|invert)\s+drawing\s+selection\b)"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
     static func parse(_ text: String) throws -> Self {
         guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
         guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.syntax }
+        if text.range(of: #"\A\s*select\s+all\s+drawings\s*\.\s*\z"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .init(elementIDs: [], mode: .all)
+        }
+        if text.range(of: #"\A\s*invert\s+drawing\s+selection\s*\.\s*\z"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .init(elementIDs: [], mode: .invert)
+        }
         if text.range(of: #"\A\s*clear\s+drawing\s+selection\s*\.\s*\z"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return .init(elementIDs: [])
         }
@@ -2958,9 +3276,23 @@ struct SpatterSelectByIDInstruction: Equatable {
         guard (1...Self.maximumIDs).contains(ids.count), Set(ids).count == ids.count else { throw Failure.syntax }
         return .init(elementIDs: ids)
     }
+    /// Resolve only from the live native eligibility pass. The resulting
+    /// request still contains explicit stable IDs and the original revision.
+    func resolving(eligibleIDs: [String], selectedIDs: Set<String>,
+                   checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Self {
+        try checkCancellation()
+        guard mode != .explicitIDs else { return self }
+        let eligible = Set(eligibleIDs)
+        guard eligible.count == eligibleIDs.count else { throw Failure.selectionContext }
+        let result = mode == .all ? eligible : eligible.subtracting(selectedIDs)
+        guard result.count <= Self.maximumIDs else { throw Failure.limit }
+        try checkCancellation()
+        return .init(elementIDs: result.sorted())
+    }
     func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
         try checkCancellation()
+        guard mode == .explicitIDs else { throw Failure.selectionContext }
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
                      action: .apply([.selectElements(.init(frame: .id(context.activeFrameID), elementIDs: elementIDs))]))
     }
@@ -3215,20 +3547,223 @@ struct SpatterProjectExportInstruction: Equatable {
     }
 }
 
+/// A Sound Library asset identity and an explicit timeline placement. IDs are
+/// catalogue SHA-256 values, never filenames, URLs or executable provider data.
+struct SpatterLibrarySoundInstruction: Equatable {
+    let assetID: String
+    let track: Int
+    let startSeconds: Double
+    private var validFields: Bool {
+        assetID.utf8.count == 64 && assetID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+            && (1...4).contains(track) && startSeconds.isFinite && (0...1000).contains(startSeconds)
+    }
+    /// A user-selected library item can copy its complete command without
+    /// exposing raw identity controls or requiring the user to type a digest.
+    var instructionText: String? {
+        guard validFields else { return nil }
+        let seconds = String(format: "%.9f", locale: Locale(identifier: "en_US_POSIX"), startSeconds)
+        return "Add library sound \(assetID) to track \(track) at \(seconds) seconds."
+    }
+    /// The shipped CC0 Impact Metal 000 sound; the resolver still verifies its
+    /// catalogue membership, rights, immutable bytes and measured audio format.
+    static let example = "Add library sound 65535d26ae55af5319a98c0ea3acf56b5d2e8bafe847beceb81d54ec1ca6ef39 to track 2 at 0 seconds."
+    enum Failure: LocalizedError {
+        case syntax, missing, unavailable
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use Copy Spatter instruction on a Sound Library title, then paste it here. Choose track 1–4 and a start from 0–1000 seconds. Nothing was added."
+            case .missing: return "That sound ID is not in the available licensed Sound Library. Choose a current library sound. Nothing was added."
+            case .unavailable: return "The licensed Sound Library is unavailable in this editor. Nothing was added."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*add\s+library\s+sound\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let pattern = #"\A\s*add\s+library\s+sound\s+([0-9a-f]{64})\s+to\s+track\s+([1-4])\s+at\s+([0-9]+(?:\.[0-9]+)?)\s+seconds?\s*\.\s*\z"#
+        guard let (_, values) = try SpatterGrammarSupport.captures(text, patterns: [pattern]),
+              let track = Int(values[1]), let seconds = SpatterGrammarSupport.number(values[2], in: 0...1000) else { throw Failure.syntax }
+        return .init(assetID: values[0].lowercased(), track: track, startSeconds: seconds)
+    }
+    func resolve<T>(in assets: [T], id: KeyPath<T, String>) throws -> T {
+        guard validFields else { throw Failure.syntax }
+        let matches = assets.filter { $0[keyPath: id] == assetID }
+        guard matches.count == 1, let sound = matches.first else { throw Failure.missing }
+        return sound
+    }
+}
+
+/// Explicit settings for Studio's editable canvas Gradient tool. This is not
+/// a gradient brush stroke and never changes remembered tool/color preferences.
+struct SpatterGradientInstruction: Equatable {
+    let shape: StudioGradientDescriptor.Shape
+    let start: SpatterMotionRecipe.PercentPoint
+    let end: SpatterMotionRecipe.PercentPoint
+    let firstColor: String
+    /// nil means fade the first color to transparent, just like the manual tool.
+    let lastColor: String?
+    let opacity: Double
+    let interpolation: StudioGradientDescriptor.Interpolation
+    let dither: Bool
+    static let linearExample = "Apply a linear gradient from (10%, 20%) to (90%, 80%) in #FF0000 to #0000FF, opacity 80%, interpolation linear-light, dither on."
+    static let radialExample = "Apply a radial gradient from (50%, 50%) to (80%, 50%) in #FF0000 to transparent, opacity 70%, interpolation sRGB, dither off."
+    enum Failure: LocalizedError {
+        case syntax, geometry, canvasLimit
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use: \(SpatterGradientInstruction.linearExample) Or \(SpatterGradientInstruction.radialExample) Include both canvas points (0–100%), colors, opacity above 0–100%, interpolation sRGB or linear-light, and dither on/off. Linear/radial only. Nothing changed."
+            case .canvasLimit: return "The native Gradient tool supports canvases up to 4,194,304 pixels. Use a smaller canvas. Nothing changed."
+            case .geometry: return "Gradient endpoints must fit the current canvas and be at least one document pixel apart. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*apply\s+(?:a\s+)?\w+\s+gradient\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let number = #"([0-9]+(?:\.[0-9]+)?)"#
+        let point = #"\(\s*"# + number + #"%\s*,\s*"# + number + #"%\s*\)"#
+        let pattern = #"\A\s*apply\s+a\s+(linear|radial)\s+gradient\s+from\s*"# + point
+            + #"\s+to\s*"# + point + #"\s+in\s+(#[0-9a-f]{6})\s+to\s+(#[0-9a-f]{6}|transparent)\s*,\s*opacity\s+"#
+            + number + #"%\s*,\s*interpolation\s+(sRGB|linear-light)\s*,\s*dither\s+(on|off)\s*\.\s*\z"#
+        guard let (_, v) = try SpatterGrammarSupport.captures(text, patterns: [pattern]),
+              let shape = StudioGradientDescriptor.Shape(rawValue: v[0].lowercased()),
+              let x1 = SpatterGrammarSupport.number(v[1], in: 0...100),
+              let y1 = SpatterGrammarSupport.number(v[2], in: 0...100),
+              let x2 = SpatterGrammarSupport.number(v[3], in: 0...100),
+              let y2 = SpatterGrammarSupport.number(v[4], in: 0...100),
+              let percent = SpatterGrammarSupport.number(v[7], in: 0...100), percent > 0 else { throw Failure.syntax }
+        return .init(shape: shape, start: .init(x: x1, y: y1), end: .init(x: x2, y: y2),
+            firstColor: v[5].uppercased(), lastColor: v[6].lowercased() == "transparent" ? nil : v[6].uppercased(),
+            opacity: percent / 100, interpolation: v[8].lowercased() == "srgb" ? .sRGB : .linearLight,
+            dither: v[9].lowercased() == "on")
+    }
+    func canvasPoints(width: Int, height: Int) throws -> (start: CGPoint, end: CGPoint) {
+        guard width > 0, height > 0, width <= 4096, height <= 4096,
+              [start.x, start.y, end.x, end.y].allSatisfy({ $0.isFinite && (0...100).contains($0) }) else { throw Failure.geometry }
+        guard width <= 4_194_304 / height else { throw Failure.canvasLimit }
+        let a = CGPoint(x: start.x * Double(width) / 100, y: start.y * Double(height) / 100)
+        let b = CGPoint(x: end.x * Double(width) / 100, y: end.y * Double(height) / 100)
+        let dx = b.x - a.x, dy = b.y - a.y
+        guard dx * dx + dy * dy >= 1 else { throw Failure.geometry }
+        return (a, b)
+    }
+    func descriptor() throws -> StudioGradientDescriptor {
+        func color(_ hex: String, alpha: Double) throws -> StudioGradientDescriptor.Color {
+            guard hex.utf8.count == 7, hex.first == "#", hex.dropFirst().utf8.allSatisfy({
+                (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
+            }), let bits = UInt32(hex.dropFirst(), radix: 16) else { throw Failure.syntax }
+            return .init(red: Double((bits >> 16) & 255) / 255, green: Double((bits >> 8) & 255) / 255,
+                blue: Double(bits & 255) / 255, alpha: alpha)
+        }
+        guard opacity.isFinite, opacity > 0, opacity <= 1 else { throw Failure.syntax }
+        return try .init(shape: shape, interpolation: interpolation, dither: dither,
+            stops: [.init(location: 0, color: color(firstColor, alpha: 1)),
+                    .init(location: 1, color: color(lastColor ?? firstColor, alpha: lastColor == nil ? 0 : 1))])
+    }
+    var summary: String {
+        "\(shape.rawValue) gradient from (\(String(format: "%.6g", start.x))%, \(String(format: "%.6g", start.y))%) to (\(String(format: "%.6g", end.x))%, \(String(format: "%.6g", end.y))%), \(firstColor) to \(lastColor ?? "transparent"), opacity \(String(format: "%.6g", opacity * 100))%, interpolation \(interpolation == .sRGB ? "sRGB" : "linear-light"), dither \(dither ? "on" : "off")"
+    }
+}
+
+/// Complete native raster-tool settings plus a bounded polyline in document
+/// percentages. No shell, URL, arbitrary descriptor or remembered preference is
+/// read from an instruction; the active selection supplies real effect coverage.
+struct SpatterPixelEffectInstruction: Equatable {
+    let settings: StudioPixelEffectSettings
+    let points: [SpatterMotionRecipe.PercentPoint]
+    private let description: String
+    var summary: String { description }
+    static let smudgeExample = "Apply smudge along (20%, 40%), (50%, 50%), (80%, 60%), size 24 px, strength 50%, opacity 80%."
+    static let blurExample = "Apply blur along (20%, 40%), (80%, 60%), size 32 px, hardness 50%, radius 4 px, strength 80%."
+    static let sharpenExample = "Apply sharpen along (20%, 40%), (80%, 60%), size 32 px, hardness 50%, radius 2 px, amount 100%, threshold 2%, opacity 80%."
+    static let dodgeExample = "Apply dodge along (20%, 40%), (80%, 60%), size 32 px, hardness 50%, exposure 25%, range midtones, protect tones on, opacity 80%."
+    static let burnExample = "Apply burn along (20%, 40%), (80%, 60%), size 32 px, hardness 50%, exposure 25%, range midtones, protect tones on, opacity 80%."
+    static let examples = [smudgeExample, blurExample, sharpenExample, dodgeExample, burnExample]
+    enum Failure: LocalizedError {
+        case syntax, geometry
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use a complete native effect example below with 2–32 canvas points and every tool-specific setting. Size 1–256 px; percentages 0–100 (Sharpen amount 0–200%); Blur/Sharpen radius 0.5–32 px. No color setting: these tools change existing pixels. Nothing changed."
+            case .geometry: return "The effect needs 2–32 finite canvas points (0–100%), no adjacent duplicates, and a canvas of at most 4,194,304 pixels. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*apply\s+(?:smudge|blur|sharpen|dodge|burn)\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let n = #"([0-9]+(?:\.[0-9]+)?)"#
+        let p = #"\(\s*[0-9]+(?:\.[0-9]+)?%\s*,\s*[0-9]+(?:\.[0-9]+)?%\s*\)"#
+        let path = "(" + p + #"(?:\s*,\s*"# + p + #"){1,31})"#
+        func pattern(_ tool: String, _ suffix: String) -> String {
+            #"\A\s*apply\s+"# + tool + #"\s+along\s*"# + path + #"\s*,\s*size\s+"# + n + #"\s+px\s*,\s*"# + suffix + #"\s*\.\s*\z"#
+        }
+        let patterns = [
+            pattern("smudge", #"strength\s+"# + n + #"%\s*,\s*opacity\s+"# + n + "%"),
+            pattern("blur", #"hardness\s+"# + n + #"%\s*,\s*radius\s+"# + n + #"\s+px\s*,\s*strength\s+"# + n + "%"),
+            pattern("sharpen", #"hardness\s+"# + n + #"%\s*,\s*radius\s+"# + n + #"\s+px\s*,\s*amount\s+"# + n + #"%\s*,\s*threshold\s+"# + n + #"%\s*,\s*opacity\s+"# + n + "%"),
+            pattern("(dodge|burn)", #"hardness\s+"# + n + #"%\s*,\s*exposure\s+"# + n + #"%\s*,\s*range\s+(all|shadows|midtones|highlights)\s*,\s*protect\s+tones\s+(on|off)\s*,\s*opacity\s+"# + n + "%")]
+        guard let (kind, v) = try SpatterGrammarSupport.captures(text, patterns: patterns) else { throw Failure.syntax }
+        // Dodge/Burn has one extra leading mode capture. Normalize indices so
+        // only their own complete parameter set reaches the tagged native type.
+        let values = kind == 3 ? Array(v.dropFirst()) : v
+        func number(_ i: Int, _ bounds: ClosedRange<Double>) throws -> Double {
+            guard let result = SpatterGrammarSupport.number(values[i], in: bounds) else { throw Failure.syntax }
+            return result
+        }
+        let settings: StudioPixelEffectSettings
+        let size = try number(1, 1...256)
+        switch kind {
+        case 0: settings = try .smudge(.init(diameter: size, strength: number(2, 0...100) / 100, opacity: number(3, 0...100) / 100))
+        case 1: settings = try .blur(.init(diameter: size, hardness: number(2, 0...100) / 100, radius: number(3, 0.5...32), strength: number(4, 0...100) / 100))
+        case 2: settings = try .sharpen(.init(diameter: size, hardness: number(2, 0...100) / 100, radius: number(3, 0.5...32),
+            amount: number(4, 0...200) / 100, threshold: number(5, 0...100) / 100, opacity: number(6, 0...100) / 100))
+        default:
+            guard let mode = StudioDodgeBurn.Mode(rawValue: v[0].lowercased()),
+                  let range = StudioDodgeBurn.TonalRange(rawValue: values[4].lowercased()) else { throw Failure.syntax }
+            settings = try .dodgeBurn(.init(mode: mode, diameter: size, hardness: number(2, 0...100) / 100,
+                exposure: number(3, 0...100) / 100, range: range, protectTones: values[5].lowercased() == "on", opacity: number(6, 0...100) / 100))
+        }
+        let expression = try NSRegularExpression(pattern: #"\(\s*([0-9]+(?:\.[0-9]+)?)%\s*,\s*([0-9]+(?:\.[0-9]+)?)%\s*\)"#)
+        let source = values[0]
+        let points: [SpatterMotionRecipe.PercentPoint] = try expression.matches(in: source, range: NSRange(source.startIndex..., in: source)).map { match in
+            guard let x = Range(match.range(at: 1), in: source), let y = Range(match.range(at: 2), in: source),
+                  let px = SpatterGrammarSupport.number(String(source[x]), in: 0...100),
+                  let py = SpatterGrammarSupport.number(String(source[y]), in: 0...100) else { throw Failure.geometry }
+            return .init(x: px, y: py)
+        }
+        guard (2...32).contains(points.count), zip(points, points.dropFirst()).allSatisfy({ $0 != $1 }) else { throw Failure.geometry }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .init(settings: settings, points: points, description: String(trimmed.dropFirst(6).dropLast()))
+    }
+    func element(id: String, layerID: String, width: Int, height: Int) throws -> DrawnElement {
+        guard width > 0, height > 0, width <= 4096, height <= 4096, width <= 4_194_304 / height,
+              (2...32).contains(points.count), points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && (0...100).contains($0.x) && (0...100).contains($0.y) }),
+              zip(points, points.dropFirst()).allSatisfy({ $0 != $1 }) else { throw Failure.geometry }
+        return try settings.element(id: id, layerID: layerID,
+            points: points.map { .init(x: $0.x * Double(width) / 100, y: $0.y * Double(height) / 100) }, width: width, height: height)
+    }
+}
+
 enum SpatterInstructionRouter {
     enum Kind: String, CaseIterable {
         case batch, frameDuplicateRange, frameReverse, navigation, layerStructure, grid, onionSkin, frameAction, layerOrder, audioTrack
-        case frameCut, drawingDuplicate, artworkOrder, imageReflection, selectionTranslate, selectionTransform, selectionReflect
-        case imageRotation, imageCrop, imagePlacement, textUpdate, tween, frameClipboard, projectSettings, brushStroke
+        case frameCut, drawingDuplicate, artworkOrder, artworkTransform, imageReflection, selectionTranslate, selectionTransform, selectionReflect
+        case imageRotation, imageCrop, imagePlacement, textCreate, textUpdate, tween, frameClipboard, projectSettings, brushStroke, freehandStroke, shape
         case selectedErasure, projectRename, frameExposure, layerUpdate, layerDuplicate, layerGlow, audioClip
         case multiClauseBrief, twoActorBrief, sceneBrief, stickFigure, circleMotion
         case fill, selectByID, sourceReference
-        case areaSelection, wandSelection, libraryPicture, projectExport
+        case areaSelection, wandSelection, libraryPicture, librarySound, projectExport, gradientFill, pixelEffect, imagePack
         /// Grammars whose preparation needs only the captured document, not a selection.
         var isContextOnly: Bool {
             switch self {
             case .frameDuplicateRange, .frameReverse, .navigation, .layerStructure, .grid, .onionSkin, .frameAction, .layerOrder, .audioTrack,
-                 .tween, .frameClipboard, .projectSettings, .projectRename, .frameExposure, .layerUpdate, .layerDuplicate, .layerGlow, .brushStroke:
+                 .tween, .frameClipboard, .projectSettings, .projectRename, .frameExposure, .layerUpdate, .layerDuplicate, .layerGlow, .brushStroke, .freehandStroke, .shape:
                 return true
             default: return false
             }
@@ -3236,10 +3771,14 @@ enum SpatterInstructionRouter {
     }
     static func classify(_ draft: String) -> Kind? {
         if SpatterInstructionBatch.isBatch(draft) { return .batch }
+        if SpatterImagePackInstruction.isInstruction(draft) { return .imagePack }
         if SpatterSourceInstruction.isInstruction(draft) { return .sourceReference }
         if SpatterAreaSelectInstruction.isInstruction(draft) { return .areaSelection }
         if SpatterWandSelectInstruction.isInstruction(draft) { return .wandSelection }
         if SpatterLibraryPictureInstruction.isInstruction(draft) { return .libraryPicture }
+        if SpatterLibrarySoundInstruction.isInstruction(draft) { return .librarySound }
+        if SpatterGradientInstruction.isInstruction(draft) { return .gradientFill }
+        if SpatterPixelEffectInstruction.isInstruction(draft) { return .pixelEffect }
         if SpatterProjectExportInstruction.isInstruction(draft) { return .projectExport }
         if SpatterSelectByIDInstruction.isInstruction(draft) { return .selectByID }
         if SpatterFillInstruction.isInstruction(draft) { return .fill }
@@ -3262,16 +3801,20 @@ enum SpatterInstructionRouter {
             if SpatterArtworkOrderInstruction.isInstruction(draft) { return .artworkOrder }
             if SpatterImageReflectionInstruction.isInstruction(draft) { return .imageReflection }
         }
+        if SpatterArtworkTransformInstruction.isInstruction(draft) { return .artworkTransform }
         if SpatterSelectionTranslateInstruction.isInstruction(draft) { return .selectionTranslate }
         if SpatterSelectionTransformInstruction.isInstruction(draft) { return .selectionTransform }
         if SpatterSelectionReflectInstruction.isInstruction(draft) { return .selectionReflect }
         if SpatterImageRotationInstruction.isInstruction(draft) { return .imageRotation }
         if SpatterImageCropInstruction.isInstruction(draft) { return .imageCrop }
         if SpatterImagePlacementInstruction.isInstruction(draft) { return .imagePlacement }
+        if SpatterTextCreateInstruction.isInstruction(draft) { return .textCreate }
         if SpatterTextUpdateInstruction.isInstruction(draft) { return .textUpdate }
         if SpatterTweenInstruction.isInstruction(draft) { return .tween }
         if SpatterFrameClipboardInstruction.isInstruction(draft) { return .frameClipboard }
         if SpatterProjectSettingsInstruction.isInstruction(draft) { return .projectSettings }
+        if SpatterShapeInstruction.isInstruction(draft) { return .shape }
+        if SpatterFreehandInstruction.isInstruction(draft) { return .freehandStroke }
         if SpatterBrushStrokeInstruction.isInstruction(draft) { return .brushStroke }
         if SpatterSelectedErasureInstruction.isInstruction(draft) { return .selectedErasure }
         if isRename { return .projectRename }
@@ -3314,6 +3857,8 @@ enum SpatterInstructionRouter {
         case .layerUpdate: return try SpatterLayerUpdateInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
         case .layerDuplicate: return try SpatterLayerDuplicateInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
         case .layerGlow: return try SpatterLayerGlowInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
+        case .shape: return try SpatterShapeInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
+        case .freehandStroke: return try SpatterFreehandInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
         case .brushStroke: return try SpatterBrushStrokeInstruction.parse(line).prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
         default: throw SpatterInstructionBatch.Failure.unsupportedLine(0, line)
         }
@@ -3336,7 +3881,10 @@ extension StudioCommand {
         case .selectFrame(let value): return .selectFrame(reference(value))
         case .selectLayer(let value): return .selectLayer(reference(value))
         case .setFrameHold(let value): return .setFrameHold(.init(frame: reference(value.frame), ticks: value.ticks))
-        case .draw(let value): return .draw(.init(frame: reference(value.frame), layer: reference(value.layer), strokes: value.strokes))
+        case .draw(let value): return .draw(.init(frame: reference(value.frame), layer: reference(value.layer), strokes: value.strokes.map {
+            .init(id: prefix + $0.id, tool: $0.tool, points: $0.points, color: $0.color, width: $0.width, opacity: $0.opacity,
+                  shape: $0.shape, eraser: $0.eraser, text: $0.text, brush: $0.brush)
+        }))
         default: return self
         }
     }
@@ -3356,7 +3904,7 @@ struct SpatterInstructionBatch: Equatable {
         var errorDescription: String? {
             switch self {
             case .lineCount: return "A batch holds 2–8 complete instructions, one per line. Nothing changed."
-            case .unsupportedLine(let number, let text): return "Line \(number) is not a complete context-only instruction (\u{201C}\(text.prefix(48))\u{201D}). Batches accept frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename and brush-stroke instructions; selection, image, text, audio-clip and brief instructions run on their own. Nothing changed."
+            case .unsupportedLine(let number, let text): return "Line \(number) is not a complete context-only instruction (\u{201C}\(text.prefix(48))\u{201D}). Batches accept frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename, shape, native-freehand and brush-stroke instructions; selection, image, text, audio-clip, library-sound, canvas-gradient, raster-effect and brief instructions run on their own. Nothing changed."
             case .tooManyCommands: return "This batch expands to more than 96 typed commands. Split it into two batches. Nothing changed."
             }
         }
@@ -3439,6 +3987,15 @@ enum SpatterInstructionPreview {
         let probe = UUID()
         do {
             switch kind {
+            case .artworkTransform:
+                let instruction = try SpatterArtworkTransformInstruction.parse(text)
+                if let context { _ = try instruction.values(width: context.width, height: context.height) }
+                return "Plan for selected whole artwork: \(instruction.summary). Apply validates the captured selection, visible unlocked layers and current project. Pixel-region/Wand selections are refused. One Undo reverses the group; nothing has changed yet."
+            case .textCreate:
+                let instruction = try SpatterTextCreateInstruction.parse(text)
+                guard let context else { return "Create an editable \(instruction.summary). Open the project to preview its bounds and layer." }
+                let request = try instruction.prepare(in: context, requestID: probe, checkCancellation: {})
+                return "Plan: create one editable \(instruction.summary) on the active frame/layer → \(describe(request)) against revision \(context.revision), as one Undo step. Nothing has changed yet."
             case .batch:
                 let batch = try SpatterInstructionBatch.parse(text)
                 guard let context else { return "Batch of \(batch.summary). Open the project to preview its commands." }
@@ -3475,6 +4032,13 @@ enum SpatterInstructionPreview {
                 }
                 let decision = SpatterSourceRightsGate.evaluate(reference)
                 return "Plan: record \(reference.url.absoluteString) as a \(reference.rightsBasis.label) reference on this project (no download). Generation would then be \(decision.allowed ? "allowed for 20–60 s briefs" : "refused"): \(decision.reason) One Undo step. Nothing has changed yet."
+            case .selectByID:
+                let instruction = try SpatterSelectByIDInstruction.parse(text)
+                if instruction.mode == .explicitIDs {
+                    return "Plan: \(instruction.elementIDs.isEmpty ? "clear drawing selection" : "select the named drawings on the active frame"). Apply validates the current frame and drawing IDs. Selection changes no project, save or Undo history. Nothing has changed yet."
+                }
+                let action = instruction.mode == .all ? "Select all" : "Invert"
+                return "Plan: \(action) drawing selection on the active frame using Lasso's visible Free-layer, on-canvas drawing rules. Clear image and Wand selections first. Apply resolves at most 64 resulting drawings in the current Studio; larger results are refused without partial selection. Selection changes no project, save or Undo history. Nothing has changed yet."
             case .areaSelection:
                 let area = try SpatterAreaSelectInstruction.parse(text)
                 return "Plan: select the drawings on the active frame fully inside this \(area.isRectangle ? "rectangle" : "\(area.vertices.count)-point polygon") under the Lasso's rules (visible, unlocked Free layers) → 1× selectElements. Selection never changes the project. Nothing has changed yet."
@@ -3484,9 +4048,33 @@ enum SpatterInstructionPreview {
             case .libraryPicture:
                 let picture = try SpatterLibraryPictureInstruction.parse(text)
                 return "Plan: verify the bundled Image Library picture \u{201C}\(picture.name)\u{201D} and add it to the active frame on a new layer behind the drawings, keeping its original bytes and license record. One Undo step. Nothing has changed yet."
+            case .pixelEffect:
+                let effect = try SpatterPixelEffectInstruction.parse(text)
+                if let context { _ = try effect.element(id: "preview-pixel-effect", layerID: context.activeLayerID, width: context.width, height: context.height) }
+                return "Plan: apply one editable \(effect.summary) through the native raster tool pipeline to the current drawing/Wand coverage, or the active layer when no drawings are selected. The source pixels must actually change before one Undo step is committed. Visible Free layer required; selected image/image pixels are unavailable. Tool preferences are unchanged. Nothing has changed yet."
+            case .gradientFill:
+                let gradient = try SpatterGradientInstruction.parse(text)
+                _ = try gradient.descriptor()
+                if let context { _ = try gradient.canvasPoints(width: context.width, height: context.height) }
+                return "Plan: apply one editable \(gradient.summary) through Studio's Gradient tool pipeline. The current drawing/Wand selection limits coverage; with no selection it fills the active layer. Image-pixel selections are unavailable. Requires a visible Free layer and a canvas of at most 4,194,304 pixels. Actual pixel change is verified before one Undo step; no tool preferences, export or publication are changed. Nothing has changed yet."
+            case .librarySound:
+                let sound = try SpatterLibrarySoundInstruction.parse(text)
+                return "Plan: verify and decode the requested licensed Sound Library sound, then add its real audio to track \(sound.track) at \(String(format: "%.6g", sound.startSeconds)) seconds through Studio's managed-audio attachment, as one Undo step. Missing, changed or unlicensed assets are refused. Playback and export are not started. Nothing has changed yet."
+            case .imagePack:
+                return "Plan: " + (try SpatterImagePackInstruction.parse(text)).preview + " No project edit or Undo entry; explicit Apply is required."
             case .projectExport:
                 let export = try SpatterProjectExportInstruction.parse(text)
                 return "Plan: start Studio's direct \(export.format.rawValue.uppercased()) export of the saved current revision to a file on this device. The project does not change; nothing is uploaded, shared or published. Requires a saved project. Nothing has changed yet."
+            case .freehandStroke:
+                let freehand = try SpatterFreehandInstruction.parse(text)
+                guard let context else { return "Plan: add one editable \(freehand.summary). Open the project to validate its canvas and active layer. Nothing has changed yet." }
+                _ = try freehand.prepare(in: context, requestID: probe, checkCancellation: {})
+                return "Plan: add one editable \(freehand.summary) through Studio’s native touch capture and 1× draw at revision \(context.revision), as one Undo step. Pressure/tilt, mirror and ruler are off; remembered tool preferences are unchanged. Nothing has changed yet."
+            case .shape:
+                let shape = try SpatterShapeInstruction.parse(text)
+                guard let context else { return "Plan: add one editable \(shape.summary). Open the project to validate its canvas bounds and active layer. Nothing has changed yet." }
+                _ = try shape.prepare(in: context, requestID: probe, checkCancellation: {})
+                return "Plan: add one editable \(shape.summary) to the active frame/layer through 1× draw at revision \(context.revision), as one Undo step. No new frames or export. Nothing has changed yet."
             case .circleMotion:
                 let recipe = try SpatterMotionRecipe.parse(text)
                 guard let context else { return "Outlined-circle motion (\(recipe.frameCount) frames). Open the project to preview." }
@@ -3732,5 +4320,58 @@ struct SpatterQualityReport: Equatable {
         if !thresholds.allowTimingMismatch, let mismatch = findings.first(where: { $0.kind == .timingMismatch }) { failures.append(mismatch.detail) }
         for finding in findings where [.movieFrameCount, .movieDuration, .audioOffset].contains(finding.kind) { failures.append(finding.detail) }
         return .init(passes: failures.isEmpty, failures: failures)
+    }
+}
+
+/// Explicit local app action. IDs name only bundled, release-pinned descriptors;
+/// no URL, path, native owner token or provider response is executable authority.
+struct SpatterImagePackInstruction: Equatable {
+    enum Action: String, CaseIterable { case check, install, remove, cancel }
+    struct Pack: Identifiable {
+        let id: String
+        let title: String
+    }
+    static let packs: [Pack] = [
+        .init(id: "kenney.1-bit-scenery.v1", title: "1-Bit Scenery"),
+        .init(id: "kenney.1-bit-expansion.v1", title: "1-Bit Characters and Props"),
+        .init(id: "kenney.1-bit-platformer.v1", title: "1-Bit Platformer"),
+        .init(id: "kenney.monochrome-rpg.v1", title: "Monochrome RPG"),
+        .init(id: "kenney.micro-roguelike.v1", title: "Micro Roguelike"),
+        .init(id: "kenney.smoke-particles.v1", title: "Smoke and Explosions")
+    ]
+    static var packIDs: [String] { packs.map(\.id) }
+    let action: Action
+    let packID: String
+    static let example = "Check image pack kenney.micro-roguelike.v1."
+    static func example(_ action: Action, packID: String = "kenney.micro-roguelike.v1") -> String {
+        action.rawValue.capitalized + " image pack " + packID + "."
+    }
+    enum Failure: LocalizedError {
+        case unsupported
+        var errorDescription: String? {
+            "Use Check, Install, Remove or Cancel image pack followed by one exact bundled pack ID. URLs, paths, owner tokens and batches are unavailable."
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return Action.allCases.contains { value.hasPrefix($0.rawValue + " image pack") }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw Failure.unsupported }
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasSuffix(".") { value.removeLast() }
+        let parts = value.split(separator: " ").map(String.init)
+        guard parts.count == 4, let action = Action(rawValue: parts[0].lowercased()),
+              parts[1].lowercased() == "image", parts[2].lowercased() == "pack",
+              packIDs.contains(parts[3]) else { throw Failure.unsupported }
+        return .init(action: action, packID: parts[3])
+    }
+    var preview: String {
+        switch action {
+        case .check: return "Verify the installed local library copy of " + packID + ". A busy or damaged copy is not reported as absent."
+        case .install: return "Install or verify the release-pinned publisher pack " + packID + ". A connection may be needed. Nothing is added to a project."
+        case .remove: return "Remove only the downloaded library copy of " + packID + "; project-owned pictures remain."
+        case .cancel: return "Request cancellation only of this Spatter panel's active " + packID + " operation. An unrelated manual operation is untouched; completed installation/removal is not rolled back."
+        }
     }
 }

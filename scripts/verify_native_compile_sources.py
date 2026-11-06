@@ -8,6 +8,10 @@ ROOT = Path(__file__).resolve().parents[1]
 # These production types refer to each other directly. Keep the real catalogue
 # in tests that compile preview sessions; a test-only stand-in would hide wiring.
 DEPENDENCIES = {
+    "StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift": {"StickDeathInfinity/Models/SpatterFreehandInstruction.swift"},
+    # Native freehand instructions share the actual manual stroke factory and renderer.
+    "StickDeathInfinity/Models/SpatterMotionRecipe.swift": {"StickDeathInfinity/Models/SpatterFreehandInstruction.swift"},
+    "StickDeathInfinity/Models/SpatterFreehandInstruction.swift": {"StickDeathInfinity/Models/SpatterMotionRecipe.swift", "StickDeathInfinity/Models/Models.swift", "StickDeathInfinity/Services/StudioBrushRenderer.swift"},
     "StickDeathInfinity/Services/Storage/StudioStorageCleanup.swift": {"StickDeathInfinity/Services/StudioAudioWaveformCache.swift", "StickDeathInfinity/Services/Storage/StudioStorageBudget.swift"},
     # Community clients share one model file and one transport protocol.
     "StickDeathInfinity/Services/Social/CommunityTransport.swift": {"StickDeathInfinity/Models/CommunityModels.swift"},
@@ -29,6 +33,15 @@ DEPENDENCIES = {
         "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
         "StickDeathInfinity/Models/StudioCommands.swift",
         # Brief-scope quality report and its draft-submission record (#213).
+        "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
+    },
+    # Local model proposals enter the existing production planner and executor.
+    "Tests/SpatterOnDevice/main.swift": {
+        "StickDeathInfinity/Models/SpatterOnDevicePlan.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift",
+        "StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift",
+        "StickDeathInfinity/Models/SpatterMotionRecipe.swift",
+        "StickDeathInfinity/Models/StudioCommands.swift",
         "StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift",
     },
     # Both-client .sdi interchange harness (#286): production portable bundle and editable archive.

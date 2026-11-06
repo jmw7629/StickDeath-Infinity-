@@ -37,7 +37,7 @@ xcodebuild build-for-testing \
   -project StickDeathInfinity.xcodeproj -scheme StickDeathInfinity \
   -configuration Debug -destination "platform=iOS Simulator,id=$SDI_SMOKE_SIMULATOR_UDID" \
   -derivedDataPath "$sdi_derived" -clonedSourcePackagesDirPath "$sdi_package_cache" \
-  -disableAutomaticPackageResolution -skipPackageUpdates -jobs 2 \
+  -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile -skipPackageUpdates -jobs 2 \
   -only-testing:StickDeathInfinityUITests \
   CODE_SIGNING_ALLOWED=NO SPATTER_BACKEND_URL= SUPABASE_URL= \
   SUPABASE_PUBLISHABLE_KEY= SUPABASE_ANON_KEY= LIVEKIT_WS_URL= \

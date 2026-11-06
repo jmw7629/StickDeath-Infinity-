@@ -6,7 +6,7 @@ permissions:
   contents: read
 concurrency:
   group: sdi-native-recovery-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   spatter-production-tests:
     runs-on: ubuntu-24.04
@@ -177,20 +177,118 @@ jobs:
         run: python3 scripts/verify_retired_communications.py
       - name: Verify control evidence map matches source and native UI tests
         run: python3 scripts/verify_control_index.py
-  native-production-tests:
-    # Fail fast before allocating the long native suite; the final aggregate
-    # still requires every production and simulator gate to succeed.
+  native-app-compile:
+    # Compile the actual app first. Production, followed by two isolated shards,
+    # can run alongside serial phone/iPad journeys: at most three Mac jobs per run.
     needs: [source-security, spatter-production-tests]
     runs-on: macos-15
-    # Production took 47m09s on run 37668843963 before image-region dependencies.
-    # Forty-five VM recipes now compile the region service and the new admin
-    # suite adds coverage. Keep bounded headroom and every sequential gate.
-    timeout-minutes: 90
+    timeout-minutes: 42
+    steps:
+      - name: Set the optional Simulator review window
+        id: native-compile-review-window
+        continue-on-error: true
+        run: |
+          python3 -c 'import time; print("start_cutoff_ns=" + str(time.monotonic_ns() + 35 * 60 * 10**9))' >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build the checked-in unsigned iOS app and capture isolated launch evidence
+        timeout-minutes: 35
+        run: python3 scripts/native-smoke/build_app_ci.py
+      - name: Preserve exact-source native compilation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-app-compile-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdi-native-compile-evidence/
+          retention-days: 3
+          if-no-files-found: error
+      - name: Package the completed Simulator compile for optional review
+        id: native-compile-package
+        if: ${{ success() && steps.native-compile-review-window.outputs.start_cutoff_ns != '' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          SDI_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          SDI_REVIEW_PACKAGE_START_CUTOFF_NS: ${{ steps.native-compile-review-window.outputs.start_cutoff_ns }}
+        run: python3 scripts/native-smoke/package_compile_review_ci.py
+      - name: Upload the early unconfigured Simulator review app
+        if: ${{ !cancelled() && steps.native-compile-package.outcome == 'success' && steps.native-compile-package.outputs.review_app_ready == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-compiled-simulator-app-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sdi-native-compile-review-app/StickDeathInfinity-simulator.zip
+            ${{ runner.temp }}/sdi-native-compile-review-app/manifest.json
+            ${{ runner.temp }}/sdi-native-compile-review-app/compile-provenance.json
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+
+  native-production-tests:
+    # Preserve every production gate while collecting independent evidence.
+    # The final aggregate still requires all production/simulator gates to pass.
+    needs: [source-security, spatter-production-tests, native-app-compile]
+    runs-on: macos-15
+    # 1bd hit the outer 90m ceiling before the expanded sequential suite finished
+    # (run 42218400907). Keep every recipe/step limit and required final gate;
+    # allow remaining production recipes to finish without adding Mac jobs.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify real rectangle and freehand selection cancellation history persistence and pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioGradientFill.swift \
+            StickDeathInfinity/Services/StudioSelectionMask.swift \
+            StickDeathInfinity/Models/StudioCraftAudio.swift \
+            StickDeathInfinity/Models/StudioCraftLayers.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioVideoFraming.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioAreaSelection/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioSoundCredits.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-area-selection-tests"
+          "$RUNNER_TEMP/sdi-area-selection-tests"
       - name: Verify truthful admin overview authorization and data lifecycle
         shell: bash
         run: |
@@ -378,6 +476,9 @@ jobs:
             -o "$RUNNER_TEMP/sdi-studio-toolbar-tests"
           "$RUNNER_TEMP/sdi-studio-toolbar-tests"
       - name: Verify actual SwiftUI popup content never collapses
+        id: popup-layout
+        # Collect independent production evidence before the final mandatory check.
+        continue-on-error: true
         run: python3 Tests/StudioPopupLayout/verify_layout.py --output-directory "$RUNNER_TEMP/studio-popup-layout"
 
       - name: Verify actual shape fill radius history and exported pixels
@@ -615,53 +716,6 @@ jobs:
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             -o "$RUNNER_TEMP/sdi-selection-clipboard-tests"
           "$RUNNER_TEMP/sdi-selection-clipboard-tests"
-      - name: Verify real rectangle and freehand selection cancellation history persistence and pixels
-        shell: bash
-        run: |
-          set -euo pipefail
-          swiftc -swift-version 5 -parse-as-library \
-            StickDeathInfinity/Services/StudioFillService.swift \
-            StickDeathInfinity/Services/StudioGradientFill.swift \
-            StickDeathInfinity/Services/StudioSelectionMask.swift \
-            StickDeathInfinity/Models/StudioCraftAudio.swift \
-            StickDeathInfinity/Models/StudioCraftLayers.swift \
-            StickDeathInfinity/App/AppConfig.swift \
-            StickDeathInfinity/App/SpatterBackendClient.swift \
-            StickDeathInfinity/Extensions/Color+SD.swift \
-            StickDeathInfinity/Models/Models.swift \
-            StickDeathInfinity/Models/StudioVideoFraming.swift \
-            StickDeathInfinity/Models/StudioSmudge.swift \
-            StickDeathInfinity/Models/StudioBlur.swift \
-            StickDeathInfinity/Models/StudioSharpen.swift \
-            StickDeathInfinity/Models/StudioDodgeBurn.swift \
-            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
-            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
-            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
-            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
-            StickDeathInfinity/Models/StudioBrush.swift \
-            StickDeathInfinity/Models/StudioCommands.swift \
-            StickDeathInfinity/Models/StudioDocument.swift \
-            StickDeathInfinity/Services/StudioBrushRenderer.swift \
-            StickDeathInfinity/Services/StudioExportService.swift \
-            StickDeathInfinity/Services/StudioChannelRendition.swift \
-            StickDeathInfinity/Services/StudioImageImportService.swift \
-            StickDeathInfinity/Services/StudioRasterImage.swift \
-            StickDeathInfinity/Storage/DeviceStorageManager.swift \
-            StickDeathInfinity/Services/StudioImageRegionService.swift \
-            StickDeathInfinity/Services/StudioFillRegion.swift \
-            StickDeathInfinity/ViewModels/StudioViewModel.swift \
-            StickDeathInfinity/Services/StudioAudioImportService.swift \
-            StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
-            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
-            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
-            StickDeathInfinity/Services/StudioColorSamplingService.swift \
-            Tests/StudioAreaSelection/main.swift \
-            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
-            StickDeathInfinity/Services/StudioMovieExportService.swift \
-            StickDeathInfinity/Services/StudioSoundCredits.swift \
-            StickDeathInfinity/Services/StudioMuxCapture.swift \
-            -o "$RUNNER_TEMP/sdi-area-selection-tests"
-          "$RUNNER_TEMP/sdi-area-selection-tests"
       - name: Verify independent persisted tool settings and actual rendered stroke pixels
         shell: bash
         run: |
@@ -1365,7 +1419,7 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             Tests/StudioSoundCatalogue/main.swift \
             -o "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests"
-          "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests" StickDeathInfinity/Resources/StudioSounds
+          "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests" StickDeathInfinity/Resources/StudioSounds assets/sound-packs
       - name: Verify licensed image catalogue and every original PNG
         shell: bash
         run: |
@@ -1784,6 +1838,8 @@ jobs:
             StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             StickDeathInfinity/ViewModels/SpatterAIViewModel.swift \
             StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
@@ -1827,6 +1883,8 @@ jobs:
             StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             StickDeathInfinity/ViewModels/SpatterAIViewModel.swift \
             StickDeathInfinity/Services/Stripe/BillingPlanCatalog.swift \
@@ -1871,6 +1929,7 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             Tests/SpatterMotionRecipe/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-motion-tests"
@@ -1899,12 +1958,45 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
             StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift \
             Tests/SpatterPlanner/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-planner-tests"
           "$RUNNER_TEMP/sdi-spatter-planner-tests"
+      - name: Verify on-device proposal grammar production transactions cancellation and Undo
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioVideoFraming.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioCraftAudio.swift \
+            StickDeathInfinity/Models/StudioCraftLayers.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
+            StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift \
+            StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
+            StickDeathInfinity/Services/Spatter/SpatterStudioControlRegistry.swift \
+            StickDeathInfinity/Models/SpatterOnDevicePlan.swift \
+            Tests/SpatterOnDevice/main.swift \
+            -o "$RUNNER_TEMP/sdi-spatter-ondevice-tests"
+          "$RUNNER_TEMP/sdi-spatter-ondevice-tests"
       - name: Verify six quick-share destinations and format choices
         shell: bash
         timeout-minutes: 2
@@ -1972,11 +2064,23 @@ jobs:
             StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioAudioWaveformCache.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
+            StickDeathInfinity/Services/StudioSmudgeSession.swift \
+            StickDeathInfinity/Services/StudioSharpenSession.swift \
+            StickDeathInfinity/Services/StudioDodgeBurnSession.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioAudioMixService.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -2023,7 +2127,16 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            StickDeathInfinity/Services/StudioSoundCredits.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioChannelRendition.swift \
             StickDeathInfinity/Services/StudioAudioMixService.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -2175,7 +2288,13 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
             Tests/SpatterStickFigure/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-stick-figure-tests"
           "$RUNNER_TEMP/sdi-spatter-stick-figure-tests"
@@ -2223,7 +2342,13 @@ jobs:
             StickDeathInfinity/Services/StudioSoundCredits.swift \
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
             StickDeathInfinity/Services/Spatter/SpatterReviewEvidence.swift \
             Tools/SpatterDraftRenderer/MacPlatform.swift \
             Tools/SpatterDraftRenderer/SpatterDraftRenderJob.swift \
@@ -2233,6 +2358,10 @@ jobs:
           rm -rf "$work"
           python3 scripts/backend/verify_draft_renderer_cli.py "$RUNNER_TEMP/sdi-spatter-draft-renderer" "$work"
       - name: Verify same-capture H.264 AAC timing pixels and ownership
+        id: native-audio-video-mux
+        env:
+          SDI_RETAIN_NATIVE_MEDIA_FIXTURE: '1'
+          SDI_NATIVE_MEDIA_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2281,6 +2410,18 @@ jobs:
             StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
             -o "$RUNNER_TEMP/sdi-StudioAudioVideoMux-tests"
           "$RUNNER_TEMP/sdi-StudioAudioVideoMux-tests"
+      - name: Preserve original generated H.264 AAC decoder fixture
+        if: ${{ !cancelled() && steps.native-audio-video-mux.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-generated-media-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sdi-native-media-fixture-${{ github.run_id }}-${{ github.run_attempt }}/h264-aac.mp4
+            ${{ runner.temp }}/sdi-native-media-fixture-${{ github.run_id }}-${{ github.run_attempt }}/export-manifest.json
+            ${{ runner.temp }}/sdi-native-media-fixture-${{ github.run_id }}-${{ github.run_attempt }}/fixture-provenance.json
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Verify mixed MP4 phases cancellation source trim and final cleanup
         shell: bash
         run: |
@@ -2608,7 +2749,12 @@ jobs:
             StickDeathInfinity/Models/StudioCraftAudio.swift \
             StickDeathInfinity/Models/StudioCraftLayers.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Models/SpatterFreehandInstruction.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioBlurCapture.swift \
+            StickDeathInfinity/Services/StudioBlurSession.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioVideoFraming.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
@@ -2819,6 +2965,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 Tests/StudioImagePack/prepare_fixture_transport_tests.py
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             Tests/StudioImagePack/main.swift \
@@ -2831,14 +2978,23 @@ jobs:
             StickDeathInfinity/Resources/StudioImages \
             Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip \
             "$RUNNER_TEMP/sdi-image-pack-fixtures/archive-paths.json"
+      - name: Require the measured popup layout gate to pass
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SDI_POPUP_LAYOUT_OUTCOME: ${{ steps.popup-layout.outcome }}
+        run: |
+          set -euo pipefail
+          test "$SDI_POPUP_LAYOUT_OUTCOME" = success
   native-ios-shards:
-    needs: native-production-tests
-    # Do not allocate Mac runners after a failed/cancelled production gate.
-    if: ${{ needs.native-production-tests.result == 'success' }}
+    needs: [native-production-tests, native-app-compile]
+    # Independent UI evidence may run after a completed red production gate.
+    # Cancelled/skipped prerequisites still allocate no shard runners.
+    if: ${{ !cancelled() && needs.native-app-compile.result == 'success' && (needs.native-production-tests.result == 'success' || needs.native-production-tests.result == 'failure') }}
     runs-on: macos-15
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
         include:
           - shard: 0
@@ -2849,19 +3005,25 @@ jobs:
       SDI_NATIVE_SHARD_INDEX: ${{ matrix.shard }}
     # Sorted alternating partitions preserve all 110 native cases (55/55):
     # shard 0 = 17220 s (7 bounded 360 s journeys), shard 1 = 17280 s (8).
-    # Per-case 300/360s (owner decision 2026-10-20), no retries, one simulator and one Mac job at a time.
+    # Per-case 300/360s (owner decision 2026-10-20), no retries. Two isolated
+    # standard hosted Macs run the shards, with one simulator on each Mac.
     # Both shards include 300s evidence overhead + 25m build/preservation;
     # shard zero alone also retains the 22-minute authentication step.
     # Tests/NativeSmokeHarness/test_suite_budget.py derives these exact ceilings.
     timeout-minutes: ${{ matrix.timeout }}
     steps:
-      - name: Require successful production verification
+      - name: Require a compiled app and completed production evidence
         shell: bash
         env:
+          SDI_APP_COMPILE_RESULT: ${{ needs.native-app-compile.result }}
           SDI_PRODUCTION_RESULT: ${{ needs.native-production-tests.result }}
         run: |
           set -euo pipefail
-          test "$SDI_PRODUCTION_RESULT" = success
+          test "$SDI_APP_COMPILE_RESULT" = success
+          case "$SDI_PRODUCTION_RESULT" in
+            success|failure) ;;
+            *) exit 1 ;;
+          esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -2871,14 +3033,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          xcodebuild -version
-          xcodebuild \
-            -project StickDeathInfinity.xcodeproj \
-            -scheme StickDeathInfinity \
-            -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/sdi-native-build" \
-            CODE_SIGNING_ALLOWED=NO build
+          python3 scripts/native-smoke/prepare_locked_build.py
           echo 'XCODE_IOS_BUILD=PASS'
       - name: Verify simulator review packaging rules
         id: native-review-rules
@@ -3034,23 +3189,25 @@ jobs:
             --output "$RUNNER_TEMP/native-journey-complete-receipt.json"
   native-ios-journeys:
     # Adaptive layouts (#264) and the native journey gate (#265, #273) on one
-    # fresh phone and one fresh iPad. Runs after the shards so only one Mac job
-    # is active at a time; a failed shard still leaves this evidence.
-    needs: [native-production-tests, native-ios-shards]
-    if: ${{ !cancelled() && needs.native-production-tests.result == 'success' }}
+    # fresh phone and one fresh iPad, run serially after successful app compile.
+    # Journeys can run alongside production and its shards; the aggregate gate
+    # still requires all release evidence.
+    needs: [native-app-compile]
+    if: ${{ !cancelled() && needs.native-app-compile.result == 'success' }}
     runs-on: macos-15
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
         include:
-          # 25 min build + 5 UI journeys x 180 s + 300 s, plus 6 hosted
-          # service journeys x 60 s + 300 s on the phone only.
+          # 25 min build + 4 UI journeys x 180 s + audio 300 s + mirror 420 s +
+          # 300 s UI overhead; add 13 hosted service journeys x 60 s + 300 s
+          # service overhead on the phone only (72 min phone / 54 min iPad).
           # Tests/NativeSmokeHarness/test_journeys.py derives these ceilings.
           - device: iphone
-            timeout: 56
+            timeout: 72
           - device: ipad
-            timeout: 45
+            timeout: 54
     timeout-minutes: ${{ matrix.timeout }}
     env:
       SDI_JOURNEY_DEVICE: ${{ matrix.device }}
@@ -3060,17 +3217,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Build checked-in native iOS target without signing or deployment
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild -version
-          xcodebuild \
-            -project StickDeathInfinity.xcodeproj \
-            -scheme StickDeathInfinity \
-            -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/sdi-native-build" \
-            CODE_SIGNING_ALLOWED=NO build
+        run: python3 scripts/native-smoke/prepare_locked_build.py
       - name: Create one fresh simulator of this family
         id: simulator
         shell: bash

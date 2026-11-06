@@ -1,5 +1,197 @@
 import SwiftUI
 
+// MARK: - Private support triage
+@MainActor
+struct AdminSupportQueueContent: View {
+    @StateObject private var requests = AdminRequestOwner()
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var queue: AdminSupportPage?
+    @State private var loadedAccount: String?
+    @State private var displayAccount: String?
+    @State private var statusFilter = ""
+    @State private var selectedID: UUID?
+    @State private var nextStatus = AdminSupportStatus.inProgress
+    @State private var note = ""
+    @State private var pending: Decision?
+    @State private var generation = UUID()
+    @State private var busy = false
+    @State private var error: String?
+    @State private var notice: String?
+
+    private struct Decision {
+        let item: AdminSupportItem
+        let status: AdminSupportStatus
+        let note: String
+        let context: AdminSupportContext
+        let scope: CommunityOperationScope
+        let filter: String
+    }
+    private var active: Bool { auth.isAuthenticated && auth.userId != nil && phase == .active }
+    private var visibleQueue: AdminSupportPage? { active && loadedAccount == auth.userId ? queue : nil }
+    private var selected: AdminSupportItem? { visibleQueue?.items.first { $0.id == selectedID } }
+    private func current(_ context: AdminSupportContext) -> Bool {
+        CommunityOperationContext.isCurrent && !Task.isCancelled && context.admits(accountID: auth.userId, authenticated: auth.isAuthenticated,
+            active: phase == .active, generation: generation)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Support queue").font(.specialElite(22))
+            Text("Private customer-service requests. Status changes and notes are audited. Notes stay private to authorized administrators; this does not send a reply or email.").font(.caption)
+            Text("The server requires the Users capability and an active MFA session.").font(.caption2).foregroundStyle(.secondary)
+            Picker("Request status", selection: $statusFilter) {
+                Text("All requests").tag("")
+                ForEach(AdminSupportStatus.allCases) { Text($0.title).tag($0.rawValue) }
+            }.disabled(busy || !active).accessibilityIdentifier("admin.support.filter")
+            Button("Refresh queue") { queueLoad(page: 0) }
+                .disabled(busy || !active).accessibilityIdentifier("admin.support.refresh")
+            if busy { ProgressView().accessibilityLabel("Loading support queue") }
+            if !active { Text("Sign in and verify MFA to work the support queue.").font(.caption) }
+            if active, displayAccount == auth.userId, let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.support.error") }
+            if active, displayAccount == auth.userId, let notice { Text(notice).font(.caption).accessibilityIdentifier("admin.support.notice") }
+            if let queue = visibleQueue {
+                Text("Page \(queue.page + 1) · \(queue.items.count) requests").font(.specialElite(16))
+                if queue.items.isEmpty { Text("No requests match this status on this page.").font(.caption) }
+                ForEach(queue.items) { item in
+                    Button { select(item) } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.subject).font(.specialElite(15)).multilineTextAlignment(.leading)
+                            Text("\(item.receipt) · \(item.status.title)").font(.caption)
+                            Text("\(item.category) · \(item.platform) · \(item.created_at.formatted())").font(.caption2)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                            .background(selectedID == item.id ? Color.red.opacity(0.15) : Color.sdSurface)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }.buttonStyle(.plain).disabled(busy)
+                        .accessibilityIdentifier("admin.support.request.\(item.id.uuidString)")
+                        .accessibilityAddTraits(selectedID == item.id ? [.isSelected] : [])
+                }
+                HStack {
+                    if queue.page > 0 { Button("Previous page") { queueLoad(page: queue.page - 1) } }
+                    if queue.hasMore, queue.page < 199 { Button("Next page") { queueLoad(page: queue.page + 1) } }
+                }.disabled(busy).accessibilityIdentifier("admin.support.pagination")
+                if queue.hasMore, queue.page == 199 {
+                    Text("The queue page limit is reached. Narrow the status filter or refresh for current requests.").font(.caption)
+                }
+                if let item = selected { detail(item) }
+            }
+        }
+        .confirmationDialog("Confirm private support status change", isPresented: Binding(
+            get: { pending.map { current($0.context) && selected == $0.item } ?? false }, set: { if !$0 { pending = nil } }), titleVisibility: .visible, presenting: pending) { decision in
+                Button("Confirm status change") {
+                    pending = nil
+                    requests.enqueue(origin: decision.scope) { _ in await update(decision) }
+                }
+                Button("Cancel", role: .cancel) { pending = nil }
+            } message: { decision in
+                Text("\(decision.item.receipt) · revision \(decision.item.revision)\n\(decision.item.status.title) → \(decision.status.title)\nPrivate note: \(decision.note)\nNo reply or email is sent.")
+            }
+        .onChange(of: statusFilter) { _, _ in requests.cancel(); clear(); queueLoad(page: 0) }
+        .onChange(of: auth.userId) { _, _ in clear() }
+        .onChange(of: auth.isAuthenticated) { _, _ in clear() }
+
+        .adminRequestLifetime(requests,
+            reset: { clear(); statusFilter = "" },
+            initial: { await load(page: 0, expectedGeneration: generation) },
+            pause: { busy = false; pending = nil })
+
+    }
+
+    @ViewBuilder private func detail(_ item: AdminSupportItem) -> some View {
+        Divider()
+        VStack(alignment: .leading, spacing: 8) {
+            Text(item.subject).font(.specialElite(18))
+            Text("Receipt: \(item.receipt) · revision \(item.revision)").font(.caption)
+            Text("Account: \(item.user_id.uuidString)").font(.caption2)
+            Text("\(item.category) · \(item.platform)\(item.app_version.isEmpty ? "" : " · version " + item.app_version)").font(.caption)
+            Text("Received \(item.created_at.formatted()) · updated \(item.updated_at.formatted())").font(.caption2)
+            Text(item.body).font(.body).textSelection(.enabled).accessibilityIdentifier("admin.support.body")
+            Text("Status: \(item.status.title)").font(.caption)
+            if !item.admin_note.isEmpty {
+                Text("Current private note").font(.specialElite(14))
+                Text(item.admin_note).font(.caption).textSelection(.enabled)
+            }
+            if item.canUpdate {
+                Picker("New status", selection: $nextStatus) {
+                    ForEach(AdminSupportStatus.editable) { Text($0.title).tag($0) }
+                }.accessibilityIdentifier("admin.support.status")
+                TextField("Required private note (up to 2000 characters)", text: $note, axis: .vertical)
+                    .lineLimit(3...8).textFieldStyle(.roundedBorder).accessibilityIdentifier("admin.support.note")
+                Button("Review status change") { prepare(item) }
+                    .disabled(busy || !AdminOperationsClient.supportNoteIsValid(note))
+                    .accessibilityIdentifier("admin.support.review")
+            } else {
+                Text("This request was withdrawn by its member and is read-only.").font(.caption)
+                    .accessibilityIdentifier("admin.support.withdrawn")
+            }
+        }.disabled(busy)
+    }
+
+    private func clearSelection() { selectedID = nil; note = ""; pending = nil; nextStatus = .inProgress }
+    private func clear() {
+        generation = UUID(); busy = false; queue = nil; loadedAccount = nil; displayAccount = nil
+        clearSelection(); error = nil; notice = nil
+    }
+    private func select(_ item: AdminSupportItem) {
+        guard requests.capture().isCurrent, !requests.working else { return }
+        guard !busy, visibleQueue?.items.contains(item) == true else { return }
+        generation = UUID(); clearSelection(); selectedID = item.id
+        nextStatus = item.canUpdate ? item.status : .inProgress
+    }
+    private func prepare(_ item: AdminSupportItem) {
+        guard requests.capture().isCurrent, !requests.working else { return }
+        guard !busy, active, let account = auth.userId, selected == item, item.canUpdate,
+              AdminSupportStatus.editable.contains(nextStatus), AdminOperationsClient.supportNoteIsValid(note) else { return }
+        pending = Decision(item: item, status: nextStatus, note: note.trimmingCharacters(in: .whitespacesAndNewlines),
+            context: AdminSupportContext(accountID: account, generation: generation), scope: requests.capture(), filter: statusFilter)
+    }
+    /// Capture ownership at the UI event, before its unstructured task is queued.
+    /// Disappearance/account/filter/selection changes revoke even a task which
+    /// has not started yet; load must never acquire the replacement generation.
+    private func queueLoad(page: Int) {
+        guard requests.capture().isCurrent, !requests.working else { return }
+        let expected = generation
+        requests.enqueue { [filter = statusFilter] _ in await load(page: page, expectedGeneration: expected, submittedFilter: filter) }
+    }
+    private func load(page: Int, expectedGeneration: UUID, keepingNotice: Bool = false, submittedFilter: String? = nil) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
+        guard CommunityOperationContext.isCurrent, !Task.isCancelled, generation == expectedGeneration,
+              !busy, active, let account = auth.userId else { return }
+        generation = UUID(); clearSelection(); queue = nil; loadedAccount = nil; displayAccount = account; error = nil
+        if !keepingNotice { notice = nil }
+        let context = AdminSupportContext(accountID: account, generation: generation)
+        let rawFilter = submittedFilter ?? statusFilter
+        let filter = rawFilter.isEmpty ? nil : AdminSupportStatus(rawValue: rawFilter)
+        busy = true
+        defer { if CommunityOperationContext.isCurrent { if current(context) { busy = false } } }
+        do {
+            let value = try await CommunityServices.admin.supportQueue(status: filter, page: page)
+            guard current(context) else { return }
+            queue = value; loadedAccount = account
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
+            guard current(context) else { return }
+            self.error = CommunityServices.admin.noteRefusal(error).errorDescription
+        }
+    }
+    private func update(_ decision: Decision) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
+        guard !busy, current(decision.context), selected == decision.item else { return }
+        busy = true; error = nil; notice = nil
+        defer { if CommunityOperationContext.isCurrent { if current(decision.context) { busy = false } } }
+        do {
+            let revision = try await CommunityServices.admin.updateSupport(decision.item, to: decision.status, note: decision.note)
+            guard current(decision.context), selected == decision.item else { return }
+            notice = "\(decision.item.receipt): \(decision.status.title), revision \(revision), confirmed by the server."
+            busy = false
+            await load(page: 0, expectedGeneration: decision.context.generation, keepingNotice: true, submittedFilter: decision.filter)
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
+            guard current(decision.context) else { return }
+            queue = nil; loadedAccount = nil; clearSelection()
+            self.error = CommunityServices.admin.noteRefusal(error).errorDescription
+        }
+    }
+}
+
 // MARK: - Backups, releases and provider configuration (#257, #248)
 /// Read-only operations status from `sdi_admin_operations` (backups, restore
 /// drills, releases, rollbacks, retention) and presence-only provider
@@ -8,6 +200,7 @@ import SwiftUI
 /// this client, and nothing here starts a backup, restore or deployment.
 @MainActor
 struct AdminOperationsStatusContent: View {
+    @StateObject private var requests = AdminRequestOwner()
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
     @State private var status: AdminOperationsStatus?
@@ -21,7 +214,7 @@ struct AdminOperationsStatusContent: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Backups & releases").font(.specialElite(22))
             Text("Outcomes reported by the host's backup, restore-drill, release and retention jobs. Controls stay on the host; this screen only reads.").font(.caption)
-            Button("Refresh") { Task { await load() } }.disabled(busy).accessibilityIdentifier("admin.operations.refresh")
+            Button("Refresh") { queueLoad() }.disabled(busy).accessibilityIdentifier("admin.operations.refresh")
             if busy { ProgressView() }
             if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.operations.error") }
             if let status {
@@ -66,10 +259,14 @@ struct AdminOperationsStatusContent: View {
             Divider()
             AdminProviderHealthSection()
         }
-        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
-            clear(); if auth.isAuthenticated && phase == .active { await load() }
-        }
-        .onDisappear { clear() }
+        .onChange(of: auth.userId) { _, _ in clear() }
+        .onChange(of: auth.isAuthenticated) { _, _ in clear() }
+
+        .adminRequestLifetime(requests,
+            reset: { clear() },
+            initial: { if let account = auth.userId { await load(expectedID: requestID, account: account) } },
+            pause: { busy = false })
+
     }
 
     @ViewBuilder private func milestone(_ title: String, _ value: AdminOperationsMilestone?, id: String) -> some View {
@@ -100,20 +297,40 @@ struct AdminOperationsStatusContent: View {
         return parts.joined(separator: " · ")
     }
     private func clear() { requestID = UUID(); busy = false; status = nil; configuration = nil; error = nil; configurationError = nil }
-    private func load() async {
-        guard !busy, auth.isAuthenticated, phase == .active else { return }
+    private func current(_ id: UUID, account: String) -> Bool {
+        CommunityOperationContext.isCurrent && !Task.isCancelled && requestID == id && auth.isAuthenticated &&
+        auth.userId == account && phase == .active
+    }
+    private func queueLoad() {
+        guard requests.capture().isCurrent, !requests.working else { return }
+        guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return }
+        let expected = requestID
+        requests.enqueue { _ in await load(expectedID: expected, account: account) }
+    }
+    private func load(expectedID: UUID, account: String) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
+        guard !busy, current(expectedID, account: account) else { return }
         let id = UUID(); requestID = id; busy = true
-        defer { if requestID == id { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if requestID == id { busy = false } } }
         do {
             let value = try await CommunityServices.admin.operations()
-            guard !Task.isCancelled, requestID == id else { return }
+            guard current(id, account: account) else { return }
             status = value; error = nil
-        } catch { if requestID == id { status = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
+            guard current(id, account: account) else { return }
+            status = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription
+        }
+        // A current first-section failure may still load the independent
+        // configuration section; stale/cancelled work never starts its RPC.
+        guard current(id, account: account) else { return }
         do {
             let value = try await CommunityServices.admin.configuration()
-            guard !Task.isCancelled, requestID == id else { return }
+            guard current(id, account: account) else { return }
             configuration = value; configurationError = nil
-        } catch { if requestID == id { configuration = nil; configurationError = CommunityServices.admin.noteRefusal(error).errorDescription } }
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
+            guard current(id, account: account) else { return }
+            configuration = nil; configurationError = CommunityServices.admin.noteRefusal(error).errorDescription
+        }
     }
 }
 
@@ -124,12 +341,27 @@ struct AdminOperationsStatusContent: View {
 /// worker; nothing executes from this screen.
 @MainActor
 struct AdminAgentInboxContent: View {
+    @StateObject private var requests = AdminRequestOwner()
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
     @State private var console: [AdminAgentConsoleEntry] = []
     @State private var proposals: [AdminAgentProposal] = []
     @State private var pending = 0
-    @State private var decision: (proposal: AdminAgentProposal, approve: Bool)?
+    private struct Decision {
+        let proposal: AdminAgentProposal
+        let approve: Bool
+        let reason: String
+        let account: String
+        let generation: UUID
+        let scope: CommunityOperationScope
+    }
+    private struct HistoryRequest {
+        let page: Int
+        let agent: String?
+        let state: String?
+        let query: String
+    }
+    @State private var decision: Decision?
     @State private var reason = ""
     @State private var agentFilter = ""
     @State private var stateFilter = ""
@@ -147,7 +379,7 @@ struct AdminAgentInboxContent: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Agent inbox & log").font(.specialElite(22))
             Text("Agents with the propose permission file a proposal instead of acting above their caps. Only the owner approves or rejects, with a reason; pending proposals expire after 14 days.").font(.caption)
-            Button("Refresh") { Task { await loadAll() } }.disabled(busy).accessibilityIdentifier("admin.inbox.refresh")
+            Button("Refresh") { queueLoadAll() }.disabled(busy).accessibilityIdentifier("admin.inbox.refresh")
             if busy { ProgressView() }
             if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("admin.inbox.error") }
             if let notice { Text(notice).font(.caption) }
@@ -173,8 +405,8 @@ struct AdminAgentInboxContent: View {
                     if let outcome = proposal.outcome, !outcome.isEmpty { Text("Outcome: \(outcome)").font(.caption2) }
                     if proposal.state == "pending" {
                         HStack {
-                            Button("Approve") { decision = (proposal, true) }.accessibilityIdentifier("admin.inbox.approve")
-                            Button("Reject", role: .destructive) { decision = (proposal, false) }.accessibilityIdentifier("admin.inbox.reject")
+                            Button("Approve") { prepareDecision(proposal, approve: true) }.accessibilityIdentifier("admin.inbox.approve")
+                            Button("Reject", role: .destructive) { prepareDecision(proposal, approve: false) }.accessibilityIdentifier("admin.inbox.reject")
                         }.disabled(busy || !reasonValid)
                     }
                 }.padding(8).background(Color.sdSurface).clipShape(RoundedRectangle(cornerRadius: 10))
@@ -192,7 +424,7 @@ struct AdminAgentInboxContent: View {
             }.accessibilityIdentifier("admin.inbox.state")
             TextField("Search references, errors or audit reasons", text: $query).textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("admin.inbox.query")
-            Button("Search history") { Task { await loadHistory(page: 0) } }
+            Button("Search history") { queueHistory(page: 0) }
                 .disabled(busy || query.trimmingCharacters(in: .whitespacesAndNewlines).count > 100)
                 .accessibilityIdentifier("admin.inbox.search")
             if let runs {
@@ -211,27 +443,33 @@ struct AdminAgentInboxContent: View {
             }
             if let runs, let audit {
                 HStack {
-                    if runs.page > 0 { Button("Previous page") { Task { await loadHistory(page: runs.page - 1) } } }
-                    if runs.hasMore || audit.hasMore { Button("Next page") { Task { await loadHistory(page: runs.page + 1) } } }
+                    if runs.page > 0 { Button("Previous page") { queueHistory(page: runs.page - 1) } }
+                    if runs.hasMore || audit.hasMore { Button("Next page") { queueHistory(page: runs.page + 1) } }
                 }.disabled(busy)
             }
             Text("Finished runs are kept 180 days and audit entries 400 days; audit entries cannot be edited.").font(.caption2).foregroundStyle(.secondary)
         }
-        .confirmationDialog("Confirm proposal decision", isPresented: Binding(get: { decision != nil }, set: { if !$0 { decision = nil } }),
+        .confirmationDialog("Confirm proposal decision", isPresented: Binding(get: {
+            decision.map { current($0.generation, account: $0.account) && proposals.contains($0.proposal) } ?? false
+        }, set: { if !$0 { decision = nil } }),
                             titleVisibility: .visible, presenting: decision) { pending in
             Button(pending.approve ? "Approve for the worker" : "Reject proposal", role: pending.approve ? nil : .destructive) {
                 decision = nil
-                Task { await decide(pending.proposal, approve: pending.approve) }
+                requests.enqueue(origin: pending.scope) { _ in await decide(pending) }
             }
             Button("Cancel", role: .cancel) { decision = nil }
         } message: { pending in
-            Text("\(pending.proposal.summary)\nReason: \(reason.trimmingCharacters(in: .whitespacesAndNewlines))\n" +
+            Text("\(pending.proposal.summary)\nReason: \(pending.reason)\n" +
                  (pending.approve ? "The worker may execute it on its next permitted run, never under emergency stop or pause." : "Nothing will run."))
         }
-        .task(id: "\(auth.userId ?? "none"):\(auth.isAuthenticated):\(phase == .active)") {
-            clear(); if auth.isAuthenticated && phase == .active { await loadAll() }
-        }
-        .onDisappear { clear() }
+        .onChange(of: auth.userId) { _, _ in clear() }
+        .onChange(of: auth.isAuthenticated) { _, _ in clear() }
+
+        .adminRequestLifetime(requests,
+            reset: { clear() },
+            initial: { if let account = auth.userId { await loadAll(expectedID: requestID, account: account) } },
+            pause: { busy = false; decision = nil })
+
     }
 
     private static func runText(_ run: AdminAgentRun) -> String {
@@ -250,39 +488,84 @@ struct AdminAgentInboxContent: View {
         requestID = UUID(); busy = false; console = []; proposals = []; pending = 0; decision = nil; reason = ""
         agentFilter = ""; stateFilter = ""; query = ""; runs = nil; audit = nil; error = nil; notice = nil
     }
-    private func loadAll() async {
-        guard !busy, auth.isAuthenticated, phase == .active else { return }
+    private func current(_ id: UUID, account: String) -> Bool {
+        CommunityOperationContext.isCurrent && !Task.isCancelled && requestID == id && auth.isAuthenticated &&
+        auth.userId == account && phase == .active
+    }
+    private func queueLoadAll() {
+        guard requests.capture().isCurrent, !requests.working else { return }
+        guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return }
+        let expected = requestID
+        requests.enqueue { _ in await loadAll(expectedID: expected, account: account) }
+    }
+    private func queueHistory(page: Int) {
+        guard requests.capture().isCurrent, !requests.working else { return }
+        guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return }
+        let expected = requestID
+        let input = HistoryRequest(page: page, agent: agentKey,
+            state: stateFilter.isEmpty ? nil : stateFilter, query: query)
+        requests.enqueue { _ in await loadHistory(input, expectedID: expected, account: account) }
+    }
+    private func prepareDecision(_ proposal: AdminAgentProposal, approve: Bool) {
+        guard requests.capture().isCurrent, !requests.working else { return }
+        guard !busy, auth.isAuthenticated, phase == .active, let account = auth.userId,
+              reasonValid, proposal.state == "pending", proposals.contains(proposal) else { return }
+        decision = Decision(proposal: proposal, approve: approve,
+            reason: reason.trimmingCharacters(in: .whitespacesAndNewlines), account: account, generation: requestID, scope: requests.capture())
+    }
+    private func loadAll(expectedID: UUID, account: String) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
+        guard !busy, current(expectedID, account: account) else { return }
         let id = UUID(); requestID = id; busy = true
-        defer { if requestID == id { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if requestID == id { busy = false } } }
         do {
             let entries = try await CommunityServices.admin.agentConsole()
+            guard current(id, account: account) else { return }
             let inbox = try await CommunityServices.admin.proposalInbox()
-            guard !Task.isCancelled, requestID == id else { return }
+            guard current(id, account: account) else { return }
             console = entries; proposals = inbox.proposals; pending = inbox.pending; error = nil
             if !agentFilter.isEmpty, !entries.contains(where: { $0.key == agentFilter }) { agentFilter = "" }
-        } catch { if requestID == id { console = []; proposals = []; pending = 0; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
+            guard current(id, account: account) else { return }
+            console = []; proposals = []; pending = 0; self.error = CommunityServices.admin.noteRefusal(error).errorDescription
+        }
     }
-    private func loadHistory(page: Int) async {
-        guard !busy, auth.isAuthenticated, phase == .active else { return }
+    private func loadHistory(_ input: HistoryRequest, expectedID: UUID, account: String) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
+        guard !busy, current(expectedID, account: account) else { return }
         let id = UUID(); requestID = id; busy = true
-        defer { if requestID == id { busy = false } }
-        let agent = agentKey, state = stateFilter.isEmpty ? nil : stateFilter, text = query
+        defer { if CommunityOperationContext.isCurrent { if requestID == id { busy = false } } }
         do {
-            let runPage = try await CommunityServices.admin.agentRunHistory(agent: agent, state: state, query: text, page: page)
-            let auditPage = try await CommunityServices.admin.agentAudit(agent: agent, query: text, page: page)
-            guard !Task.isCancelled, requestID == id else { return }
+            let runPage = try await CommunityServices.admin.agentRunHistory(agent: input.agent,
+                state: input.state, query: input.query, page: input.page)
+            guard current(id, account: account) else { return }
+            let auditPage = try await CommunityServices.admin.agentAudit(agent: input.agent, query: input.query, page: input.page)
+            guard current(id, account: account) else { return }
             runs = runPage; audit = auditPage; error = nil
-        } catch { if requestID == id { runs = nil; audit = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
+            guard current(id, account: account) else { return }
+            runs = nil; audit = nil; self.error = CommunityServices.admin.noteRefusal(error).errorDescription
+        }
     }
-    private func decide(_ proposal: AdminAgentProposal, approve: Bool) async {
-        guard !busy, auth.isAuthenticated, phase == .active, reasonValid else { return }
+    private func decide(_ pending: Decision) async {
+        guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return }
+        guard !busy, current(pending.generation, account: pending.account),
+              pending.proposal.state == "pending", proposals.contains(pending.proposal),
+              (1...2000).contains(pending.reason.count) else { return }
         let id = UUID(); requestID = id; busy = true; error = nil; notice = nil
-        defer { if requestID == id { busy = false } }
+        defer { if CommunityOperationContext.isCurrent { if requestID == id { busy = false } } }
         do {
-            let state = try await CommunityServices.admin.decideProposal(proposal, approve: approve, reason: reason)
-            guard !Task.isCancelled, requestID == id else { return }
-            notice = "Proposal \(state) and audited."; reason = ""; busy = false
-            await loadAll()
-        } catch { if requestID == id { self.error = CommunityServices.admin.noteRefusal(error).errorDescription } }
+            let state = try await CommunityServices.admin.decideProposal(pending.proposal,
+                approve: pending.approve, reason: pending.reason)
+            guard current(id, account: pending.account) else { return }
+            notice = "Proposal \(state) and audited."
+            // Do not erase a newer draft typed while this exact decision ran.
+            if reason.trimmingCharacters(in: .whitespacesAndNewlines) == pending.reason { reason = "" }
+            busy = false
+            await loadAll(expectedID: id, account: pending.account)
+        } catch { guard CommunityOperationContext.scope != nil, CommunityOperationContext.isCurrent else { return };
+            guard current(id, account: pending.account) else { return }
+            self.error = CommunityServices.admin.noteRefusal(error).errorDescription
+        }
     }
 }

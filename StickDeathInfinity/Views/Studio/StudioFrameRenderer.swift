@@ -514,6 +514,54 @@ struct StudioFrameRenderer {
         case .luminosity: return .luminosity
         }
     }
+    /// Explicit line segments avoid target-size-dependent native curve tessellation.
+    /// Aim below 1/64 projected pixel, use the proven 256-sample floor, and keep
+    /// extreme valid off-canvas geometry bounded without adding a render failure.
+    private static func stableEllipse(in rect: CGRect, context: GraphicsContext, lineWidth: CGFloat) -> CGPath {
+        let rx = Double(rect.width) / 2, ry = Double(rect.height) / 2
+        let transform = context.transform
+        let xScale = hypot(Double(transform.a), Double(transform.b))
+        let yScale = hypot(Double(transform.c), Double(transform.d))
+        // Frobenius norms bound the largest affine stretch, including shear.
+        let radius = hypot(rx * xScale, ry * yScale)
+            + Double(lineWidth) / 2 * hypot(xScale, yScale)
+        let pixels = radius * max(1, Double(context.environment.displayScale))
+        var count = 256
+        while count < 8192 && pixels * (1 - cos(.pi / Double(count))) > 1.0 / 64 { count *= 2 }
+        let path = CGMutablePath(), cx = Double(rect.midX), cy = Double(rect.midY)
+        for index in 0..<count {
+            let angle = Double(index) * 2 * .pi / Double(count)
+            let point = CGPoint(x: cx + rx * cos(angle), y: cy + ry * sin(angle))
+            if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    /// Keep fill and stroke as separate native commands inside the caller's
+    /// existing opacity group. Layer blending, glow and clipping stay outside.
+    private static func drawStablePrimitive(_ path: CGPath, fill: Color?, stroke: Color,
+                                            lineWidth: CGFloat, context: inout GraphicsContext) {
+        let environment = context.environment
+        let strokeColor = stroke.resolve(in: environment).cgColor
+        if let fill {
+            let fillColor = fill.resolve(in: environment).cgColor
+            context.withCGContext { cg in
+                cg.saveGState()
+                cg.setFillColor(fillColor); cg.addPath(path); cg.fillPath()
+                cg.restoreGState()
+            }
+        }
+        context.withCGContext { cg in
+            cg.saveGState()
+            cg.setStrokeColor(strokeColor); cg.setLineWidth(lineWidth)
+            cg.setLineCap(.butt); cg.setLineJoin(.miter); cg.setMiterLimit(10)
+            cg.setLineDash(phase: 0, lengths: [])
+            cg.addPath(path); cg.strokePath()
+            cg.restoreGState()
+        }
+    }
+
     private static func drawElement(context: inout GraphicsContext, element: DrawnElement, size: CGSize, canvasSize: CGSize,
                                    brush: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)?) throws {
         let scaleX = size.width / canvasSize.width
@@ -659,20 +707,25 @@ struct StudioFrameRenderer {
             }
             let rect = CGRect(x: min(first.x, last.x), y: min(first.y, last.y),
                 width: abs(last.x - first.x), height: abs(last.y - first.y))
+            context.scaleBy(x: scaleX, y: scaleY)
+            context.opacity = element.opacity
             let path: Path
-            if element.tool == .circle { path = Path(ellipseIn: rect) }
+            if element.tool == .circle { path = Path(stableEllipse(in: rect, context: context, lineWidth: element.width)) }
             else {
                 let radius = min(CGFloat(shape.cornerRadius), min(rect.width, rect.height) / 2)
                 path = Path(roundedRect: rect, cornerRadius: radius)
             }
-            context.scaleBy(x: scaleX, y: scaleY)
-            context.opacity = element.opacity
             // Apply element opacity once to the whole shape, including the
             // overlap between its fill and stroke. Layer opacity stays outside.
             context.drawLayer { drawing in
                 drawing.opacity = 1
-                if let fill = shape.fillColor { drawing.fill(path, with: .color(Color(hex: fill))) }
-                drawing.stroke(path, with: .color(color), lineWidth: element.width)
+                if element.tool == .circle || shape.cornerRadius > 0 {
+                    drawStablePrimitive(path.cgPath, fill: shape.fillColor.map { Color(hex: $0) }, stroke: color,
+                        lineWidth: element.width, context: &drawing)
+                } else {
+                    if let fill = shape.fillColor { drawing.fill(path, with: .color(Color(hex: fill))) }
+                    drawing.stroke(path, with: .color(color), lineWidth: element.width)
+                }
             }
             return
         }
@@ -762,11 +815,10 @@ struct StudioFrameRenderer {
             )
             let radiusX = abs(element.points[1].x - element.points[0].x) / 2 * scaleX
             let radiusY = abs(element.points[1].y - element.points[0].y) / 2 * scaleY
-            let path = Path(ellipseIn: CGRect(
-                x: center.x - radiusX, y: center.y - radiusY,
-                width: radiusX * 2, height: radiusY * 2
-            ))
-            context.stroke(path, with: .color(color), lineWidth: element.width * scaleX)
+            let rect = CGRect(x: center.x - radiusX, y: center.y - radiusY,
+                width: radiusX * 2, height: radiusY * 2)
+            let path = stableEllipse(in: rect, context: context, lineWidth: element.width * scaleX)
+            drawStablePrimitive(path, fill: nil, stroke: color, lineWidth: element.width * scaleX, context: &context)
 
         case .text:
             if let text = element.fillColor, let first = element.points.first {

@@ -17,6 +17,100 @@ class RoomOwnerAndScheduleTest {
     private val project = "0aaaaaaa-1111-4222-8333-444444444444"
     private fun body(request: HttpRequest) = JSONObject(String(request.body!!))
 
+    @Test fun createRoomSharesOnlyTheExplicitMetadataWithTheMemberSession() {
+        val transport = ScriptedTransport { request ->
+            if (request.url.endsWith("/sdi_room_action")) ScriptedTransport.json(200, """{"status":"created","room_id":"$room"}""")
+            else ScriptedTransport.json(200, """{"status":"updated","project_revision":2}""")
+        }
+        val client = RoomsClient(CommunityGateway(FixedSession(), transport))
+        val outcome = client.createRoom("  Animation team  ", RoomProjectShareDraft(project, "  Scene 1  ", true), true)
+        assertEquals(RoomCreationOutcome.Created(room, 2), outcome)
+        assertEquals(2, transport.requests.size)
+        val create = transport.requests[0]; val share = transport.requests[1]
+        assertEquals("${Fixtures.URL}/rest/v1/rpc/sdi_room_action", create.url)
+        assertEquals("${Fixtures.URL}/rest/v1/rpc/sdi_room_manage", share.url)
+        assertEquals("Bearer member-token", share.headers["Authorization"])
+        assertEquals(setOf("action", "title", "consent"), body(create).keys().asSequence().toSet())
+        assertEquals("create", body(create).getString("action")); assertEquals("Animation team", body(create).getString("title"))
+        assertTrue(body(create).getBoolean("consent"))
+        val sent = body(share)
+        assertEquals(setOf("action", "room", "project_ref", "project_title", "permissions", "revision"), sent.keys().asSequence().toSet())
+        assertEquals("set_project", sent.getString("action")); assertEquals(room, sent.getString("room"))
+        assertEquals("device-project:$project", sent.getString("project_ref")); assertEquals("Scene 1", sent.getString("project_title"))
+        assertEquals("[\"view\",\"edit\"]", sent.getJSONArray("permissions").toString()); assertEquals(1, sent.getInt("revision"))
+        assertEquals(listOf("view"), RoomProjectShareDraft(project, "P").permissions)
+    }
+
+    @Test fun createRoomValidatesConsentAndMetadataBeforeAnyRequest() {
+        val transport = ScriptedTransport { fail("Invalid drafts must not send"); error("unreachable") }
+        val client = RoomsClient(CommunityGateway(FixedSession(), transport))
+        val valid = RoomProjectShareDraft(project, "P")
+        val invalid = listOf<() -> Unit>(
+            { client.createRoom("R", valid, false) },
+            { client.createRoom(" ", valid, true) },
+            { client.createRoom("R".repeat(101), valid, true) },
+            { client.createRoom("R", valid.copy(projectId = "account-token"), true) },
+            { client.createRoom("R", valid.copy(title = " "), true) },
+            { client.createRoom("R", valid.copy(title = "P".repeat(101)), true) }
+        )
+        invalid.forEach { call -> try { call(); fail("Expected invalid input") } catch (_: IllegalArgumentException) { } }
+        try { client.createRoom("R", valid, true) { false }; fail() } catch (_: CommunityException.Stale) { }
+        assertTrue(transport.requests.isEmpty())
+    }
+
+    @Test fun failedSecondStageRetainsTheCreatedRoomAndNeverRepeatsCreate() {
+        val transport = ScriptedTransport { request ->
+            if (request.url.endsWith("/sdi_room_action")) ScriptedTransport.json(200, """{"status":"created","room_id":"$room"}""")
+            else ScriptedTransport.json(200, """{"error":"Revision changed."}""")
+        }
+        val outcome = RoomsClient(CommunityGateway(FixedSession(), transport)).createRoom("R", RoomProjectShareDraft(project, "P"), true)
+        assertTrue(outcome is RoomCreationOutcome.CreatedWithoutProject)
+        assertEquals(room, outcome.room); assertEquals(2, transport.requests.size)
+        assertEquals(1, transport.requests.count { it.url.endsWith("/sdi_room_action") })
+    }
+
+    @Test fun hideBetweenCreateAndShareKeepsPartialRoomWithoutStartingTheShare() {
+        var visible = true
+        val transport = ScriptedTransport {
+            visible = false
+            ScriptedTransport.json(200, """{"status":"created","room_id":"$room"}""")
+        }
+        val outcome = RoomsClient(CommunityGateway(FixedSession(), transport)).createRoom("R", RoomProjectShareDraft(project, "P"), true) { visible }
+        assertTrue(outcome is RoomCreationOutcome.CreatedWithoutProject); assertEquals(room, outcome.room)
+        assertEquals(1, transport.requests.size)
+    }
+
+    @Test fun changedAccountCannotUseTheNewSessionForTheSecondStage() {
+        val session = FixedSession()
+        val original = session.generation
+        val transport = ScriptedTransport {
+            session.generation++; session.token = "different-member-token"
+            ScriptedTransport.json(200, """{"status":"created","room_id":"$room"}""")
+        }
+        try {
+            RoomsClient(CommunityGateway(session, transport)).createRoom("R", RoomProjectShareDraft(project, "P"), true) { session.generation == original }
+            fail("The old account's response must be discarded")
+        } catch (_: CommunityException.Stale) { }
+        assertEquals(1, transport.requests.size)
+        assertEquals("Bearer member-token", transport.requests.single().headers["Authorization"])
+    }
+
+    @Test fun creationNeedsConfigurationSessionAndAConfirmedProjectRevision() {
+        val noNetwork = ScriptedTransport { fail("Must not send"); error("unreachable") }
+        val draft = RoomProjectShareDraft(project, "P")
+        try { RoomsClient(CommunityGateway(FixedSession(configured = null), noNetwork)).createRoom("R", draft, true); fail() } catch (_: CommunityException.NotConfigured) { }
+        try { RoomsClient(CommunityGateway(FixedSession(token = null), noNetwork)).createRoom("R", draft, true); fail() } catch (_: CommunityException.SignedOut) { }
+        assertTrue(noNetwork.requests.isEmpty())
+        val wrongRevision = ScriptedTransport { request ->
+            if (request.url.endsWith("/sdi_room_action")) ScriptedTransport.json(200, """{"status":"created","room_id":"$room"}""")
+            else ScriptedTransport.json(200, """{"status":"updated","project_revision":1}""")
+        }
+        assertTrue(RoomsClient(CommunityGateway(FixedSession(), wrongRevision)).createRoom("R", draft, true) is RoomCreationOutcome.CreatedWithoutProject)
+        val malformed = ScriptedTransport { ScriptedTransport.json(200, """{"status":"created","room_id":"not-a-uuid"}""") }
+        try { RoomsClient(CommunityGateway(FixedSession(), malformed)).createRoom("R", draft, true); fail() } catch (_: CommunityException.InvalidResponse) { }
+        assertEquals(1, malformed.requests.size)
+    }
+
     @Test fun summaryMembersAndOwnerActionsUseTheIosContracts() {
         val transport = ScriptedTransport { request ->
             when {

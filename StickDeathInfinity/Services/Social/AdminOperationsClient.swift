@@ -142,6 +142,29 @@ final class AdminOperationsClient {
         return response
     }
 
+    /// Finance-capability ledger record, with recent MFA checked locally and again by the server.
+    /// No automatic retry: reuse the exact reference if the first outcome cannot be read back.
+    func recordExpense(_ request: AdminExpenseRequest) async throws -> AdminExpenseOutcome {
+        if let prompt = stepUpPrompt(for: "finance_record.expense") {
+            throw CommunityError.server(message: prompt, code: "step_up_required")
+        }
+        let response = try await gateway.call("sdi_finance_record", params: request, as: AdminExpenseResponse.self)
+        switch response.status {
+        case "recorded":
+            guard let entry = response.entry, let possible = response.possible_duplicate else {
+                throw CommunityError.invalidResponse("Expense outcome unconfirmed. Check the ledger for this reference before retrying.")
+            }
+            return .recorded(entry: entry, possibleDuplicate: possible)
+        case "duplicate":
+            guard response.ref == request.ref else {
+                throw CommunityError.invalidResponse("Expense reference was not confirmed. Check the ledger before retrying.")
+            }
+            return .duplicate(reference: request.ref)
+        default:
+            throw CommunityError.invalidResponse("Expense outcome unconfirmed. Check the ledger for this reference before retrying.")
+        }
+    }
+
     // MARK: Room reports (#235/#247)
     func roomReports() async throws -> [AdminRoomReport] {
         let response = try await gateway.call("sdi_room_moderate", params: AdminRoomModerateRequest(action: "list"), as: AdminRoomModerateResponse.self)
@@ -752,3 +775,286 @@ extension AdminOperationsClient {
 }
 struct AdminDiagnosticsRequest: Encodable, Equatable { let action: String; let days: Int }
 struct AdminDiagnosticsCounter: Identifiable, Equatable { var id: String { counter }; let counter: String; let total: Int }
+
+// MARK: - Private support triage (support-requests.sql)
+enum AdminSupportStatus: String, Codable, CaseIterable, Identifiable {
+    case open, inProgress = "in_progress", waitingOnMember = "waiting_on_member", resolved, withdrawn
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .open: return "Received"
+        case .inProgress: return "In progress"
+        case .waitingOnMember: return "Waiting on member"
+        case .resolved: return "Resolved"
+        case .withdrawn: return "Withdrawn"
+        }
+    }
+    static var editable: [Self] { allCases.filter { $0 != .withdrawn } }
+}
+
+/// Content remains in this view's memory only. No attachment, project, reply to
+/// a member or email delivery is part of the support RPC.
+struct AdminSupportItem: Decodable, Identifiable, Equatable {
+    let id: UUID
+    let user_id: UUID
+    let receipt: String
+    let category: String
+    let platform: String
+    let app_version: String
+    let subject: String
+    let body: String
+    let status: AdminSupportStatus
+    let admin_note: String
+    let revision: Int64
+    let created_at: Date
+    let updated_at: Date
+    var canUpdate: Bool { status != .withdrawn }
+
+    func validated() throws -> Self {
+        guard receipt.utf8.count == 14, receipt.range(of: #"^SDI-[A-Z0-9]{10}$"#, options: .regularExpression) != nil,
+              ["account", "billing", "studio", "publishing", "rights", "safety", "bug", "other"].contains(category),
+              ["ios", "android", "web", "other"].contains(platform), app_version.unicodeScalars.count <= 50,
+              (1...120).contains(subject.unicodeScalars.count), (1...2000).contains(body.unicodeScalars.count),
+              admin_note.unicodeScalars.count <= 2000, revision > 0, revision < Int64.max,
+              created_at.timeIntervalSinceReferenceDate.isFinite, updated_at.timeIntervalSinceReferenceDate.isFinite else {
+            throw CommunityError.invalidResponse("Support request unavailable. Refresh the queue.")
+        }
+        return self
+    }
+}
+
+struct AdminSupportPage: Equatable {
+    let items: [AdminSupportItem]
+    let hasMore: Bool
+    let page: Int
+}
+/// No token is retained: this binds a queue result/confirmation to the visible
+/// account and view generation, and is invalid on sign-out or scene departure.
+struct AdminSupportContext: Equatable {
+    let accountID: String
+    let generation: UUID
+    func admits(accountID current: String?, authenticated: Bool, active: Bool, generation currentGeneration: UUID) -> Bool {
+        authenticated && active && !accountID.isEmpty && current == accountID && generation == currentGeneration
+    }
+}
+struct AdminSupportActionRequest: Encodable, Equatable, Sendable {
+    let action: String
+    var request: UUID? = nil
+    var status: String? = nil
+    var note: String? = nil
+    var page: Int? = nil
+    var revision: Int64? = nil
+}
+struct AdminSupportResponse: CommunityCodedResponse {
+    let error: String?
+    let code: String?
+    let status: String?
+    let requests: [AdminSupportItem]?
+    let has_more: Bool?
+    let revision: Int64?
+}
+
+extension AdminOperationsClient {
+    /// The server gates both operations with the users capability, active admin
+    /// membership and MFA. Tab visibility never substitutes for this gate.
+    func supportQueue(status: AdminSupportStatus? = nil, page: Int = 0) async throws -> AdminSupportPage {
+        guard (0...199).contains(page) else { throw CommunityError.invalidResponse("Support page out of range.") }
+        let response = try await gateway.call("sdi_support_action",
+            params: AdminSupportActionRequest(action: "list", status: status?.rawValue, page: page),
+            as: AdminSupportResponse.self)
+        guard let items = response.requests, items.count <= 50, let hasMore = response.has_more,
+              !hasMore || items.count == 50, Set(items.map(\.id)).count == items.count else {
+            throw CommunityError.invalidResponse("Support queue unavailable. Refresh access and verify MFA.")
+        }
+        return AdminSupportPage(items: try items.map { try $0.validated() }, hasMore: hasMore, page: page)
+    }
+
+    static func supportNoteIsValid(_ note: String) -> Bool {
+        (1...2000).contains(note.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars.count)
+    }
+
+    /// The UUID and expected revision belong to the exact selected row, never a
+    /// queue index. A missing, stale or ambiguous receipt is never a local success.
+    @discardableResult
+    func updateSupport(_ item: AdminSupportItem, to status: AdminSupportStatus, note: String) async throws -> Int64 {
+        _ = try item.validated()
+        let text = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard item.canUpdate, AdminSupportStatus.editable.contains(status), Self.supportNoteIsValid(text) else {
+            throw CommunityError.server(message: "Choose a current request, editable status and private note of up to 2000 characters.", code: nil)
+        }
+        let response = try await gateway.call("sdi_support_action", params: AdminSupportActionRequest(action: "update_status",
+            request: item.id, status: status.rawValue, note: text, revision: item.revision), as: AdminSupportResponse.self)
+        guard response.status == "confirmed", response.revision == item.revision + 1 else {
+            throw CommunityError.invalidResponse("The support change was not confirmed at the expected revision. Refresh before retrying.")
+        }
+        return item.revision + 1
+    }
+}
+
+// MARK: - Typed moderation preview contracts
+// Provider addresses only arrive in video_source. A legacy raw field cannot
+// authorize YouTube, and a mismatched typed provider never falls back to it.
+struct ModerationReport: Decodable, Identifiable, Equatable {
+    let id: UUID; let reason: String; let version: Int; let created_at: Date
+    let caption: String; let creator: UUID; let title: String; let url: String; let render_digest: String
+    var video_source: CommunityVideoSource? = nil
+    var playbackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(video_source, legacyURL: url) }
+}
+struct AdminWarReport: Decodable, Identifiable, Equatable {
+    let id: UUID; let match_id: UUID; let reason: String; let revision: Int; let created_at: Date; let status: String
+    let left_title: String; let right_title: String?; let left_url: String; let right_url: String?
+    var left_video_source: CommunityVideoSource? = nil; var right_video_source: CommunityVideoSource? = nil
+    var leftPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(left_video_source, legacyURL: left_url) }
+    var rightPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(right_video_source, legacyURL: right_url) }
+}
+struct AdminWarAppeal: Decodable, Identifiable, Equatable {
+    let id: UUID; let explanation: String; let revision: Int; let created_at: Date; let match_id: UUID
+    let decision_reason: String; let previous_status: String; let left_digest: String; let right_digest: String?
+    let left_title: String; let right_title: String?; let left_url: String; let right_url: String?
+    var left_video_source: CommunityVideoSource? = nil; var right_video_source: CommunityVideoSource? = nil
+    var leftPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(left_video_source, legacyURL: left_url) }
+    var rightPlaybackSource: FeedPlaybackSource? { CommunityVideoSource.resolve(right_video_source, legacyURL: right_url) }
+}
+
+// MARK: - Fresh moderation preview admission
+// This is a local invalidation fence, never server authorization. A current
+// authorized queue reply is required for every grant, including raw previews.
+struct AdminPreviewTarget: Equatable {
+    enum Queue: String { case feedReports, feedAppeals, warReports, warAppeals }
+    enum Side: String { case single, left, right }
+    let queue: Queue
+    let record: UUID
+    let revision: Int
+    let side: Side
+    let video: CommunityVideoSource
+}
+struct AdminPreviewAdmission {
+    struct Context: Equatable {
+        let account: String
+        /// An in-memory SDK token equality marker. Never logged or sent as a
+        /// permission claim; any session/token change invalidates the grant.
+        let sessionMarker: String
+        let active: Bool
+        var usable: Bool { active && !account.isEmpty && !sessionMarker.isEmpty }
+        static let unavailable = Context(account: "", sessionMarker: "", active: false)
+    }
+    struct Ticket: Equatable {
+        fileprivate let generation: UUID
+        fileprivate let sequence: Int
+        fileprivate let target: AdminPreviewTarget
+        fileprivate let context: Context
+        fileprivate let started: TimeInterval
+    }
+    static let maximumLease: TimeInterval = 15
+    private var generation = UUID()
+    private var sequence = 0
+    private var binding: AdminPreviewTarget?
+    private var context: Context?
+    private var pending: Ticket?
+    private(set) var source: FeedPlaybackSource?
+    private(set) var deadline: TimeInterval?
+
+    mutating func begin(_ target: AdminPreviewTarget, context: Context, uptime: TimeInterval) -> Ticket? {
+        guard context.usable, uptime.isFinite, target.revision >= 0, target.video.playbackSource != nil else {
+            invalidate(); return nil
+        }
+        if binding != target || self.context != context { invalidate() }
+        binding = target; self.context = context; sequence += 1
+        let ticket = Ticket(generation: generation, sequence: sequence, target: target, context: context, started: uptime)
+        pending = ticket
+        return ticket
+    }
+    /// Request start bounds the lease, so a delayed reply cannot extend an old
+    /// authorization window. A separate UI watchdog expires a hung renewal.
+    mutating func accept(_ candidate: AdminPreviewTarget, ticket: Ticket, context: Context,
+                         serverNow: Date, uptime: TimeInterval) -> Bool {
+        guard pending == ticket, generation == ticket.generation else { return false }
+        guard context.usable, context == ticket.context, candidate == ticket.target,
+              uptime.isFinite, uptime >= ticket.started, uptime < ticket.started + Self.maximumLease,
+              source == nil || deadline.map({ uptime < $0 }) == true,
+              let source = candidate.video.playbackSource else { invalidate(); return false }
+        let remaining = candidate.video.expires_at.map { $0.timeIntervalSince(serverNow) } ?? Self.maximumLease
+        guard remaining.isFinite, remaining > 0 else { invalidate(); return false }
+        self.source = source
+        deadline = min(ticket.started + Self.maximumLease, uptime + remaining)
+        pending = nil
+        return true
+    }
+    func isValid(_ target: AdminPreviewTarget?, context: Context, uptime: TimeInterval) -> Bool {
+        guard context.usable, self.context == context, binding == target, source != nil,
+              let deadline, uptime.isFinite else { return false }
+        return uptime < deadline
+    }
+    mutating func refuse(_ ticket: Ticket) {
+        if pending == ticket { invalidate() }
+    }
+    mutating func invalidate() {
+        generation = UUID(); sequence = 0; binding = nil; context = nil
+        pending = nil; source = nil; deadline = nil
+    }
+}
+
+private struct AdminPreviewReportsResponse: CommunityCodedResponse {
+    let error: String?; let code: String?; let reports: [ModerationReport]?
+}
+private struct AdminPreviewWarReportsResponse: CommunityCodedResponse {
+    let error: String?; let code: String?; let reports: [AdminWarReport]?
+}
+private struct AdminPreviewWarAppealsResponse: CommunityCodedResponse {
+    let error: String?; let code: String?; let appeals: [AdminWarAppeal]?
+}
+extension AdminOperationsClient {
+    /// A queue snapshot is a selection only. Re-read the same authorized queue
+    /// and require the current record, revision, side, provider URL and expiry.
+    func refreshPreview(_ target: AdminPreviewTarget) async throws -> AdminPreviewTarget {
+        let candidate: AdminPreviewTarget?
+        switch target.queue {
+        case .feedReports:
+            let reply = try await gateway.call("sdi_moderation_action", params: ["action": "list"], as: AdminPreviewReportsResponse.self)
+            guard let items = reply.reports, items.count <= 50, Set(items.map(\.id)).count == items.count else { throw CommunityError.invalidResponse("Preview queue unavailable.") }
+            candidate = items.first(where: { $0.id == target.record })?.previewTarget
+        case .feedAppeals:
+            let items = try await appealQueue()
+            guard Set(items.map(\.id)).count == items.count else { throw CommunityError.invalidResponse("Preview queue unavailable.") }
+            candidate = items.first(where: { $0.id == target.record })?.previewTarget
+        case .warReports:
+            let reply = try await gateway.call("sdi_war_moderate", params: ["action": "list"], as: AdminPreviewWarReportsResponse.self)
+            guard let items = reply.reports, items.count <= 50, Set(items.map(\.id)).count == items.count else { throw CommunityError.invalidResponse("Preview queue unavailable.") }
+            candidate = items.first(where: { $0.id == target.record })?.previewTarget(right: target.side == .right)
+        case .warAppeals:
+            let reply = try await gateway.call("sdi_war_appeal_admin", params: ["action": "list"], as: AdminPreviewWarAppealsResponse.self)
+            guard let items = reply.appeals, items.count <= 50, Set(items.map(\.id)).count == items.count else { throw CommunityError.invalidResponse("Preview queue unavailable.") }
+            candidate = items.first(where: { $0.id == target.record })?.previewTarget(right: target.side == .right)
+        }
+        guard let candidate, candidate == target, candidate.video.playbackSource != nil,
+              candidate.video.expires_at.map({ $0 > previewServerNow }) ?? true else {
+            throw CommunityError.invalidResponse("Preview changed or is no longer authorized. Refresh the queue.")
+        }
+        return candidate
+    }
+    var previewServerNow: Date { gateway.clock.serverNow(deviceNow: Date()).addingTimeInterval(gateway.clock.uncertainty) }
+}
+extension ModerationReport {
+    var previewTarget: AdminPreviewTarget? {
+        guard let video_source, video_source.playbackSource != nil else { return nil }
+        return .init(queue: .feedReports, record: id, revision: version, side: .single, video: video_source)
+    }
+}
+extension ModerationAppeal {
+    var previewTarget: AdminPreviewTarget? {
+        guard let revision, let video_source, video_source.playbackSource != nil else { return nil }
+        return .init(queue: .feedAppeals, record: id, revision: revision, side: .single, video: video_source)
+    }
+}
+extension AdminWarReport {
+    func previewTarget(right: Bool) -> AdminPreviewTarget? {
+        guard let video = right ? right_video_source : left_video_source, video.playbackSource != nil else { return nil }
+        return .init(queue: .warReports, record: id, revision: revision, side: right ? .right : .left, video: video)
+    }
+}
+extension AdminWarAppeal {
+    func previewTarget(right: Bool) -> AdminPreviewTarget? {
+        guard let video = right ? right_video_source : left_video_source, video.playbackSource != nil else { return nil }
+        return .init(queue: .warAppeals, record: id, revision: revision, side: right ? .right : .left, video: video)
+    }
+}

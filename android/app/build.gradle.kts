@@ -35,6 +35,11 @@ val stageStudioImages by tasks.registering(Sync::class) {
 android {
     namespace = "com.stickdeath.studio"
     compileSdk = 35
+    // Tiny libc-only no-replace file commit. No bundled C++ runtime or downloaded code.
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
+    }
     defaultConfig {
         applicationId = "com.stickdeath.studio"
         minSdk = 26
@@ -61,6 +66,8 @@ android {
     sourceSets.getByName("main").assets.srcDir(generatedStudioAssets)
     // Shared iOS/Android `.sdi` golden fixtures (Tests/SDIFixtures) feed the instrumented import tests.
     sourceSets.getByName("androidTest").assets.srcDir("../../Tests/SDIFixtures/assets")
+    // Reuse the existing hash-pinned publisher ZIP in instrumentation only; no duplicate archive.
+    sourceSets.getByName("androidTest").assets.srcDir("../../Tests/StudioImagePack/Fixtures")
     // The same fixtures plus `reexport.json` let the JVM re-export comparison run without a device.
     sourceSets.getByName("test").resources.srcDir("../../Tests/SDIFixtures")
     androidResources { noCompress += listOf("wav", "m4a") }
@@ -72,6 +79,8 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies {
+    // Isolated public image GETs; compatible Java8/API21 JAR has no INTERNET manifest merge.
+    implementation("com.squareup.okhttp3:okhttp:4.12.1")
     // Plain JVM unit tests (app/src/test) cover the pure mixing/blend-name math; no Android runtime needed.
     testImplementation("junit:junit:4.13.2")
     // The mockable android.jar stubs org.json; the real library lets JVM tests exercise the retained

@@ -123,6 +123,10 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
     private var fingerprints: [UUID: SHA256.Digest] = [:]
     private var task: Task<Void, Never>?
     private var generation = UUID()
+    private enum CataloguePreview: Equatable {
+        case preparing, playing
+    }
+    private var cataloguePreview: CataloguePreview?
     private var player: AVAudioPlayer?
     private var playerIdentity: ObjectIdentifier?
     private var playbackTimer: Timer?
@@ -320,19 +324,24 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
         stop()
         let id = UUID(); generation = id
         isBusy = true; state = attach == nil ? .analyzing : .importing
+        if attach == nil { cataloguePreview = .preparing }
         progress = 0; lastImportedClipID = nil
         task = Task { [weak self] in
             guard let self else { return }
-            defer { self.isBusy = false; self.task = nil }
+            defer {
+                if self.cataloguePreview == .preparing { self.cataloguePreview = nil }
+                self.isBusy = false; self.task = nil
+            }
             do {
-                let data = try await catalogue.loadResource(sound)
-                try Task.checkCancellation()
-                guard self.generation == id, stillCurrent() else { throw SessionError.staleProject }
-                let result = try await StudioSavedAudioAnalysis.run(data: data, name: sound.title,
+                let prepared = try await StudioCatalogueSoundSource.prepare(sound, catalogue: catalogue,
                     importer: self.importer, scratchParent: self.scratchParent) { [weak self] value in
                         try Task.checkCancellation()
                         await self?.updateProgress(value, generation: id)
+                    } check: {
+                        try Task.checkCancellation()
+                        guard self.generation == id, stillCurrent() else { throw SessionError.staleProject }
                     }
+                let result = prepared.audio
                 try Task.checkCancellation()
                 guard self.generation == id else { return }
                 guard stillCurrent() else { throw SessionError.staleProject }
@@ -348,7 +357,9 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
                 } else {
                     self.remember(result, for: track.id)
                     self.progress = 1; self.state = .ready; self.isBusy = false
-                    _ = self.play(clipID: sound.id, track: track, volume: 1)
+                    if self.play(clipID: sound.id, track: track, volume: 1) {
+                        self.cataloguePreview = .playing
+                    }
                 }
             } catch is CancellationError {
                 if self.generation == id { self.state = .cancelled }
@@ -403,7 +414,20 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
         guard playingClipID == clipID, value.isFinite, (0...1).contains(value) else { return }
         player?.volume = Float(value)
     }
+    /// Dismissing the library cancels its audition, including pending decoding.
+    func stopCataloguePreview() {
+        switch cataloguePreview {
+        case .preparing:
+            generation = UUID(); task?.cancel()
+            cataloguePreview = nil; state = .stopped
+        case .playing:
+            stop()
+        case nil:
+            break
+        }
+    }
     func stop() {
+        if cataloguePreview == .playing { cataloguePreview = nil }
         playbackTimer?.invalidate(); playbackTimer = nil
         player?.stop(); player?.delegate = nil; player = nil; playerIdentity = nil
         StudioAudioSessionController.shared.end(owner: sessionOwnerID)
@@ -474,6 +498,38 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
             case .changedResource: return "The sound file changed while loading. No clip was added."
             }
         }
+    }
+}
+
+/// The shared Sound Library import path for touch and typed Spatter requests.
+/// Its result cannot be forged outside this file: membership/rights/hash checks,
+/// real codec analysis and scratch cleanup have already completed.
+enum StudioCatalogueSoundSource {
+    struct Prepared {
+        let sound: StudioSoundCatalogue.Sound
+        let audio: StudioAudioImportService.ImportedAudio
+        fileprivate init(sound: StudioSoundCatalogue.Sound, audio: StudioAudioImportService.ImportedAudio) {
+            self.sound = sound; self.audio = audio
+        }
+    }
+    @MainActor
+    static func prepare(_ sound: StudioSoundCatalogue.Sound, catalogue: StudioSoundCatalogue,
+                        importer: StudioAudioImportService = .shared,
+                        scratchParent: URL = FileManager.default.temporaryDirectory,
+                        progress: @escaping @Sendable (StudioAudioImportService.Progress) async throws -> Void = { _ in },
+                        check: () throws -> Void = { try Task.checkCancellation() }) async throws -> Prepared {
+        try check()
+        let data = try await catalogue.loadResource(sound)
+        try Task.checkCancellation(); try check()
+        let audio = try await StudioSavedAudioAnalysis.run(data: data, name: sound.title,
+            importer: importer, scratchParent: scratchParent, progress: progress)
+        try Task.checkCancellation(); try check()
+        guard audio.originalData == data, audio.sha256 == sound.sha256,
+              abs(audio.duration - sound.duration) <= 0.001,
+              audio.sampleRate == sound.sampleRate, audio.channelCount == sound.channels else {
+            throw StudioSoundCatalogue.CatalogueError.invalid
+        }
+        return Prepared(sound: sound, audio: audio)
     }
 }
 

@@ -148,7 +148,60 @@ report). Unset, every job still fails with the OWNER-GATED capacity message.
 Optional: `SDI_DRAFT_RENDER_DIR` (private output root), `SDI_DRAFT_RENDER_FPS`/
 `_WIDTH`/`_HEIGHT` (default 24 FPS, 640×360) and
 `SDI_DRAFT_RENDER_TIMEOUT_SECONDS` (default 600, at most 840 so a render ends
-inside the 15-minute lease; the lease is renewed every 60 s while it runs).
+inside the 15-minute draft lease). The production render timeout must exceed 20
+seconds. The renderer waits in slices of at most 20 seconds between heartbeat
+checks. A preceding RPC may use its own budget. Each RPC budgets at most 20
+seconds from before process creation, including DNS, TLS, headers and body.
+It reserves up to one second for kill and reap. Process creation and scheduling
+can take longer under the OS. A late child receives no request bytes, and the
+caller makes no unbounded reap wait. Near the render deadline, the worker
+stops asking for heartbeats while the child is live. It checks again only
+after the exit is confirmed, before retaining the preview and before sending
+the private review. A claim without a valid item allowance cannot launch the
+renderer.
+
+The render host can explicitly call `draft_worker.run_daily_draft_once` with
+its configured HTTPS backend origin, server-only Supabase secret API key and
+`CLIRenderer` backed by a `DraftPreviewStore`. The preview store supplies the
+owner account for the review. The worker uses the existing service-only
+claim, progress and agent-heartbeat RPCs. It stops after `review_pending` and
+leaves review decisions and release to their existing owner-controlled routes.
+
+### Run one private draft from the render host
+
+After the owner approves capacity, configures the daily draft agent's limits,
+and verifies the private intake and its owner preview route, run from the
+deployed repository root on the trusted macOS render host:
+
+```sh
+python3 -m backend.spatter.daily_draft_cli --run-once
+```
+
+Set `SDI_BACKEND_URL` to the authorized HTTPS backend origin and
+`SDI_BACKEND_SERVICE_KEY_FILE` to the absolute path of an owner-private file
+containing the modern Supabase server secret API key. The file must belong to
+the worker, have no group or other permissions (for example `0600`), and be a
+regular file. Use the host's secure credential store to provision it. Never
+place its contents in arguments, environment variables, repository files or
+logs. Publishable and legacy JWT keys are refused.
+
+Set `SDI_DRAFT_RENDERER_CLI` to the built native executable and
+`SDI_DRAFT_RENDER_DIR` to an existing private worker-owned output directory.
+Provide the owner preview settings below, including an existing private intake
+directory that the serving intake worker actually uses. The intake origin,
+preview signing file and owner ID must agree with that serving worker; a local
+directory on a separate host is not a working preview handoff. The command
+rejects missing or invalid local configuration before its first RPC.
+
+The command prints one JSON object with a `state` field. Exit `0` means
+`review_pending`; exit `3` means `not_claimed` (nothing rendered); exit `2`
+means `invalid_invocation` or `invalid_configuration`; exit `1` means
+`failed`, `refused`, `unconfirmed` or `timed_out`; Ctrl-C returns
+`interrupted` with exit `130`. It never prints service reasons, keys, preview
+URLs or host paths. It runs one pass under the existing RPC/render limits
+and a 16-minute operator deadline. No retry or schedule is installed; inspect
+the existing private job state before manually rerunning an unconfirmed pass.
+This command cannot approve or release a draft.
 
 The adapter re-hashes the movie, manifest and editable project named by the
 receipt, requires `private_draft: true` / `published: false`, matches brief,
@@ -156,7 +209,8 @@ seed and size to the job, and fails a passing verdict whose decoded frame count
 or duration disagrees with the plan. A `publish_preview(movie, sha256, plan)`
 callable must return the private HTTPS preview URL for the owner's review row;
 without one the render fails before running. Drafts stay in the output root for
-review; failed runs are deleted. Nothing is uploaded, released or scheduled:
+review. A failed run preserves its private scratch if renderer exit could not
+be confirmed within the bounded reap wait. Nothing is uploaded, released or scheduled:
 release still needs the owner's approval of the exact render digest.
 Daily plans use `briefs.v3`: `plan_brief` shortens a plan (never below 2 s)
 until it fits the app planner's element budget at 24 FPS (`fits_element_budget`
@@ -217,3 +271,58 @@ switches and credential non-disclosure. No sockets, provider or database.
   server usage after a refusal instead.
 * Live integration runs (real provider failures, rate limits, token expiry
   against a deployed project) are deferred. Nothing here claims a deployment.
+
+
+## Explicit HTTP composition (source candidate)
+
+`application.create_application(environment, verify_jwt=..., provider=...)` now
+composes the existing advice handler as a WSGI application. Importing starts no
+listener and performs no network call. Mount it only in the approved private
+host behind the existing gateway. `SDI_SPATTER_URL` is the exact HTTPS endpoint
+also configured as native `SPATTER_BACKEND_URL`; only that host and path accept
+POST, and query strings, alternate routes and other methods are refused.
+The gateway must set the WSGI HTTPS scheme and Host itself; client forwarded
+headers are ignored. The factory requires a valid endpoint to start. Absent
+verifier, provider or required backend settings return 503 `not configured` on
+valid authenticated-shaped requests without authorization, metering or provider
+calls. A missing bearer token returns 401.
+
+The host injects a vetted `verify_jwt` satisfying the contract above and an
+explicitly configured provider. Before metering, the signed subject must match
+`ingestion.auth.AccountAuthorizer`'s live `sdi_upload_identity` result, preserving
+current-session/account restrictions and full non-anonymous identity. Signature,
+audience, issuer and expiry verification must remain enabled in that verifier.
+The existing server-only `SqlMeter` is wired through an allowlisted, size-bounded
+HTTPS POST adapter; it uses `SDI_BACKEND_URL`, `SDI_BACKEND_PUBLISHABLE_KEY` and
+`SDI_BACKEND_SERVICE_KEY_FILE` (absolute, worker-owned private file). Backend URL
+validation and the existing optional `/native-review-api` prefix follow the
+shared AccountAuthorizer. No service credential is accepted from a client.
+Meter requests carry the distinct publishable key as `apikey` and the service
+credential only in `Authorization: Bearer`; equal keys are refused.
+Missing secrets at a configured file or invalid configuration fail construction;
+errors never publish their contents. No provider/model/key is added here.
+
+HTTP requires JSON, an explicit Content-Length of 1..131072 bytes, no transfer
+encoding or content encoding, and the existing message/count/content bounds.
+Duplicate JSON keys, non-finite numbers, unknown fields (including commands),
+extra message fields, and out-of-bound `max_tokens` (1..500) or `temperature`
+(0..1) are refused before metering/provider calls. These generation fields
+remain advice-contract inputs; the existing handler/provider interface controls
+actual generation settings. The adapter returns bounded JSON with no-store and
+nosniff; it exposes no shell, admin, Studio executor, publication or message
+endpoint. Existing typed Studio commands and exact-render approval remain in
+their established paths. `SDI_SPATTER_CONCURRENCY` defaults to 2 (range 1..4),
+with immediate 503 when capacity is occupied and no application request queue.
+
+Runtime integration remains required: approved HTTPS/gateway route, WSGI host
+(e.g. the existing proposed Gunicorn runtime), trusted proxy scheme/host setup,
+request read/wall-clock limits and rate limits, log redaction, verifier and
+provider configuration, approved allowance/global ceiling and private secrets.
+The meter adapter has no retries or redirects and caps response bytes; its
+urllib timeout is an I/O timeout, not an absolute DNS/body wall deadline. The
+shared authorizer has its existing timeout behavior. WSGI provides no portable
+client-disconnect/cancellation signal: once a synchronous completion begins,
+a cancelled client may leave it running and metered. Existing provider-router
+thread timeouts do not kill an in-flight provider call. Deployment must account
+for these limits; this source change claims no cancellation, live integration,
+provider acceptance, training, publication or deployment verification.

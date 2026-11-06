@@ -5,6 +5,32 @@ import CoreGraphics
 /// Layer appearance is applied after pixel processing, never baked in twice.
 @MainActor
 enum StudioBlurCapture {
+    /// Shared active-layer and cumulative-budget capture for the editable
+    /// Gradient tool, whether started by touch or a typed Spatter instruction.
+    static func captureGradient(element: DrawnElement, document: StudioDocument, selection: Set<String>,
+                                raster: Data?, rasterDataByID: [String: Data] = [:]) throws -> Capture {
+        try Task.checkCancellation()
+        guard element.layerID == document.activeLayerID, let descriptor = element.gradient,
+              var frame = document.frames.first(where: { $0.id == document.activeFrameID }) else { throw StudioGradientDescriptor.Failure.invalid }
+        _ = try descriptor.validate(element: element, width: document.width, height: document.height)
+        frame.elements.append(element)
+        try StudioSmudgeDescriptor.validateFrame(frame, width: document.width, height: document.height)
+        return try capture(document: document, selection: selection, raster: raster,
+            rasterDataByID: rasterDataByID, clipsToSelection: true)
+    }
+
+    static func capturePixelEffect(element: DrawnElement, document: StudioDocument, selection: Set<String>,
+                                   raster: Data?, rasterDataByID: [String: Data] = [:]) throws -> Capture {
+        try Task.checkCancellation()
+        guard element.layerID == document.activeLayerID,
+              var frame = document.frames.first(where: { $0.id == document.activeFrameID }) else { throw StudioSmudge.Failure.invalidSettings }
+        try StudioPixelEffectSettings.validate(element, width: document.width, height: document.height)
+        frame.elements.append(element)
+        try StudioSmudgeDescriptor.validateFrame(frame, width: document.width, height: document.height)
+        return try capture(document: document, selection: selection, raster: raster,
+            rasterDataByID: rasterDataByID, clipsToSelection: element.selectionMask != nil)
+    }
+
     struct Capture {
         let projectID: UUID
         let revision: Int

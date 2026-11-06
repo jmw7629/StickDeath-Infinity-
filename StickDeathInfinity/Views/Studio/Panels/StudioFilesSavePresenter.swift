@@ -22,25 +22,28 @@ extension StudioGIFExportSession.ShareRequest: StudioExportFileRequest {}
 @MainActor
 struct StudioFilesSavePresenter: UIViewControllerRepresentable {
     let request: StudioExportFileRequest
+    var onOfferedToUIKit: @MainActor () -> Void = {}
     let isAllowed: @MainActor () -> Bool
     let onTerminal: (UUID) -> Void
 
     func makeUIViewController(context: Context) -> Host {
-        Host(request: request, isAllowed: isAllowed, onTerminal: onTerminal)
+        Host(request: request, onOfferedToUIKit: onOfferedToUIKit, isAllowed: isAllowed, onTerminal: onTerminal)
     }
     func updateUIViewController(_ controller: Host, context: Context) { controller.updateAuthorization(isAllowed) }
     static func dismantleUIViewController(_ controller: Host, coordinator: ()) { controller.detachFromPanel() }
 
     final class Host: UIViewController, UIDocumentPickerDelegate {
         private let request: StudioExportFileRequest
+        private let onOfferedToUIKit: @MainActor () -> Void
         private var isAllowed: @MainActor () -> Bool
         private var onTerminal: ((UUID) -> Void)?
         private var picker: UIDocumentPickerViewController?
         private var attempted = false
         private var finished = false
 
-        init(request: StudioExportFileRequest, isAllowed: @escaping @MainActor () -> Bool, onTerminal: @escaping (UUID) -> Void) {
-            self.request = request; self.isAllowed = isAllowed; self.onTerminal = onTerminal
+        init(request: StudioExportFileRequest, onOfferedToUIKit: @escaping @MainActor () -> Void = {}, isAllowed: @escaping @MainActor () -> Bool, onTerminal: @escaping (UUID) -> Void) {
+            self.request = request; self.onOfferedToUIKit = onOfferedToUIKit
+            self.isAllowed = isAllowed; self.onTerminal = onTerminal
             super.init(nibName: nil, bundle: nil)
         }
         required init?(coder: NSCoder) { fatalError("Programmatic export saving only") }
@@ -64,6 +67,7 @@ struct StudioFilesSavePresenter: UIViewControllerRepresentable {
                 guard !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { throw PresentationError.unavailable }
                 // asCopy keeps the export directory untouched: the picker writes
                 // copies, and the session's own cleanup rules still apply.
+                onOfferedToUIKit()
                 let controller = UIDocumentPickerViewController(forExporting: urls, asCopy: true)
                 controller.delegate = self
                 controller.shouldShowFileExtensions = true

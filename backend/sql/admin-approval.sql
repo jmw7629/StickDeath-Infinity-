@@ -66,6 +66,17 @@ begin
  return report;
 end $$;
 revoke all on function sdi_private.review_quality_report(uuid) from public,anon,authenticated;
+-- Private visibility follows the job link even after its retained copy expires.
+-- The table is installed later by spatter-draft-jobs.sql.
+create function sdi_private.review_is_daily_spatter_draft(review uuid) returns boolean
+language plpgsql stable set search_path='' as $$
+declare linked boolean;
+begin
+ if review is null or to_regclass('sdi_private.spatter_draft_jobs') is null then return false; end if;
+ execute 'select exists(select 1 from sdi_private.spatter_draft_jobs where review_id=$1)' into linked using review;
+ return linked;
+end $$;
+revoke all on function sdi_private.review_is_daily_spatter_draft(uuid) from public,anon,authenticated;
 -- True only for a Spatter daily draft (spatter-draft-jobs.sql, installed later)
 -- whose exact current bytes are retained (render_artifacts, publishing-jobs.sql).
 -- Such a draft may be approved by the owner with no destinations: "approved, not
@@ -88,8 +99,9 @@ create function sdi_private.review_action(action text,review uuid default null,d
 language plpgsql security definer set search_path='' as $$
 declare r sdi_private.render_reviews; is_owner boolean; result jsonb;
 begin
- if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then return jsonb_build_object('error','Current video-review permission and MFA are required.'); end if;
- select owner into is_owner from sdi_private.admin_roles where user_id=auth.uid();
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true then
+  return jsonb_build_object('error','Current video-review permission and MFA are required.'); end if;
+ select exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) into is_owner;
  if action='list' then
   -- Storyboard and source-project digest columns are installed by
   -- spatter-draft-jobs.sql; read them through the row so this list keeps working
@@ -99,13 +111,15 @@ begin
     rr.rights_cleared,rr.destinations,rr.spatter_generated,rr.state,rr.version,
     to_jsonb(rr)->'storyboard' as storyboard,to_jsonb(rr)->>'source_project_digest' as source_project_digest,
     sdi_private.review_quality_report(rr.id) as quality_report
-   from sdi_private.render_reviews rr where rr.state='pending' order by rr.created_at limit 50
+   from sdi_private.render_reviews rr where rr.state='pending'
+    and (is_owner or not sdi_private.review_is_daily_spatter_draft(rr.id)) order by rr.created_at limit 50
   ) item;
   return jsonb_build_object('reviews',result,'owner',is_owner);
  end if;
  if action is null or action<>'decide' or review is null or digest is null or version is null or decision is null or note is null or decision not in('approved','rejected','changes') or length(note)>2000 then
   return jsonb_build_object('error','Invalid review decision.'); end if;
- select * into r from sdi_private.render_reviews where id=review for update;
+ select * into r from sdi_private.render_reviews rr where rr.id=review
+  and (is_owner or not sdi_private.review_is_daily_spatter_draft(rr.id)) for update;
  if not found or r.render_digest<>digest or r.version<>version or r.state<>'pending' then
   return jsonb_build_object('error','This render changed or was already reviewed. Reload the queue.'); end if;
  if decision='approved' and (not r.rights_cleared or length(r.consent_version)=0
@@ -128,15 +142,17 @@ grant execute on function public.sdi_review_action(text,uuid,text,bigint,text,te
 -- metadata or an expired private preview link.
 create function sdi_private.review_history(page integer default 0) returns jsonb
 language plpgsql security definer set search_path='' as $$
-declare result jsonb;
+declare result jsonb; is_owner boolean;
 begin
- if not sdi_private.admin_can('reviews') or not sdi_private.account_active() then
+ if sdi_private.admin_can('reviews') is not true or sdi_private.account_active() is not true then
   return jsonb_build_object('error','Current administrator MFA session required.');end if;
+ select exists(select 1 from sdi_private.admin_roles where user_id=auth.uid() and enabled and owner) into is_owner;
  if page is null or page not between 0 and 199 then return jsonb_build_object('error','Invalid history page.');end if;
  select coalesce(jsonb_agg(row_to_json(item)),'[]'::jsonb) into result from (
   select id,review_id,actor,owner_at_decision,render_title,source_revision,rights_summary,
    render_digest,review_version,consent_version,destinations,decision,note,created_at
-  from sdi_private.render_decisions order by created_at desc,id limit 50 offset page*50
+  from sdi_private.render_decisions d where is_owner or not sdi_private.review_is_daily_spatter_draft(d.review_id)
+  order by created_at desc,id limit 50 offset page*50
  ) item;
  return jsonb_build_object('decisions',result);
 end $$;

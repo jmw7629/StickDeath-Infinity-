@@ -3,6 +3,7 @@
 begin;
 do $$
 declare admin uuid; member uuid; r jsonb; item jsonb; ann uuid; ios uuid; droid uuid;
+ redaction_surface jsonb; fixture_reported_at timestamptz;
 begin
  admin:=sdi_test.admin('provider-admin',false,array['overview']); member:=sdi_test.user('provider-member');
 
@@ -18,6 +19,9 @@ begin
  perform sdi_test.check(sdi_private.worker_configuration_report('service-sweeps',
   '{"sdi_mail_sender_domain":true,"sdi_mail_credentials_file":false,"sdi_stripe_webhook_secret_file":true,"sdi_youtube_client_file":true,"sdi_youtube_token_file":true,
     "sdi_apns_key_id":true,"sdi_apns_team_id":true,"sdi_apns_key_file":true,"sdi_apns_topic":true,"sdi_fcm_project_id":true,"sdi_fcm_service_account_file":true}'),'presence reported');
+ -- Public timing metadata may legitimately contain the SMTP error-code digits.
+ fixture_reported_at:=date_trunc('second',clock_timestamp())-interval '1 second'+interval '535 milliseconds';
+ update sdi_private.worker_configuration set reported_at=fixture_reported_at where worker='service-sweeps';
 
  -- Service-reported outcomes: closed vocabulary only, no free text.
  perform sdi_test.check(not sdi_private.provider_outcome_report('email',false,'smtp said: 535 bad password for owner@example.test'),'free-text error refused');
@@ -50,6 +54,8 @@ begin
  select e into item from jsonb_array_elements(r->'providers') e where e->>'provider'='email';
  perform sdi_test.check(item->>'configured'='no' and item->'missing'='["sdi_mail_credentials_file"]'::jsonb and item->>'health'='unconfigured'
   and item->>'last_error_class'='network' and (item->>'consecutive_failures')::integer=2,'email: missing credential named, latest class: '||item::text);
+ perform sdi_test.check(item->'configuration_reported_at'=to_jsonb(fixture_reported_at)
+  and position('535' in item->>'configuration_reported_at')>0,'public timestamp containing SMTP digits remains visible');
  select e into item from jsonb_array_elements(r->'providers') e where e->>'provider'='stripe';
  perform sdi_test.check(item->>'configured'='yes' and item->>'health'='failing' and item->>'last_error_class'='event_error'
   and item->'last_success_at'<>'null'::jsonb,'stripe: later event error is failing: '||item::text);
@@ -61,7 +67,13 @@ begin
  perform sdi_test.check(item->>'configured'='yes' and item->>'health'='no_activity','youtube: configured, no activity yet: '||item::text);
  select e into item from jsonb_array_elements(r->'providers') e where e->>'provider'='spatter';
  perform sdi_test.check(item->>'configured'='unreported' and item->>'health'='healthy' and item->'missing'='["sdi_draft_renderer_cli"]'::jsonb,'spatter: render outcome without presence report: '||item::text);
- perform sdi_test.check(position('UNAUTHENTICATED' in r::text)=0 and position('535' in r::text)=0 and position(repeat('a',64) in r::text)=0,'no provider message or token reaches the reader');
+ -- Only the four known typed timestamp fields are excluded from the short-code
+ -- scan; scan the unmodified response for complete messages, addresses and tokens.
+ select jsonb_set(r-'measured_at','{providers}',jsonb_agg(e-'configuration_reported_at'-'last_success_at'-'last_failure_at'))
+  into redaction_surface from jsonb_array_elements(r->'providers') e;
+ perform sdi_test.check(position('UNAUTHENTICATED' in r::text)=0 and position('535' in redaction_surface::text)=0
+  and position('smtp said: 535 bad password for owner@example.test' in r::text)=0 and position('owner@example.test' in r::text)=0
+  and position(repeat('a',64) in r::text)=0 and position(repeat('b',64) in r::text)=0,'no provider message or token reaches the reader');
 
  -- A device that unregistered is not a provider failure.
  update sdi_private.announcement_deliveries set reason='unregistered' where device_id=droid;

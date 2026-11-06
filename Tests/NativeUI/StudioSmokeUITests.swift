@@ -435,10 +435,19 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(reviewedCount, 8, "Review must obey production batch bound")
         let remove = app.buttons["studio.storage.remove-revisions"]
         try reveal(remove); remove.tap()
-        let confirm = app.buttons["studio.storage.confirm-remove-revisions"]
+        let removalAlert = app.alerts["Permanently remove these older saved versions?"].firstMatch
+        let confirm = removalAlert.buttons["studio.storage.confirm-remove-revisions"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        let cancel = app.buttons["studio.storage.cancel-confirmation"]
-        XCTAssertTrue(cancel.isHittable); cancel.tap()
+        let cancel = removalAlert.buttons["studio.storage.cancel-confirmation"].firstMatch
+        let cancelReady = expectation(
+            for: NSPredicate(format: "exists == true AND hittable == true AND enabled == true"),
+            evaluatedWith: cancel).waitUntilFulfilled(timeout: 5)
+        if !cancelReady {
+            capture(app, name: "storage-cleanup-cancel-not-ready")
+            captureHierarchy(app, name: "storage-cleanup-cancel-not-ready-hierarchy")
+        }
+        XCTAssertTrue(cancelReady, "The actual removal alert must expose an interactive Cancel button")
+        cancel.tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: confirm).waitUntilFulfilled(timeout: 5))
         XCTAssertEqual(preview.label, reviewedText, "Cancelling must preserve the exact reviewed batch")
         XCTAssertFalse(app.staticTexts["studio.storage.revision-result"].exists, "Cancel must not claim or perform a completed removal")
@@ -825,8 +834,10 @@ final class StudioSmokeUITests: XCTestCase {
         try cleanCanvas()
         let firstID = frames(app).firstMatch.identifier
         let first = try pixels(canvas.screenshot().image), startInk = try ink(first)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Duplicate frame", in: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in frames(app).count == 2 }, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: 5))
         XCTAssertEqual(frames(app).count, 2)
         let lastID = try XCTUnwrap(frames(app).allElementsBoundByIndex.first { $0.identifier != firstID }).identifier
         XCTAssertEqual(app.buttons[lastID].value as? String, "Selected")
@@ -845,7 +856,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(endInk.y, startInk.y, accuracy: 0.01)
         XCTAssertEqual(Double(endInk.count) / Double(startInk.count), 1, accuracy: 0.05,
                        "Moving the endpoint cropped or replaced source artwork")
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Tween to next frame…", in: app).tap()
         let count = app.steppers["studio.tween.count"]
         XCTAssertTrue(count.waitForExistence(timeout: 5))
@@ -922,8 +933,10 @@ final class StudioSmokeUITests: XCTestCase {
         try cleanCanvas()
         let firstID = frames(app).firstMatch.identifier
         let first = try pixels(canvas.screenshot().image)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Duplicate frame", in: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in frames(app).count == 2 }, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: 5))
         XCTAssertEqual(frames(app).count, 2)
         let lastID = try XCTUnwrap(frames(app).allElementsBoundByIndex.first { $0.identifier != firstID }).identifier
         XCTAssertEqual(app.buttons[lastID].value as? String, "Selected")
@@ -934,7 +947,7 @@ final class StudioSmokeUITests: XCTestCase {
         try cleanCanvas()
         let last = try pixels(canvas.screenshot().image)
         try assertQuarterTweenRotation(first, last, degrees: 90)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Tween to next frame…", in: app).tap()
         let count = app.steppers["studio.tween.count"]
         XCTAssertTrue(count.waitForExistence(timeout: 5))
@@ -1057,12 +1070,12 @@ final class StudioSmokeUITests: XCTestCase {
         let last = try pixels(canvas.screenshot().image)
         let startX = try redCenter(first), endX = try redCenter(last)
         XCTAssertGreaterThan(endX - startX, 0.25)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Tween to next frame…", in: app).tap()
         try waitForButton("Cancel", in: app).tap()
         XCTAssertEqual(app.buttons[lastID].value as? String, "Selected", "Cancelled tween must retain the previous frame")
         XCTAssertEqual(frames(app).count, 2)
-        app.buttons[firstID].press(forDuration: 0.7)
+        try openFrameActions(firstID, in: app)
         try waitForButton("Tween to next frame…", in: app).tap()
         let count = app.steppers["studio.tween.count"]
         XCTAssertTrue(count.waitForExistence(timeout: 5))
@@ -1110,23 +1123,42 @@ final class StudioSmokeUITests: XCTestCase {
         let app = try launchGuestStudio()
         defer { app.terminate() }
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8))
-        try waitForButton("Profile", in: app).tap()
+        try openDesktopSubject("profile", in: app)
         XCTAssertTrue(app.staticTexts["Guest"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["On-device guest"].exists)
         // XCUIElementQuery string subscripts reject identifiers over 128 characters.
-        let inventoryNote = "Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall; a dash means the total was not loaded, never an estimate."
+        let inventoryNote = "Projects counts saved animations on this device. Published, Followers and Likes are counted by the service from videos currently visible on the wall. A dash means a total was not loaded."
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", inventoryNote)).firstMatch.exists,
             "Profile must identify actual device inventory and unavailable connected totals")
         XCTAssertFalse(app.staticTexts["StickMaster"].exists, "Guest profile displayed a fabricated sample identity")
         capture(app, name: "owner-guest-profile-reference")
         let projects = app.buttons["profile.projects.open"]
         XCTAssertTrue(projects.waitForExistence(timeout: 5)); XCTAssertTrue(projects.isHittable)
+        let projectsNavigationDeadline = ProcessInfo.processInfo.systemUptime + 8
         projects.tap()
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8),
             "Profile Projects did not open the actual project library")
         XCTAssertTrue(app.scrollViews["studio.library.scroll"].exists)
-        try waitForButton("Profile", in: app).tap()
-        try waitForButton("Settings", in: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "hittable == true"),
+            evaluatedWith: app.buttons["studio.new-project"])
+            .waitUntilFulfilled(timeout: max(0, projectsNavigationDeadline - ProcessInfo.processInfo.systemUptime)),
+            "Profile Projects did not bring the actual Studio library forward")
+        try openDesktopSubject("profile", in: app)
+        // The actual guest row combines its title and subtitle. It appears
+        // below the device inventory, outside the initial profile viewport.
+        let settings = app.buttons.matching(NSPredicate(format: "label == %@",
+            "Settings, Identity, security, privacy & your data")).firstMatch
+        let profileScroll = app.scrollViews.containing(.button, identifier: "profile.projects.open").firstMatch
+        XCTAssertTrue(profileScroll.waitForExistence(timeout: 5))
+        for _ in 0..<8 {
+            if settings.exists && settings.isHittable,
+               profileScroll.frame.intersection(app.frame).insetBy(dx: 2, dy: 2).contains(settings.frame) { break }
+            profileScroll.swipeUp()
+        }
+        XCTAssertTrue(settings.exists && settings.isEnabled && settings.isHittable
+            && profileScroll.frame.intersection(app.frame).insetBy(dx: 2, dy: 2).contains(settings.frame),
+            "The actual profile Settings row must be visible before opening it")
+        settings.tap()
         XCTAssertTrue(app.staticTexts["No signed-in account"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Sign Out"].exists, "Guest settings invented an authenticated account")
         capture(app, name: "owner-guest-profile-settings")
@@ -1211,15 +1243,43 @@ final class StudioSmokeUITests: XCTestCase {
         let settingsName = app.textFields["studio.settings.name"]
         XCTAssertTrue(settingsName.waitForExistence(timeout: 8))
         let settingsScroll = app.scrollViews["studio.settings.scroll"]
+        let close = app.buttons["studio.settings.close"]
+        let discard = app.alerts["Discard unapplied settings?"]
+        try setName(settingsName, originalName + " discarded")
+        try reveal(close, in: settingsScroll, application: app, upward: false); close.tap()
+        XCTAssertTrue(discard.waitForExistence(timeout: 5))
+        discard.buttons["Discard Changes"].tap()
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in !settingsScroll.exists }, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: 5), "Confirmed discard did not close Project Settings")
+        app.buttons["studio.menu.open"].tap()
+        XCTAssertTrue(settings.waitForExistence(timeout: 5)); settings.tap()
+        XCTAssertTrue(settingsName.waitForExistence(timeout: 8))
+        XCTAssertEqual(settingsName.value as? String, originalName, "Discarded name became a project edit")
+
         try setName(settingsName, finalName)
         let hd = app.buttons["studio.project.preset.hd"]
         try reveal(hd, in: settingsScroll, application: app); hd.tap()
         let fps30 = app.buttons["studio.project.fps.30"]
         try reveal(fps30, in: settingsScroll, application: app); fps30.tap()
         capture(app, name: "owner-project-settings-reference-card")
+        let export = app.buttons["studio.settings.open-export"]
+        try reveal(export, in: settingsScroll, application: app); export.tap()
+        XCTAssertTrue(discard.waitForExistence(timeout: 5))
+        discard.buttons["Keep Editing"].tap()
+        XCTAssertTrue(settingsScroll.exists)
+        XCTAssertFalse(app.buttons["studio.export.start"].exists, "Cancel still opened Export")
+
+        let reload = app.buttons["studio.settings.reload-name"]
+        try reveal(reload, in: settingsScroll, application: app, upward: false); reload.tap()
+        XCTAssertTrue(discard.waitForExistence(timeout: 5), "Reload silently discarded the form")
+        discard.buttons["Keep Editing"].tap()
+        try reveal(settingsName, in: settingsScroll, application: app, upward: false)
+        XCTAssertEqual(settingsName.value as? String, finalName, "Cancel lost the edited name")
+        try reveal(fps30, in: settingsScroll, application: app)
+        XCTAssertTrue(fps30.isSelected, "Cancel lost the edited frame rate")
+
         let apply = app.buttons["studio.settings.rename"]
         try reveal(apply, in: settingsScroll, application: app); apply.tap()
-        let close = app.buttons["studio.settings.close"]
         try reveal(close, in: settingsScroll, application: app, upward: false); close.tap()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "30 FPS")).firstMatch.exists)
         try waitForButton("UNDO", in: app).tap()
@@ -1582,13 +1642,11 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     private func gradientPopupControl(_ id: String, app: XCUIApplication, scrollUp: Bool) throws -> XCUIElement {
-        let control = app.descendants(matching: .any)[id].firstMatch
-        for attempt in 0...4 {
-            if control.exists && control.isHittable { return control }
-            guard attempt < 4 else { break }
-            let scroll = app.scrollViews.containing(.button, identifier: "studio.tool-settings.reset").firstMatch
-            XCTAssertTrue(scroll.exists, "Gradient controls must stay inside the one scrollable popup")
-            if scrollUp { scroll.swipeUp() } else { scroll.swipeDown() }
+        let scroll = app.scrollViews["studio.tool-settings.scroll"]
+        let control = scroll.descendants(matching: .any)[id].firstMatch
+        if revealToolPopupControl(control, in: scroll, fallbackUp: scrollUp, horizontalRounding: 1,
+                                 missingScroll: "Gradient controls must stay inside the one scrollable popup") {
+            return control
         }
         captureHierarchy(app, name: "gradient-control-unreachable-" + id)
         XCTFail("Gradient control is unreachable: " + id)
@@ -1603,7 +1661,9 @@ final class StudioSmokeUITests: XCTestCase {
         try choosePickerTestColor("#FF0000", app: app)
         try selectToolbarTool("brush", app: app)
         try resetToolPreferencesInPopup(app)
-        try gradientPopupControl("studio.brush-library", app: app, scrollUp: false).tap()
+        let library = try gradientPopupControl("studio.brush-library", app: app, scrollUp: false)
+        XCTAssertGreaterThanOrEqual(library.frame.height.rounded(), 44, "Brush Library requires a full touch target")
+        library.tap()
         try gradientPopupControl("studio.brush-family.gradient", app: app, scrollUp: true).tap()
         XCTAssertTrue(app.buttons["studio.brush-library"].label.contains("Gradient"))
         let size = try gradientPopupControl("studio.setting.size", app: app, scrollUp: false)
@@ -1813,10 +1873,10 @@ final class StudioSmokeUITests: XCTestCase {
         @MainActor func repeatOption(_ target: XCUIApplication, frameID: String) throws -> XCUIElement {
             let frame = target.buttons[frameID]
             XCTAssertTrue(frame.waitForExistence(timeout: 5) && frame.isHittable)
-            frame.press(forDuration: 0.7)
-            let menu = target.buttons["studio.frame-menu.repeat"]
+            try openFrameActions(frameID, in: target)
+            let menu = target.buttons["studio.frame-actions.repeat"]
             XCTAssertTrue(menu.waitForExistence(timeout: 5) && menu.isHittable); menu.tap()
-            let option = target.buttons["studio.frame-menu.repeat.2"]
+            let option = target.buttons["studio.frame-actions.repeat.2"]
             XCTAssertTrue(option.waitForExistence(timeout: 5) && option.isEnabled && option.isHittable)
             // This label is computed from this cel's stored durationTicks and the
             // project's actual FPS, rather than the exposure menu's fixed presets.
@@ -1825,9 +1885,9 @@ final class StudioSmokeUITests: XCTestCase {
         }
         XCTAssertEqual(thumbnails(app).count, 1)
         let originalID = thumbnails(app).firstMatch.identifier
-        app.buttons[originalID].press(forDuration: 0.7)
+        try openFrameActions(originalID, in: app)
         try waitForButton("Frame exposure", in: app).tap()
-        let hold = app.buttons["studio.frame-menu.hold.3"]
+        let hold = app.buttons["studio.frame-actions.hold.3"]
         XCTAssertTrue(hold.waitForExistence(timeout: 5) && hold.isEnabled && hold.isHittable)
         XCTAssertEqual(hold.label, "3 ticks (0.25s)"); hold.tap()
         try settlePickerCanvasAfterSave(app, canvas: canvas)
@@ -1867,6 +1927,35 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    private func openFrameActions(_ frameID: String, in app: XCUIApplication) throws {
+        let target = app.buttons[frameID]
+        XCTAssertTrue(target.waitForExistence(timeout: 5))
+        let targetLabel = target.label
+        let thumbnails = app.scrollViews["studio.frame-timeline"].buttons
+        let active = thumbnails.matching(NSPredicate(format: "value == %@", "Selected")).firstMatch
+        XCTAssertTrue(active.exists)
+        let activeIndex = try XCTUnwrap(active.label.split(separator: " ").last.flatMap { Int($0) })
+        let targetIndex = try XCTUnwrap(targetLabel.split(separator: " ").last.flatMap { Int($0) })
+        let offset = targetIndex - activeIndex
+        guard abs(offset) <= 1 else {
+            XCTFail("This fixture expects the action frame to be active or adjacent")
+            throw NSError(domain: "NativeFrameActions", code: 1)
+        }
+
+        let open = app.buttons["studio.frame-actions.open"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5) && open.isHittable && open.isEnabled)
+        open.tap()
+        let stepper = app.steppers["studio.frame-actions.target"]
+        XCTAssertTrue(stepper.waitForExistence(timeout: 5))
+        if offset != 0 {
+            let step = stepper.buttons["studio.frame-actions.target-" + (offset < 0 ? "Decrement" : "Increment")]
+            XCTAssertTrue(step.exists && step.isHittable && step.isEnabled)
+            step.tap()
+        }
+        XCTAssertEqual(stepper.label, targetLabel, "Frame actions must target the requested frame")
+    }
+
+    @MainActor
     func testFrameContextReorderDeleteUndoAndColdReopen() throws {
         try verifyFrameContext(duplicateHistoryOnly: false)
     }
@@ -1901,7 +1990,19 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(app.buttons[blankID].value as? String, "Selected")
         let blank = try pixels(canvas.screenshot().image)
         XCTAssertGreaterThan(try changedPixelCount(drawn, blank), 50)
-        try contextAction(originalID, "duplicate")
+        if duplicateHistoryOnly {
+            try contextAction(originalID, "duplicate")
+        } else {
+            // Keep native-menu Duplicate coverage in its independent history
+            // case. Prepare this longer journey through the existing real sheet.
+            try openFrameActions(originalID, in: app)
+            let duplicate = app.buttons["studio.frame-actions.duplicate"]
+            XCTAssertTrue(duplicate.waitForExistence(timeout: 5) && duplicate.isHittable && duplicate.isEnabled)
+            duplicate.tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"),
+                evaluatedWith: app.steppers["studio.frame-actions.target"]).waitUntilFulfilled(timeout: 5))
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+        }
         XCTAssertEqual(thumbnails(app).count, 3)
         let copyID = thumbnails(app).allElementsBoundByIndex.first {
             $0.identifier != originalID && $0.identifier != blankID
@@ -1921,7 +2022,19 @@ final class StudioSmokeUITests: XCTestCase {
             XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
             return
         }
-        try contextAction(copyID, "earlier")
+        // Exercise the actual frame-strip drag command for reorder. The native
+        // menu's Move earlier action is not established by this journey. Menu
+        // opening and item selection each incurred 60s XCTest animation waits;
+        // retain native-menu Delete below and the same 300s case allowance.
+        let copy = app.buttons[copyID], original = app.buttons[originalID]
+        XCTAssertTrue(copy.isHittable && original.isHittable)
+        copy.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.7,
+            thenDragTo: original.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)),
+            withVelocity: .slow, thenHoldForDuration: 0.5)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Frame 1"),
+            evaluatedWith: app.buttons[copyID]).waitUntilFulfilled(timeout: 5),
+            "The real frame-strip drop did not move the copied frame before the original")
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
         XCTAssertEqual(app.buttons[copyID].label, "Frame 1")
         XCTAssertEqual(app.buttons[originalID].label, "Frame 2")
         XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
@@ -1999,6 +2112,7 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForButton("Skip Tutorial", in: app).tap()
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 5),
                       "Open Studio routed to a different tab")
+        try maximizeDesktopSubject("studio", in: app)
         let name = try createProjectIfLibraryIsShown(app)
         XCTAssertTrue(app.buttons["studio.back"].waitForExistence(timeout: 8))
         app.buttons["studio.back"].tap()
@@ -2011,7 +2125,7 @@ final class StudioSmokeUITests: XCTestCase {
         try tapWelcomeAction("welcome.guide", in: reopened)
         reopened.buttons["onboarding.skip"].tap()
         try waitForButton("Skip Tutorial", in: reopened).tap()
-        try waitForButton("Studio", in: reopened).tap()
+        try openDesktopSubject("studio", in: reopened)
         XCTAssertTrue(reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch.waitForExistence(timeout: 8), "Guide navigation lost the local project")
         capture(reopened, name: "guide-completed-local-project-preserved")
     }
@@ -2505,7 +2619,7 @@ final class StudioSmokeUITests: XCTestCase {
         let app = try launchGuestStudio()
         defer { app.terminate() }
         XCTAssertFalse(button("Messages", in: app).exists)
-        try waitForButton("Rooms", in: app).tap()
+        try openDesktopSubject("rooms", in: app)
         let guestRooms = app.staticTexts["Sign in to create or join rooms"]
         XCTAssertTrue(guestRooms.waitForExistence(timeout: 5))
         XCTAssertFalse(button("Create room", in: app).exists)
@@ -2517,11 +2631,11 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(button("Find Match", in: app).exists)
         // War Room uses native stack navigation rather than the retired
         // placeholder's custom Back to Rooms button.
-        let back = app.navigationBars.buttons.firstMatch
+        let back = app.descendants(matching: .any)["desktop.window.rooms"].firstMatch.navigationBars.buttons.firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5) && back.isHittable)
         back.tap()
         XCTAssertTrue(guestRooms.waitForExistence(timeout: 5))
-        try waitForButton("Studio", in: app).tap()
+        try openDesktopSubject("studio", in: app)
         XCTAssertTrue(app.buttons["studio.new-project"].waitForExistence(timeout: 5))
         capture(app, name: "rooms-back-to-studio")
     }
@@ -2558,6 +2672,36 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(close.exists, "X did not dismiss tool-specific controls")
         try selectToolbarTool("hand", app: app)
         XCTAssertTrue(close.waitForExistence(timeout: 3), "Retapping Hand did not restore its context")
+
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        let dockedCanvas = canvas.frame
+        let hideTools = app.buttons["studio.toolbar.toggle"]
+        let showTools = app.buttons["studio.show-tools"]
+        XCTAssertTrue(hideTools.isHittable)
+        hideTools.tap()
+        let hidden = NSPredicate { _, _ in
+            showTools.isHittable && !rail.exists && !close.exists
+                && canvas.frame.width > dockedCanvas.width
+                && abs(canvas.frame.midX - stage.frame.midX) <= 2
+        }
+        XCTAssertTrue(expectation(for: hidden, evaluatedWith: nil).waitUntilFulfilled(timeout: 5),
+                      "Hiding tools should clear the rail and popup and give the canvas more room")
+        showTools.tap()
+        let hand = app.buttons["studio.tool.hand"]
+        let restored = NSPredicate { _, _ in
+            rail.value as? String == "Vertical" && grip.isHittable
+                && rail.frame.maxX > stage.frame.maxX - 20
+                && hand.isHittable && hand.isSelected && !showTools.exists
+                && abs(canvas.frame.midX - dockedCanvas.midX) <= 2
+        }
+        XCTAssertTrue(expectation(for: restored, evaluatedWith: nil).waitUntilFulfilled(timeout: 5),
+                      "Restoring tools should retain the right dock and selected Hand")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "studio.toolbar").count, 1)
+        XCTAssertFalse(close.exists, "Restoring the rail reopened the dismissed popup")
+        XCTAssertTrue(undo.exists && !undo.isEnabled, "Hiding and restoring tools altered undo history")
+
+        try selectToolbarTool("hand", app: app)
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
         try selectToolbarTool("eyedropper", app: app)
         XCTAssertFalse(close.exists, "An inapplicable tool kept the settings popup")
         XCTAssertFalse(app.buttons["studio.context.close"].exists, "The removed secondary toolbar returned")
@@ -2573,7 +2717,6 @@ final class StudioSmokeUITests: XCTestCase {
         try selectToolbarTool("hand", app: app)
         app.buttons["studio.tool-settings.zoom-in"].tap()
         app.buttons["studio.tool-settings.fit"].tap()
-        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertGreaterThan(canvas.frame.width, 80)
         XCTAssertGreaterThan(canvas.frame.height, 80)
         let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
@@ -3195,29 +3338,48 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     private func sharpenSetting(_ name: String, in target: XCUIApplication) throws -> XCUIElement {
-        let slider = target.sliders["studio.setting." + name]
-        let scroll = target.scrollViews.containing(.button, identifier: "studio.tool-settings.reset").firstMatch
-        for attempt in 0...5 {
-            XCTAssertTrue(scroll.exists, "Sharpen popup must scroll to every real setting")
-            guard scroll.exists else { break }
-            let viewport = scroll.frame
-            let sliderFrame = slider.exists ? slider.frame : CGRect.null
-            // A partially clipped slider can report hittable while its adjustment
-            // coordinates reach the canvas underneath. Require its whole track.
-            if !sliderFrame.isNull && viewport.contains(sliderFrame) && slider.isHittable { return slider }
-            guard attempt < 5 else { break }
-            // Reset leaves this popup at its bottom. Revisit Size by scrolling
-            // down; reveal settings below the viewport by scrolling up.
-            if !sliderFrame.isNull && sliderFrame.minY < viewport.minY {
-                scroll.swipeDown()
-            } else {
-                scroll.swipeUp()
-            }
+        let scroll = target.scrollViews["studio.tool-settings.scroll"]
+        let slider = scroll.sliders["studio.setting." + name]
+        if revealToolPopupControl(slider, in: scroll, fallbackUp: name != "size",
+                                 missingScroll: "Sharpen popup must scroll to every real setting") {
+            return slider
         }
         capture(target, name: "tool-setting-unreachable-" + name)
         captureHierarchy(target, name: "sharpen-setting-unreachable-" + name)
         XCTFail("Sharpen setting is unreachable: " + name)
         throw NSError(domain: "SharpenNative", code: 1)
+    }
+
+    @MainActor
+    private func revealToolPopupControl(_ control: XCUIElement, in scroll: XCUIElement, fallbackUp: Bool,
+                                        horizontalRounding: CGFloat = 0, missingScroll: String) -> Bool {
+        for attempt in 0...6 {
+            guard scroll.exists else { XCTFail(missingScroll); return false }
+            let viewport = scroll.frame
+            let frame = control.exists ? control.frame : .null
+            // A clipped control can report hittable. Keep its whole hit area in
+            // the popup before tapping or adjusting it.
+            let hasFrame = !frame.isNull && !frame.isEmpty
+            let visible = viewport.insetBy(dx: -horizontalRounding, dy: 0)
+            if hasFrame && visible.contains(frame) && control.isHittable { return true }
+            guard attempt < 6, viewport.width > 0, viewport.height > 0 else { break }
+            // Expansion and momentum can put the target on either side of
+            // the viewport. Use the direction hint when the frame gives no direction.
+            let above = hasFrame && frame.minY < viewport.minY
+            let below = hasFrame && frame.maxY > viewport.maxY
+            let up = !above && (below || fallbackUp)
+            let startFractions: [CGFloat] = up ? [0.78, 0.74, 0.70, 0.66, 0.62, 0.58]
+                : [0.22, 0.26, 0.30, 0.34, 0.38, 0.42]
+            let tracks = scroll.sliders.allElementsBoundByIndex.map(\.frame)
+            let startY = startFractions.first { fraction in
+                let y = viewport.minY + viewport.height * fraction
+                return !tracks.contains { y >= $0.minY && y <= $0.maxY }
+            } ?? startFractions[0]
+            let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: startY))
+            let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: up ? 0.18 : 0.82))
+            start.press(forDuration: 0.10, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.25)
+        }
+        return false
     }
     @MainActor
     func testSharpenPixelsUndoAndColdReopen() throws {
@@ -3365,7 +3527,9 @@ final class StudioSmokeUITests: XCTestCase {
         for (key, value) in adjustments {
             let slider = try sharpenSetting(key, in: app)
             defaults[key] = try XCTUnwrap(slider.value as? String)
-            slider.adjust(toNormalizedSliderPosition: value)
+            XCTAssertTrue(dragNativeSliderThumb(slider, toNormalizedSliderPosition: Double(value),
+                                               range: key == "size" ? 1...256 : 0...100),
+                          "The actual native slider value or bounds are unavailable")
             saved[key] = try XCTUnwrap(slider.value as? String)
             XCTAssertNotEqual(saved[key], defaults[key], "Setting did not change: " + key)
         }
@@ -3602,22 +3766,39 @@ final class StudioSmokeUITests: XCTestCase {
             let swatch = picker.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2))
             swatch.tap()
-            // iOS exposes this native picker track as Other, with a separate
-            // percentage TextField; the Studio opacity Slider is underneath.
+            // Captured native pickers expose sliderAlpha controls or an
+            // Opacity-labeled track and percentage field; scope both to the picker.
             let systemPicker = app.otherElements["UIColorPickerView"].firstMatch
             // Hosted runners intermittently drop the first swatch tap (3 of 4
             // runs on 2026-10-21 never presented the picker); tap the same
             // swatch once more before failing.
             if !systemPicker.waitForExistence(timeout: 10) { swatch.tap() }
             XCTAssertTrue(systemPicker.waitForExistence(timeout: 20))
-            let alpha = systemPicker.otherElements.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
-            let alphaValue = systemPicker.textFields.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
-            XCTAssertTrue(alpha.waitForExistence(timeout: 5) && alpha.isHittable && alpha.isEnabled)
+            let alphaCandidates = [
+                (track: systemPicker.sliders["sliderAlpha"].firstMatch,
+                 percentage: systemPicker.textFields["sliderAlpha"].firstMatch),
+                (track: systemPicker.sliders.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch,
+                 percentage: systemPicker.textFields.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch)
+            ]
+            func actionableAlphaControls() -> (track: XCUIElement, percentage: XCUIElement)? {
+                alphaCandidates.first {
+                    $0.track.exists && $0.track.isHittable && $0.track.isEnabled
+                        && $0.percentage.exists && $0.percentage.isEnabled
+                }
+            }
+            let alphaReady = expectation(for: NSPredicate { _, _ in
+                actionableAlphaControls() != nil
+            }, evaluatedWith: systemPicker).waitUntilFulfilled(timeout: 5)
+            XCTAssertTrue(alphaReady, "Actual native picker opacity controls did not become actionable")
+            let alphaControls = try XCTUnwrap(actionableAlphaControls(), "Actual native picker opacity controls are unavailable")
+            let alpha = alphaControls.track, alphaValue = alphaControls.percentage
             XCTAssertTrue(alphaValue.exists && alphaValue.isEnabled)
             let priorAlpha = try XCTUnwrap(alphaValue.value as? String)
-            // Actual captured UIKit hierarchy identifies the track and its
-            // bounds. Tap its midpoint, then verify the native percentage.
-            alpha.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            // A track tap left the captured UIKit picker at 100%. Exercise its
+            // native slider adjustment and read the actual percentage field.
+            try adjustNativeDraftSlider(alpha, target: 50, range: 0...100, tolerance: 5,
+                                        app: app, name: "native-text-opacity",
+                                        viewport: systemPicker, valueControl: alphaValue)
             let halfOpacity = expectation(for: NSPredicate { _, _ in
                 guard let value = alphaValue.value as? String,
                       let percent = Double(value.replacingOccurrences(of: "%", with: "")) else { return false }
@@ -4082,11 +4263,13 @@ final class StudioSmokeUITests: XCTestCase {
                           "Transform control is not fully visible inside its sole popup")
         }
         try revealTransformControl(scale)
-        scale.adjust(toNormalizedSliderPosition: 0.4667) // roughly 200% in 25...400
+        try adjustNativeDraftSlider(scale, target: 200, range: 25...400, tolerance: 20,
+                                    app: app, name: "selection-scale")
         let actualScale = try XCTUnwrap(Double((scale.value as? String ?? "").filter { "0123456789.-".contains($0) }))
         XCTAssertTrue((180...220).contains(actualScale), "Scale gesture did not reach the actual control; value=\(actualScale)")
         try revealTransformControl(angle)
-        angle.adjust(toNormalizedSliderPosition: 0.75) // roughly 90 degrees
+        try adjustNativeDraftSlider(angle, target: 90, range: -180...180, tolerance: 15,
+                                    app: app, name: "selection-angle")
         let actualAngle = try XCTUnwrap(Double((angle.value as? String ?? "").filter { "0123456789.-".contains($0) }))
         XCTAssertTrue((75...105).contains(actualAngle), "Angle gesture did not reach the actual control; value=\(actualAngle)")
         try revealTransformControl(apply)
@@ -4576,7 +4759,7 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["studio.audio.library.open"].tap()
         let catalogueCount = app.staticTexts["studio.audio.catalogue.count"]
         XCTAssertTrue(catalogueCount.waitForExistence(timeout: 8))
-        XCTAssertEqual(catalogueCount.label, "2,127 offline sounds · CC0")
+        XCTAssertEqual(catalogueCount.label, "2,212 offline sounds · CC0")
         let clipCount = app.staticTexts["studio.audio.clip-count"]
         XCTAssertEqual(clipCount.label, "0 clips")
         try audioLibraryButton("studio.audio.category.Impacts & Crashes", app: app).tap()
@@ -4596,7 +4779,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["studio.audio.search.empty"].exists)
         try audioLibraryButton("studio.audio.search.clear", app: app).tap()
         XCTAssertTrue(["", "Search sounds, tags, categories…"].contains(search.value as? String ?? "<missing>"), "Clear filters retained the query")
-        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "2,127 matching sounds"),
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "2,212 matching sounds"),
                                   evaluatedWith: resultCount).waitUntilFulfilled(timeout: 5),
                       "Clear filters must restore the entire catalogue")
         search.tap(); search.typeText("collision\n")
@@ -4654,10 +4837,27 @@ final class StudioSmokeUITests: XCTestCase {
     /// These completion checks need one-shot playback; Studio defaults to looping.
     @MainActor
     private func disableDefaultAudioLoop(_ app: XCUIApplication) throws {
-        app.buttons["studio.audio.timelinePlay"].press(forDuration: 0.7)
+        let play = app.buttons["studio.audio.timelinePlay"]
+        XCTAssertTrue(play.exists && play.isHittable && play.isEnabled)
+        let transportFrame = play.frame
+        play.press(forDuration: 0.7)
         let loop = app.descendants(matching: .any)["studio.audio.loop"].firstMatch
         XCTAssertTrue(loop.waitForExistence(timeout: 5) && loop.isHittable)
         loop.tap()
+        // SwiftUI temporarily reports the lifted context-menu preview as Play.
+        // Wait for the menu to close and the real transport to regain its frame
+        // before callers tap it; hittability alone can describe that preview.
+        let restoredTransport = expectation(for: NSPredicate { _, _ in
+            guard !loop.exists, play.exists, play.isHittable, play.isEnabled else { return false }
+            let frame = play.frame
+            return transportFrame.width > 0 && transportFrame.height > 0
+                && abs(frame.minX - transportFrame.minX) <= 1
+                && abs(frame.minY - transportFrame.minY) <= 1
+                && abs(frame.width - transportFrame.width) <= 1
+                && abs(frame.height - transportFrame.height) <= 1
+        }, evaluatedWith: app)
+        XCTAssertTrue(restoredTransport.waitUntilFulfilled(timeout: 10),
+                      "Audio transport did not return after dismissing the Loop menu")
     }
 
     @MainActor
@@ -4672,7 +4872,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
         let catalogueCount = app.staticTexts["studio.audio.catalogue.count"]
         XCTAssertTrue(catalogueCount.waitForExistence(timeout: 8), "Expanded catalogue never finished loading")
-        XCTAssertEqual(catalogueCount.label, "2,127 offline sounds · CC0")
+        XCTAssertEqual(catalogueCount.label, "2,212 offline sounds · CC0")
         let search = app.textFields["studio.audio.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Card Fan 1 Kenney\n")
         try audioLibraryButton("studio.audio.catalogue.add.7a6ba4661a10ff06cd0c8c758f671bb4347fa6b4d26e23b6e7cb9165ee9aa24a", app: app).tap()
@@ -4822,6 +5022,56 @@ final class StudioSmokeUITests: XCTestCase {
             let slider = target.sliders["studio.audio.track-volume.1"]
             try reveal(slider, in: target, down: true); return slider
         }
+        func captureVolumeMismatch(_ slider: XCUIElement, observed: String,
+                                   renderedIdentifier: String, expected: ClosedRange<Int>, name: String) {
+            let scroll = app.scrollViews["studio.audio.compact.scroll"]
+            let viewport = scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 12)
+            let details = XCTAttachment(string: "observed=\(observed); current=\(slider.value as? String ?? ""); rendered=\(app.staticTexts[renderedIdentifier].label); expected=\(expected); sliderFrame=\(slider.frame); audioScrollFrame=\(scroll.frame); viewport=\(viewport); fullyVisible=\(viewport.contains(slider.frame)); enabled=\(slider.isEnabled); hittable=\(slider.isHittable); clipMute=\(app.buttons["studio.audio.clip-mute"].label)")
+            details.name = name + "-observed-volume-and-bounds"
+            details.lifetime = .keepAlways; add(details)
+            capture(app, name: name + "-volume-mismatch")
+            captureHierarchy(app, name: name + "-volume-mismatch-hierarchy")
+        }
+        // Clip volume is setup for the following single track-volume gesture.
+        // Each native adjustment can commit history, so never retry the track
+        // gesture whose one-step Undo is asserted below.
+        func acquireClipVolumeSetup(_ slider: XCUIElement) {
+            let scroll = app.scrollViews["studio.audio.compact.scroll"]
+            var aim = 0.4
+            var previous: (aim: Double, percent: Int)?
+            var observations = [String]()
+            defer {
+                let details = XCTAttachment(string: observations.joined(separator: "\n"))
+                details.name = "audio-clip-setup-native-values-and-bounds"
+                details.lifetime = .keepAlways; add(details)
+            }
+            for attempt in 1...3 {
+                guard scroll.exists, slider.exists else {
+                    observations.append("attempt=\(attempt); audioScrollExists=\(scroll.exists); sliderExists=\(slider.exists)")
+                    break
+                }
+                let viewport = scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 12)
+                observations.append("attempt=\(attempt); aim=\(aim); before=\(slider.value as? String ?? ""); sliderFrame=\(slider.frame); audioScrollFrame=\(scroll.frame); viewport=\(viewport); enabled=\(slider.isEnabled); hittable=\(slider.isHittable)")
+                guard slider.isHittable, slider.isEnabled, viewport.contains(slider.frame) else { break }
+                slider.adjust(toNormalizedSliderPosition: CGFloat(aim))
+                let displayed = slider.value as? String ?? ""
+                observations.append("attempt=\(attempt); actual=\(displayed); sliderFrameAfter=\(slider.frame)")
+                guard let actual = Int(displayed.components(separatedBy: " ")[0]),
+                      (0...100).contains(actual) else { break }
+                if (35...45).contains(actual) { return }
+                var nextAim = aim + (40 - Double(actual)) / 100
+                if let previous, (previous.percent - 40) * (actual - 40) < 0 {
+                    let interpolated = previous.aim + (40 - Double(previous.percent))
+                        * (aim - previous.aim) / Double(actual - previous.percent)
+                    if interpolated.isFinite,
+                       (min(previous.aim, aim)...max(previous.aim, aim)).contains(interpolated) {
+                        nextAim = interpolated
+                    }
+                }
+                previous = (aim: aim, percent: actual)
+                aim = min(1, max(0, nextAim))
+            }
+        }
         let audio = app.buttons["studio.audio.open"]
         XCTAssertTrue(audio.exists && audio.isHittable); audio.tap()
         let library = app.buttons["studio.audio.library.open"]
@@ -4838,10 +5088,14 @@ final class StudioSmokeUITests: XCTestCase {
         let clipSlider = app.sliders["studio.audio.volume"]
         try reveal(clipSlider, in: app, down: true)
         XCTAssertEqual(clipSlider.value as? String, "80 percent")
-        clipSlider.adjust(toNormalizedSliderPosition: 0.4)
+        acquireClipVolumeSetup(clipSlider)
         XCTAssertTrue(expectation(for: NSPredicate(format: "value != %@", "80 percent"), evaluatedWith: clipSlider).waitUntilFulfilled(timeout: 8))
         let clipVolume = try XCTUnwrap(clipSlider.value as? String)
         let clipPercent = try XCTUnwrap(Int(clipVolume.components(separatedBy: " ")[0]))
+        if !(35...45).contains(clipPercent) {
+            captureVolumeMismatch(clipSlider, observed: clipVolume,
+                                  renderedIdentifier: "studio.audio.clip-volume-value", expected: 35...45, name: "audio-clip")
+        }
         XCTAssertTrue((35...45).contains(clipPercent), "Clip slider did not commit the requested region")
         XCTAssertEqual(app.staticTexts["studio.audio.clip-volume-value"].label, "\(clipPercent)%")
         XCTAssertEqual(clipMute.label, "Unmute selected clip")
@@ -4851,6 +5105,10 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "value != %@", "100 percent"), evaluatedWith: slider).waitUntilFulfilled(timeout: 8))
         let savedValue = try XCTUnwrap(slider.value as? String)
         let percent = try XCTUnwrap(Int(savedValue.components(separatedBy: " ")[0]))
+        if !(20...30).contains(percent) {
+            captureVolumeMismatch(slider, observed: savedValue,
+                                  renderedIdentifier: "studio.audio.track-volume-value.1", expected: 20...30, name: "audio-track")
+        }
         XCTAssertTrue((20...30).contains(percent), "Track slider did not commit the requested region")
         XCTAssertEqual(app.sliders["studio.audio.volume"].value as? String, clipVolume)
         XCTAssertEqual(clipMute.label, "Unmute selected clip")
@@ -5075,7 +5333,29 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
         let savedClip = reopened.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.audio.clip.")).firstMatch
-        XCTAssertTrue(savedClip.waitForExistence(timeout: 8) && savedClip.isHittable)
+        let savedLanes = reopened.scrollViews["studio.audio.lanes"]
+        let savedWorkspace = reopened.scrollViews["studio.audio.compact.scroll"]
+        let savedClipReady = NSPredicate { _, _ in
+            guard savedClip.exists, savedClip.isHittable, savedClip.isEnabled,
+                  savedLanes.exists, savedWorkspace.exists else { return false }
+            let viewport = savedLanes.frame.intersection(savedWorkspace.frame).intersection(reopened.frame)
+            let clipFrame = savedClip.frame
+            return !viewport.isNull && !viewport.isEmpty && clipFrame.width > 0 && clipFrame.height > 0
+                && viewport.contains(clipFrame)
+        }
+        let savedClipBecameReady = expectation(for: savedClipReady, evaluatedWith: nil).waitUntilFulfilled(timeout: 8)
+        if !savedClipBecameReady {
+            capture(reopened, name: "audio-trim-saved-clip-not-ready")
+            captureHierarchy(reopened, name: "audio-trim-saved-clip-not-ready-hierarchy")
+            let clip = savedClip.exists ? "type=\(savedClip.elementType.rawValue), frame=\(savedClip.frame), hittable=\(savedClip.isHittable), enabled=\(savedClip.isEnabled)" : "missing"
+            let lanes = savedLanes.exists ? "\(savedLanes.frame)" : "missing"
+            let workspace = savedWorkspace.exists ? "\(savedWorkspace.frame)" : "missing"
+            let bounds = XCTAttachment(string: "clip=\(clip); lanes=\(lanes); workspace=\(workspace); app=\(reopened.frame)")
+            bounds.name = "audio-trim-saved-clip-bounds"; bounds.lifetime = .keepAlways; add(bounds)
+        }
+        XCTAssertTrue(savedClipBecameReady, "The actual saved clip must be fully visible, enabled and hittable before tapping")
+        guard savedClipBecameReady else { throw NSError(domain: "NativeAudioTrimReadiness", code: 1) }
+        XCTAssertTrue(savedClip.exists && savedClip.isHittable && savedClip.isEnabled)
         savedClip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(reopened.staticTexts["studio.audio.clip-timing"].label.contains("Source 0.05s · 0.10s"), "Cold reopen lost the applied trim values")
         capture(reopened, name: "audio-numeric-trim-cold-reopened")
@@ -5390,16 +5670,31 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(undo.isEnabled, "The brush journey requires a new blank project")
 
         try selectToolbarTool("brush", app: app)
+        let popup = app.scrollViews["studio.tool-settings.scroll"]
+        let reset = popup.buttons["studio.tool-settings.reset"]
+        XCTAssertTrue(revealToolPopupControl(reset, in: popup, fallbackUp: true,
+                                            missingScroll: "Brush reset must use the tool popup"))
+        reset.tap()
         let library = app.buttons["studio.brush-library"]
-        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        XCTAssertTrue(library.waitForExistence(timeout: 5))
+        XCTAssertTrue(revealToolPopupControl(library, in: popup, fallbackUp: false,
+                                            missingScroll: "Brush Library must use the tool popup"))
+        library.tap()
         let round = app.buttons["studio.brush-family.round"]
-        XCTAssertTrue(round.waitForExistence(timeout: 5)); XCTAssertTrue(round.isHittable); round.tap()
+        XCTAssertTrue(round.waitForExistence(timeout: 5))
+        XCTAssertTrue(revealToolPopupControl(round, in: popup, fallbackUp: true, horizontalRounding: 1,
+                                            missingScroll: "Built-in brushes must use the tool popup"))
+        XCTAssertTrue(round.isHittable); round.tap()
         let size = app.sliders["studio.setting.size"]
         let opacity = app.sliders["studio.setting.opacity"]
-        XCTAssertTrue(size.waitForExistence(timeout: 5)); XCTAssertTrue(size.isHittable)
+        XCTAssertTrue(size.waitForExistence(timeout: 5))
+        XCTAssertTrue(revealToolPopupControl(size, in: popup, fallbackUp: false,
+                                            missingScroll: "Brush Size must use the tool popup"))
+        XCTAssertTrue(size.isHittable)
         XCTAssertTrue(opacity.isHittable)
         let initialSize = try XCTUnwrap(size.value as? String)
         let initialOpacity = try XCTUnwrap(opacity.value as? String)
+        XCTAssertEqual(initialSize, "3px", "Reset must restore the Brush size before testing an adjustment")
         size.adjust(toNormalizedSliderPosition: 0.75)
         opacity.adjust(toNormalizedSliderPosition: 0.6)
         let selectedSize = try XCTUnwrap(size.value as? String)
@@ -6696,7 +6991,9 @@ final class StudioSmokeUITests: XCTestCase {
         try reveal(app.buttons["studio.image-placement.open"]).tap()
         try reveal(app.buttons["studio.image-placement.half"]).tap()
         let angle = app.sliders.matching(NSPredicate(format: "label == %@", "Additional angle")).firstMatch
-        try reveal(angle).adjust(toNormalizedSliderPosition: 0.625)
+        let visibleAngle = try reveal(angle)
+        try adjustNativeDraftSlider(visibleAngle, target: 45, range: -180...180, tolerance: 5,
+                                    app: app, name: "image-additional-angle")
         let degrees = try XCTUnwrap(Double((angle.value as? String ?? "").replacingOccurrences(of: "°", with: "")))
         XCTAssertGreaterThan(degrees, 40); XCTAssertLessThan(degrees, 50)
         capture(app, name: "image-additional-angle-draft")
@@ -7250,7 +7547,7 @@ final class StudioSmokeUITests: XCTestCase {
         try imageControl("studio.image.library", app: app).tap()
         let count = app.staticTexts["studio.image-library.count"]
         XCTAssertTrue(count.waitForExistence(timeout: 8))
-        XCTAssertEqual(count.label, "207 free pictures · available offline")
+        XCTAssertEqual(count.label, "243 free pictures · available offline")
         let search = app.textFields["studio.image-library.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("dragon\n")
         let picture = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
@@ -7501,9 +7798,7 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "mp4-native-share-sheet")
         captureHierarchy(app, name: "mp4-native-share-sheet-hierarchy")
         XCTAssertTrue(presented); XCTAssertTrue(saveToFiles.isHittable)
-        let dismiss = nativeShare.buttons["header.closeButton"]
-        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
-        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        try dismissNativeMovieShare(nativeShare, app: app, name: "mp4-native-share")
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The MP4 remains available."),
             evaluatedWith: status).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled,
@@ -7514,7 +7809,8 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     /// Real native consumer -> local Files copy -> source disposal/re-export ->
-    /// cold launch -> real AVFoundation-backed Files import. No file seeding.
+    /// cold launch -> real AVFoundation-backed Files import. The separate test
+    /// app supplies an empty local Files location; it never supplies the movie.
     @MainActor
     func testMP4FilesSaveSurvivesReexportAndColdSourceDisposal() throws {
         var app = try launchGuestStudio()
@@ -7530,31 +7826,80 @@ final class StudioSmokeUITests: XCTestCase {
 
         func localFilesRoot() throws {
             // Save to Files launches an asynchronous system extension. Wait for
-            // its actual location controls before resolving the local root.
+            // its actual location controls and navigate the fixture through UI.
+            // Presentation and all provider navigation share the existing 30s.
+            let deadline = Date().addingTimeInterval(30)
+            func waitForProvider(_ predicate: NSPredicate, failure: String) throws {
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0,
+                      expectation(for: predicate, evaluatedWith: app).waitUntilFulfilled(timeout: remaining) else {
+                    capture(app, name: "mp4-files-provider-transition-failed")
+                    captureHierarchy(app, name: "mp4-files-provider-transition-failed-hierarchy")
+                    XCTFail(failure)
+                    throw NSError(domain: "SDIMP4FilesUI", code: 2)
+                }
+            }
             let providerReady = NSPredicate { _, _ in
                 app.navigationBars["FullDocumentManagerViewControllerNavigationBar"].exists
                     || app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"].exists
                     || app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Browse", "Locations")).firstMatch.exists
             }
-            // abc9b2e CI: the provider's navigation bar and Save arrived just after a 10s wait.
-            guard expectation(for: providerReady, evaluatedWith: app).waitUntilFulfilled(timeout: 30) else {
-                capture(app, name: "mp4-files-provider-transition-failed")
-                captureHierarchy(app, name: "mp4-files-provider-transition-failed-hierarchy")
-                XCTFail("Actual Files provider did not finish presenting")
-                throw NSError(domain: "SDIMP4FilesUI", code: 2)
+            try waitForProvider(providerReady, failure: "Actual Files provider did not finish presenting")
+            let localRoot = app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"]
+            let fileView = app.collectionViews["File View"]
+            let providerNavigation = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
+            let localSidebar = app.collectionViews["Browse View"].cells["DOC.sidebar.item.On My iPhone"]
+            func localRootReady() -> Bool {
+                // The system retains this browsingRoot identifier on the Browse
+                // sidebar. Require the actual local content and navigation title.
+                localRoot.exists && fileView.exists
+                    && providerNavigation.staticTexts["On My iPhone"].exists
+            }
+            func localRootIdentifier() -> String {
+                guard fileView.exists else { return "" }
+                let root = app.otherElements.matching(NSPredicate(format: "identifier BEGINSWITH %@",
+                    "DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: ")).firstMatch
+                return root.exists ? root.identifier : ""
             }
             for _ in 0..<5 {
-                if app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"].exists { return }
-                let local = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "On My iPhone"))
+                if localRootReady() { break }
+                if localSidebar.exists && localSidebar.isHittable {
+                    localSidebar.tap()
+                    break
+                }
+                // Cold import can remember this test's unique child folder.
+                // Ascend only the exact fixture path or system Browse controls.
+                let previousRoot = localRootIdentifier()
+                let browse = app.buttons.matching(NSPredicate(format: "label IN %@",
+                    ["Exports", "SDI Export Test Files", "Browse", "Locations"]))
                     .allElementsBoundByIndex.first { $0.exists && $0.isHittable }
-                if let local { local.tap(); return }
-                let browse = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Browse", "Locations"))
-                    .allElementsBoundByIndex.first { $0.exists && $0.isHittable }
-                if let browse { browse.tap() } else { break }
+                guard let browse else { break }
+                browse.tap()
+                try waitForProvider(NSPredicate { _, _ in
+                    return localRootReady() || localRootIdentifier() != previousRoot
+                        || (localSidebar.exists && localSidebar.isHittable)
+                }, failure: "Files did not finish navigating back to the local fixture root")
             }
-            captureHierarchy(app, name: "mp4-files-local-location-missing")
-            XCTFail("Actual local Files location unavailable; never substitute cloud or a remembered destination")
-            throw NSError(domain: "SDIMP4FilesUI", code: 1)
+            try waitForProvider(NSPredicate { _, _ in localRootReady() },
+                failure: "Actual On My iPhone root unavailable")
+            for name in ["SDI Export Test Files", "Exports"] {
+                // The captured local-provider cell appends ", Container" to
+                // its identifier and an item count to its label. Match the
+                // exact folder title within that cell, not a partial row label.
+                let folder = app.collectionViews["File View"].cells.matching(
+                    NSPredicate(format: "identifier == %@ OR identifier == %@", name, name + ", Container"))
+                    .containing(.staticText, identifier: name).firstMatch
+                try waitForProvider(NSPredicate { _, _ in folder.exists && folder.isHittable },
+                    failure: "The real local Files fixture folder is unavailable: " + name)
+                // The observed icon grid exposes a non-actionable title child;
+                // the exact cell's upper quarter lies inside its folder glyph.
+                // A single observed glyph tap selected the folder without opening;
+                // activate it with one native double-tap gesture.
+                folder.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).doubleTap()
+                let location = app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: " + name]
+                try waitForProvider(NSPredicate { _, _ in location.exists },
+                    failure: "Files did not enter the exact fixture folder: " + name)
+            }
         }
         func renderMovie() throws {
             try openExportPanel(app)
@@ -7604,7 +7949,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: folderInput)
             .waitUntilFulfilled(timeout: 20), "Actual folder rename must finish before choosing the destination")
         let destination = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", folderName)).firstMatch
-        if destination.waitForExistence(timeout: 3) && destination.isHittable { destination.tap() }
+        if destination.waitForExistence(timeout: 3) && destination.isHittable { destination.doubleTap() }
         // Files exposes the folder title as an Actions Menu button. Match the
         // observed browsing-root identity to prove this exact local destination.
         let localDestination = app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: " + folderName]
@@ -7652,7 +7997,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(importFiles.waitForExistence(timeout: 8)); importFiles.tap()
         try localFilesRoot()
         let savedFolder = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", folderName)).firstMatch
-        XCTAssertTrue(savedFolder.waitForExistence(timeout: 8)); XCTAssertTrue(savedFolder.isHittable); savedFolder.tap()
+        XCTAssertTrue(savedFolder.waitForExistence(timeout: 8)); XCTAssertTrue(savedFolder.isHittable); savedFolder.doubleTap()
         let movie = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@",
             projectName.replacingOccurrences(of: " ", with: "-"))).firstMatch
         XCTAssertTrue(movie.waitForExistence(timeout: 8)); XCTAssertTrue(movie.isHittable); movie.tap()
@@ -7708,13 +8053,33 @@ final class StudioSmokeUITests: XCTestCase {
         let share = try exportControl("studio.export.share", app: app)
         XCTAssertTrue(share.isEnabled); share.tap()
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
-        let saveToFiles = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
-        // The remote share sheet populates its actions slowly on hosted runners.
-        XCTAssertTrue(saveToFiles.waitForExistence(timeout: 20)); XCTAssertTrue(saveToFiles.isHittable)
+        // The actual GIF consumer offers Save Image in both UIKit presentations.
+        // Read the real action without saving to Photos or invoking a consumer.
+        let saveImage = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save Image")).firstMatch
+        XCTAssertTrue(saveImage.waitForExistence(timeout: 20))
+        XCTAssertTrue(nativeShare.exists); XCTAssertTrue(saveImage.isHittable)
         capture(app, name: "gif-native-share-sheet")
-        let dismiss = nativeShare.buttons["header.closeButton"]
-        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
-        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        captureHierarchy(app, name: "gif-native-share-sheet-hierarchy")
+        // UIKit uses a Close button in its full-height container on iOS 18.
+        // Current iOS also presents a smaller popover without that button.
+        // Exercise the real dismissal control or visible outside backdrop.
+        let close = nativeShare.buttons["header.closeButton"].firstMatch
+        if close.exists && close.isHittable {
+            close.tap()
+        } else {
+            let visibleSheet = nativeShare.frame.intersection(app.frame)
+            let outside = CGPoint(x: visibleSheet.midX, y: (visibleSheet.maxY + app.frame.maxY) / 2)
+            XCTAssertFalse(visibleSheet.isEmpty)
+            XCTAssertGreaterThan(app.frame.maxY - visibleSheet.maxY, 20)
+            let outsideIsVisible = app.frame.contains(outside) && !nativeShare.frame.contains(outside)
+            XCTAssertTrue(outsideIsVisible)
+            guard !visibleSheet.isEmpty, app.frame.maxY - visibleSheet.maxY > 20, outsideIsVisible else {
+                throw NSError(domain: "NativeGIFShareDismissal", code: 1)
+            }
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: outside.x - app.frame.minX, dy: outside.y - app.frame.minY)).tap()
+        }
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: nativeShare).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The GIF remains available."),
             evaluatedWith: status).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled)
@@ -7806,26 +8171,18 @@ final class StudioSmokeUITests: XCTestCase {
         try exportControl("studio.export.share", app: app).tap()
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
         let files = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
-        let dismiss = nativeShare.buttons["header.closeButton"]
-        // CI37718624465 captured real Close and Save to Files at about 16s
-        // after Share; initial remote snapshots consumed the old 10s window.
-        // Both actual controls share one 40s deadline (hosted runners overran
-        // 20s populating the remote sheet). Never retap Share.
-        let shareDeadline = Date().addingTimeInterval(40)
-        let nativeCloseReady = expectation(for: NSPredicate { _, _ in
-            dismiss.exists && dismiss.isEnabled && dismiss.isHittable
-        }, evaluatedWith: dismiss).waitUntilFulfilled(timeout: max(0, shareDeadline.timeIntervalSinceNow))
-        let shareReady = nativeCloseReady && expectation(for: NSPredicate { _, _ in
-            files.exists && files.isEnabled && files.isHittable && dismiss.isHittable
-        }, evaluatedWith: files).waitUntilFulfilled(timeout: max(0, shareDeadline.timeIntervalSinceNow))
+        // The captured iOS 26 popover exposes Save to Files without a Close
+        // button. Require the real action, then dismiss that actual presentation.
+        let shareReady = expectation(for: NSPredicate { _, _ in
+            files.exists && files.isEnabled && files.isHittable
+        }, evaluatedWith: files).waitUntilFulfilled(timeout: 40)
         if !shareReady {
             capture(app, name: "mp4-native-share-readiness-failure")
             captureHierarchy(app, name: "mp4-native-share-readiness-failure-hierarchy")
         }
         XCTAssertTrue(shareReady, "Native MP4 share actions did not become accessible")
         capture(app, name: "mp4-bundled-audio-native-share")
-        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
-        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        try dismissNativeMovieShare(nativeShare, app: app, name: "mp4-bundled-audio-share")
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The MP4 remains available."), evaluatedWith: status).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled)
         capture(app, name: "mp4-bundled-audio-retained-after-share-cancel")
@@ -8037,6 +8394,11 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(canvas.waitUntilPresent(timeout: 8))
         try choosePickerTestColor("#0000FF", app: app)
         try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
+        // This pixel journey needs opaque paint; Fill retains per-tool settings across launches.
+        let fillOpacity = app.sliders["studio.setting.opacity"]
+        XCTAssertTrue(fillOpacity.exists && fillOpacity.isHittable, "Fill opacity must be actionable")
+        fillOpacity.adjust(toNormalizedSliderPosition: 1)
+        XCTAssertEqual(fillOpacity.value as? String, "100%", "Establish opaque Fill before the blue-pixel oracle")
         app.buttons["studio.tool-settings.close"].tap()
         try waitForStableCanvas(canvas)
         canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5)).tap()
@@ -8518,6 +8880,98 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    private func dismissNativeMovieShare(_ nativeShare: XCUIElement, app: XCUIApplication, name: String) throws {
+        let close = nativeShare.buttons["header.closeButton"].firstMatch
+        if close.exists && close.isEnabled && close.isHittable {
+            close.tap()
+        } else {
+            // The same native popover dismissal is exercised by the GIF journey.
+            // Derive an outside point from the observed presentation, and fail
+            // if UIKit has not left an actual visible backdrop to tap.
+            let visibleSheet = nativeShare.frame.intersection(app.frame)
+            let outside = CGPoint(x: visibleSheet.midX, y: (visibleSheet.maxY + app.frame.maxY) / 2)
+            guard !visibleSheet.isNull, !visibleSheet.isEmpty,
+                  app.frame.maxY - visibleSheet.maxY > 20,
+                  app.frame.contains(outside), !nativeShare.frame.contains(outside) else {
+                captureHierarchy(app, name: name + "-dismissal-unavailable")
+                XCTFail("The actual native share presentation has no reachable dismissal control or backdrop")
+                throw NSError(domain: "NativeMovieShareDismissal", code: 1)
+            }
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: outside.x - app.frame.minX, dy: outside.y - app.frame.minY)).tap()
+        }
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: nativeShare)
+            .waitUntilFulfilled(timeout: 8), "The actual native movie share presentation did not dismiss")
+    }
+
+    /// Start on the native thumb using its displayed value and actual bounds.
+    /// XCTest's normalized adjustment dropped the visible Burn drag and made
+    /// UIKit opacity oscillate between 40% and 65%. Use the same genuine control
+    /// with a brief press and a slower drag; callers still verify actual readback.
+    @MainActor
+    private func dragNativeSliderThumb(_ slider: XCUIElement, toNormalizedSliderPosition position: Double,
+                                       range: ClosedRange<Double>, valueControl: XCUIElement? = nil) -> Bool {
+        let bounds = slider.frame
+        let span = range.upperBound - range.lowerBound
+        guard let displayed = (valueControl ?? slider).value as? String,
+              let current = Double(displayed.filter { "0123456789.-".contains($0) }),
+              current.isFinite, range.contains(current), span > 0, position.isFinite,
+              bounds.width > bounds.height, bounds.height > 0 else { return false }
+        // The thumb stays inside the control at both endpoints. Height-based
+        // insets keep the press within that thumb; existing readback feedback
+        // corrects residual native geometry and integer-percentage rounding.
+        let inset = bounds.height / 2
+        let travel = bounds.width - inset * 2
+        let currentPosition = (current - range.lowerBound) / span
+        let origin = slider.coordinate(withNormalizedOffset: .zero)
+        let start = origin.withOffset(CGVector(dx: inset + CGFloat(currentPosition) * travel, dy: bounds.height / 2))
+        let end = origin.withOffset(CGVector(dx: inset + CGFloat(min(1, max(0, position))) * travel, dy: bounds.height / 2))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.10)
+        return true
+    }
+
+    /// Read each actual native value while the draft is uncommitted. Preserve
+    /// both sides of the measured bracket instead of losing it after an overshoot.
+    @MainActor
+    private func adjustNativeDraftSlider(_ slider: XCUIElement, target: Double, range: ClosedRange<Double>,
+                                         tolerance: Double, app: XCUIApplication, name: String,
+                                         viewport: XCUIElement? = nil, valueControl: XCUIElement? = nil) throws {
+        let span = range.upperBound - range.lowerBound
+        var aim = (target - range.lowerBound) / span
+        var observed = [String]()
+        var lowerSample: (aim: Double, value: Double)?
+        var upperSample: (aim: Double, value: Double)?
+        let scroll = viewport ?? app.scrollViews["studio.tool-settings.scroll"]
+        for _ in 0..<5 {
+            guard slider.exists, slider.isHittable, slider.isEnabled, scroll.exists else { break }
+            let viewport = scroll.frame.intersection(app.frame).insetBy(dx: 0, dy: 12)
+            guard viewport.contains(slider.frame) else { break }
+            guard dragNativeSliderThumb(slider, toNormalizedSliderPosition: aim,
+                                        range: range, valueControl: valueControl) else { break }
+            let displayed = (valueControl ?? slider).value as? String ?? ""
+            observed.append(displayed)
+            guard let actual = Double(displayed.filter { "0123456789.-".contains($0) }),
+                  actual.isFinite, range.contains(actual) else { break }
+            if abs(actual - target) < tolerance { return }
+            if actual < target { lowerSample = (aim, actual) }
+            else { upperSample = (aim, actual) }
+            var nextAim = aim + (target - actual) / span
+            if let lowerSample, let upperSample, lowerSample.aim < upperSample.aim {
+                let interpolated = lowerSample.aim + (target - lowerSample.value)
+                    * (upperSample.aim - lowerSample.aim) / (upperSample.value - lowerSample.value)
+                if interpolated.isFinite { nextAim = interpolated }
+            }
+            aim = min(1, max(0, nextAim))
+        }
+        capture(app, name: name + "-slider-target-not-reached")
+        captureHierarchy(app, name: name + "-slider-target-not-reached-hierarchy")
+        let values = XCTAttachment(string: "target=\(target); range=\(range); values=\(observed)")
+        values.name = name + "-slider-observed-values"; values.lifetime = .keepAlways; add(values)
+        XCTFail("The actual native slider did not reach its existing target band after five bounded native adjustments")
+        throw NSError(domain: "NativeDraftSlider", code: 1)
+    }
+
+    @MainActor
     private func captureHierarchy(_ app: XCUIApplication, name: String) {
         let attachment = XCTAttachment(string: app.debugDescription)
         attachment.name = name; attachment.lifetime = .keepAlways
@@ -8560,8 +9014,49 @@ final class StudioSmokeUITests: XCTestCase {
         let app = try launchAtWelcome(extraLaunchArguments: extraLaunchArguments)
         try tapWelcomeAction("welcome.guest", in: app)
         try waitForButton("Skip Tutorial", in: app).tap()
-        try waitForButton("Studio", in: app).tap()
+        try openDesktopSubject("studio", in: app)
         return app
+    }
+
+    /// Exercise the primary native navigation without relying on the optional dock.
+    /// These existing full-page journeys use real maximize controls so persisted
+    /// desktop placements cannot change their editor and sheet geometry.
+    @MainActor
+    private func openDesktopSubject(_ subject: String, in app: XCUIApplication) throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        try desktopButton("desktop.menu.subjects", in: app, deadline: deadline).tap()
+        try desktopButton("desktop.open." + subject, in: app, deadline: deadline).tap()
+        // Menu navigation and its idle waits have already spent their own budget.
+        // Give the resulting window its separate, still-bounded state wait.
+        try maximizeDesktopSubject(subject, in: app)
+    }
+
+    @MainActor
+    private func maximizeDesktopSubject(_ subject: String, in app: XCUIApplication,
+                                        deadline: TimeInterval = ProcessInfo.processInfo.systemUptime + 10) throws {
+        let prefix = "desktop.window." + subject
+        let maximize = app.buttons[prefix + ".maximize"]
+        let restored = app.buttons[prefix + ".restore-size"]
+        let available = NSPredicate { _, _ in maximize.exists || restored.exists }
+        XCTAssertTrue(expectation(for: available, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Missing native subject size control: " + subject)
+        if maximize.exists {
+            try desktopButton(prefix + ".maximize", in: app, deadline: deadline).tap()
+        }
+        _ = try desktopButton(prefix + ".restore-size", in: app, deadline: deadline)
+    }
+
+    @MainActor
+    private func desktopButton(_ identifier: String, in app: XCUIApplication,
+                               deadline: TimeInterval) throws -> XCUIElement {
+        let element = app.buttons[identifier]
+        XCTAssertTrue(element.waitUntilPresent(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Missing native button: " + identifier)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
+            .waitUntilFulfilled(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Native button is not reachable: " + identifier)
+        return element
     }
 
     @MainActor

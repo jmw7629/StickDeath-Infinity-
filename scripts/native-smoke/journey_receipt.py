@@ -30,7 +30,12 @@ SUITES = {
 # depend on screen size, so they run once, on the phone.
 DEVICE_SUITES = {"iphone": ("ui", "service"), "ipad": ("ui",)}
 PER_CASE_SECONDS = 180
-MAXIMUM_CASE_SECONDS = 240
+MAXIMUM_CASE_SECONDS = 420
+# Preserve the literal allowances already reviewed in JourneyUITests.swift.
+EXTENDED_CASE_SECONDS = {
+    "testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable": 300,
+    "testMirrorMenuChoicesAccessibilityAndOlderSystemFallback": 420,
+}
 SERVICE_CASE_SECONDS = 60
 SUITE_OVERHEAD_SECONDS = 300
 MAXIMUM_CASES = 20
@@ -48,8 +53,43 @@ def suite_inventory(root=ROOT):
     return {key: expected_names((root / path).read_text(), cls) for key, (path, cls, _target) in SUITES.items()}
 
 
-def ui_timeout_seconds(count):
-    return count * PER_CASE_SECONDS + SUITE_OVERHEAD_SECONDS
+def ui_timeout_seconds(names):
+    return sum(EXTENDED_CASE_SECONDS.get(name, PER_CASE_SECONDS) for name in names) + SUITE_OVERHEAD_SECONDS
+
+
+def ui_test_budget(source, command):
+    """Only the two named, reviewed journeys may exceed the unchanged 180s default."""
+    names = expected_names(source, SUITES["ui"][1])
+    if not set(EXTENDED_CASE_SECONDS).issubset(names):
+        raise ValueError("The reviewed extended journeys must remain in the complete UI suite")
+    # A literal first statement in every case prevents the higher CLI ceiling
+    # from silently extending another journey, or hiding an unbounded override.
+    if source.count("executionTimeAllowance") != len(names):
+        raise ValueError("Every UI journey requires exactly one explicit bounded allowance")
+    for name in names:
+        seconds = EXTENDED_CASE_SECONDS.get(name, PER_CASE_SECONDS)
+        header = (r"func\s+" + re.escape(name) + r"\s*\(\)\s*throws\s*\{\s*"
+                  r"(?://[^\n]*\n\s*)*executionTimeAllowance\s*=\s*" + str(seconds) + r"\s*\n")
+        if not re.search(header, source):
+            raise ValueError("Missing explicit bounded allowance for " + name)
+    selected = selector("ui")
+    if command.count(selected) != 1:
+        raise ValueError("UI journeys require the complete class exactly once")
+    for prefix in ("-only-testing", "-skip-testing", "-test-iterations", "-retry-tests-on-failure",
+                   "-run-tests-until-failure", "-maximum-test-iterations"):
+        if any(arg != selected and (arg == prefix or arg.startswith(prefix + ":") or arg.startswith(prefix + "="))
+               for arg in command):
+            raise ValueError("UI journeys cannot filter or retry cases")
+    required = {"-test-timeouts-enabled": "YES",
+                "-default-test-execution-time-allowance": str(PER_CASE_SECONDS),
+                "-maximum-test-execution-time-allowance": str(MAXIMUM_CASE_SECONDS),
+                "-parallel-testing-enabled": "NO",
+                "-maximum-concurrent-test-simulator-destinations": "1"}
+    for flag, value in required.items():
+        matches = [arg for arg in command if arg == flag or arg.startswith(flag + "=") or arg.startswith(flag + ":")]
+        if matches != [flag] or command.index(flag) + 1 == len(command) or command[command.index(flag) + 1] != value:
+            raise ValueError("UI journeys must preserve " + flag + " " + value)
+    return ui_timeout_seconds(names)
 
 
 def service_timeout_seconds(count):

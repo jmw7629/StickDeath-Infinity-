@@ -8,7 +8,7 @@ let package = Package(
     platforms: [.iOS(.v17)],
     dependencies: [
         // Supabase — Auth, Database, Storage, Realtime, Edge Functions
-        .package(url: "https://github.com/supabase-community/supabase-swift.git", from: "2.0.0"),
+        .package(url: "https://github.com/supabase-community/supabase-swift.git", exact: "2.55.6"),
 
         // Calls and messaging are retired scope: no LiveKit dependency.
         // iOS subscriptions use StoreKit 2 (built in); Stripe is server-side only.

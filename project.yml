@@ -27,6 +27,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.willisbmb.StickDeathInfinity
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: false
+        # Optional iOS 26 framework; app deployment remains iOS 17.
+        OTHER_LDFLAGS: "$(inherited) -weak_framework FoundationModels"
       configs:
         # Public values only (origin, publishable key, product ids). Debug/CI
         # builds stay unconfigured so offline verification is unchanged.
@@ -103,4 +105,4 @@ schemes:
 packages:
   supabase-swift:
     url: https://github.com/supabase-community/supabase-swift.git
-    from: "2.0.0"
+    exactVersion: "2.55.6"

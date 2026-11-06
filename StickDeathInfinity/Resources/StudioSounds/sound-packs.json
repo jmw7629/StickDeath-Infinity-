@@ -1,0 +1,22 @@
+[
+  {
+    "id": "ambience-nature-cc0-v1",
+    "title": "Ambience and Nature",
+    "manifestURL": "https://raw.githubusercontent.com/jmw7629/StickDeath-Infinity-/sdi-sound-packs-v1/assets/sound-packs/ambience-nature-cc0-v1/catalogue.json",
+    "manifestBytes": 104106,
+    "manifestSHA256": "004d60b4b1bad48497df729d20096d1e7123888c26414a681f7f9123d41e1d34",
+    "baseURL": "https://raw.githubusercontent.com/jmw7629/StickDeath-Infinity-/sdi-sound-packs-v1/assets/sound-packs/ambience-nature-cc0-v1/",
+    "soundCount": 10,
+    "totalAudioBytes": 23592178
+  },
+  {
+    "id": "comedy-cartoon-cc0-v1",
+    "title": "Comedy and Cartoon",
+    "manifestURL": "https://raw.githubusercontent.com/jmw7629/StickDeath-Infinity-/sdi-sound-packs-v1/assets/sound-packs/comedy-cartoon-cc0-v1/catalogue.json",
+    "manifestBytes": 135007,
+    "manifestSHA256": "27b3c71240c5c5dae86b3a49728d455e63d1bde50c923da9559b976d8337a033",
+    "baseURL": "https://raw.githubusercontent.com/jmw7629/StickDeath-Infinity-/sdi-sound-packs-v1/assets/sound-packs/comedy-cartoon-cc0-v1/",
+    "soundCount": 13,
+    "totalAudioBytes": 3325234
+  }
+]

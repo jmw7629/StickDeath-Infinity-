@@ -11,7 +11,7 @@ def verify(apk):
     root = Path(__file__).resolve().parents[1] / "StickDeathInfinity/Resources/StudioSounds"
     catalogue_bytes = (root / "catalogue.json").read_bytes()
     catalogue = json.loads(catalogue_bytes)
-    if catalogue.get("schemaVersion") != 1 or len(catalogue.get("sounds", [])) != 2127:
+    if catalogue.get("schemaVersion") != 1 or len(catalogue.get("sounds", [])) != 2212:
         raise ValueError("Unexpected source catalogue; review the library contract before packaging")
     total = 0
     seen = set()

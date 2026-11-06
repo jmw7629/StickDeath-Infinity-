@@ -948,6 +948,12 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
             try require(!cleanExitVM.isEditing && !cleanExitVM.isDirty &&
                 cleanExitVM.document == cleanExitDocument,
                 "Optional save failure trapped or changed already saved artwork")
+            let priorProjects = cleanExitVM.savedProjects.map(\.id), priorSaveTime = cleanExitVM.lastSaveTime
+            let failedCreate = await cleanExitVM.createProject(name: "First save retry", width: 160, height: 96, fps: 24)
+            try require(!failedCreate && !cleanExitVM.isEditing && !cleanExitVM.isDirty
+                && cleanExitVM.document == cleanExitDocument && cleanExitVM.savedProjects.map(\.id) == priorProjects
+                && cleanExitVM.lastSaveTime == priorSaveTime && cleanExitVM.message?.contains("Project could not be saved") == true,
+                "A failed first save left the library or replaced the previous editor state")
 
             reopened.commitElement(stroke(layer: reopened.activeLayerID))
             let unsaved = reopened.document
@@ -957,6 +963,21 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
                         "failed save/back discarded dirty work or claimed success")
             try fm.removeItem(at: store.animationsDir)
             try fm.moveItem(at: preserved, to: store.animationsDir)
+            var persistedAtEntry: AnimationProject?
+            let entryObserver = cleanExitVM.$isEditing.dropFirst().sink { editing in
+                if editing { persistedAtEntry = try? store.loadAnimation(id: cleanExitVM.document.id) }
+            }
+            let retriedCreate = await cleanExitVM.createProject(name: "First save retry", width: 160, height: 96, fps: 24)
+            entryObserver.cancel()
+            let newDocument = cleanExitVM.document
+            guard let firstRecord = persistedAtEntry, let archive = firstRecord.editableDocumentData else {
+                throw Failure(text: "The editor opened before its new project was readable on disk")
+            }
+            let savedCreate = try StudioDocumentArchive.decode(archive).document
+            try require(retriedCreate && cleanExitVM.isEditing && !cleanExitVM.isDirty && newDocument.id != cleanExitDocument.id
+                && firstRecord.id == newDocument.id && savedCreate == newDocument && newDocument.name == "First save retry"
+                && newDocument.width == 160 && newDocument.height == 96 && newDocument.fps == 24,
+                "First-save retry changed the requested settings or opened the wrong project")
             let recovered = await reopened.save()
             try require(recovered && !reopened.isDirty, "retry after storage recovery failed")
             await reopened.backToProjects()

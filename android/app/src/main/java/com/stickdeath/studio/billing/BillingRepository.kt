@@ -70,7 +70,7 @@ sealed class StoreStatus {
 }
 
 /**
- * Google Play Billing for the two monthly plans and consumable Spatter credit packs.
+ * Google Play Billing for the paid monthly plans and consumable Spatter credit packs.
  * - Connects only when the build names real product ids.
  * - Prices, titles and trials come only from Play.
  * - A purchase is acknowledged (subscription) or consumed (credit pack) only after
@@ -190,17 +190,17 @@ class BillingRepository(
 
     private suspend fun reconcileOwnedPurchases() {
         if (!client.isReady) return
-        var verifiedTier: PlanTier? = null
+        var verifiedStatus: PlanStatus? = null
         for (type in listOf(BillingClient.ProductType.SUBS, BillingClient.ProductType.INAPP)) {
             val owned = client.queryPurchasesAsync(QueryPurchasesParams.newBuilder().setProductType(type).build())
             if (owned.billingResult.responseCode != BillingClient.BillingResponseCode.OK) continue
-            owned.purchasesList.forEach { purchase -> handle(purchase)?.let { verifiedTier = PlanTier.best(verifiedTier, it) } }
+            owned.purchasesList.forEach { purchase -> handle(purchase)?.let { verifiedStatus = PurchasePolicy.bestSubscription(verifiedStatus, it) } }
         }
-        PlanRuntime.reportVerifiedPurchase(verifiedTier)
+        PlanRuntime.reportVerifiedPurchase(verifiedStatus?.tier, inTrial = verifiedStatus?.trialing ?: false)
     }
 
-    /** Returns the subscription tier the server granted for [purchase], if any. */
-    private suspend fun handle(purchase: Purchase): PlanTier? {
+    /** Returns the subscription and current trial state the server granted for [purchase], if any. */
+    private suspend fun handle(purchase: Purchase): PlanStatus? {
         val productId = purchase.products.firstOrNull() ?: return null
         val kind = when {
             catalog.plan(productId) != null -> PurchaseKind.Subscription
@@ -219,10 +219,14 @@ class BillingRepository(
         if (state != StorePurchaseState.Purchased) return null
         val verification = runCatching { verifier.verify(PurchaseFacts(productId, kind, purchase.purchaseToken, purchase.orderId)) }
             .getOrElse { PurchaseVerification.Failed(it.message ?: "the server could not be reached") }
+        val verifiedStatus = PurchasePolicy.verifiedSubscription(kind, state, verification)
         when (PurchasePolicy.action(kind, state, purchase.isAcknowledged, verification)) {
             PurchaseAction.Acknowledge -> {
                 val ack = client.acknowledgePurchase(AcknowledgePurchaseParams.newBuilder().setPurchaseToken(purchase.purchaseToken).build())
-                message = if (ack.responseCode == BillingClient.BillingResponseCode.OK) "Your plan is active." else "The server granted your plan; Google Play will be confirmed on the next refresh."
+                message = if (ack.responseCode == BillingClient.BillingResponseCode.OK) {
+                    if (verifiedStatus?.trialing == true) "Your free trial is active. Spatter is preview-only until the trial ends."
+                    else "Your plan is active."
+                } else "The server granted your plan; Google Play will be confirmed on the next refresh."
             }
             PurchaseAction.Consume -> {
                 val consumed = client.consumePurchase(ConsumeParams.newBuilder().setPurchaseToken(purchase.purchaseToken).build())
@@ -232,10 +236,10 @@ class BillingRepository(
                 PurchaseVerification.NotConfigured -> "Google Play reports a purchase this build cannot verify yet. Nothing was granted; Google Play refunds it automatically if it is not confirmed within three days."
                 is PurchaseVerification.Rejected -> "The server did not accept this purchase (${verification.reason}). Nothing was granted."
                 is PurchaseVerification.Failed -> "The purchase could not be verified (${verification.reason}). Nothing was granted yet; try Refresh."
-                is PurchaseVerification.Granted -> message
+                is PurchaseVerification.Granted -> if (kind == PurchaseKind.Subscription && verifiedStatus == null) "The server did not confirm a paid subscription. Nothing was granted." else message
             }
         }
-        return (verification as? PurchaseVerification.Granted)?.tier?.takeIf { kind == PurchaseKind.Subscription }
+        return verifiedStatus
     }
 
     private fun publish() = PlanRuntime.reportStore(loaded = status == StoreStatus.Loaded && subscriptions.size >= 2, purchasable = purchasesAvailable)

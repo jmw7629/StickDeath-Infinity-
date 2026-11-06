@@ -200,7 +200,7 @@ class DraftPreviewTests(unittest.TestCase):
         published = self.store.publish(self.movie, self.digest)
         upload = dp.draft_upload_id(self.digest)
         registrar = ReviewRegistrar("https://backend.example.test", "service-key", self.root, "terms-v1",
-                                    self.store.signer(self.links))
+                                    self.store.signer(self.links), publishable_key="publishable-key")
         permit = str(uuid.uuid4())
         sent = []
 
@@ -243,7 +243,7 @@ class DraftPreviewTests(unittest.TestCase):
         key = self.base / "signing.key"; key.write_bytes(b"k" * 32); os.chmod(key, 0o600)
         env = {"SDI_BACKEND_URL": "https://backend.example.test", "SDI_INTAKE_ORIGIN": ORIGIN, "SDI_PUBLISHING_CONSENT_VERSION": "terms-v1",
                "SDI_INTAKE_DIRECTORY": str(self.root), "SDI_INTAKE_TOTAL_BYTES": str(4 << 30), "SDI_PREVIEW_SIGNING_KEY_FILE": str(key),
-               "SDI_BACKEND_PUBLISHABLE_KEY": "pk", "SDI_BACKEND_SERVICE_KEY_FILE": str(svc), "SDI_FFPROBE": "/usr/bin/true", "SDI_FFMPEG": "/usr/bin/true"}
+               "SDI_BACKEND_PUBLISHABLE_KEY": "pk", "SDI_BACKEND_SERVICE_KEY_FILE": str(svc), "SDI_DECODER_ROOT": "/test/decoder", "SDI_DECODER_SNAPSHOT_DIRECTORY": "/test/snapshots"}
         drafts = dp.DraftPreviewStore(self.root, PreviewLinks(ORIGIN, b"k" * 32), OWNER)
         url = drafts.publish(self.movie, self.digest).url
 
@@ -255,6 +255,14 @@ class DraftPreviewTests(unittest.TestCase):
             getattr(body, "close", lambda: None)()
             return seen["status"], data
 
+        # This preview-only factory test never invokes a decoder. Root-owned
+        # sandbox installation is a separate Linux integration acceptance gate.
+        from backend.ingestion import application as intake_application
+        from backend.ingestion.decoder import DecoderSandbox
+        from unittest.mock import patch
+        sandbox = object.__new__(DecoderSandbox)
+        sandbox_patch = patch.object(intake_application, "DecoderSandbox", return_value=sandbox)
+        sandbox_patch.start()
         original = registration_module.ReviewRegistrar.preview_authority
         try:
             # Without the owner setting the factory never consults draft records (the
@@ -264,6 +272,7 @@ class DraftPreviewTests(unittest.TestCase):
             status, data = fetch(create_application(dict(env, SDI_DRAFT_PREVIEW_OWNER_ID=OWNER)))
         finally:
             registration_module.ReviewRegistrar.preview_authority = original
+            sandbox_patch.stop()
         self.assertEqual(status, "200 OK")
         self.assertEqual(hashlib.sha256(data).hexdigest(), self.digest)
 

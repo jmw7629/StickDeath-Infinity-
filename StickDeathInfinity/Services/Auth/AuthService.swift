@@ -91,6 +91,8 @@ final class AuthService: ObservableObject {
     }
 
     var userId: String? { currentUser?.id.uuidString }
+    /// Read-only identity lifetime for private community work, including same-account reauthentication.
+    var communityIdentityRevision: UUID { identityRevision }
     var isAuthenticated: Bool { state == .authenticated }
     var isSuperAdmin: Bool {
         // Display hint only: server app metadata, never editable profile/email data.
@@ -498,7 +500,16 @@ final class AuthService: ObservableObject {
             email: email,
             password: password
         )
-        try await finishAuthentication(session.user)
+        try await finishAuthentication(session.user, ensureUsername: Self.emailUsername(for: session.user))
+    }
+    /// Confirmation can defer the first session until this later sign-in. This
+    /// editable metadata supplies display data only, never authorization.
+    static func emailUsername(for user: User) -> String {
+        let fallback = "Creator_" + String(user.id.uuidString.prefix(8))
+        guard case .string(let username)? = user.userMetadata["username"],
+              !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              username.unicodeScalars.count <= 80, username.rangeOfCharacter(from: .controlCharacters) == nil else { return fallback }
+        return username
     }
 
     // MARK: - Guest
@@ -516,7 +527,7 @@ final class AuthService: ObservableObject {
         defer { authenticationInProgress = false }
         let client = try supabase
         do {
-            try await client.auth.signOut()
+            try await client.auth.signOut(scope: .local)
             setIdentity(nil)
         } catch {
             // The pinned SDK clears local credentials before remote revocation.
@@ -777,18 +788,38 @@ final class AuthService: ObservableObject {
     /// Account-level notice that is not an authentication failure (for example
     /// a username another creator already uses). Cleared on identity change.
     @Published private(set) var profileNotice: String?
+    private func canBootstrapProfile(userId: String, revision: UUID) -> Bool {
+        guard !Task.isCancelled, identityRevision == revision, currentUser?.id.uuidString == userId,
+              let session = try? supabase.auth.currentSession, !session.isExpired,
+              session.user.id.uuidString == userId else { return false }
+        return true
+    }
     private func ensureProfile(userId: String, email: String?, username: String) async {
+        let revision = identityRevision
+        guard canBootstrapProfile(userId: userId, revision: revision) else { return }
         profileNotice = nil
         do {
             try await supabase.from("users").upsert([
                 "id": AnyJSON.string(userId),
                 "email": email.map { AnyJSON.string($0) } ?? .null,
-                "username": .string(username),
-                "created_at": .string(ISO8601DateFormatter().string(from: Date()))
+                // Creation time and account privileges are server-owned.
+                "username": .string(username)
             ], onConflict: "id", ignoreDuplicates: true).execute()
         } catch let error as PostgrestError where error.code == "23505" {
-            // Unique violation on a non-identity column: the account exists and
-            // is signed in, but the requested handle is taken. Say so.
+            guard canBootstrapProfile(userId: userId, revision: revision) else { return }
+            // A taken handle must not strand a new member without a profile.
+            // Omit username so the owned row can use NULL until Settings edits it.
+            // Ignoring an existing id preserves that member's chosen profile.
+            do {
+                try await supabase.from("users").upsert([
+                    "id": AnyJSON.string(userId),
+                    "email": email.map { AnyJSON.string($0) } ?? .null
+                ], onConflict: "id", ignoreDuplicates: true).execute()
+            } catch {
+                // Availability stays separate from authentication; fetchProfile
+                // will leave the profile unavailable when this request fails.
+            }
+            guard canBootstrapProfile(userId: userId, revision: revision) else { return }
             profileNotice = "The username \"\(username)\" is already taken. You are signed in; choose a different username in Settings."
         } catch {
             // Profile availability is separate from authentication. The fenced

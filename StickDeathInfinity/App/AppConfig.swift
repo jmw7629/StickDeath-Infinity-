@@ -205,11 +205,13 @@ enum SDIIntakeClient {
         }
         throw Failure.unavailable
     }
-    static func request<Body: Encodable, Result: Decodable>(path: [String], body: Body, token: String) async throws -> Result {
-        try await raw(path: path, method: "POST", body: JSONEncoder().encode(body), token: token)
+    static func request<Body: Encodable, Result: Decodable>(path: [String], body: Body, token: String,
+        checkCurrent: (@MainActor () throws -> Void)? = nil) async throws -> Result {
+        try await raw(path: path, method: "POST", body: JSONEncoder().encode(body), token: token, checkCurrent: checkCurrent)
     }
     static func raw<Result: Decodable>(path: [String], method: String, body: Data? = nil,
-                                      headers: [String: String] = [:], token: String) async throws -> Result {
+                                      headers: [String: String] = [:], token: String,
+                                      checkCurrent: (@MainActor () throws -> Void)? = nil) async throws -> Result {
         guard ["GET", "POST", "PATCH", "DELETE"].contains(method),
               Set(headers.keys).isSubset(of: ["Idempotency-Key", "Upload-Offset", "Upload-Checksum"]),
               headers.values.allSatisfy({ $0.utf8.count <= 200 && $0.unicodeScalars.allSatisfy { $0.value > 32 && $0.value < 127 } }) else { throw Failure.response }
@@ -224,7 +226,10 @@ enum SDIIntakeClient {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false; config.urlCredentialStorage = nil; config.urlCache = nil
         config.timeoutIntervalForRequest = 30; config.timeoutIntervalForResource = 60
-        let session = URLSession(configuration: config, delegate: SDIIntakeRedirectPolicy(), delegateQueue: nil)
+        let scoped = checkCurrent.map { _ in SDIIntakeScopedReply() }
+        let delegate: URLSessionDelegate
+        if let scoped { delegate = scoped } else { delegate = SDIIntakeRedirectPolicy() }
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url); request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -234,7 +239,18 @@ enum SDIIntakeClient {
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         guard (body?.count ?? 0) <= (method == "PATCH" ? 4 * 1024 * 1024 : 8192) else { throw Failure.response }
         try Task.checkCancellation()
-        let (bytes, response) = try await session.bytes(for: request)
+        let response: URLResponse
+        let scopedData: Data?
+        let stream: URLSession.AsyncBytes?
+        if let checkCurrent, let scoped {
+            let reply = try await scoped.load(session: session, request: request, checkCurrent: checkCurrent)
+            scopedData = reply.0; response = reply.1; stream = nil
+            try await checkCurrent()
+        } else {
+            // Unscoped callers retain the existing bounded streamed-byte path.
+            let reply = try await session.bytes(for: request)
+            stream = reply.0; response = reply.1; scopedData = nil
+        }
         guard let http = response as? HTTPURLResponse, http.url == url else { throw Failure.response }
         if http.statusCode == 401 || http.statusCode == 403 { throw Failure.authorization }
         if http.statusCode == 409 { throw Failure.conflict }
@@ -245,15 +261,92 @@ enum SDIIntakeClient {
         }
         guard (200...299).contains(http.statusCode) else { throw Failure.rejected }
         guard response.expectedContentLength <= 16_384 else { throw Failure.response }
-        var data = Data()
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            guard data.count < 16_384 else { throw Failure.response }
-            data.append(byte)
+        var data = scopedData ?? Data()
+        if let stream {
+            for try await byte in stream {
+                try Task.checkCancellation()
+                guard data.count < 16_384 else { throw Failure.response }
+                data.append(byte)
+            }
         }
-        return try JSONDecoder().decode(Result.self, from: data)
+        if let checkCurrent { try await checkCurrent() }
+        let result = try JSONDecoder().decode(Result.self, from: data)
+        if let checkCurrent { try await checkCurrent() }
+        return result
     }
 }
+/// Per-call optional UI lease; Foundation/concurrency only. It uses the caller's configured
+/// ephemeral session and the same redirect denial, bounds bytes before buffering and completes once.
+private final class SDIIntakeScopedReply: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<(Data, URLResponse), Error>?
+    private var task: URLSessionDataTask?
+    private var finished = false
+    private var data = Data()
+    private var response: URLResponse?
+
+    @MainActor
+    func load(session: URLSession, request: URLRequest,
+              checkCurrent: @escaping @MainActor () throws -> Void) async throws -> (Data, URLResponse) {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                guard !finished, self.continuation == nil else {
+                    lock.unlock(); continuation.resume(throwing: CancellationError()); return
+                }
+                self.continuation = continuation
+                do { try checkCurrent(); try Task.checkCancellation() }
+                catch { lock.unlock(); finish(.failure(error), cancel: true); return }
+                // No actor suspension separates the lease check and actual URLSession resume.
+                let task = session.dataTask(with: request)
+                self.task = task
+                task.resume()
+                lock.unlock()
+            }
+        }, onCancel: { self.finish(.failure(CancellationError()), cancel: true) })
+    }
+    private func finish(_ result: Result<(Data, URLResponse), Error>, cancel: Bool) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let continuation = self.continuation, task = self.task
+        self.continuation = nil; self.task = nil
+        lock.unlock()
+        if cancel { task?.cancel() }
+        continuation?.resume(with: result)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock(); self.response = response; lock.unlock()
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            // Preserve the existing status mapping without buffering an error response body.
+            finish(.success((Data(), response)), cancel: false); completionHandler(.cancel); return
+        }
+        guard response.expectedContentLength <= 16_384 else {
+            finish(.failure(SDIIntakeClient.Failure.response), cancel: true); completionHandler(.cancel); return
+        }
+        completionHandler(.allow)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive incoming: Data) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        guard data.count + incoming.count <= 16_384 else {
+            lock.unlock(); finish(.failure(SDIIntakeClient.Failure.response), cancel: true); return
+        }
+        data.append(incoming); lock.unlock()
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error { finish(.failure(error), cancel: false); return }
+        lock.lock(); let response = self.response, data = self.data; lock.unlock()
+        guard let response else { finish(.failure(SDIIntakeClient.Failure.response), cancel: false); return }
+        finish(.success((data, response)), cancel: false)
+    }
+}
+
 private final class SDIIntakeRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {

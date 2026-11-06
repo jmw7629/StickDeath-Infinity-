@@ -7,17 +7,26 @@ import Supabase
 struct WatchTogetherView: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
     @Environment(\.requestSignIn) private var requestSignIn
+    /// State also invalidates async closures that captured an earlier visible
+    /// environment value before the retained Rooms window was hidden.
+    @State private var resourcesSuspended = false
     @State private var rooms: [WatchRoom] = []
-    @State private var media: [WatchMedia] = []
+    @State private var media: [WatchRoomMedia] = []
     /// Read-only membership rows (account identifiers only). RLS returns the
     /// viewer's own row, or every row when the viewer owns the room.
     @State private var participants: [WatchParticipant] = []
     @State private var selected: WatchRoom?
     @State private var selectedMedia = ""
-    @State private var state: WatchPlayback?
+    @State private var state: WatchRoomPlayback?
+    @State private var statusVideo: WatchRoomMedia?
+    @State private var playbackAdmission = WatchPlaybackAdmission()
+    @State private var catalogRequest = UUID()
     @State private var player: AVPlayer?
     @State private var loadedMedia: UUID?
+    @State private var loadedSource: FeedPlaybackSource?
+    @State private var providerPlayback: WatchProviderPlayback?
     @State private var error: String?
     @State private var busy = false
     @State private var seekPosition = 0.0
@@ -31,8 +40,10 @@ struct WatchTogetherView: View {
     @State private var clock = ServerClockEstimator()
 
     private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(phase == .active):\(refresh)" }
+    private var playbackIdentity: String { "\(selected?.id.uuidString ?? "none"):\(subjectWindowVisible):\(identity)" }
+    private var resourcesAllowed: Bool { subjectWindowVisible && !resourcesSuspended && auth.isAuthenticated && phase == .active }
     private var isHost: Bool { selected?.owner_id.uuidString.lowercased() == auth.userId?.lowercased() }
-    private var currentMedia: WatchMedia? { media.first { $0.id == state?.media_id } }
+    private var currentMedia: WatchRoomMedia? { statusVideo?.id == state?.media_id ? statusVideo : nil }
     private var client: SupabaseClient { get throws { try SupabaseManager.shared.client } }
 
     var body: some View {
@@ -59,14 +70,14 @@ struct WatchTogetherView: View {
                         Spacer()
                         Button("Leave") { leave() }.accessibilityIdentifier("watchTogether.leave")
                     }
-                    if let player, let currentMedia {
+                    if let player, let currentMedia, let duration = currentMedia.synchronizedDuration {
                         VideoPlayer(player: player).frame(minHeight: 220)
                             .allowsHitTesting(false)
                             .accessibilityLabel("Shared playback: \(currentMedia.title)")
                         Text(currentMedia.title).font(.specialElite(18))
                         localAudioControls
                         if isHost, let state {
-                            Slider(value: $seekPosition, in: 0...max(1,currentMedia.duration), onEditingChanged: { editing in
+                            Slider(value: $seekPosition, in: 0...max(1,duration), onEditingChanged: { editing in
                                 seeking = editing
                                 if !editing { Task { await control(position: seekPosition, playing: state.playing) } }
                             }).accessibilityLabel("Shared video position").accessibilityIdentifier("watchTogether.seek")
@@ -81,6 +92,14 @@ struct WatchTogetherView: View {
                              : "Position uses the server's last update time and a measured clock offset of \(String(format: "%+.1f", clock.offset)) s (±\(String(format: "%.1f", clock.uncertainty)) s); a drift of a few seconds between members is expected.")
                             .font(.caption).foregroundColor(.sdTextSecondary)
                             .accessibilityIdentifier("watchTogether.clock")
+                    } else if let currentMedia, case .youtube = currentMedia.playbackSource {
+                        Text(currentMedia.title).font(.specialElite(18))
+                        Text("The host selected a YouTube video. Each member starts it with YouTube’s controls; shared play, pause, seek and volume are unavailable for this provider.")
+                            .foregroundColor(.sdTextSecondary)
+                            .accessibilityIdentifier("watchTogether.provider-independent")
+                        Button("Open shared YouTube video") { Task { await openProviderVideo() } }
+                            .disabled(busy).frame(minHeight: 44)
+                            .accessibilityIdentifier("watchTogether.open-provider")
                     } else if state == nil {
                         Text("No video selected in this room.")
                     }
@@ -88,11 +107,13 @@ struct WatchTogetherView: View {
                     if isHost {
                         Picker("Approved video", selection: $selectedMedia) {
                             Text("Choose video").tag("")
-                            ForEach(media) { Text($0.title).tag($0.id.uuidString) }
+                            ForEach(media) { Text($0.title + ($0.supportsSharedControls ? "" : " · YouTube (independent controls)")).tag($0.id.uuidString) }
                         }.accessibilityIdentifier("watchTogether.media-picker")
                         Button("Share selected video") { Task { await share() } }
                             .disabled(selectedMedia.isEmpty || busy)
                             .accessibilityIdentifier("watchTogether.share-video")
+                        Button("Refresh approved videos") { Task { await loadMedia(selected) } }
+                            .disabled(busy).accessibilityIdentifier("watchTogether.refresh-media")
                         if media.isEmpty { Text("No approved videos are available.").foregroundColor(.sdTextSecondary) }
                     }
                 } else {
@@ -114,14 +135,27 @@ struct WatchTogetherView: View {
         .navigationTitle("Watch Together").navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .task(id: identity) { await load() }
-        .task(id: selected?.id) {
-            guard let room = selected else { return }
-            while !Task.isCancelled && selected?.id == room.id {
-                await synchronize(room)
+        .task(id: playbackIdentity) {
+            guard !Task.isCancelled, resourcesAllowed, let room = selected else { return }
+            await loadMedia(room)
+            while !Task.isCancelled && resourcesAllowed && selected?.id == room.id {
+                _ = await synchronize(room)
                 do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
             }
         }
-        .onDisappear { leave() }
+        .sheet(item: $providerPlayback) { item in CommunityVideoPlayer(source: item.source, title: item.title) }
+        .onAppear {
+            resourcesSuspended = !subjectWindowVisible
+            if !subjectWindowVisible { suspendResources() }
+        }
+        .onChange(of: subjectWindowVisible) { visible in
+            resourcesSuspended = !visible
+            if !visible { suspendResources() }
+            // A selected room resumes through the visibility-keyed task, which
+            // rechecks membership and media before creating another player.
+            else if selected == nil { refresh += 1 }
+        }
+        .onDisappear { resourcesSuspended = true; leave() }
         .accessibilityIdentifier("watchTogether.screen")
     }
 
@@ -176,74 +210,100 @@ struct WatchTogetherView: View {
         player?.volume = Float(min(1, max(0, localVolume)))
     }
     @MainActor private func clearPlayback() {
+        playbackAdmission.invalidatePendingRequests()
+        player?.currentItem?.cancelPendingSeeks()
         player?.pause(); player?.replaceCurrentItem(with: nil); player = nil
-        state = nil; loadedMedia = nil; seeking = false; seekPosition = 0
+        state = nil; statusVideo = nil; loadedMedia = nil; loadedSource = nil; providerPlayback = nil; seeking = false; seekPosition = 0
     }
     @MainActor private func leave() {
-        generation = UUID(); clearPlayback(); selected = nil; selectedMedia = ""; busy = false; participants = []; clock = ServerClockEstimator()
+        generation = UUID(); clearPlayback(); playbackAdmission.reset(); catalogRequest = UUID(); selected = nil; selectedMedia = ""; media = []; busy = false; participants = []; clock = ServerClockEstimator()
+    }
+    @MainActor private func suspendResources() {
+        resourcesSuspended = true
+        generation = UUID(); catalogRequest = UUID()
+        clearPlayback(); busy = false
+        // Keep the selected room, picker selection, catalogue and navigation.
+        // Account/scene changes still run load()/leave() with their old policy.
     }
     @MainActor private func isCurrent(_ room: WatchRoom, account: String?, epoch: UUID) -> Bool {
         !Task.isCancelled && generation == epoch && selected?.id == room.id &&
-            auth.isAuthenticated && auth.userId == account && phase == .active
+            resourcesAllowed && auth.userId == account
     }
     @MainActor private func load() async {
         leave(); rooms = []; media = []; error = nil
-        guard auth.isAuthenticated, phase == .active, let account = auth.userId else { return }
+        guard resourcesAllowed, let account = auth.userId else { return }
         let epoch = generation
         busy = true; defer { if generation == epoch { busy = false } }
         do {
             let values: [WatchRoom] = try await client.from("sdi_rooms").select().eq("closed", value: false).limit(100).execute().value
-            let videos: [WatchMedia] = try await client.from("sdi_watch_media").select().limit(100).execute().value
-            guard !Task.isCancelled, generation == epoch, phase == .active, account == auth.userId, auth.isAuthenticated else { return }
-            rooms = values; media = videos.filter { $0.validURL != nil && $0.duration.isFinite && $0.duration > 0 }
+            guard !Task.isCancelled, generation == epoch, resourcesAllowed, account == auth.userId else { return }
+            rooms = values
         } catch {
-            guard !Task.isCancelled, generation == epoch, phase == .active, account == auth.userId else { return }
+            guard !Task.isCancelled, generation == epoch, resourcesAllowed, account == auth.userId else { return }
             self.error = "Watch Together is unavailable. Check your connection and room service configuration."
         }
     }
-    @MainActor private func synchronize(_ room: WatchRoom) async {
-        guard auth.isAuthenticated, phase == .active else { leave(); return }
+    @MainActor private func synchronize(_ room: WatchRoom, allowingBusy: Bool = false) async -> WatchPlaybackGrant? {
+        guard !Task.isCancelled, subjectWindowVisible, !resourcesSuspended else { return nil }
+        guard auth.isAuthenticated, phase == .active else { leave(); return nil }
+        guard !busy || allowingBusy else { return nil }
         let account = auth.userId; let epoch = generation
+        let ticket = playbackAdmission.beginRefresh()
         do {
             // Recheck room visibility every poll, even when no playback exists.
             let membership: [WatchRoom] = try await client.from("sdi_rooms").select().eq("id", value: room.id.uuidString).limit(1).execute().value
-            guard isCurrent(room, account: account, epoch: epoch) else { return }
-            guard let refreshedRoom = membership.first, membership.count == 1 else { leave(); error = "Room access ended."; return }
+            guard isCurrent(room, account: account, epoch: epoch), playbackAdmission.isCurrent(ticket) else { return nil }
+            guard let refreshedRoom = membership.first, membership.count == 1 else { leave(); error = "Room access ended."; return nil }
             selected = refreshedRoom
             let members: [WatchParticipant] = try await client.from("sdi_room_members").select("user_id,owner_approved,member_accepted,revoked")
                 .eq("room_id", value: room.id.uuidString).limit(100).execute().value
-            guard isCurrent(room, account: account, epoch: epoch) else { return }
+            guard isCurrent(room, account: account, epoch: epoch), playbackAdmission.isCurrent(ticket) else { return nil }
             participants = members.sorted { $0.user_id.uuidString < $1.user_id.uuidString }
             let sentAt = Date()
-            let playbackResponse: PostgrestResponse<[WatchPlayback]> = try await client.from("sdi_watch_sessions").select().eq("room_id", value: room.id.uuidString).limit(1).execute()
-            let values = playbackResponse.value
+            let playbackResponse = try await client.rpc("sdi_watch_action", params: WatchRoomRequest(action: "status", room: room.id)).execute()
+            let response = try CommunityCoding.decode(WatchRoomResponse.self, from: playbackResponse.data)
+            guard isCurrent(room, account: account, epoch: epoch), playbackAdmission.isCurrent(ticket) else { return nil }
             clock.record(sentAt: sentAt, receivedAt: Date(),
                          serverDate: playbackResponse.response.value(forHTTPHeaderField: "Date").flatMap(CommunityDates.parseHTTPDate))
-            guard isCurrent(room, account: account, epoch: epoch) else { return }
-            guard let value = values.first else { clearPlayback(); return }
-            // Rights withdrawal/expiry removes media immediately on the next poll.
-            let videos: [WatchMedia] = try await client.from("sdi_watch_media").select().eq("id", value: value.media_id.uuidString).limit(1).execute().value
-            guard isCurrent(room, account: account, epoch: epoch) else { return }
-            guard let video = videos.first, let url = video.validURL, value.position.isFinite,
-                  video.duration.isFinite, video.duration > 0 else { leave(); error = "Shared video is no longer available."; return }
+            if response.status == "empty" { clearPlayback(); return nil }
+            guard response.status == "confirmed", let value = response.session, let video = response.video,
+                  let source = video.playbackSource, value.isValid(for: video) else {
+                leave(); error = "Shared video is no longer available."; return nil
+            }
+            guard playbackAdmission.admit(value, media: video, ticket: ticket) else {
+                clearPlayback(); error = "Playback changed while refreshing. Waiting for a current room state."; return nil
+            }
+            let grant = WatchPlaybackGrant(ticket: ticket, session: value, media: video)
             media.removeAll { $0.id == video.id }; media.append(video)
-            if loadedMedia != video.id { player?.pause(); player = AVPlayer(url: url); loadedMedia = video.id }
+            state = value; statusVideo = video; error = nil
+            if let opened = providerPlayback, opened.id != video.id || opened.source != source { providerPlayback = nil }
+            guard let url = source.renditionURL, let duration = video.synchronizedDuration else {
+                player?.pause(); player?.replaceCurrentItem(with: nil); player = nil; loadedMedia = nil; loadedSource = nil
+                seeking = false; seekPosition = 0
+                return grant
+            }
+            if loadedMedia != video.id || loadedSource != source {
+                player?.pause(); player?.replaceCurrentItem(with: nil)
+                player = AVPlayer(url: url); loadedMedia = video.id; loadedSource = source
+            }
             applyLocalAudio()
-            state = value; error = nil
             // `updated_at` is server time; the estimator converts this device's
             // clock to server time using the measured reply-header offset.
             let target = clock.sharedPosition(position: value.position, playing: value.playing, updatedAt: value.updated_at,
-                                              duration: video.duration, deviceNow: Date())
+                                              duration: duration, deviceNow: Date())
             if !seeking {
                 if abs(finitePosition()-target) > 0.75 { await player?.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) }
-                guard isCurrent(room, account: account, epoch: epoch) else { return }
+                guard isCurrent(room, account: account, epoch: epoch), playbackAdmission.isCurrent(ticket) else { return nil }
                 seekPosition = target
             }
-            if value.playing && target < video.duration { player?.play() } else { player?.pause() }
+            guard isCurrent(room, account: account, epoch: epoch), playbackAdmission.isCurrent(ticket) else { return nil }
+            if value.playing && target < duration { player?.play() } else { player?.pause() }
+            return grant
         } catch {
-            guard isCurrent(room, account: account, epoch: epoch) else { return }
+            guard isCurrent(room, account: account, epoch: epoch), playbackAdmission.isCurrent(ticket) else { return nil }
             clearPlayback()
             self.error = "Playback paused because room access could not be refreshed. Reconnecting…"
+            return nil
         }
     }
     private func finitePosition() -> Double {
@@ -251,45 +311,90 @@ struct WatchTogetherView: View {
         return position.isFinite ? max(0, position) : 0
     }
     @MainActor private func control(position: Double, playing: Bool) async {
-        guard !busy, isHost, let current = state, let room = selected, position.isFinite else { return }
+        guard resourcesAllowed, !busy, isHost, let current = state, let room = selected, position.isFinite else { return }
         let epoch = generation; let account = auth.userId
-        busy = true; defer { if generation == epoch { busy = false } }
+        busy = true; let ticket = playbackAdmission.beginRefresh()
+        defer { if generation == epoch { busy = false } }
         do {
-            struct Change: Encodable { let position: Double; let playing: Bool }
-            let rows: [WatchPlayback] = try await client.from("sdi_watch_sessions")
-                .update(Change(position: min(currentMedia?.duration ?? 3600, max(0,position)), playing: playing))
-                .eq("id", value: current.id.uuidString).eq("revision", value: current.revision).select().execute().value
-            guard isCurrent(room, account: account, epoch: epoch) else { return }
-            guard rows.count == 1 else { error = "Playback changed elsewhere. Refreshing before the next control."; return }
-            await synchronize(room)
+            guard let duration = currentMedia?.synchronizedDuration else {
+                error = "YouTube uses independent provider controls."; return
+            }
+            let response = try await call(WatchRoomRequest(action: "control", room: room.id,
+                revision: current.revision, position: min(duration, max(0,position)), playing: playing))
+            guard isCurrent(room, account: account, epoch: epoch), playbackAdmission.isCurrent(ticket) else { return }
+            guard response.status == "confirmed", let updated = response.session, let video = response.video,
+                  updated.id == current.id, updated.media_id == current.media_id, updated.revision > current.revision,
+                  playbackAdmission.admit(updated, media: video, ticket: ticket) else {
+                throw CommunityError.invalidResponse("Playback change was not confirmed.")
+            }
+            _ = await synchronize(room, allowingBusy: true)
         } catch {
             guard isCurrent(room, account: account, epoch: epoch) else { return }
+            clearPlayback()
             self.error = "Playback change was not confirmed. Try again."
         }
     }
     @MainActor private func share() async {
-        guard !busy, isHost, let room = selected, let mediaID = UUID(uuidString: selectedMedia), media.contains(where: {$0.id == mediaID}) else { return }
-        let epoch = generation; let account = auth.userId
-        busy = true; defer { if generation == epoch { busy = false } }
+        guard resourcesAllowed, !busy, isHost, let room = selected, let mediaID = UUID(uuidString: selectedMedia), media.contains(where: {$0.id == mediaID}) else { return }
+        let epoch = generation; let account = auth.userId; let previous = state
+        busy = true; let ticket = playbackAdmission.beginRefresh()
+        defer { if generation == epoch { busy = false } }
         do {
-            struct Selection: Encodable { let room_id: UUID; let media_id: UUID; let position = 0.0; let playing = false }
-            let value = Selection(room_id: room.id, media_id: mediaID)
-            if let state {
-                struct Replacement: Encodable { let media_id: UUID; let position = 0.0; let playing = false }
-                let rows: [WatchPlayback] = try await client.from("sdi_watch_sessions").update(Replacement(media_id: mediaID))
-                    .eq("id", value: state.id.uuidString).eq("revision", value: state.revision).select().execute().value
-                guard isCurrent(room, account: account, epoch: epoch) else { return }
-                guard rows.count == 1 else { error = "Session changed. Refresh before sharing."; return }
-            } else {
-                try await client.from("sdi_watch_sessions").insert(value).execute()
+            let response = try await call(WatchRoomRequest(action: "select", room: room.id,
+                media: mediaID, revision: previous?.revision))
+            guard isCurrent(room, account: account, epoch: epoch), playbackAdmission.isCurrent(ticket) else { return }
+            guard response.status == "confirmed", let updated = response.session, let video = response.video,
+                  updated.media_id == mediaID,
+                  previous.map({ updated.id == $0.id && updated.revision > $0.revision }) ?? (updated.revision == 0),
+                  playbackAdmission.admit(updated, media: video, ticket: ticket) else {
+                throw CommunityError.invalidResponse("Video selection was not confirmed.")
             }
-            guard isCurrent(room, account: account, epoch: epoch) else { return }
-            await synchronize(room)
+            _ = await synchronize(room, allowingBusy: true)
         } catch {
             guard isCurrent(room, account: account, epoch: epoch) else { return }
+            clearPlayback()
             self.error = "Video selection was not confirmed. Refresh and try again."
         }
     }
+    @MainActor private func call(_ request: WatchRoomRequest) async throws -> WatchRoomResponse {
+        let response = try await client.rpc("sdi_watch_action", params: request).execute()
+        return try CommunityCoding.decode(WatchRoomResponse.self, from: response.data)
+    }
+    @MainActor private func loadMedia(_ room: WatchRoom) async {
+        guard resourcesAllowed else { return }
+        let account = auth.userId; let epoch = generation
+        let request = UUID(); catalogRequest = request
+        do {
+            let response = try await call(WatchRoomRequest(action: "catalog", room: room.id))
+            guard isCurrent(room, account: account, epoch: epoch), catalogRequest == request else { return }
+            guard let videos = response.media, videos.count <= 100,
+                  videos.allSatisfy({ $0.playbackSource != nil }) else {
+                throw CommunityError.invalidResponse("The video library is unavailable.")
+            }
+            media = videos
+            if !media.contains(where: { $0.id.uuidString == selectedMedia }) { selectedMedia = "" }
+        } catch {
+            guard isCurrent(room, account: account, epoch: epoch), catalogRequest == request else { return }
+            media = []; selectedMedia = ""
+            self.error = "Approved videos are unavailable. Reconnect after checking room service configuration."
+        }
+    }
+    @MainActor private func openProviderVideo() async {
+        guard resourcesAllowed, !busy, let room = selected, let expected = state, let expectedVideo = currentMedia,
+              case .youtube = expectedVideo.playbackSource, let expectedSource = expectedVideo.playbackSource else { return }
+        let account = auth.userId; let epoch = generation
+        busy = true; playbackAdmission.invalidatePendingRequests()
+        defer { if generation == epoch { busy = false } }
+        // Only this tap's own accepted, latest fresh grant may open the sheet.
+        // A superseded/failed read never falls back to an old displayed row.
+        guard let grant = await synchronize(room, allowingBusy: true),
+              isCurrent(room, account: account, epoch: epoch), playbackAdmission.isCurrent(grant.ticket),
+              grant.session == state, grant.session.id == expected.id,
+              grant.session.media_id == expected.media_id, grant.session.revision == expected.revision,
+              grant.media.playbackSource == expectedSource else { return }
+        providerPlayback = WatchProviderPlayback(id: grant.media.id, source: expectedSource, title: grant.media.title)
+    }
+
 }
 
 private struct WatchRoom: Decodable, Identifiable { let id: UUID; let owner_id: UUID; let title: String }
@@ -297,15 +402,8 @@ private struct WatchParticipant: Decodable, Identifiable {
     var id: UUID { user_id }
     let user_id: UUID; let owner_approved: Bool; let member_accepted: Bool; let revoked: Bool
 }
-private struct WatchPlayback: Decodable, Identifiable {
-    let id: UUID; let media_id: UUID; let position: Double; let playing: Bool
-    let revision: Int; let updated_at: Date
-}
-private struct WatchMedia: Decodable, Identifiable {
-    let id: UUID; let title: String; let url: String; let duration: Double
-    var validURL: URL? {
-        guard let components = URLComponents(string: url), components.scheme == "https",
-              components.host != nil, components.user == nil, components.password == nil else { return nil }
-        return components.url
-    }
+private struct WatchProviderPlayback: Identifiable {
+    let id: UUID
+    let source: FeedPlaybackSource
+    let title: String
 }

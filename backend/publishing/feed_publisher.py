@@ -26,6 +26,8 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import subprocess
+import re
+import urllib.parse
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 
@@ -39,7 +41,7 @@ POSTER_EDGE = 640
 class FeedJobAPI(JobAPI):
     """Service-role RPC client for the four feed worker functions."""
     PREFIX = "sdi_feed_"
-    PERMITTED = frozenset({"publish_claim", "publish_finish", "removal_claim", "removal_finish"})
+    PERMITTED = frozenset({"publish_claim", "publish_finish", "publish_reference", "removal_claim", "removal_finish"})
 
 
 class HostingAdapter(Protocol):
@@ -109,8 +111,21 @@ class FeedPublisher:
                 return {"state": "idle"}
             return self._publish(job)
 
+    @staticmethod
+    def _hosted_url(url) -> bool:
+        if not isinstance(url, str) or len(url) > 2048:
+            return False
+        try:
+            parts = urllib.parse.urlsplit(url)
+            host = (parts.hostname or "").lower().rstrip(".")
+            reserved = ("youtube.com", "youtu.be", "youtube-nocookie.com", "googlevideo.com", "ytimg.com")
+            return (parts.scheme == "https" and bool(host) and not parts.username and not parts.password
+                    and not any(host == name or host.endswith("." + name) for name in reserved))
+        except ValueError:
+            return False
+
     def _delete(self, url) -> bool:
-        if not isinstance(url, str) or not url.startswith("https://"):
+        if not self._hosted_url(url):
             return False
         try:
             return self.host.delete(url) is True
@@ -131,11 +146,17 @@ class FeedPublisher:
         if job.get("destination") != "feed":
             self.api.call("publish_finish", job=job_id, token=token, url=None, duration=None, failure="Unsupported destination for the feed worker.")
             return {"state": "failed", "job": job_id, "reason": "unsupported destination"}
+        provider = job.get("playback_provider", "rendition")
+        if provider == "youtube":
+            return self._reference(job)
+        if provider != "rendition":
+            self.api.call("publish_finish", job=job_id, token=token, url=None, duration=None, failure="Unsupported feed playback provider.")
+            return {"state": "failed", "job": job_id, "reason": "unsupported playback provider"}
         try:
             source = self._artifact(job)
             duration = self._duration(source)
             url = self.host.put("%s.mp4" % job["digest"], source, job["digest"])
-            if not isinstance(url, str) or not url.startswith("https://") or len(url) > 2048:
+            if not self._hosted_url(url):
                 raise FeedError("Hosting adapter returned no HTTPS URL; nothing published.")
         except FeedError as error:
             self.api.call("publish_finish", job=job_id, token=token, url=None, duration=None, failure=str(error))
@@ -159,6 +180,23 @@ class FeedPublisher:
         if poster_cleanup:
             result["poster_cleanup"] = poster_cleanup
         return result
+
+    def _reference(self, job: dict) -> dict:
+        """Only the database may resolve a verified channel job into feed metadata.
+        No artifact lookup, probe, poster extraction, upload or host deletion.
+        """
+        result = self.api.call("publish_reference", job=job["job"], token=job["lease"])
+        if not isinstance(result, dict):
+            return {"state": "reconcile", "job": job["job"], "reason": "reference result unavailable"}
+        state = result.get("state")
+        if state == "published":
+            url = result.get("url")
+            if not isinstance(url, str) or not re.fullmatch(r"https://www\.youtube\.com/watch\?v=[A-Za-z0-9_-]{11}", url):
+                return {"state": "reconcile", "job": job["job"], "reason": "reference result invalid"}
+            return {"state": "published", "job": job["job"], "url": url, "playback_provider": "youtube"}
+        if state in ("cancelled", "unavailable"):
+            return {"state": state, "job": job["job"], "playback_provider": "youtube"}
+        return {"state": "reconcile", "job": job["job"], "reason": "reference not confirmed"}
 
     def _poster(self, job: dict, source: Path, duration: float):
         """Extract, bound, hash and host the poster.
@@ -209,7 +247,7 @@ class FeedPublisher:
             url = self.host.put("%s.poster.jpg" % job["digest"], staging, digest)
         except Exception:
             return None, "Poster hosting failed; the video is published without a poster."
-        if not isinstance(url, str) or not url.startswith("https://") or len(url) > 2048:
+        if not self._hosted_url(url):
             return None, "Poster hosting returned no HTTPS URL."
         return {"url": url, "digest": digest, "bytes": size}, None
 

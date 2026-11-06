@@ -89,5 +89,24 @@
     <string>$(SDI_PUBLISHING_CONSENT_VERSION)</string>
     <key>SDI_PUBLISHING_TERMS_URL</key>
     <string>$(SDI_PUBLISHING_TERMS_URL)</string>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.willisnmb.stickdeathinfinity.frame-reorder</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.willisnmb.stickdeathinfinity.layer-reorder</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

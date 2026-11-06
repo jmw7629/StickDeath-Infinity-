@@ -33,3 +33,34 @@ The separate `StickDeathInfinityAuthTests` scheme contains the native regression
 ## Epic #9 evidence (sign-in with session restoration)
 
 One `AuthService` owns every provider and the server UUID is the only account identity (`Services/Auth/AuthService.swift`); provider callbacks must match `stickdeath://auth/callback` with exactly one `code` and no `error=`, and unsolicited or replayed callbacks are refused (`handleOAuthCallback`, `DeepLinkRouter`). Apple uses a native nonce/state request with cancellation mapped to no banner, first-authorization name persistence, private-relay handles and the revocation check above; Google, GitHub (identity scopes only) and Microsoft (explicit tenant, `AADSTS` mapping) share the PKCE browser session with browser-cancel and `access_denied` mapped to calm messages. Restoration refreshes the Keychain session through the SDK, classifies revoked/expired/offline results separately, discards a session left by a previous install (`sdi.installMarker`) and keeps sign-in buttons disabled while loading. Forgot Password is neutral with a 60 s cooldown, sign-up awaiting confirmation shows "Check your email", a taken username is a notice, and account deletion is refused truthfully. All of this is covered by `Tests/AuthState` (deferred native execution); real provider sign-in on a configured device remains an owner-gated check.
+
+## Current verified native deployment (6 November 2026)
+
+Read-only discovery of the existing Release Supabase backend returned HTTP 200 at
+12:26:30 UTC: Apple enabled; Google, GitHub and Azure/Microsoft disabled. The
+native backend remains the Supabase project already declared by Release. The
+separate Hostinger administrator identity service is not substituted for it.
+
+Interactive Debug now uses the exact existing Release public endpoint and
+publishable key. These are public client configuration, not provider credentials.
+Both configurations explicitly leave SDI_OAUTH_PROVIDERS empty: a compiled button
+must not advertise an unsupported Google, GitHub or Microsoft deployment. Apple
+continues through the native identity-token flow; server enabled=true does not
+prove a successful signed-device login, bundle audience, entitlement or account
+restoration. Real Apple sign-in still requires that end-to-end verification.
+
+Google, GitHub and Microsoft require genuine owner-controlled provider app
+registration and server-side client credentials before enabling them. Keep secrets
+off clients. Verify the intended project's exact native callback allowlist
+(stickdeath://auth/callback, and stickdeath://auth/reset for recovery), issuer,
+audience and account-linking policy. Microsoft additionally needs a matching
+explicit tenant. Add a provider to the public list only after its server setup
+and actual success/cancellation/denial flows are verified; no provider was enabled
+or tested by this source change.
+
+Existing offline Auth, Journey, Studio and unsigned Review CI empty overrides
+remain unchanged. The Simulator compile/capture helper now also appends empty
+values for its existing exact LIBRARY_OFFLINE_SETTINGS tuple before build. Its
+offline refusal check and all command ownership, assertions and time budgets stay
+intact. This prevents configured Debug defaults from connecting that CI helper to
+the real backend; it does not establish new native runtime acceptance.

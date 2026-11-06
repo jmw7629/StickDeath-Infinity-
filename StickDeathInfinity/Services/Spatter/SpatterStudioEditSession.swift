@@ -23,6 +23,7 @@ final class SpatterStudioEditSession: ObservableObject {
     /// Resolves a libraryPicture instruction to a verified import. The Studio
     /// panel supplies the bundled Image Library; nil means no library here.
     typealias LibraryPictureResolver = @MainActor (SpatterLibraryPictureInstruction) async throws -> StudioImageImportService.ImportedImage
+    typealias LibrarySoundResolver = @MainActor (SpatterLibrarySoundInstruction) async throws -> StudioCatalogueSoundSource.Prepared
     enum SelectionRoute: Equatable { case area, wand }
     enum SaveState: Equatable {
         case unavailable, projectChanged, unsaved, saving, saved
@@ -70,9 +71,11 @@ final class SpatterStudioEditSession: ObservableObject {
         var selectionTranslate: SpatterSelectionTranslateInstruction? = nil
         var selectionTransform: SpatterSelectionTransformInstruction? = nil
         var selectionReflectAxis: StudioReflectionAxis? = nil
+        var artworkTransform: SpatterArtworkTransformInstruction? = nil
         var imageRotation: StudioImageQuarterTurn? = nil
         var imageCrop: StudioImageCrop? = nil
         var imagePlacement: SpatterImagePlacementInstruction? = nil
+        var textCreate: SpatterTextCreateInstruction? = nil
         var textUpdate: SpatterTextUpdateInstruction? = nil
         // October 13 registry extensions, briefs and batches (#204, #205, #206, #214).
         var storyboard: SpatterStoryboard? = nil
@@ -81,6 +84,8 @@ final class SpatterStudioEditSession: ObservableObject {
         var frameClipboard: SpatterFrameClipboardInstruction? = nil
         var projectSettings: SpatterProjectSettingsInstruction? = nil
         var brushStroke: SpatterBrushStrokeInstruction? = nil
+        var freehandStroke: SpatterFreehandInstruction? = nil
+        var shape: SpatterShapeInstruction? = nil
         /// Content of the frames and layers this edit created, captured right after
         /// apply, so a typed revert can prove they are still untouched later.
         var createdFrames: [AnimationFrame] = []
@@ -96,7 +101,26 @@ final class SpatterStudioEditSession: ObservableObject {
         var selectionRoute: SelectionRoute? = nil
         var selectedDrawingCount: Int = 0
         var libraryPictureName: String? = nil
+        var librarySound: SpatterLibrarySoundInstruction? = nil
+        var librarySoundTitle: String? = nil
+        var librarySoundDuration: Double? = nil
+        var gradientFill: SpatterGradientInstruction? = nil
+        var gradientSelectedDrawingCount: Int = 0
+        var gradientCoveredPixels: Int = 0
+        var pixelEffect: SpatterPixelEffectInstruction? = nil
+        var pixelEffectSelectedDrawings: Int = 0
         var summary: String {
+            if let pixelEffect {
+                let coverage = pixelEffectSelectedDrawings == 0 ? "the active layer" : "the current drawing/Wand coverage (\(pixelEffectSelectedDrawings) drawings)"
+                return "Applied editable \(pixelEffect.summary) to \(coverage), after verifying a real change in existing pixels. One Undo removes the effect; original artwork remains editable. Tool preferences, export and publication were unchanged."
+            }
+            if let gradientFill {
+                let scope = gradientSelectedDrawingCount == 0 ? "the active layer" : "the current drawing/Wand selection (\(gradientSelectedDrawingCount) drawings)"
+                return "Applied an editable \(gradientFill.summary) to \(scope), with \(gradientCoveredPixels) pixels of mask coverage, after verifying a real pixel change. One Undo removes it; original artwork remains editable. Tool preferences, export and publication were unchanged."
+            }
+            if let librarySound, let librarySoundTitle, let librarySoundDuration {
+                return "Added licensed Sound Library sound \u{201C}\(librarySoundTitle)\u{201D}, \(String(format: "%.6g", librarySoundDuration)) seconds of verified audio, to track \(librarySound.track) at \(String(format: "%.6g", librarySound.startSeconds)) seconds in one Undo step. Playback, export and publication were not started."
+            }
             if let selectionRoute {
                 let rule = selectionRoute == .area ? "fully inside the outline under the Lasso's rules"
                     : "touched by the Wand's color region (no feather; effects use the drawings' own pixels)"
@@ -114,6 +138,10 @@ final class SpatterStudioEditSession: ObservableObject {
                 return "Recorded \(recordedSource.url.absoluteString) as a \(recordedSource.rightsBasis.label) reference in one undoable local edit; nothing was downloaded. \(decision.allowed ? "20–60 s briefs may now generate from it." : "Generation stays refused:") \(decision.reason)"
             }
             if let selectByID {
+                if selectByID.mode != .explicitIDs {
+                    let action = selectByID.mode == .all ? "Select all" : "Invert"
+                    return "\(action): \(selectedDrawingCount) visible editable drawing\(selectedDrawingCount == 1 ? " is" : "s are") selected on the active frame. Hidden, locked, transparent, eraser and off-canvas artwork were excluded. The project and Undo history did not change; use Move next."
+                }
                 return selectByID.elementIDs.isEmpty ? "Cleared the drawing selection. The project did not change."
                     : "Selected \(selectByID.elementIDs.count) drawing\(selectByID.elementIDs.count == 1 ? "" : "s") on the active frame by ID. The project did not change; use Move or a selection instruction next."
             }
@@ -146,6 +174,12 @@ final class SpatterStudioEditSession: ObservableObject {
                 let rate = projectSettings.fps.map { "\($0) FPS" }
                 return "Updated project settings (\([size, rate].compactMap { $0 }.joined(separator: ", "))) in one Undo step. Artwork coordinates are unchanged; audio keeps its time in seconds."
             }
+            if let shape {
+                return "Drew one editable \(shape.summary) on the active frame and layer in one Undo step. No frames were added or exported."
+            }
+            if let freehandStroke {
+                return "Drew one editable native \(freehandStroke.summary) on the active frame/layer in one Undo step. Pressure/tilt, mirror and ruler were off. Remembered tool preferences, export and publication were unchanged."
+            }
             if let brushStroke {
                 return "Drew one \(SpatterBrushStrokeInstruction.name(brushStroke.family)) brush stroke on the active layer in one Undo step. It is an editable stroke with its own brush settings."
             }
@@ -158,6 +192,10 @@ final class SpatterStudioEditSession: ObservableObject {
                 }
                 if let soloed = edit.soloed { return "\(soloed ? "Soloed" : "Unsoloed") audio track \(edit.track) in one Undo step. Other tracks keep their own settings." }
                 return "\(edit.muted == true ? "Muted" : "Unmuted") audio track \(edit.track) in one Undo step. Clips and original audio are preserved."
+            }
+            if let artworkTransform {
+                return receipt.outcome == .unchanged ? "The selected artwork did not change. Nothing changed."
+                    : "Applied one local edit: \(artworkTransform.summary). One Undo restores the complete selection; original image bytes and editable drawings are preserved."
             }
             if let selectionTranslate {
                 return receipt.outcome == .unchanged ? "The selected drawings did not move. Nothing changed."
@@ -180,6 +218,9 @@ final class SpatterStudioEditSession: ObservableObject {
             if let imagePlacement {
                 return receipt.outcome == .unchanged ? "The selected image already has this placement. Nothing changed."
                     : "Placed the selected image at (\(String(format: "%.6g", imagePlacement.xPercent))%, \(String(format: "%.6g", imagePlacement.yPercent))%) with size \(String(format: "%.6g", imagePlacement.widthPercent))% × \(String(format: "%.6g", imagePlacement.heightPercent))%\(imagePlacement.angleDegrees.map { " and angle \(String(format: "%.6g", $0))°" } ?? "") in one Undo step. Original image bytes are unchanged."
+            }
+            if let textCreate {
+                return "Created one editable \(textCreate.summary) in one Undo step. Existing artwork, the selected tool and its remembered settings are unchanged."
             }
             if textUpdate != nil {
                 return receipt.outcome == .unchanged ? "The selected text already has this content and color. Nothing changed."
@@ -301,6 +342,7 @@ final class SpatterStudioEditSession: ObservableObject {
     @Published private(set) var appliedEdit: AppliedEdit?
     @Published private(set) var exportHandoff: ExportHandoff?
     var libraryPictureResolver: LibraryPictureResolver?
+    var librarySoundResolver: LibrarySoundResolver?
     @Published private(set) var isClosed = false
     var isWorking: Bool { status == .preparing }
 
@@ -344,14 +386,25 @@ final class SpatterStudioEditSession: ObservableObject {
         let selectedTool: DrawingTool?
         let activePanel: StudioPanelType
         let isPlaying: Bool
+        /// Only library-sound creation owns a captured playhead; unrelated
+        /// instruction routes keep their existing context contract.
+        let librarySoundPlayhead: Double?
+        let gradient: StudioViewModel.GradientCapture?
+        let artworkTransform: StudioViewModel.SelectionHandleCapture?
+        let capturesArtworkTransform: Bool
         init(accountID: String?, screen: StudioViewModel.CommandScreenContext, document: StudioCommandContext,
-             selectedImage: StudioViewModel.ImageMoveCapture?, selectedArtwork: StudioViewModel.SelectionHandleCapture?, mixedArtwork: Bool) {
+             selectedImage: StudioViewModel.ImageMoveCapture?, selectedArtwork: StudioViewModel.SelectionHandleCapture?, mixedArtwork: Bool,
+             captureLibrarySoundPlayhead: Bool = false, gradient: StudioViewModel.GradientCapture? = nil,
+             artworkTransform: StudioViewModel.SelectionHandleCapture? = nil, capturesArtworkTransform: Bool = false) {
             self.accountID = accountID; projectID = document.projectID; revision = document.revision
             activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
             displayedFrameID = screen.displayedFrameID; selectedElementIDs = screen.selectedElementIDs
             selectedAudioClipID = screen.selectedAudioClipID; selectedTool = screen.selectedTool
             self.selectedImage = selectedImage; self.selectedArtwork = selectedArtwork; self.mixedArtwork = mixedArtwork
             activePanel = screen.activePanel; isPlaying = screen.isPlaying
+            librarySoundPlayhead = captureLibrarySoundPlayhead ? screen.audioPlayheadTime : nil
+            self.gradient = gradient; self.artworkTransform = artworkTransform
+            self.capturesArtworkTransform = capturesArtworkTransform
         }
     }
     private enum SessionError: LocalizedError {
@@ -376,7 +429,6 @@ final class SpatterStudioEditSession: ObservableObject {
                 submissionID: UUID = UUID(), currentScope: @escaping ScopeProvider) -> Bool {
         guard !isWorking else { return false }
         guard !isClosed else { notice = "This local edit session is closed. Open a new session to create another recipe."; return false }
-        appliedEdit = nil; appliedAccountID = nil; exportHandoff = nil
         guard draft.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else {
             status = .rejected; notice = SpatterMotionRecipe.RecipeError.instructionTooLong.localizedDescription; return false
         }
@@ -387,6 +439,9 @@ final class SpatterStudioEditSession: ObservableObject {
         guard acceptedIDs.count < Self.maximumSubmissions else {
             status = .rejected; notice = "This local edit session has reached its request limit. Open a new session; your project is unchanged."; return false
         }
+        // A rejected draft or replay is not a new edit; keep the previous receipt.
+        // Context/eligibility rejection and accepted preparation keep their existing cleanup.
+        appliedEdit = nil; appliedAccountID = nil; exportHandoff = nil
         let scope = currentScope(), screen = studio.commandScreenContext
         do {
             guard scope.isStudioVisible else { throw SessionError.outsideStudio }
@@ -395,7 +450,11 @@ final class SpatterStudioEditSession: ObservableObject {
         } catch { reject(error); return false }
         guard let document = screen.document else { reject(SessionError.outsideStudio); return false }
         let captured = Capture(accountID: accountID, screen: screen, document: document,
-                               selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork)
+                               selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork,
+                               captureLibrarySoundPlayhead: SpatterLibrarySoundInstruction.isInstruction(draft),
+                               gradient: (SpatterGradientInstruction.isInstruction(draft) || SpatterPixelEffectInstruction.isInstruction(draft)) ? studio.capturePixelEffect() : nil,
+                               artworkTransform: SpatterArtworkTransformInstruction.isInstruction(draft) ? studio.beginSpatterArtworkTransform() : nil,
+                               capturesArtworkTransform: SpatterArtworkTransformInstruction.isInstruction(draft))
         let started = now()
         let deadline = started.advanced(by: budget)
         acceptedIDs.insert(submissionID)
@@ -448,6 +507,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isImageRotation = SpatterImageRotationInstruction.isInstruction(draft)
                 let isImageCrop = SpatterImageCropInstruction.isInstruction(draft)
                 let isImagePlacement = SpatterImagePlacementInstruction.isInstruction(draft)
+                let isTextCreate = SpatterTextCreateInstruction.isInstruction(draft)
                 let isTextUpdate = SpatterTextUpdateInstruction.isInstruction(draft)
                 var selectionTranslate: SpatterSelectionTranslateInstruction?
                 var selectionTransform: SpatterSelectionTransformInstruction?
@@ -455,6 +515,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 var imageRotation: StudioImageQuarterTurn?
                 var imageCrop: StudioImageCrop?
                 var imagePlacement: SpatterImagePlacementInstruction?
+                var textCreate: SpatterTextCreateInstruction?
                 var textUpdate: SpatterTextUpdateInstruction?
                 // October 13 registry extensions (#204), batches (#205) and briefs (#206).
                 let isBatch = SpatterInstructionBatch.isBatch(draft)
@@ -462,12 +523,16 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isFrameClipboard = SpatterFrameClipboardInstruction.isInstruction(draft)
                 let isProjectSettings = SpatterProjectSettingsInstruction.isInstruction(draft)
                 let isBrushStroke = SpatterBrushStrokeInstruction.isInstruction(draft)
+                let isFreehandStroke = SpatterFreehandInstruction.isInstruction(draft)
+                let isShape = SpatterShapeInstruction.isInstruction(draft)
                 var batchSummary: String?
                 var storyboard: SpatterStoryboard?
                 var tweenInstruction: SpatterTweenInstruction?
                 var frameClipboardInstruction: SpatterFrameClipboardInstruction?
                 var projectSettingsInstruction: SpatterProjectSettingsInstruction?
                 var brushStrokeInstruction: SpatterBrushStrokeInstruction?
+                var freehandStrokeInstruction: SpatterFreehandInstruction?
+                var shapeInstruction: SpatterShapeInstruction?
                 var exposureInstruction: SpatterFrameExposureInstruction?
                 var reverseInstruction: SpatterFrameReverseInstruction?
                 var duplicateRangeInstruction: SpatterFrameDuplicateRangeInstruction?
@@ -492,6 +557,9 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isAreaSelect = SpatterAreaSelectInstruction.isInstruction(draft)
                 let isWandSelect = SpatterWandSelectInstruction.isInstruction(draft)
                 let isLibraryPicture = SpatterLibraryPictureInstruction.isInstruction(draft)
+                let isLibrarySound = SpatterLibrarySoundInstruction.isInstruction(draft)
+                let isGradientFill = SpatterGradientInstruction.isInstruction(draft)
+                let isPixelEffect = SpatterPixelEffectInstruction.isInstruction(draft)
                 let isProjectExport = SpatterProjectExportInstruction.isInstruction(draft)
                 var selectionRoute: SelectionRoute?
                 var selectedCount = 0
@@ -506,6 +574,48 @@ final class SpatterStudioEditSession: ObservableObject {
                                                               revision: document.revision, accountID: captured.accountID), format: format)
                     self.status = .handedOff
                     self.notice = "Starting Studio's direct \(format.rawValue.uppercased()) export of saved revision \(document.revision) to a file on this device. The project did not change; nothing is uploaded, shared or published."
+                    return
+                } else if !isBatch && SpatterArtworkTransformInstruction.isInstruction(draft) {
+                    let instruction = try SpatterArtworkTransformInstruction.parse(draft)
+                    guard !captured.isPlaying, captured.displayedFrameID == captured.activeFrameID,
+                          let target = captured.artworkTransform else { throw SpatterArtworkTransformInstruction.Failure.selection }
+                    let values = try instruction.values(width: document.width, height: document.height)
+                    try await self.checkpoint()
+                    try check()
+                    try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                    let receipt = try studio.applySpatterArtworkTransform(target,
+                        dx: values.dx, dy: values.dy, scale: values.scale, rotation: values.rotation,
+                        flipHorizontal: values.flipHorizontal, flipVertical: values.flipVertical, requestID: submissionID,
+                        checkCancellation: {
+                            try check()
+                            try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                        })
+                    let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: 0, gridInstruction: nil, onionInstruction: nil,
+                        frameExposureTicks: nil, frameAction: nil, isLayerGlowEdit: false, isLayerDuplicate: false,
+                        isLayerUpdate: false, layerVisibility: nil, layerOrderUp: nil, artworkOrderForward: nil,
+                        imageReflectionAxis: nil, isAudioEdit: false, renamedProjectName: nil, addedAudioClipCount: 0,
+                        removedAudioClipCount: 0, changedExistingAudioClipCount: 0, addedFrameCount: 0,
+                        fps: studio.fps, addedDurationSeconds: 0, artworkTransform: instruction)
+                    self.appliedAccountID = captured.accountID
+                    self.appliedEdit = result; self.status = .applied; self.notice = result.summary
+                    return
+                } else if !isBatch && isPixelEffect {
+                    let result = try await self.applyPixelEffect(draft, captured: captured, studio: studio,
+                        submissionID: submissionID, check: check, currentScope: currentScope)
+                    self.appliedAccountID = captured.accountID
+                    self.appliedEdit = result; self.status = .applied; self.notice = result.summary
+                    return
+                } else if !isBatch && isGradientFill {
+                    let result = try await self.applyGradient(draft, captured: captured, studio: studio,
+                        submissionID: submissionID, check: check, currentScope: currentScope)
+                    self.appliedAccountID = captured.accountID
+                    self.appliedEdit = result; self.status = .applied; self.notice = result.summary
+                    return
+                } else if !isBatch && isLibrarySound {
+                    let result = try await self.addLibrarySound(draft, document: document, captured: captured, studio: studio,
+                        submissionID: submissionID, check: check, currentScope: currentScope)
+                    self.appliedAccountID = captured.accountID
+                    self.appliedEdit = result; self.status = .applied; self.notice = result.summary
                     return
                 } else if !isBatch && isLibraryPicture {
                     let result = try await self.addLibraryPicture(draft, document: document, captured: captured, studio: studio,
@@ -550,7 +660,18 @@ final class SpatterStudioEditSession: ObservableObject {
                 } else if !isBatch && isSelectByID {
                     guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before selecting drawings.") }
                     let instruction = try SpatterSelectByIDInstruction.parse(draft)
-                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    if instruction.mode == .explicitIDs {
+                        preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    } else {
+                        guard studio.currentFrame.id == document.activeFrameID, captured.selectedImage == nil, !studio.hasFillImageTarget,
+                              !studio.hasDrawingWandSelection, studio.wandSelectedPixels == 0, !studio.wandWorking else {
+                            throw SessionError.unavailable("Clear image and Wand pixel selections, then show the active frame before selecting whole drawings. Nothing was selected.")
+                        }
+                        let eligible = try studio.visibleEditableDrawingIDs(checkCancellation: check)
+                        let resolved = try instruction.resolving(eligibleIDs: eligible.sorted(), selectedIDs: captured.selectedElementIDs, checkCancellation: check)
+                        preparedRequest = try resolved.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                        selectedCount = resolved.elementIDs.count
+                    }
                     selectByIDInstruction = instruction
                 } else if !isBatch && isFill {
                     // The same capture and region computation as the Fill tool. A
@@ -712,6 +833,11 @@ final class SpatterStudioEditSession: ObservableObject {
                         preparedRequest = try instruction.prepare(in: document, frameID: frameID, layerID: layerID, assetID: assetID, requestID: submissionID, checkCancellation: check)
                         imagePlacement = instruction
                     }
+                } else if isTextCreate {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before creating text with Spatter.") }
+                    let instruction = try SpatterTextCreateInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    textCreate = instruction
                 } else if isTextUpdate {
                     let instruction = try SpatterTextUpdateInstruction.parse(draft)
                     // Exactly one captured selected element that is a real text box on the active frame.
@@ -738,6 +864,16 @@ final class SpatterStudioEditSession: ObservableObject {
                     let instruction = try SpatterProjectSettingsInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
                     projectSettingsInstruction = instruction
+                } else if isShape {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before drawing with Spatter.") }
+                    let instruction = try SpatterShapeInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    shapeInstruction = instruction
+                } else if isFreehandStroke {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before drawing with Spatter.") }
+                    let instruction = try SpatterFreehandInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    freehandStrokeInstruction = instruction
                 } else if isBrushStroke {
                     guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before drawing with Spatter.") }
                     let instruction = try SpatterBrushStrokeInstruction.parse(draft)
@@ -791,6 +927,11 @@ final class SpatterStudioEditSession: ObservableObject {
                 // No suspension between the last fresh context check and this
                 // synchronous atomic VM transaction. Its own original revision,
                 // brush-input, work-budget and cancellation guards still apply.
+                if let instruction = selectByIDInstruction, instruction.mode != .explicitIDs {
+                    guard !studio.hasFillImageTarget, !studio.hasDrawingWandSelection, studio.wandSelectedPixels == 0, !studio.wandWorking else {
+                        throw SessionError.contextChanged
+                    }
+                }
                 let previousMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }
@@ -823,9 +964,9 @@ final class SpatterStudioEditSession: ObservableObject {
                     fps: studio.fps, addedDurationSeconds: Double(addedTicks) / Double(studio.fps),
                     audioTrackInstruction: audioTrackInstruction, cutFrameCount: isFrameCut ? document.frames.filter { old in !studio.frames.contains { $0.id == old.id } }.count : 0, duplicatedDrawingCount: isDrawingDuplicate ? receipt.createdElementIDs.count : 0,
                     selectionTranslate: selectionTranslate, selectionTransform: selectionTransform, selectionReflectAxis: selectionReflectAxis,
-                    imageRotation: imageRotation, imageCrop: imageCrop, imagePlacement: imagePlacement, textUpdate: textUpdate,
+                    imageRotation: imageRotation, imageCrop: imageCrop, imagePlacement: imagePlacement, textCreate: textCreate, textUpdate: textUpdate,
                     storyboard: storyboard, batchSummary: batchSummary, tween: tweenInstruction, frameClipboard: frameClipboardInstruction,
-                    projectSettings: projectSettingsInstruction, brushStroke: brushStrokeInstruction,
+                    projectSettings: projectSettingsInstruction, brushStroke: brushStrokeInstruction, freehandStroke: freehandStrokeInstruction, shape: shapeInstruction,
                     createdFrames: studio.document.frames.filter { newIDs.contains($0.id) },
                     createdLayers: studio.document.layers.filter { Set(receipt.createdLayerIDs).contains($0.id) },
                     fill: fillInstruction, selectByID: selectByIDInstruction, source: sourceInstruction,
@@ -886,6 +1027,133 @@ final class SpatterStudioEditSession: ObservableObject {
             renamedProjectName: nil, addedAudioClipCount: 0, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
             addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, libraryPictureName: imported.name)
     }
+    private func applyPixelEffect(_ draft: String, captured: Capture, studio: StudioViewModel,
+                                  submissionID: UUID, check: () throws -> Void,
+                                  currentScope: ScopeProvider) async throws -> AppliedEdit {
+        let instruction = try SpatterPixelEffectInstruction.parse(draft)
+        guard !captured.isPlaying, let capture = captured.gradient, studio.capturePixelEffect() == capture else {
+            throw SessionError.unavailable("Stop playback, finish drafts, and show an active layer with Free lock before applying an effect. Nothing changed.")
+        }
+        guard capture.imageSelectionID == nil, !capture.imagePixelsSelected else {
+            throw SessionError.unavailable("Spatter raster effects support drawing/Wand coverage or the full active layer. Deselect the image or image-pixel selection first. Nothing changed.")
+        }
+        guard studio.planAllowsTool(instruction.settings.tool) else { throw SessionError.unavailable(studio.planLimits.upgradeNote) }
+        let input = try instruction.element(id: "effect-" + submissionID.uuidString, layerID: capture.layerID, width: capture.width, height: capture.height)
+        let element = try studio.preparePixelEffect(input, capture: capture, checkCancellation: check)
+        let layer = try StudioBlurCapture.capturePixelEffect(element: element, document: studio.document,
+            selection: studio.selectedElementIDs, raster: studio.rasterData(studio.currentFrame.rasterAssetID),
+            rasterDataByID: studio.rasterSources(for: studio.currentFrame))
+        let original = try StudioSmudge.Pixels(width: layer.pixels.width, height: layer.pixels.height, rgba: layer.pixels.rgba)
+        let worker = Task.detached(priority: .userInitiated) { () throws -> StudioSmudge.Pixels in
+            try StudioSmudgeReplay.applyPixelEffect(element, to: original)
+        }
+        let pixels = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+        try await checkpoint(); try check()
+        try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+        guard !worker.isCancelled, studio.capturePixelEffect() == capture,
+              layer.isCurrent(studio.document, selection: studio.selectedElementIDs) else { throw SessionError.contextChanged }
+        guard pixels != original else { throw SessionError.unavailable("This raster effect does not change any pixels here. Nothing was added.") }
+        let receipt = try studio.commitPixelEffect(element, capture: capture, requestID: submissionID, checkCancellation: {
+            try check()
+            try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+        })
+        return AppliedEdit(receipt: receipt, selectedErasureMaskCount: 0, gridInstruction: nil, onionInstruction: nil,
+            frameExposureTicks: nil, frameAction: nil, isLayerGlowEdit: false, isLayerDuplicate: false, isLayerUpdate: false,
+            layerVisibility: nil, layerOrderUp: nil, artworkOrderForward: nil, imageReflectionAxis: nil, isAudioEdit: false,
+            renamedProjectName: nil, addedAudioClipCount: 0, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
+            addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, pixelEffect: instruction,
+            pixelEffectSelectedDrawings: capture.selection.count)
+    }
+
+    /// Runs the same native Gradient capture, replay, mask and canonical editor
+    /// commit as a touch drag. Typed settings never mutate the user's tool state.
+    private func applyGradient(_ draft: String, captured: Capture, studio: StudioViewModel,
+                               submissionID: UUID, check: () throws -> Void,
+                               currentScope: ScopeProvider) async throws -> AppliedEdit {
+        let instruction = try SpatterGradientInstruction.parse(draft)
+        guard !captured.isPlaying, let gradientCapture = captured.gradient,
+              studio.captureGradient(requiringGradientTool: false) == gradientCapture else {
+            throw SessionError.unavailable("Stop playback, finish drafts, and show an active layer with Free lock before applying a gradient. Nothing changed.")
+        }
+        guard gradientCapture.imageSelectionID == nil, !gradientCapture.imagePixelsSelected else {
+            throw SessionError.unavailable("Spatter gradients support drawing/Wand selections or the full active layer. Deselect the image or image-pixel selection first. Nothing changed.")
+        }
+        guard gradientCapture.width <= StudioGradientFill.maximumPixels / gradientCapture.height else {
+            throw SessionError.unavailable("This gradient exceeds the native 4,194,304-pixel limit. Use a smaller canvas. Nothing changed.")
+        }
+        let points = try instruction.canvasPoints(width: gradientCapture.width, height: gradientCapture.height)
+        let element = try studio.gradientElement(gradientCapture, from: points.start, to: points.end,
+            descriptor: instruction.descriptor(), color: instruction.firstColor, opacity: instruction.opacity,
+            id: "gradient-" + submissionID.uuidString, requiringGradientTool: false, checkCancellation: check)
+        let layer = try StudioBlurCapture.captureGradient(element: element, document: studio.document,
+            selection: studio.selectedElementIDs, raster: studio.rasterData(studio.currentFrame.rasterAssetID),
+            rasterDataByID: studio.rasterSources(for: studio.currentFrame))
+        let original = try StudioSmudge.Pixels(width: layer.pixels.width, height: layer.pixels.height, rgba: layer.pixels.rgba)
+        let worker = Task.detached(priority: .userInitiated) { () throws -> StudioSmudge.Pixels in
+            try StudioSmudgeReplay.applyGradient(element, to: original)
+        }
+        let pixels = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+        try await checkpoint(); try check()
+        try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+        guard !worker.isCancelled, studio.captureGradient(requiringGradientTool: false) == gradientCapture,
+              layer.isCurrent(studio.document, selection: studio.selectedElementIDs) else { throw SessionError.contextChanged }
+        guard pixels != original else {
+            throw SessionError.unavailable("This gradient does not change any pixels in the current layer or selection. Nothing was added.")
+        }
+        let receipt = try studio.commitGradient(element, capture: gradientCapture, requestID: submissionID,
+            requiringGradientTool: false, checkCancellation: {
+                try check()
+                try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+            })
+        let covered = element.fillMask?.spans.reduce(0) { $0 + $1.end - $1.start } ?? 0
+        return AppliedEdit(receipt: receipt, selectedErasureMaskCount: 0, gridInstruction: nil, onionInstruction: nil,
+            frameExposureTicks: nil, frameAction: nil, isLayerGlowEdit: false, isLayerDuplicate: false, isLayerUpdate: false,
+            layerVisibility: nil, layerOrderUp: nil, artworkOrderForward: nil, imageReflectionAxis: nil, isAudioEdit: false,
+            renamedProjectName: nil, addedAudioClipCount: 0, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
+            addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, gradientFill: instruction,
+            gradientSelectedDrawingCount: gradientCapture.selection.count, gradientCoveredPixels: covered)
+    }
+    /// Same licensed decoder and atomic managed-asset attachment as the manual
+    /// Sound Library. No URL/path from a prompt or provider reaches this path.
+    private func addLibrarySound(_ draft: String, document: StudioCommandContext, captured: Capture, studio: StudioViewModel,
+                                 submissionID: UUID, check: () throws -> Void,
+                                 currentScope: ScopeProvider) async throws -> AppliedEdit {
+        let instruction = try SpatterLibrarySoundInstruction.parse(draft)
+        guard !captured.isPlaying, studio.textDraft == nil, let playhead = captured.librarySoundPlayhead else {
+            throw SessionError.unavailable("Stop playback and finish any text draft before adding a library sound. Nothing was added.")
+        }
+        guard studio.planLimits.soundLibrary else { throw SessionError.unavailable(studio.planLimits.upgradeNote) }
+        guard let resolve = librarySoundResolver else { throw SpatterLibrarySoundInstruction.Failure.unavailable }
+        let prepared = try await resolve(instruction)
+        try await checkpoint(); try check()
+        try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+        guard prepared.sound.id == instruction.assetID, prepared.sound.sha256 == instruction.assetID else {
+            throw SpatterLibrarySoundInstruction.Failure.missing
+        }
+        let before = studio.document
+        let clipID = try studio.attachImportedAudio(prepared.audio.track, expectedProjectID: document.projectID,
+            expectedRevision: document.revision, frameID: document.activeFrameID, trackNumber: instruction.track,
+            atTime: instruction.startSeconds, expectedPlayhead: playhead, checkCancellation: {
+                try check()
+                try requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                guard studio.planLimits.soundLibrary else { throw SessionError.unavailable(studio.planLimits.upgradeNote) }
+            })
+        // Disposable waveform metadata is written only after a successful edit.
+        // Cache failure never changes the audio or turns the real edit into failure.
+        try? StudioWaveformCache.shared.store(prepared.audio.waveformRecord)
+        let after = studio.document
+        let receipt = StudioCommandReceipt(requestID: submissionID, projectID: after.id, previousRevision: before.revision,
+            revision: after.revision, outcome: .applied, created: [:], createdFrameIDs: [], deletedFrameIDs: [],
+            createdLayerIDs: [], deletedLayerIDs: [], createdElementIDs: [], deletedElementIDs: [], changedAudioClipIDs: [clipID],
+            clipboardElementCount: 0, clipboardID: nil)
+        return AppliedEdit(receipt: receipt, selectedErasureMaskCount: 0, gridInstruction: nil, onionInstruction: nil,
+            frameExposureTicks: nil, frameAction: nil, isLayerGlowEdit: false, isLayerDuplicate: false, isLayerUpdate: false,
+            layerVisibility: nil, layerOrderUp: nil, artworkOrderForward: nil, imageReflectionAxis: nil, isAudioEdit: true,
+            renamedProjectName: nil, addedAudioClipCount: 1, removedAudioClipCount: 0, changedExistingAudioClipCount: 0,
+            addedFrameCount: 0, fps: studio.fps, addedDurationSeconds: 0, librarySound: instruction,
+            librarySoundTitle: prepared.sound.title, librarySoundDuration: prepared.audio.duration)
+    }
+
     private static func requireEligible(_ studio: StudioViewModel, screen: StudioViewModel.CommandScreenContext) throws {
         guard screen.route == .editor, screen.document != nil, studio.isEditing else { throw SessionError.outsideStudio }
         guard studio.activeStrokeID == nil else { throw SessionError.unavailable("Finish the current touch stroke before creating a local recipe.") }
@@ -903,7 +1171,11 @@ final class SpatterStudioEditSession: ObservableObject {
         try Self.requireEligible(studio, screen: screen)
         guard let document = screen.document,
               Capture(accountID: scope.accountID, screen: screen, document: document,
-                      selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork) == captured else { throw SessionError.contextChanged }
+                      selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork,
+                      captureLibrarySoundPlayhead: captured.librarySoundPlayhead != nil,
+                      gradient: captured.gradient == nil ? nil : studio.captureGradient(requiringGradientTool: false),
+                      artworkTransform: captured.capturesArtworkTransform ? studio.beginSpatterArtworkTransform() : nil,
+                      capturesArtworkTransform: captured.capturesArtworkTransform) == captured else { throw SessionError.contextChanged }
     }
     private func reject(_ error: Error) {
         if let sessionError = error as? SessionError {
@@ -1179,4 +1451,216 @@ enum SpatterSHA256 {
     static func hexDigest(of data: Data) -> String {
         digest(of: data).map { String(format: "%02x", $0) }.joined()
     }
+}
+
+
+/// Explicit pack app actions use the same owner as manual downloads, outside
+/// SpatterStudioEditSession's fifteen-second reversible-document-edit lease.
+@MainActor
+final class SpatterImagePackActionSession: ObservableObject {
+    typealias Scope = SpatterStudioEditSession.Scope
+    typealias ScopeProvider = @MainActor () -> Scope
+    typealias Descriptors = @MainActor () throws -> [StudioImagePackCache.Descriptor]
+    typealias Fetch = @Sendable (StudioImagePackCache.Descriptor) async throws -> Data
+    enum Status: Equatable { case idle, running, cancelling, finished, cancelled, rejected, stale, closed }
+    struct Receipt: Equatable {
+        let submissionID: UUID
+        let operationID: UUID?
+        let packID: String
+        let action: SpatterImagePackInstruction.Action
+        let summary: String
+    }
+    @Published private(set) var status: Status = .idle
+    @Published private(set) var notice: String?
+    @Published private(set) var receipt: Receipt?
+    @Published private(set) var isWorking = false
+    @Published private(set) var isClosed = false
+    private let operations: StudioImagePackOperations
+    private let descriptors: Descriptors
+    private let fetch: Fetch?
+    private let checkpoint: @MainActor () async throws -> Void
+    private let ownerID = UUID()
+    private var handle: StudioImagePackOperations.Handle?
+    private var task: Task<Void, Never>?
+    private var runID: UUID?
+    private var generation = UUID()
+    private var accepted = Set<UUID>()
+    private var instruction: SpatterImagePackInstruction?
+    private var captured: Capture?
+    private struct Capture: Equatable {
+        let accountID: String?
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let layerID: String
+        let displayedFrameID: String?
+        let panel: StudioPanelType
+    }
+    init(operations: StudioImagePackOperations = .shared,
+         descriptors: @escaping Descriptors = { try StudioImagePackCache.descriptors() },
+         fetch: Fetch? = nil,
+         checkpoint: @escaping @MainActor () async throws -> Void = { await Task.yield(); try Task.checkCancellation() }) {
+        self.operations = operations; self.descriptors = descriptors
+        self.fetch = fetch; self.checkpoint = checkpoint
+    }
+    deinit { task?.cancel() }
+    private func capture(_ studio: StudioViewModel, scope: Scope, accountID: String?) throws -> Capture {
+        let screen = studio.commandScreenContext
+        guard scope.isStudioVisible, scope.accountID == accountID, studio.isEditing, screen.activePanel == .spatterAI, !screen.isPlaying,
+              !studio.isSaving, let document = screen.document,
+              screen.displayedFrameID == document.activeFrameID else { throw ActionError.stale }
+        return .init(accountID: accountID, projectID: document.projectID, revision: document.revision,
+                     frameID: document.activeFrameID, layerID: document.activeLayerID,
+                     displayedFrameID: screen.displayedFrameID, panel: screen.activePanel)
+    }
+    private func current(_ capture: Capture, studio: StudioViewModel, scope: Scope) -> Bool {
+        (try? self.capture(studio, scope: scope, accountID: capture.accountID)) == capture
+    }
+    private enum ActionError: LocalizedError {
+        case stale, unavailable, busy
+        var errorDescription: String? {
+            switch self {
+            case .stale: return "The current account or Studio context changed. Submit the pack action again in the current editor."
+            case .unavailable: return "This exact release-pinned picture pack is unavailable here."
+            case .busy: return "A picture-pack operation is already running or changed during verification. Wait for its actual result and check again."
+            }
+        }
+    }
+    @discardableResult
+    func submit(_ draft: String, in studio: StudioViewModel, accountID: String?,
+                submissionID: UUID = UUID(), currentScope: @escaping ScopeProvider) -> Bool {
+        guard !isClosed else { return false }
+        do {
+            let parsed = try SpatterImagePackInstruction.parse(draft)
+            guard !accepted.contains(submissionID), accepted.count < SpatterStudioEditSession.maximumSubmissions else {
+                notice = "This pack action was already handled or this panel reached its request limit."; return false
+            }
+            let capture = try self.capture(studio, scope: currentScope(), accountID: accountID)
+            if parsed.action == .cancel {
+                guard isWorking, instruction?.packID == parsed.packID, captured == capture, status == .running else {
+                    notice = "This panel has no matching active pack operation to cancel. Other owners are untouched."; return false
+                }
+                accepted.insert(submissionID)
+                return cancel()
+            }
+            guard !isWorking else { notice = "Wait for this pack action's actual result or cancel it first."; return false }
+            guard let descriptor = try descriptors().first(where: { $0.id == parsed.packID }) else { throw ActionError.unavailable }
+            accepted.insert(submissionID); generation = submissionID; runID = submissionID
+            instruction = parsed; captured = capture; receipt = nil; notice = parsed.preview
+            status = .running; isWorking = true
+            task = Task { [weak self, weak studio] in
+                guard let self else { return }
+                defer {
+                    if self.runID == submissionID {
+                        self.task = nil; self.runID = nil; self.handle = nil; self.isWorking = false
+                    }
+                }
+                do {
+                    try await self.checkpoint()
+                    try Task.checkCancellation()
+                    guard let studio, self.generation == submissionID,
+                          self.current(capture, studio: studio, scope: currentScope()) else { throw ActionError.stale }
+                    let summary: String
+                    var operationID: UUID? = nil
+                    if parsed.action == .check {
+                        let before = await self.operations.status()
+                        if let before, case .running = before.phase { throw ActionError.busy }
+                        if let before, case .cancelling = before.phase { throw ActionError.busy }
+                        let installed = try await self.operations.installed(descriptor)
+                        let after = await self.operations.status()
+                        try Task.checkCancellation()
+                        guard before == after else { throw ActionError.busy }
+                        summary = installed.map { "\(descriptor.title): \($0.availableImages.count) verified pictures available offline." }
+                            ?? "\(descriptor.title): no installed library copy was found by local verification."
+                    } else {
+                        let action: StudioImagePackOperations.Action = parsed.action == .install ? .install : .remove
+                        let handle = try await self.operations.start(descriptor, action: action, ownerID: self.ownerID, fetch: self.fetch)
+                        self.handle = handle; operationID = handle.request.id
+                        if Task.isCancelled || self.generation != submissionID ||
+                            !self.current(capture, studio: studio, scope: currentScope()) {
+                            _ = await self.operations.cancel(handle.request, ownerID: self.ownerID)
+                        }
+                        let operations = self.operations, ownerID = self.ownerID
+                        let result = try await withTaskCancellationHandler {
+                            try await operations.wait(for: handle, ownerID: ownerID)
+                        } onCancel: {
+                            Task { _ = await operations.cancel(handle.request, ownerID: ownerID) }
+                        }
+                        switch result.receipt.outcome {
+                        case .installed(let count):
+                            summary = "\(descriptor.title): \(count) verified pictures available offline. Nothing was added to the project."
+                        case .removed:
+                            summary = "\(descriptor.title): removal finished; the downloaded library copy is absent. Project-owned pictures remain."
+                        case .cancelled:
+                            summary = "\(descriptor.title): the owned pack operation ended cancelled. No project artwork was changed."
+                        case .failed(let reason): throw StudioImagePackActionFailure(reason: reason)
+                        }
+                        // Atomic success remains success after an explicit cancel tap.
+                        // A revoked account/context instead suppresses this panel's receipt.
+                        if self.generation == submissionID,
+                           self.current(capture, studio: studio, scope: currentScope()) {
+                            self.status = result.receipt.outcome == .cancelled ? .cancelled : .finished
+                        }
+                    }
+                    guard self.generation == submissionID, !self.isClosed else { return }
+                    guard self.current(capture, studio: studio, scope: currentScope()) else {
+                        self.invalidate(); return
+                    }
+                    self.receipt = .init(submissionID: submissionID, operationID: operationID,
+                                         packID: parsed.packID, action: parsed.action, summary: summary)
+                    self.notice = summary
+                    if self.status == .running { self.status = .finished }
+                } catch {
+                    guard self.generation == submissionID, !self.isClosed else { return }
+                    if let studio, !self.current(capture, studio: studio, scope: currentScope()) {
+                        self.invalidate()
+                    } else if error is CancellationError {
+                        self.status = .cancelled; self.notice = "The owned pack action ended cancelled. No project artwork was changed."
+                    } else {
+                        self.status = .rejected
+                        self.notice = String(error.localizedDescription.prefix(512))
+                    }
+                }
+            }
+            return true
+        } catch {
+            if !isWorking { status = .rejected; receipt = nil }
+            notice = String(error.localizedDescription.prefix(512)); return false
+        }
+    }
+    /// Requests only this panel's native capability. Busy remains until the
+    /// shared owner reports completion; cancellation never claims a rollback.
+    @discardableResult
+    func cancel() -> Bool {
+        guard !isClosed, isWorking, status == .running else { return false }
+        status = .cancelling; notice = "Cancellation requested. Waiting for the owned pack operation's actual result."
+        task?.cancel()
+        if let handle {
+            let operations = operations, ownerID = ownerID
+            Task { _ = await operations.cancel(handle.request, ownerID: ownerID) }
+        }
+        return true
+    }
+    private func invalidate() {
+        generation = UUID(); receipt = nil; status = .stale
+        notice = "Pack action context closed. Pending owned work was asked to cancel; check the library for its actual final state."
+        task?.cancel()
+        if let handle {
+            let operations = operations, ownerID = ownerID
+            Task { _ = await operations.cancel(handle.request, ownerID: ownerID) }
+        }
+    }
+    func contextDidChange(in studio: StudioViewModel, currentScope: Scope) {
+        guard !isClosed else { return }
+        if isWorking, let captured, !current(captured, studio: studio, scope: currentScope) { invalidate() }
+        if receipt != nil, let captured, !current(captured, studio: studio, scope: currentScope) { receipt = nil; notice = nil }
+    }
+    func close() {
+        invalidate(); isClosed = true; status = .closed; notice = nil
+    }
+    func waitForCompletion() async { let task = task; await task?.value }
+}
+private struct StudioImagePackActionFailure: LocalizedError {
+    let reason: String
+    var errorDescription: String? { reason }
 }

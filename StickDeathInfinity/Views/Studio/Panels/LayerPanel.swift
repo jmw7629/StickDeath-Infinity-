@@ -501,9 +501,9 @@ struct LayerDetailView: View {
             } message: { _ in
                 Text("Use 1–120 characters. Renaming changes the label only; artwork and layer order stay intact.")
             }
-        .confirmationDialog("Delete selected layer?", isPresented: Binding(
+        .alert("Delete selected layer?", isPresented: Binding(
             get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
-            titleVisibility: .visible, presenting: pendingDeletion) { capture in
+            presenting: pendingDeletion) { capture in
                 Button("Delete layer", role: .destructive) { _ = vm.deleteLayer(capture); pendingDeletion = nil }
                 Button("Cancel", role: .cancel) { pendingDeletion = nil }
             } message: { capture in

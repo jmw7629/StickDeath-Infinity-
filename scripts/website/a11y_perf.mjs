@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { runAdminEpochScenarios } from './admin_epoch_scenarios.mjs';
 
 // Default to the pre-installed browser bundle only where it exists (local review
 // container); elsewhere Playwright uses its own cache (CI runs `playwright install`).
@@ -284,6 +285,7 @@ async function perf(browser, base) {
 }
 
 async function main() {
+  for (const result of await runAdminEpochScenarios()) record('admin response ownership: ' + result.name, result.ok, result.detail || '', 'offline production handlers');
   const server = await startServer();
   const base = `http://127.0.0.1:${server.address().port}/`;
   const articles = JSON.parse(fs.readFileSync(path.join(site, 'help', 'articles.json'), 'utf8')).articles;
@@ -309,6 +311,54 @@ async function main() {
     const formStatus = await accountPage.locator('#account-form-status').textContent();
     record('account sign-in validates locally before any request', formStatus.includes('at least 8 characters') && accountRequests.every((u) => u.startsWith(base)), formStatus, 'account.html@390x844');
     await accountContext.close();
+    // Checkout uses an isolated fake transport. No Supabase or Stripe request
+    // leaves the harness; hosted URLs are deliberately absent from the response.
+    for (const includeUnlimited of [false, true]) {
+      const fixtureContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+      const fixturePage = await fixtureContext.newPage();
+      const fixtureBackend = 'https://sdi-billing-fixture.example';
+      const products = { creator: 'sdi.creator.monthly.web', pro: 'sdi.pro.monthly.web' };
+      if (includeUnlimited) products.unlimited = 'sdi.unlimited.monthly.web';
+      const posted = [];
+      await fixtureContext.route(base + 'account-config.js', (route) => route.fulfill({
+        status: 200, contentType: 'application/javascript',
+        body: 'window.SDI_ACCOUNT_CONFIG = ' + JSON.stringify({ backendURL: fixtureBackend,
+          publishableKey: 'sb_publishable_fixture_1234567890', providers: [],
+          billing: { checkoutURL: fixtureBackend + '/functions/v1/stripe-checkout', products, creditPacks: [] } }) + ';'
+      }));
+      await fixtureContext.route(fixtureBackend + '/**', async (route) => {
+        const request = route.request(), pathname = new URL(request.url()).pathname;
+        const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'apikey,authorization,content-type', 'access-control-allow-methods': 'GET,POST,OPTIONS' };
+        if (request.method() === 'OPTIONS') { await route.fulfill({ status: 204, headers }); return; }
+        let body = {};
+        if (pathname === '/auth/v1/token') body = { access_token: 'account-fixture-token', refresh_token: 'fixture-refresh', expires_in: 3600, user: { email: 'billing@example.invalid' } };
+        else if (pathname === '/rest/v1/users') body = [{ username: 'fixture', subscription_tier: 'free' }];
+        else if (pathname === '/functions/v1/stripe-checkout') { posted.push({ body: request.postDataJSON(), token: request.headers().authorization }); body = { url: null }; }
+        await route.fulfill({ status: 200, contentType: 'application/json', headers, body: JSON.stringify(body) });
+      });
+      const fixtureScope = 'account checkout ' + (includeUnlimited ? 'three configured plans' : 'legacy two-plan config');
+      await fixturePage.goto(base + 'account.html', { waitUntil: 'load' });
+      await fixturePage.fill('#account-email', 'billing@example.invalid'); await fixturePage.fill('#account-password', 'fixture-password');
+      await fixturePage.click('#account-form button[type=submit]');
+      await fixturePage.waitForFunction(() => !document.querySelector('#plans-actions').hidden && !document.querySelector('#plans-creator').disabled);
+      const states = await fixturePage.evaluate(() => ({ creator: document.querySelector('#plans-creator').disabled,
+        pro: document.querySelector('#plans-pro').disabled, unlimited: document.querySelector('#plans-unlimited').disabled,
+        status: document.querySelector('#plans-status').textContent }));
+      record('Unlimited follows its configured product without disabling existing plans', !states.creator && !states.pro && states.unlimited === !includeUnlimited &&
+        (includeUnlimited || states.status.includes('Unlimited checkout is not available yet')), JSON.stringify(states), fixtureScope);
+      await fixturePage.click(includeUnlimited ? '#plans-unlimited' : '#plans-creator');
+      await fixturePage.waitForFunction(() => document.querySelector('#plans-status').textContent.includes('did not return a payment page'));
+      const plan = await fixturePage.locator('#profile-plan').textContent();
+      record('checkout sends the selected approved product, own session and safe return without granting a plan', posted.length === 1 &&
+        posted[0].body.action === 'checkout' && posted[0].body.product_id === (includeUnlimited ? products.unlimited : products.creator) &&
+        posted[0].body.return_url === base + 'account.html' && posted[0].token === 'Bearer account-fixture-token' && plan.includes('Free'),
+        JSON.stringify({ posted, plan }), fixtureScope);
+      await fixturePage.click('#profile-signout');
+      await fixturePage.waitForFunction(() => document.querySelector('#plans-actions').hidden && document.querySelector('#plans-unlimited').disabled);
+      const signedOutCheckout = await fixturePage.evaluate(() => ({ hidden: document.querySelector('#plans-actions').hidden, disabled: document.querySelector('#plans-unlimited').disabled }));
+      record('signing out hides checkout and disables Unlimited', signedOutCheckout.hidden && signedOutCheckout.disabled, JSON.stringify(signedOutCheckout), fixtureScope);
+      await fixtureContext.close();
+    }
     // store.html "coming soon" (owner decision 2026-10-15). Default config (enabled:false):
     // concepts without prices or cart, "Voting opens soon", every control disabled, no number, no external request.
     const storeContext = await browser.newContext({ viewport: { width: 390, height: 844 } }); const storePage = await storeContext.newPage();
@@ -528,24 +578,45 @@ async function main() {
     const adminStatic = await (async () => { await nojsPage.goto(base + 'admin.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The command center is not configured' }); })();
     record('admin shell states "not configured" without JavaScript', adminStatic, '', 'admin.html@390x844 no-js');
     await nojs.close();
-    // Admin shell with JavaScript and the repository's null configuration: sign-in stays hidden, nothing is requested.
+    // Check the actual shipped configuration. The same-origin gateway must refuse this HTTP-only test origin.
     const adminContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const adminPage = await adminContext.newPage();
     const adminRequests = [];
     adminPage.on('request', (request) => adminRequests.push(request.url()));
     await adminPage.goto(base + 'admin.html', { waitUntil: 'load' });
-    const adminState = await adminPage.evaluate(() => ({ configured: window.SDI_ADMIN_CONFIG !== null && window.SDI_ADMIN_CONFIG !== undefined, signinHidden: document.getElementById('admin-signin').hidden, consoleHidden: document.getElementById('admin-console').hidden, title: document.getElementById('admin-status-title').textContent }));
+    const adminState = await adminPage.evaluate(() => ({ configured: window.SDI_ADMIN_CONFIG !== null && window.SDI_ADMIN_CONFIG !== undefined, transport: window.SDI_ADMIN_CONFIG?.transport, secureOrigin: location.protocol === 'https:', signinHidden: document.getElementById('admin-signin').hidden, consoleHidden: document.getElementById('admin-console').hidden, title: document.getElementById('admin-status-title').textContent }));
     const sameOrigin = adminRequests.every((url) => url.startsWith(base));
     // Unconfigured: nothing dynamic. Configured (admin-config.js holds the public backend origin and
     // publishable key): the sign-in form shows, the console stays hidden until the server verifies a
     // session, and loading the page still sends nothing anywhere.
-    if (adminState.configured) {
+    if (adminState.configured && adminState.transport === 'same-origin-gateway' && !adminState.secureOrigin) {
+      record('admin shell refuses credential entry on an insecure same-origin gateway', adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('configuration is present but invalid'), JSON.stringify(adminState), 'admin.html@390x844 HTTP');
+    } else if (adminState.configured) {
       record('admin shell shows sign-in and keeps the console hidden before a verified session', !adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('not signed in'), JSON.stringify(adminState), 'admin.html@390x844');
     } else {
       record('admin shell keeps sign-in and console hidden with null configuration', adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('not configured'), JSON.stringify(adminState), 'admin.html@390x844');
     }
     record('admin shell requests only its own files on load', sameOrigin, `${adminRequests.length} requests`, 'admin.html@390x844');
     await adminContext.close();
+    // Retain the configured HTTPS sign-in contract independently of the HTTP
+    // refusal above. This public-key fixture never contacts its dummy backend.
+    const configuredAdmin = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const configuredPage = await configuredAdmin.newPage();
+    const configuredRequests = [];
+    configuredPage.on('request', (request) => configuredRequests.push(request.url()));
+    await configuredPage.route('**/admin-config.js', (route) => route.fulfill({
+      contentType: 'application/javascript',
+      body: 'window.SDI_ADMIN_CONFIG = { backendURL: "https://admin-auth.example.invalid", publishableKey: "sdi_public_fixture_no_server_privileges" };'
+    }));
+    await configuredPage.goto(base + 'admin.html', { waitUntil: 'load' });
+    const configuredState = await configuredPage.evaluate(() => ({
+      signinHidden: document.getElementById('admin-signin').hidden,
+      consoleHidden: document.getElementById('admin-console').hidden,
+      title: document.getElementById('admin-status-title').textContent
+    }));
+    record('admin configured HTTPS client shows sign-in and protects the console', !configuredState.signinHidden && configuredState.consoleHidden && configuredState.title.includes('not signed in'), JSON.stringify(configuredState), 'admin.html@390x844 HTTPS-config fixture');
+    record('admin HTTPS configuration sends no backend request before sign-in', configuredRequests.every((url) => url.startsWith(base)), `${configuredRequests.length} requests`, 'admin.html@390x844 HTTPS-config fixture');
+    await configuredAdmin.close();
     // file:// smoke: the help center must render from the embedded help-data.js without fetch().
     const local = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const localPage = await local.newPage();

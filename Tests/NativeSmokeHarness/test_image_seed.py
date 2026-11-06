@@ -65,7 +65,7 @@ class Harness(unittest.TestCase):
             seed.main()
             self.assertEqual(run.call_args.args[0][2], 'addmedia')
 
-    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False, test_timeout=False, video_failure=False, shard_index=None, prepared_commit=None):
+    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False, test_timeout=False, video_failure=False, shard_index=None, prepared_commit=None, files_failure=False):
         calls = self.calls
         waits = self.waits
         signals = self.signals
@@ -125,7 +125,10 @@ class Harness(unittest.TestCase):
         def video(udid, output):
             calls.append(('seed-video', udid, str(output)))
             if video_failure: raise subprocess.TimeoutExpired('video addmedia', 120)
-        with patch.object(rec, 'seed_video_fixture', side_effect=video), patch.object(seed, 'collect_failure'), patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
+        def files(udid, output):
+            calls.append(('files-provider-fixture', udid, str(output)))
+            if files_failure: raise subprocess.TimeoutExpired('fixture launch', 30)
+        with patch.object(rec, 'provision_files_fixture', side_effect=files), patch.object(rec, 'seed_video_fixture', side_effect=video), patch.object(seed, 'collect_failure'), patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
             return rec.main()
 
     def test_actual_recorder_constructs_only_reviewed_shard_and_keeps_seed_failure(self):
@@ -177,7 +180,7 @@ class Harness(unittest.TestCase):
         names = sorted(re.findall(r"^\s*func\s+(test\w+)\s*\(", source, re.MULTILINE))
         self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), rec.FIXTURE_SOURCE_SHA256,
                          "Review fixture dependencies before updating the source pin")
-        for consumer, kind in [(rec.PHOTO_FIXTURE_CASE, 'image'), (rec.VIDEO_FIXTURE_CASE, 'video')]:
+        for consumer, kind in [(rec.PHOTO_FIXTURE_CASE, 'image'), (rec.VIDEO_FIXTURE_CASE, 'video'), (rec.FILES_FIXTURE_CASE, 'files')]:
             plan = rec.fixture_requirements(source, {'testNames': [consumer], 'fullTestNames': names}, True)
             self.assertTrue(plan[kind])
         bundled = rec.fixture_requirements(source, {'testNames': ['testImageTweenLinearPixelsUndoAndColdReopen'], 'fullTestNames': names}, True)
@@ -187,12 +190,16 @@ class Harness(unittest.TestCase):
         cancel = 'testRotoscopeFilesPickerCancelPreservesProject'
         plan = rec.fixture_requirements(source, {'testNames': [cancel], 'fullTestNames': names}, True)
         self.assertFalse(plan['image']); self.assertFalse(plan['video'])
+        self.assertFalse(plan['files'])
         changed = rec.fixture_requirements(source + '\n// changed shared helper', {}, True)
         self.assertTrue(changed['image']); self.assertTrue(changed['video'])
         all_tests = rec.fixture_requirements(source, {}, False)
         self.assertTrue(all_tests['image']); self.assertTrue(all_tests['video'])
         with self.assertRaises(ValueError):
             rec.fixture_requirements(source, {'testNames': ['unknown'], 'fullTestNames': names}, True)
+        with self.assertRaises(ValueError):
+            rec.fixture_requirements(source + '\n// changed shared helper',
+                                     {'testNames': [rec.FILES_FIXTURE_CASE], 'fullTestNames': names}, True)
 
     def test_failed_video_seed_runs_all_ui_once_and_keeps_gate_failed(self):
         self.assertEqual(self.recording(video_failure=True), 4)
@@ -212,9 +219,41 @@ class Harness(unittest.TestCase):
         boot = next((i for (i, c) in enumerate(calls) if c[:3] == ('xcrun', 'simctl', 'bootstatus')))
         add = next((i for (i, c) in enumerate(calls) if c[:3] == ('xcrun', 'simctl', 'addmedia')))
         record = next((i for (i, c) in enumerate(calls) if c[:3] == ('xcrun', 'simctl', 'io')))
+        files = next(i for i, c in enumerate(calls) if c[0] == 'files-provider-fixture')
         self.assertLess(boot, add)
         self.assertLess(add, record)
+        self.assertLess(boot, files); self.assertLess(files, record)
+        self.assertEqual(calls[files][1], ID)
+        self.assertEqual(sum(c[0] == 'files-provider-fixture' for c in calls), 1)
         self.assertEqual(calls[add][3], ID)
+
+    def test_failed_files_fixture_keeps_gate_failed_and_runs_the_complete_suite_once(self):
+        self.assertEqual(self.recording(files_failure=True), 4)
+        self.assertEqual(sum(c[0] == 'files-provider-fixture' for c in self.calls), 1)
+        tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
+        self.assertEqual(len(tests), 1)
+        self.assertFalse(any('skip-testing' in value or 'only-testing' in value for value in tests[0]))
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertFalse(report['filesFixtureReady'])
+        self.assertEqual(report['filesFixtureStatus'], 'failed')
+        self.assertEqual(report['filesFixtureFailureClass'], 'TimeoutExpired')
+
+    def test_files_fixture_is_not_provisioned_for_the_other_reviewed_shard(self):
+        import re
+        source = (Path(__file__).resolve().parents[2] / 'Tests/NativeUI/StudioSmokeUITests.swift').read_text()
+        names = sorted(re.findall(r"^\s*func\s+(test\w+)\s*\(", source, re.MULTILINE))
+        shard = 1 - names.index(rec.FILES_FIXTURE_CASE) % 2
+        self.assertEqual(self.recording(shard_index=shard, files_failure=True), 0)
+        self.assertFalse(any(c[0] == 'files-provider-fixture' for c in self.calls))
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertIsNone(report['filesFixtureReady'])
+        self.assertEqual(report['filesFixtureStatus'], 'not_required')
+
+    def test_files_fixture_failure_does_not_replace_the_real_ui_failure(self):
+        self.assertEqual(self.recording(files_failure=True, test_exit=65), 65)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertEqual(report['uiTestExitCode'], 65)
+        self.assertFalse(report['filesFixtureReady'])
 
     def test_failed_native_bootstatus_prevents_seeding(self):
         with self.assertRaises(subprocess.CalledProcessError):

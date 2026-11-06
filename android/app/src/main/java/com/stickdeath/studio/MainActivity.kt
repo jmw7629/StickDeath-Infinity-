@@ -9,9 +9,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -25,17 +31,30 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.zIndex
+import kotlin.math.roundToInt
 import androidx.compose.ui.unit.dp
 import com.stickdeath.studio.diagnostics.DiagnosticsSettingsSection
 import com.stickdeath.studio.diagnostics.DiagnosticsStore
@@ -43,6 +62,7 @@ import com.stickdeath.studio.diagnostics.DiagnosticsStore
 class MainActivity : ComponentActivity() {
     private val studio: StudioViewModel by viewModels()
     private val account: com.stickdeath.studio.connect.AccountViewModel by viewModels()
+    private val community: com.stickdeath.studio.connect.CommunityViewModel by viewModels()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) handleAuthCallback(intent)
@@ -52,7 +72,8 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    override fun onStop() { studio.stopScenePlayback(); studio.save(); super.onStop() }
+    override fun onStart() { super.onStart(); community.setRoomsAppForeground(true); account.setDesktopAppForeground(true); community.setDesktopAppForeground(true) }
+    override fun onStop() { community.setRoomsAppForeground(false); account.setDesktopAppForeground(false); community.setDesktopAppForeground(false); studio.cancelWand(); studio.stopScenePlayback(); studio.save(); super.onStop() }
     override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handleAuthCallback(intent) }
     /** Only the app's own OAuth redirect is handled; the in-memory PKCE verifier makes it single-use. */
     private fun handleAuthCallback(received: android.content.Intent?) {
@@ -67,38 +88,410 @@ class MainActivity : ComponentActivity() {
 
 @Composable private fun StudioApp(vm: StudioViewModel) {
     val context = LocalContext.current
-    val moviePicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("video/mp4")) { vm.finishExport(it) }
-    val gifPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/gif")) { vm.finishExport(it) }
-    val pngPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { vm.finishExport(it) }
-    val projectPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { vm.finishExport(it) }
-    val sdiPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { vm.finishExport(it) }
-    val zipPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { vm.finishExport(it) }
     val artifact = vm.exportArtifact
-    LaunchedEffect(artifact, vm.exportPickerRequested) {
-        if (artifact != null && !vm.exportPickerRequested) {
-            vm.markExportPickerRequested()
+    LaunchedEffect(artifact) {
+        val current = artifact ?: return@LaunchedEffect
+        val request = vm.beginExportHandoff(current) ?: return@LaunchedEffect
+        if (current.share && vm.offerExportHandoff(request)) {
             try {
-                if (artifact.share) {
-                    // Quick share: try each destination package; a missing app falls back to the chooser.
-                    val direct = artifact.targetPackages.any { target ->
-                        try { context.startActivity(ShareExports.direct(context, artifact, target)); true }
-                        catch (_: android.content.ActivityNotFoundException) { false }
-                    }
-                    if (!direct) context.startActivity(ShareExports.chooser(context, artifact))
-                    vm.shareSheetOpened(artifact, directApp = direct)
-                } else when (artifact.kind) {
-                    ExportKind.MP4 -> moviePicker.launch(artifact.name)
-                    ExportKind.GIF -> gifPicker.launch(artifact.name)
-                    ExportKind.PNG -> pngPicker.launch(artifact.name)
-                    ExportKind.PROJECT, ExportKind.CREDITS, ExportKind.MANIFEST -> projectPicker.launch(artifact.name)
-                    ExportKind.SDI -> sdiPicker.launch(artifact.name)
-                    ExportKind.SEQUENCE, ExportKind.SPRITESHEET -> zipPicker.launch(artifact.name)
+                // Quick share: try each destination package; a missing app falls back to the chooser.
+                val direct = current.targetPackages.any { target ->
+                    try { context.startActivity(ShareExports.direct(context, current, target)); true }
+                    catch (_: android.content.ActivityNotFoundException) { false }
                 }
-            } catch (e: Exception) { vm.cancelExport(); vm.report(e.message ?: "No compatible export or sharing app is available.") }
+                if (!direct) context.startActivity(ShareExports.chooser(context, current))
+                vm.shareSheetOpened(request, directApp = direct)
+            } catch (e: Exception) {
+                vm.exportHandoffLaunchFailed(request, e.message ?: "No compatible sharing app is available.")
+            }
         }
     }
+    val request = vm.exportHandoff
+    if (request != null && !request.artifact.share) {
+        // A new request gets a new callback. Recreating this one keeps its saved launcher key.
+        key(request.id) {
+            val mime = when (request.artifact.kind) {
+                ExportKind.MP4 -> "video/mp4"
+                ExportKind.GIF -> "image/gif"
+                ExportKind.PNG -> "image/png"
+                ExportKind.PROJECT, ExportKind.CREDITS, ExportKind.MANIFEST -> "application/json"
+                ExportKind.SDI -> "application/octet-stream"
+                ExportKind.SEQUENCE, ExportKind.SPRITESHEET -> "application/zip"
+            }
+            val picker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(mime)) { uri ->
+                vm.finishExport(request, uri)
+            }
+            LaunchedEffect(request) {
+                if (!vm.offerExportHandoff(request)) return@LaunchedEffect
+                try {
+                    picker.launch(request.artifact.name)
+                } catch (e: Exception) {
+                    vm.exportHandoffLaunchFailed(request, e.message ?: "No compatible app is available to save the export.")
+                }
+            }
+        }
+    }
+    // Activity-scoped owners: auth callbacks and every subject share these exact models.
+    val account: com.stickdeath.studio.connect.AccountViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val community: com.stickdeath.studio.connect.CommunityViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val signedIn = account.state as? com.stickdeath.studio.connect.AccountState.SignedIn
+    val accountIdentity = signedIn?.takeIf { !it.isAnonymous && !account.needsNewPassword }?.userId
+    LaunchedEffect(accountIdentity) { community.accountChanged(accountIdentity) }
     val document = vm.document
-    if (document == null) ProjectLibrary(vm) else Editor(vm, document)
+    var showDock by rememberSaveable { mutableStateOf(false) }
+    var requestedPanel by remember { mutableStateOf<String?>(null) }
+    var studioWindow by rememberSaveable(stateSaver = AndroidDesktopPlacement.saver) {
+        mutableStateOf(AndroidDesktopPlacement(open = true, maximized = true))
+    }
+    var accountWindow by rememberSaveable(stateSaver = AndroidDesktopPlacement.saver) {
+        mutableStateOf(AndroidDesktopPlacement(x = .10f, y = .08f, width = .88f, height = .86f))
+    }
+    var roomsWindow by rememberSaveable(stateSaver = AndroidDesktopPlacement.saver) {
+        mutableStateOf(AndroidDesktopPlacement(x = .05f, y = .04f, width = .90f, height = .90f))
+    }
+    var roomsMounted by rememberSaveable { mutableStateOf(false) }
+    var accountMounted by rememberSaveable { mutableStateOf(false) }
+    val communityWindows = com.stickdeath.studio.connect.CommunitySubject.entries.associateWith { subject ->
+        key(subject.key) { rememberCommunityWindow(subject) }
+    }
+    var frontSubject by rememberSaveable { mutableStateOf("studio") }
+    var windowOrder by rememberSaveable { mutableStateOf(arrayListOf("account", "rooms", "studio")) }
+    fun focusSubject(subject: String) {
+        if (subject != "desktop") windowOrder = ArrayList(windowOrder.filter { it != subject } + subject)
+        frontSubject = subject
+    }
+    fun subjectOrder(subject: String) = (windowOrder.indexOf(subject) + 1).toFloat()
+    fun subjectVisible(subject: String): Boolean = when (subject) {
+        "studio" -> studioWindow.open && !studioWindow.minimized
+        "account" -> accountWindow.open && !accountWindow.minimized
+        "rooms" -> roomsWindow.open && !roomsWindow.minimized
+        else -> communityWindows.entries.firstOrNull { it.key.key == subject }?.value?.visible == true
+    }
+    fun focusRemaining(excluding: String) {
+        focusSubject(windowOrder.asReversed().firstOrNull { it != excluding && subjectVisible(it) } ?: "desktop")
+    }
+    val studioVisible = subjectVisible("studio")
+    val accountVisible = subjectVisible("account")
+    val roomsVisible = subjectVisible("rooms")
+    SideEffect {
+        community.setRoomsWindowVisible(roomsVisible)
+        community.setDesktopWindowVisible("account", accountVisible)
+        communityWindows.forEach { (subject, state) ->
+            account.setDesktopWindowVisible(subject.key, state.visible)
+            community.setDesktopWindowVisible(subject.key, state.visible)
+        }
+    }
+    DisposableEffect(account, community) {
+        onDispose {
+            community.setRoomsWindowVisible(false)
+            community.setDesktopWindowVisible("account", false)
+            com.stickdeath.studio.connect.CommunitySubject.entries.forEach {
+                account.setDesktopWindowVisible(it.key, false)
+                community.setDesktopWindowVisible(it.key, false)
+            }
+        }
+    }
+    fun openStudio() { studioWindow = studioWindow.copy(open = true, minimized = false); focusSubject("studio") }
+    fun openAccount() {
+        accountMounted = true
+        accountWindow = accountWindow.copy(open = true, minimized = false)
+        community.setDesktopWindowVisible("account", true)
+        focusSubject("account")
+    }
+    fun openRooms() {
+        community.setRoomsWindowVisible(true)
+        roomsMounted = true
+        roomsWindow = roomsWindow.copy(open = true, minimized = false)
+        focusSubject("rooms")
+    }
+    fun openCommunity(subject: com.stickdeath.studio.connect.CommunitySubject) {
+        val state = communityWindows.getValue(subject)
+        state.mounted.value = true
+        state.placement.value = state.placement.value.copy(open = true, minimized = false)
+        account.setDesktopWindowVisible(subject.key, true)
+        community.setDesktopWindowVisible(subject.key, true)
+        focusSubject(subject.key)
+    }
+    fun hideStudio(minimize: Boolean) {
+        // Hide the window, never discard the editor/project/history or export owner.
+        vm.cancelWand(); vm.cancelAudioImport(); vm.cancelImageImport(); vm.cancelFill()
+        vm.stopScenePlayback(); vm.save()
+        studioWindow = studioWindow.copy(open = minimize, minimized = minimize)
+        focusRemaining("studio")
+    }
+    fun hideAccount(minimize: Boolean) {
+        community.setDesktopWindowVisible("account", false)
+        accountWindow = accountWindow.copy(open = minimize, minimized = minimize)
+        focusRemaining("account")
+    }
+    fun hideRooms(minimize: Boolean) {
+        community.setRoomsWindowVisible(false)
+        roomsWindow = roomsWindow.copy(open = minimize, minimized = minimize)
+        focusRemaining("rooms")
+    }
+    fun hideCommunity(subject: com.stickdeath.studio.connect.CommunitySubject, minimize: Boolean) {
+        val state = communityWindows.getValue(subject)
+        account.setDesktopWindowVisible(subject.key, false)
+        community.setDesktopWindowVisible(subject.key, false)
+        state.placement.value = state.placement.value.copy(open = minimize, minimized = minimize)
+        focusRemaining(subject.key)
+    }
+    BackHandler(enabled = roomsVisible && frontSubject == "rooms") { hideRooms(false) }
+    BackHandler(enabled = accountVisible && frontSubject == "account") { hideAccount(false) }
+    val frontCommunity = com.stickdeath.studio.connect.CommunitySubject.entries.firstOrNull { it.key == frontSubject }
+    BackHandler(enabled = frontCommunity != null && subjectVisible(frontCommunity.key)) {
+        frontCommunity?.let { hideCommunity(it, false) }
+    }
+    BackHandler(enabled = windowOrder.none { subjectVisible(it) } && document != null) { openStudio() }
+    // Every host has a fixed keyed slot. Focus changes only z-order; Studio and
+    // its export launchers never move or acquire another model/store.
+    Column(Modifier.fillMaxSize().safeDrawingPadding().background(Color(0xff24778a))) {
+        StudioDesktopNavigation(
+            hasProject = document != null, available = !vm.closing,
+            showDock = showDock, toggleDock = { showDock = !showDock },
+            openStudio = { openStudio() }, openAccount = { openAccount() }, openRooms = { openRooms() },
+            openCommunity = { openCommunity(it) },
+            openProjects = { openStudio(); if (document != null) requestedPanel = "projects" },
+            openSettings = { openStudio(); requestedPanel = "project" })
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+            val boundsWidth = maxWidth.value.coerceAtLeast(1f)
+            val boundsHeight = maxHeight.value.coerceAtLeast(1f)
+            AndroidDesktopWindow("Studio", studioWindow, boundsWidth, boundsHeight,
+                visible = studioVisible, focused = frontSubject == "studio", order = subjectOrder("studio"),
+                focus = { focusSubject("studio") }, close = { hideStudio(false) }, minimize = { hideStudio(true) },
+                maximize = { studioWindow = studioWindow.copy(maximized = !studioWindow.maximized); focusSubject("studio") },
+                move = { dx, dy -> studioWindow = studioWindow.moved(dx, dy, boundsWidth, boundsHeight) },
+                resize = { dx, dy -> studioWindow = studioWindow.resized(dx, dy, boundsWidth, boundsHeight) }) {
+                BoxWithConstraints(Modifier.fillMaxSize()) {
+                    if (document == null) ProjectLibrary(vm)
+                    else Editor(vm, document, requestedPanel, onPanelRequestHandled = { requestedPanel = null },
+                        subjectVisible = studioVisible, subjectFront = frontSubject == "studio",
+                        compactHeightOverride = maxHeight < 480.dp, onOpenAccount = { openAccount() })
+                }
+            }
+            if (accountMounted) AndroidDesktopWindow("Account", accountWindow, boundsWidth, boundsHeight,
+                visible = accountVisible, focused = frontSubject == "account", order = subjectOrder("account"),
+                focus = { focusSubject("account") }, close = { hideAccount(false) }, minimize = { hideAccount(true) },
+                maximize = { accountWindow = accountWindow.copy(maximized = !accountWindow.maximized); focusSubject("account") },
+                move = { dx, dy -> accountWindow = accountWindow.moved(dx, dy, boundsWidth, boundsHeight) },
+                resize = { dx, dy -> accountWindow = accountWindow.resized(dx, dy, boundsWidth, boundsHeight) }) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) { AccountPanel(vm, account, community, accountVisible) }
+            }
+            if (roomsMounted) AndroidDesktopWindow("Rooms", roomsWindow, boundsWidth, boundsHeight,
+                visible = roomsVisible, focused = frontSubject == "rooms", order = subjectOrder("rooms"),
+                focus = { focusSubject("rooms") }, close = { hideRooms(false) }, minimize = { hideRooms(true) },
+                maximize = { roomsWindow = roomsWindow.copy(maximized = !roomsWindow.maximized); focusSubject("rooms") },
+                move = { dx, dy -> roomsWindow = roomsWindow.moved(dx, dy, boundsWidth, boundsHeight) },
+                resize = { dx, dy -> roomsWindow = roomsWindow.resized(dx, dy, boundsWidth, boundsHeight) }) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.stickdeath.studio.connect.RoomsDesktopSection(vm, account, community, roomsVisible,
+                        onOpenAccount = { openAccount() }, onOpenStudio = { openStudio() })
+                }
+            }
+            com.stickdeath.studio.connect.CommunitySubject.entries.forEach { subject ->
+                key(subject.key) {
+                    val state = communityWindows.getValue(subject)
+                    if (state.mounted.value) AndroidDesktopWindow(subject.title, state.placement.value, boundsWidth, boundsHeight,
+                        visible = state.visible, focused = frontSubject == subject.key, order = subjectOrder(subject.key),
+                        focus = { focusSubject(subject.key) }, close = { hideCommunity(subject, false) },
+                        minimize = { hideCommunity(subject, true) },
+                        maximize = { state.placement.value = state.placement.value.copy(maximized = !state.placement.value.maximized); focusSubject(subject.key) },
+                        move = { dx, dy -> state.placement.value = state.placement.value.moved(dx, dy, boundsWidth, boundsHeight) },
+                        resize = { dx, dy -> state.placement.value = state.placement.value.resized(dx, dy, boundsWidth, boundsHeight) }) {
+                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (subject == com.stickdeath.studio.connect.CommunitySubject.Notifications) LocalNotificationPreferences(vm)
+                            com.stickdeath.studio.connect.CommunityDesktopSection(subject, account, community, state.visible,
+                                onOpenAccount = { openAccount() })
+                        }
+                    }
+                }
+            }
+        }
+        if (showDock) Surface(color = Color(0xffead29a), contentColor = Color(0xff171b24)) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                TextButton({ openStudio() }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
+                    Text(if (studioWindow.minimized) "Restore Studio" else "Studio")
+                }
+                TextButton({ openAccount() }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
+                    Text(if (accountWindow.minimized) "Restore Account" else "Account")
+                }
+                TextButton({ openRooms() }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
+                    Text(if (roomsWindow.minimized) "Restore Rooms" else "Rooms")
+                }
+                com.stickdeath.studio.connect.CommunitySubject.entries.forEach { subject ->
+                    TextButton({ openCommunity(subject) }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
+                        Text(if (communityWindows.getValue(subject).placement.value.minimized) "Restore ${subject.title}" else subject.title)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private class RetainedCommunityWindow(
+    val placement: MutableState<AndroidDesktopPlacement>, val mounted: MutableState<Boolean>,
+) {
+    val visible: Boolean get() = placement.value.open && !placement.value.minimized
+}
+@Composable private fun rememberCommunityWindow(subject: com.stickdeath.studio.connect.CommunitySubject): RetainedCommunityWindow {
+    val position = .03f + (subject.ordinal % 3) * .025f
+    val placement = rememberSaveable(subject.key, stateSaver = AndroidDesktopPlacement.saver) {
+        mutableStateOf(AndroidDesktopPlacement(x = position, y = position, width = .88f, height = .88f))
+    }
+    val mounted = rememberSaveable(subject.key) { mutableStateOf(false) }
+    return remember(placement, mounted) { RetainedCommunityWindow(placement, mounted) }
+}
+
+/** Normal placements are normalized to the safe workspace, then clamped on each
+ * render and movement/resize. Maximize never overwrites the saved restore size. */
+private data class AndroidDesktopPlacement(
+    val x: Float = .02f, val y: Float = .02f, val width: Float = .96f, val height: Float = .94f,
+    val open: Boolean = false, val minimized: Boolean = false, val maximized: Boolean = false,
+) {
+    fun rect(boundsWidth: Float, boundsHeight: Float): AndroidDesktopRect {
+        if (maximized) return AndroidDesktopRect(0f, 0f, boundsWidth, boundsHeight)
+        val w = (width * boundsWidth).coerceIn(minOf(320f, boundsWidth), boundsWidth)
+        val h = (height * boundsHeight).coerceIn(minOf(320f, boundsHeight), boundsHeight)
+        return AndroidDesktopRect((x * boundsWidth).coerceIn(0f, boundsWidth - w),
+            (y * boundsHeight).coerceIn(0f, boundsHeight - h), w, h)
+    }
+    fun moved(dx: Float, dy: Float, bw: Float, bh: Float): AndroidDesktopPlacement {
+        if (maximized || !dx.isFinite() || !dy.isFinite()) return this
+        val r = rect(bw, bh)
+        return copy(x = (r.x + dx).coerceIn(0f, bw - r.width) / bw,
+            y = (r.y + dy).coerceIn(0f, bh - r.height) / bh)
+    }
+    fun resized(dx: Float, dy: Float, bw: Float, bh: Float): AndroidDesktopPlacement {
+        if (maximized || !dx.isFinite() || !dy.isFinite()) return this
+        val r = rect(bw, bh)
+        return copy(x = r.x / bw, y = r.y / bh,
+            width = (r.width + dx).coerceIn(minOf(320f, bw - r.x), bw - r.x) / bw,
+            height = (r.height + dy).coerceIn(minOf(320f, bh - r.y), bh - r.y) / bh)
+    }
+    companion object {
+        val saver = androidx.compose.runtime.saveable.listSaver<AndroidDesktopPlacement, Any>(
+            save = { listOf(it.x, it.y, it.width, it.height, it.open, it.minimized, it.maximized) },
+            restore = {
+                AndroidDesktopPlacement((it[0] as Number).toFloat(), (it[1] as Number).toFloat(),
+                    (it[2] as Number).toFloat(), (it[3] as Number).toFloat(), it[4] as Boolean, it[5] as Boolean, it[6] as Boolean)
+            })
+    }
+}
+private data class AndroidDesktopRect(val x: Float, val y: Float, val width: Float, val height: Float)
+
+/** Nonplaced children retain composition/drafts but cannot draw, receive input,
+ * or appear in accessibility while their subject window is closed/minimized. */
+private fun Modifier.desktopVisibility(visible: Boolean): Modifier =
+    (if (visible) this else clearAndSetSemantics { }).layout { measurable, constraints ->
+        val child = measurable.measure(constraints)
+        layout(child.width, child.height) { if (visible) child.placeRelative(0, 0) }
+    }
+
+@Composable private fun AndroidDesktopWindow(
+    title: String, placement: AndroidDesktopPlacement, boundsWidth: Float, boundsHeight: Float,
+    visible: Boolean, focused: Boolean, order: Float, focus: () -> Unit,
+    close: () -> Unit, minimize: () -> Unit, maximize: () -> Unit,
+    move: (Float, Float) -> Unit, resize: (Float, Float) -> Unit, content: @Composable () -> Unit,
+) {
+    val rect = placement.rect(boundsWidth, boundsHeight)
+    val density = LocalDensity.current.density
+    val latestFocus by rememberUpdatedState(focus)
+    val latestMove by rememberUpdatedState(move)
+    val latestResize by rememberUpdatedState(resize)
+    Column(Modifier.offset { IntOffset((rect.x * density).roundToInt(), (rect.y * density).roundToInt()) }
+        .size(rect.width.dp, rect.height.dp).zIndex(order).desktopVisibility(visible)
+        .pointerInput(Unit) {
+            // Observe only: never consume the canvas/tool gesture or restart it on focus.
+            awaitEachGesture { awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial); latestFocus() }
+        }
+        .border(2.dp, Color(0xff151921)).background(Color(0xffead29a))) {
+        Row(Modifier.fillMaxWidth().height(44.dp).background(if (focused) Color(0xffead29a) else Color(0xffa7aaa9)),
+            verticalAlignment = Alignment.CenterVertically) {
+            TextButton(close, Modifier.size(44.dp).semantics { contentDescription = "Close $title window" },
+                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("×") }
+            Text(title, color = Color(0xff171b24), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 4.dp)
+                    .semantics {
+                        contentDescription = "$title window title. Restore size to move."
+                        if (!placement.maximized) customActions = listOf(
+                            CustomAccessibilityAction("Move left") { latestFocus(); latestMove(-24f, 0f); true },
+                            CustomAccessibilityAction("Move right") { latestFocus(); latestMove(24f, 0f); true },
+                            CustomAccessibilityAction("Move up") { latestFocus(); latestMove(0f, -24f); true },
+                            CustomAccessibilityAction("Move down") { latestFocus(); latestMove(0f, 24f); true })
+                    }.pointerInput(boundsWidth, boundsHeight, placement.maximized) {
+                        detectDragGestures(onDragStart = { latestFocus() }) { change, drag ->
+                            if (!placement.maximized) { change.consume(); latestMove(drag.x / density, drag.y / density) }
+                        }
+                    })
+            TextButton(minimize, Modifier.size(44.dp).semantics { contentDescription = "Minimize $title window" },
+                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("—") }
+            TextButton(maximize, Modifier.size(44.dp).semantics {
+                contentDescription = if (placement.maximized) "Restore $title window size" else "Maximize $title window"
+            }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text(if (placement.maximized) "↙" else "□") }
+        }
+        Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.background).clipToBounds()) { content() }
+        if (!placement.maximized) Row(Modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Drag title to move", color = Color(0xff171b24),
+                style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f).padding(start = 8.dp))
+            Text("↘", color = Color(0xff171b24), modifier = Modifier.width(44.dp).fillMaxHeight().semantics {
+                contentDescription = "Resize $title window. Restore size first if maximized."
+                if (!placement.maximized) customActions = listOf(
+                    CustomAccessibilityAction("Make wider") { latestFocus(); latestResize(24f, 0f); true },
+                    CustomAccessibilityAction("Make narrower") { latestFocus(); latestResize(-24f, 0f); true },
+                    CustomAccessibilityAction("Make taller") { latestFocus(); latestResize(0f, 24f); true },
+                    CustomAccessibilityAction("Make shorter") { latestFocus(); latestResize(0f, -24f); true })
+            }.pointerInput(boundsWidth, boundsHeight, placement.maximized) {
+                detectDragGestures(onDragStart = { latestFocus() }) { change, drag ->
+                    if (!placement.maximized) { change.consume(); latestResize(drag.x / density, drag.y / density) }
+                }
+            })
+        }
+    }
+}
+
+/** Real subjects share the existing application/state; no placeholder subjects. */
+@Composable private fun StudioDesktopNavigation(
+    hasProject: Boolean, available: Boolean, showDock: Boolean, toggleDock: () -> Unit,
+    openStudio: () -> Unit, openProjects: () -> Unit, openSettings: () -> Unit, openAccount: () -> Unit, openRooms: () -> Unit,
+    openCommunity: (com.stickdeath.studio.connect.CommunitySubject) -> Unit,
+) {
+    var expanded by remember { mutableStateOf<String?>(null) }
+    Surface(color = Color(0xfff1dfb0), contentColor = Color(0xff171b24), shadowElevation = 3.dp) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("SDI ∞", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(end = 8.dp))
+            Box {
+                TextButton({ expanded = "subjects" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Subjects") }
+                DropdownMenu(expanded == "subjects", onDismissRequest = { expanded = null }) {
+                    DropdownMenuItem(text = { Text("Studio") }, enabled = available, onClick = { expanded = null; openStudio() })
+                    DropdownMenuItem(text = { Text("Rooms") }, enabled = available, onClick = { expanded = null; openRooms() })
+                    com.stickdeath.studio.connect.CommunitySubject.entries.forEach { subject ->
+                        DropdownMenuItem(text = { Text(subject.title) }, enabled = available, onClick = { expanded = null; openCommunity(subject) })
+                    }
+                    DropdownMenuItem(text = { Text("Account, plans & preferences") }, enabled = available, onClick = { expanded = null; openAccount() })
+                }
+            }
+            Box {
+                TextButton({ expanded = "studio" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Studio") }
+                DropdownMenu(expanded == "studio", onDismissRequest = { expanded = null }) {
+                    DropdownMenuItem(text = { Text("Local projects") }, enabled = available,
+                        onClick = { expanded = null; openProjects() })
+                    DropdownMenuItem(text = { Text("Project settings") }, enabled = hasProject && available,
+                        onClick = { expanded = null; openSettings() })
+                }
+            }
+            Box {
+                TextButton({ expanded = "desktop" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Desktop") }
+                DropdownMenu(expanded == "desktop", onDismissRequest = { expanded = null }) {
+                    DropdownMenuItem(text = { Text(if (showDock) "Hide bottom navigation" else "Show bottom navigation") },
+                        onClick = { expanded = null; toggleDock() })
+                }
+            }
+        }
+    }
 }
 
 /** Shared with the plan model, which allows Free accounts only these sizes. */
@@ -243,8 +636,12 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     }
 }
 
-@Composable private fun Editor(vm: StudioViewModel, doc: Document) {
-    val compactHeight = LocalConfiguration.current.screenHeightDp < 480
+@Composable private fun Editor(vm: StudioViewModel, doc: Document,
+    requestedPanel: String? = null, onPanelRequestHandled: () -> Unit = {},
+    subjectVisible: Boolean = true, subjectFront: Boolean = true,
+    compactHeightOverride: Boolean? = null, onOpenAccount: () -> Unit = {}) {
+    val compactHeight = compactHeightOverride ?: (LocalConfiguration.current.screenHeightDp < 480)
+    val viewportSize = remember { mutableStateOf(IntSize.Zero) }
     var thumbnailsOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
     val showThumbnails = thumbnailsOverride ?: !compactHeight
     val audioImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importAudio(it) }
@@ -262,6 +659,17 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     var settingsDraft by remember(doc.id) { mutableStateOf(ProjectDraft.from(doc)) }
     var fitArtwork by remember(doc.id) { mutableStateOf(true) }
     var playing by remember { mutableStateOf(false) }
+    LaunchedEffect(requestedPanel, doc.id) {
+        when (requestedPanel) {
+            "projects" -> { playing = false; vm.save(close = true) }
+            "project" -> { playing = false; settingsCapture = doc; settingsDraft = ProjectDraft.from(doc); panel = "project" }
+            "account" -> onOpenAccount()
+        }
+        if (requestedPanel != null) onPanelRequestHandled()
+    }
+    LaunchedEffect(subjectVisible) {
+        if (!subjectVisible) { playing = false; vm.stopScenePlayback(); vm.stopAudioPreview() }
+    }
     LaunchedEffect(vm.sceneStopGeneration) { playing = false }
     LaunchedEffect(playing) { vm.notePlayback(playing) }
     var selectedLayerAction by remember(doc.id) { mutableStateOf<String?>(null) }
@@ -269,10 +677,10 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     var previewIndex by remember(doc.id) { mutableIntStateOf(0) }
     var previewSeconds by remember(doc.id) { mutableDoubleStateOf(0.0) }
     LaunchedEffect(panel) { if (panel != "audio") vm.stopAudioPreview() }
-    BackHandler { if (playing) playing = false else vm.save(close = true) }
+    BackHandler(enabled = subjectVisible && subjectFront) { if (playing) playing = false else vm.save(close = true) }
     val timelineState = androidx.compose.foundation.lazy.rememberLazyListState()
-    LaunchedEffect(playing, doc.id, doc.revision) {
-        if (playing) {
+    LaunchedEffect(playing, doc.id, doc.revision, subjectVisible) {
+        if (playing && subjectVisible) {
             vm.cancelAudioImport(); vm.stopAudioPreview(); vm.cancelImageImport(); vm.cancelFill()
             val clock = FramePlaybackClock(doc)
             previewIndex = clock.frameAt(0)
@@ -311,11 +719,12 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.save() }, enabled = !vm.saving) { Text(if (vm.saving) "Saving…" else if (vm.dirty) "Save" else "Saved") }
         }
         Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xff303034)).padding(12.dp), contentAlignment = Alignment.Center) {
-            DrawingSurface(vm, doc, if (playing) doc.frames[previewIndex.coerceIn(doc.frames.indices)] else doc.frame, playing, doc.onion.enabled)
+            DrawingSurface(vm, doc, if (playing) doc.frames[previewIndex.coerceIn(doc.frames.indices)] else doc.frame,
+                playing, doc.onion.enabled, viewportSize)
             StudioFloatingToolbar {
-            Tool.entries.filter { it != Tool.Image }.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(toolLabel(tool)) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
+            studioTools.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(toolLabel(tool)) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
             TextButton({ panel = "spatter" }, enabled = !playing && !vm.closing) { Text("Spatter") }
-            TextButton({ panel = "account" }, enabled = !vm.closing) { Text("Account") }
+            TextButton(onOpenAccount, enabled = !vm.closing) { Text("Account") }
             TextButton({
                 if (vm.beginImageImport()) {
                     try { imageImporter.launch(arrayOf("image/png", "image/jpeg")) }
@@ -379,7 +788,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.moveFrame(doc.activeFrameID, false) }, enabled = !playing && !vm.closing && doc.frames.last().id != doc.activeFrameID) { Text("Later") }
         }
     }
-    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "status" -> "Studio status"; "videoFrame" -> "Video frame at playhead"; "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; "spatter" -> "Spatter (local commands)"; "account" -> "Account, notifications & diagnostics"; else -> "Tool settings" }) },
+    if (panel != null && subjectVisible) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "status" -> "Studio status"; "videoFrame" -> "Video frame at playhead"; "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; "spatter" -> "Spatter (local commands)"; "account" -> "Account, notifications & diagnostics"; else -> "Tool settings" }) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (panel) {
@@ -391,7 +800,6 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                         Text(vm.message.ifBlank { "No current notice." })
                     }
                     "spatter" -> SpatterPanel(vm, doc, enabled = !playing && !vm.closing)
-                    "account" -> AccountPanel(vm)
                     "videoFrame" -> {
                         val sourceSeconds = doc.frames.takeWhile { it.id != doc.activeFrameID }.sumOf { it.hold.toLong() }.toDouble() / doc.fps
                         Text("Extract the nearest video frame at %.3f seconds into the selected animation frame. Move the animation playhead to choose a different source time.".format(sourceSeconds))
@@ -474,15 +882,36 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             Text(if (vm.fillContiguous) "Only the connected region (four neighboring pixels)." else "Every matching pixel across the canvas, including disconnected regions.")
                             Text("Up to 4,194,304 canvas pixels and 20,000 pixel runs per fill, with a five-second work limit. Fills keep their original pixel mask when moved, resized, rotated, flipped or fitted to a new canvas. Lasso selects the whole fill by its bounds. Keep all fill edges inside the canvas; Undo/Redo and layer locks apply.")
                             if (vm.filling) TextButton({ vm.cancelFill(); vm.report("Fill cancelled; no fill was added.") }) { Text("Cancel fill") }
+                        } else if (vm.tool == Tool.Wand) {
+                            Text("Tap a color on the top painted layer. Wand selects the whole artwork on top at matching pixels, then opens Move.")
+                            Text("Tolerance: ${vm.wandTolerance} / 255")
+                            Slider(vm.wandTolerance.toFloat(), { vm.configureWand(tolerance = it.toInt()) },
+                                valueRange = 0f..255f, steps = 254)
+                            FilterChip(vm.wandContiguous, { vm.configureWand(contiguous = !vm.wandContiguous) }, { Text("Contiguous") })
+                            Text(if (vm.wandContiguous) "Match connected paint only." else "Match colors across this layer, including disconnected paint.")
+                            if (vm.wandSelecting) TextButton({ vm.cancelWand() }) { Text("Cancel Wand") }
                         } else if (vm.tool == Tool.Eyedropper) {
                             Text("Tap to sample the visible canvas, including layer opacity and erased areas. Hidden layers, onion skin and selection handles are excluded. Sampling returns to your previous color drawing tool.")
                         } else if (vm.tool == Tool.Hand) {
                             Text("Hand · ${(vm.viewportZoom * 100).toInt()}%")
                             Text("Drag to pan; pinch to zoom around your fingers. This moves the view, not the artwork.")
-                            Slider(vm.viewportZoom, { vm.viewport(it, 0f, 0f) }, valueRange = 0.25f..8f)
+                            Slider(vm.viewportZoom, { vm.viewport(it, 0f, 0f) }, valueRange = viewportZoomRange)
                             TextButton({ vm.fitViewport() }) { Text("Fit canvas") }
+                        } else if (vm.tool == Tool.Zoom) {
+                            Text("Zoom · ${(vm.viewportZoom * 100).toInt()}%")
+                            Text("Tap the canvas to zoom in at that point. Pinch in either direction. The buttons zoom around the center of the view.")
+                            val size = viewportSize.value
+                            val enabled = !playing && !vm.closing && size.width > 0 && size.height > 0
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                TextButton({ transformViewport(vm, doc, size, center, Offset.Zero, 1f / viewportZoomStep) },
+                                    enabled = enabled && vm.viewportZoom > viewportZoomRange.start) { Text("Zoom out") }
+                                TextButton({ transformViewport(vm, doc, size, center, Offset.Zero, viewportZoomStep) },
+                                    enabled = enabled && vm.viewportZoom < viewportZoomRange.endInclusive) { Text("Zoom in") }
+                                TextButton({ vm.fitViewport() }, enabled = enabled) { Text("Fit canvas") }
+                            }
                         } else if (vm.tool == Tool.Lasso || vm.tool == Tool.Move) {
-                            Text("Lasso encloses whole unlocked drawings, text, images and fills. Fill selection encloses its entire bounding box, including gaps between disconnected regions. A selection switches to Move. Drag inside its box; corners resize and the top handle rotates. Keep transformed drawings inside the canvas.")
+                            Text("In Move, tap or drag unlocked artwork to select it. Tap empty canvas outside the selection box to clear it. Drag inside the box to move the group, use the corners to resize, or use the top handle to rotate. Lasso encloses whole objects and uses the entire bounding box for fills. Keep transformed artwork inside the canvas.")
                             Text("${vm.selectedStrokeIDs.size} selected objects")
                             if (vm.selectedText != null) TextButton({ vm.chooseTool(Tool.Text) }) { Text("Edit text") }
                             FilterChip(vm.selectionPreservesAspect,
@@ -601,7 +1030,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             }
                             TextButton({ vm.resetSelectedBrush() }) { Text("Reset this brush") }
                             Text("Size, opacity, smoothing and nib angle are remembered separately for each brush.")
-                            Text("Textures retain their pattern when saved or exported. Dip Pen varies width with stroke direction; stylus pressure is not yet supported.")
+                            Text("Textures retain their pattern when saved or exported. Round responds to compatible stylus pressure. Dip Pen varies width with stroke direction.")
                         }
                         Text("Width: ${vm.width.toInt()} pixels")
                         Slider(vm.width, { vm.width = it }, valueRange = 1f..128f)
@@ -741,6 +1170,10 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
         })
 }
 
+private val studioTools: List<Tool> = Tool.entries
+    .filterNot { it == Tool.Image || it == Tool.Wand }.toMutableList()
+    .apply { add(indexOf(Tool.Lasso), Tool.Wand) }
+
 private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft eraser"; else -> tool.name }
 
 /** Crop and quarter turns of the single selected image (iOS rasterCrop / rasterQuarterTurns). */
@@ -801,15 +1234,22 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
 }
 
 /** Honest connection state, local notification preferences and local crash diagnostics. */
-@Composable private fun AccountPanel(vm: StudioViewModel) {
-    com.stickdeath.studio.connect.ConnectedAccountSection()
+@Composable private fun AccountPanel(vm: StudioViewModel, account: com.stickdeath.studio.connect.AccountViewModel,
+    community: com.stickdeath.studio.connect.CommunityViewModel, visible: Boolean) {
+    com.stickdeath.studio.connect.ConnectedAccountSection(account)
     com.stickdeath.studio.billing.PlansSection()
-    Text(BackendContract.IDENTITY)
-    Text("Planned server contract: ${BackendContract.rpcs.size} member RPCs across " +
-        BackendArea.entries.filter { BackendContract.rpcs(it).isNotEmpty() }.joinToString { "${it.label} (${BackendContract.rpcs(it).size})" } +
-        ". Transport: ${BackendContract.TRANSPORT}")
-    Text("No user-to-user messaging or calls exist in this contract.")
-    Text("Notifications", style = MaterialTheme.typography.titleMedium)
+    com.stickdeath.studio.connect.AccountDataDesktopSection(account, community, visible)
+    Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
+    val reports = remember(vm.message) { vm.crashReports() }
+    Text("${reports.size} local crash report(s). Reports are redacted (no names, paths, project contents or identifiers), kept at most 30 days / five files, and never uploaded. No analytics SDK is installed.")
+    reports.firstOrNull()?.let { latest -> Text(vm.readCrashReport(latest).lineSequence().take(12).joinToString("\n"), style = MaterialTheme.typography.bodySmall) }
+    if (reports.isNotEmpty()) TextButton({ vm.deleteCrashReports() }) { Text("Delete local crash reports") }
+    val diagnosticsContext = LocalContext.current
+    DiagnosticsSettingsSection(remember { DiagnosticsStore(diagnosticsContext) })
+}
+
+@Composable private fun LocalNotificationPreferences(vm: StudioViewModel) {
+    Text("Local notification preferences", style = MaterialTheme.typography.titleMedium)
     Text("No push provider is configured on Android and nothing is sent. These choices are stored on this device so delivery honours them once the owner enables it. Account, billing and moderation notices cannot be turned off.")
     var preferences by remember { mutableStateOf(vm.notificationPreferences()) }
     preferences.fold({ current ->
@@ -826,76 +1266,181 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
         }
         Text("Daily cap for Studio/community and announcement notices: ${current.dailyCap} per day.")
     }, { error -> Text("Saved notification preferences could not be read (${error.message}). They were preserved, not overwritten.") })
-    Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
-    val reports = remember(vm.message) { vm.crashReports() }
-    Text("${reports.size} local crash report(s). Reports are redacted (no names, paths, project contents or identifiers), kept at most 30 days / five files, and never uploaded. No analytics SDK is installed.")
-    reports.firstOrNull()?.let { latest -> Text(vm.readCrashReport(latest).lineSequence().take(12).joinToString("\n"), style = MaterialTheme.typography.bodySmall) }
-    if (reports.isNotEmpty()) TextButton({ vm.deleteCrashReports() }) { Text("Delete local crash reports") }
-    val diagnosticsContext = LocalContext.current
-    DiagnosticsSettingsSection(remember { DiagnosticsStore(diagnosticsContext) })
 }
 
-private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, radius: Float): List<Pair<String, Point>> {
-    fun clipped(x: Float, y: Float) = Point(x.coerceIn(radius, width-radius), y.coerceIn(radius, height-radius))
-    return listOf("rotate" to clipped(bounds.center.x, if (bounds.top > radius*3) bounds.top-radius*2 else bounds.bottom+radius*2),
-        "scale" to clipped(bounds.left,bounds.top), "scale" to clipped(bounds.right,bounds.top),
-        "scale" to clipped(bounds.left,bounds.bottom), "scale" to clipped(bounds.right,bounds.bottom))
+private val viewportZoomRange = 0.25f..8f
+private const val viewportZoomStep = 1.5f
+
+private fun transformViewport(
+    vm: StudioViewModel, doc: Document, viewport: IntSize,
+    anchor: Offset, pan: Offset, scale: Float, requireCanvasHit: Boolean = false,
+) {
+    val current = vm.document ?: return
+    if (vm.closing || current.id != doc.id || current.width != doc.width || current.height != doc.height ||
+        viewport.width <= 0 || viewport.height <= 0 || !scale.isFinite() || scale <= 0f ||
+        !anchor.x.isFinite() || !anchor.y.isFinite() || !pan.x.isFinite() || !pan.y.isFinite()) return
+
+    val old = vm.viewportZoom
+    val next = (old * scale).coerceIn(viewportZoomRange)
+    if (next == old && pan == Offset.Zero) return
+    val ratio = next / old
+    val cx = anchor.x - viewport.width / 2f
+    val cy = anchor.y - viewport.height / 2f
+    val fit = minOf(viewport.width.toFloat() / doc.width, viewport.height.toFloat() / doc.height)
+    val fittedWidth = doc.width * fit
+    val fittedHeight = doc.height * fit
+    if (requireCanvasHit && (kotlin.math.abs(cx - vm.viewportX) > fittedWidth * old / 2f ||
+            kotlin.math.abs(cy - vm.viewportY) > fittedHeight * old / 2f)) return
+
+    val width = fittedWidth * next
+    val height = fittedHeight * next
+    val limitX = ((width + viewport.width) / 2 - minOf(48f, width / 2)).coerceAtLeast(0f)
+    val limitY = ((height + viewport.height) / 2 - minOf(48f, height / 2)).coerceAtLeast(0f)
+    // Solve for the translation that keeps the same canvas point under the anchor.
+    vm.viewport(next, (cx - (cx - vm.viewportX) * ratio + pan.x).coerceIn(-limitX, limitX),
+        (cy - (cy - vm.viewportY) * ratio + pan.y).coerceIn(-limitY, limitY))
 }
 
-@Composable private fun DrawingSurface(vm: StudioViewModel, doc: Document, frame: Frame, playing: Boolean, onion: Boolean) {
-    var pending by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<List<Point>>(emptyList()) }
+private suspend fun PointerInputScope.detectViewportZoom(
+    onTap: (Offset) -> Unit,
+    onPinch: (Offset, Offset, Float) -> Unit,
+) = awaitEachGesture {
+    val down = awaitFirstDown()
+    var tap = true
+    var usedMultiplePointers = false
+    var pastSlop = false
+    var totalPan = Offset.Zero
+    var totalZoom = 1f
+    do {
+        val event = awaitPointerEvent()
+        if (event.changes.any { it.isConsumed }) break
+        // Once a second pointer participates, its final release can never become a tap.
+        if (event.changes.any { it.id != down.id && it.pressed }) usedMultiplePointers = true
+        if (!usedMultiplePointers) {
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) tap = false
+            if (!change.pressed && tap) {
+                change.consume()
+                onTap(down.position)
+            }
+        } else if (event.changes.count { it.pressed && it.previousPressed } >= 2) {
+            val pan = event.calculatePan()
+            val zoom = event.calculateZoom()
+            if (!pastSlop) {
+                totalPan += pan
+                totalZoom *= zoom
+                val zoomMotion = kotlin.math.abs(1f - totalZoom) * event.calculateCentroidSize(useCurrent = false)
+                pastSlop = zoomMotion > viewConfiguration.touchSlop || totalPan.getDistance() > viewConfiguration.touchSlop
+            }
+            if (pastSlop) {
+                onPinch(event.calculateCentroid(useCurrent = false), pan, zoom)
+                event.changes.forEach { if (it.position != it.previousPosition) it.consume() }
+            }
+        }
+    } while (event.changes.any { it.pressed })
+}
+
+private data class DrawingPreview(
+    val points: List<Point> = emptyList(),
+    val roundBrush: SwiftRoundBrush? = null,
+)
+
+private fun stylusPressure(value: Float, fallback: Double = 1.0): Double =
+    if (value.isFinite()) value.coerceIn(0f, 1f).toDouble() else fallback
+
+@Composable private fun DrawingSurface(
+    vm: StudioViewModel, doc: Document, frame: Frame, playing: Boolean, onion: Boolean,
+    viewportSize: MutableState<IntSize>,
+) {
+    var pending by remember(doc.id, doc.revision, vm.tool) { mutableStateOf(DrawingPreview()) }
     var pendingSeed by remember(doc.id) { mutableStateOf(0) }
     var transformed by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<Frame?>(null) }
+    var movePreviewIDs by remember(doc.id, doc.revision, vm.tool) { mutableStateOf<Set<String>?>(null) }
     LaunchedEffect(doc.id, doc.width, doc.height) { vm.fitViewport() }
-    BoxWithConstraints(Modifier.fillMaxSize().clipToBounds().onSizeChanged { vm.fitViewport() }
-        .pointerInput(doc.id, doc.width, doc.height, vm.tool, playing, vm.closing) {
-            if (vm.tool == Tool.Hand && !playing && !vm.closing) detectTransformGestures { centroid, pan, zoom, _ ->
-                val old = vm.viewportZoom
-                val next = (old * zoom).coerceIn(0.25f, 8f)
-                val ratio = next / old
-                val cx = centroid.x - size.width / 2f; val cy = centroid.y - size.height / 2f
-                val fit = minOf(size.width.toFloat() / doc.width, size.height.toFloat() / doc.height)
-                val canvasWidth = doc.width * fit * next; val canvasHeight = doc.height * fit * next
-                val limitX = ((canvasWidth + size.width) / 2 - minOf(48f, canvasWidth / 2)).coerceAtLeast(0f)
-                val limitY = ((canvasHeight + size.height) / 2 - minOf(48f, canvasHeight / 2)).coerceAtLeast(0f)
-                vm.viewport(next, (cx - (cx - vm.viewportX) * ratio + pan.x).coerceIn(-limitX, limitX),
-                    (cy - (cy - vm.viewportY) * ratio + pan.y).coerceIn(-limitY, limitY))
+    BoxWithConstraints(
+        Modifier.fillMaxSize().clipToBounds().onSizeChanged {
+            if (viewportSize.value != it) {
+                viewportSize.value = it
+                vm.fitViewport()
             }
-        }, contentAlignment = Alignment.Center) {
+        }.pointerInput(doc.id, doc.width, doc.height, vm.tool, playing, vm.closing) {
+            if (playing || vm.closing) return@pointerInput
+            when (vm.tool) {
+                Tool.Hand -> detectTransformGestures { centroid, pan, zoom, _ ->
+                    if (vm.tool == Tool.Hand) transformViewport(vm, doc, size, centroid, pan, zoom)
+                }
+                Tool.Zoom -> detectViewportZoom(
+                    onTap = { anchor ->
+                        if (vm.tool == Tool.Zoom) {
+                            transformViewport(vm, doc, size, anchor, Offset.Zero, viewportZoomStep, requireCanvasHit = true)
+                        }
+                    },
+                    onPinch = { anchor, pan, zoom ->
+                        if (vm.tool == Tool.Zoom) transformViewport(vm, doc, size, anchor, pan, zoom)
+                    },
+                )
+                else -> Unit
+            }
+        },
+        contentAlignment = Alignment.Center,
+    ) {
         val ratio = doc.width.toFloat() / doc.height
         val canvasWidth = minOf(maxWidth, maxHeight * ratio)
         val canvasHeight = canvasWidth / ratio
         Canvas(Modifier.size(canvasWidth, canvasHeight).graphicsLayer {
             scaleX = vm.viewportZoom; scaleY = vm.viewportZoom
             translationX = vm.viewportX; translationY = vm.viewportY
-        }.clipToBounds().pointerInput(doc.id, doc.revision, vm.tool, vm.width, vm.color, vm.strokeOpacity, vm.smoothing, vm.mirrorMode, vm.shapeFilled, vm.shapeEqualSides, playing, vm.closing, vm.selectedStrokeIDs, vm.selectionMode, vm.selectionShape, vm.selectionPreservesAspect, vm.brushFamily, vm.nibAngle, vm.rulerMode) {
+        }.clipToBounds().pointerInput(doc.id, doc.revision, vm.tool, vm.width, vm.color, vm.strokeOpacity, vm.smoothing, vm.mirrorMode, vm.shapeFilled, vm.shapeEqualSides, playing, vm.closing, vm.selectedStrokeIDs, vm.selectionMode, vm.selectionShape, vm.selectionPreservesAspect, vm.brushFamily, vm.nibAngle, vm.rulerMode, vm.wandTolerance, vm.wandContiguous) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
-                if (playing || vm.closing || vm.tool == Tool.Hand) return@awaitEachGesture
+                if (playing || vm.closing || vm.tool == Tool.Hand || vm.tool == Tool.Zoom) return@awaitEachGesture
                 val tool = vm.tool; val width = vm.width; val color = vm.color; val opacity = vm.strokeOpacity
+                val wandGesture = tool == Tool.Wand
+                fun isInCanvas(position: Offset): Boolean =
+                    position.x >= 0f && position.x < size.width && position.y >= 0f && position.y < size.height
+                if (wandGesture && (down.isConsumed || currentEvent.changes.size != 1 || !isInCanvas(down.position))) {
+                    return@awaitEachGesture
+                }
                 val mirror = vm.mirrorMode
                 val brush = vm.brushFamily; val nibAngle = vm.nibAngle; val brushSeed = newID().hashCode(); pendingSeed = brushSeed
                 val drawing = tool.isDrawing
+                val tapTool = tool == Tool.Fill || tool == Tool.Eyedropper || tool == Tool.Text || wandGesture
                 val filled = vm.shapeFilled && tool.isClosedShape
                 val equalSides = vm.shapeEqualSides
                 if (drawing && (doc.layer.locked || !doc.layer.visible || doc.layer.opacity == 0f)) return@awaitEachGesture
                 fun point(x: Float, y: Float) = Point((x * doc.width / size.width).coerceIn(0f, doc.width.toFloat()), (y * doc.height / size.height).coerceIn(0f, doc.height.toFloat()))
                 val first = point(down.position.x, down.position.y)
                 val points = mutableListOf(first)
+                val usesStylusPressure = tool == Tool.Pencil && brush == BrushFamily.Round && down.type == PointerType.Stylus
+                if (usesStylusPressure && (down.isConsumed || !isInCanvas(down.position) ||
+                        currentEvent.changes.any { it.id != down.id && it.pressed })) return@awaitEachGesture
+                val roundBrush = if (usesStylusPressure) SwiftRoundBrush.stylus(vm.smoothing, stylusPressure(down.pressure)) else null
+                val pressureSamples = roundBrush?.pressures?.toMutableList()
+                fun drawingPreview() = DrawingPreview(points.toList(), roundBrush?.copy(pressures = requireNotNull(pressureSamples).toList()))
                 val smoother = StrokeSmoother(first, if (tool == Tool.Pencil || tool.isEraser) vm.smoothing else 0f)
                 // Ruler applies to freehand pencil/eraser gestures only; shapes already have straight geometry.
                 val ruler = RulerConstraint(first, if (tool == Tool.Pencil || tool.isEraser) vm.rulerMode else RulerMode.Off)
-                val ids = vm.selectedStrokeIDs
+                val priorIDs = vm.selectedStrokeIDs
                 val selectionMode = vm.selectionMode
                 val selectionShape = vm.selectionShape
                 val preservesAspect = vm.selectionPreservesAspect
-                val bounds = ArtworkSelection.bounds(doc.frame, ids)
-                val radius = minOf(22f * doc.width / size.width / vm.viewportZoom, minOf(doc.width,doc.height)/4f)
-                val handle = if (tool == Tool.Move && bounds != null) selectionHandles(bounds,doc.width,doc.height,radius)
-                    .filter { kotlin.math.hypot(it.second.x-first.x,it.second.y-first.y) <= radius }
-                    .minByOrNull { kotlin.math.hypot(it.second.x-first.x,it.second.y-first.y) }?.first else null
-                if (tool == Tool.Move && (bounds == null || (handle == null && !bounds.contains(first)))) return@awaitEachGesture
+                val gestureZoom = vm.viewportZoom
+                if (tool == Tool.Move && (!gestureZoom.isFinite() || gestureZoom <= 0f)) return@awaitEachGesture
+                val priorBounds = if (tool == Tool.Move) ArtworkSelection.bounds(doc.frame, priorIDs) else null
+                val radius = minOf(22f * doc.width / size.width / gestureZoom, minOf(doc.width,doc.height)/4f)
+                val handle = priorBounds?.let { ArtworkSelection.transformHandleAt(it, doc.width, doc.height, radius, first) }
+                val keepsSelection = handle != null || priorBounds?.contains(first) == true
+                val ids = if (tool == Tool.Move && !keepsSelection) {
+                    ArtworkSelection.topmostAt(doc.frame, doc.layers, first)?.let { setOf(it) }.orEmpty()
+                } else priorIDs
+                val bounds = when {
+                    keepsSelection -> priorBounds
+                    tool == Tool.Move -> ArtworkSelection.bounds(doc.frame, ids)
+                    else -> null
+                }
+                var moveStarted = keepsSelection
                 fun movement(current: Point): ArtworkTransform {
+                    if (!moveStarted || current == first) return ArtworkTransform()
                     val b = bounds ?: return ArtworkTransform()
                     val ax = first.x-b.center.x; val ay = first.y-b.center.y
                     val bx = current.x-b.center.x; val by = current.y-b.center.y
@@ -915,26 +1460,61 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                     }
                 }
                 var overflow = false
-                if (tool != Tool.Move && tool != Tool.Fill && tool != Tool.Eyedropper && tool != Tool.Text && !tool.isShape) pending = points.toList()
+                if (tool != Tool.Move && !tapTool && !tool.isShape) pending = drawingPreview()
                 down.consume()
                 vm.noteGesture(true)
                 try {
+                    // Keep selection provisional until release. Changing the ViewModel's selection
+                    // here would restart pointerInput before this drag can finish.
+                    if (tool == Tool.Move) movePreviewIDs = ids
                     while (true) {
                         val event = awaitPointerEvent()
-                        // A second touch cancels the single-object gesture without committing.
-                        if (event.changes.any { it.id != down.id && it.pressed }) break
+                        // Wand also refuses a second pointer that is already releasing.
+                        if (event.changes.any { it.id != down.id && (wandGesture || it.pressed) }) break
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        // Compose can deliver cancellation as a consumed synthetic up.
+                        if ((tool == Tool.Move || wandGesture || usesStylusPressure) && change.isConsumed) break
+                        if (wandGesture && (!change.previousPressed || !isInCanvas(change.position))) break
                         val current = point(change.position.x, change.position.y)
-                        if (tool == Tool.Move && bounds != null) transformed = movement(current).apply(doc.frame, ids, bounds)
-                        else if (tool == Tool.Fill || tool == Tool.Eyedropper || tool == Tool.Text) {
+                        if (tool == Tool.Move) {
+                            if (bounds != null) {
+                                if (!moveStarted) {
+                                    // Pointer positions are local to the scaled canvas. Touch slop uses device pixels.
+                                    val localDistance = (change.position - down.position).getDistance()
+                                    moveStarted = localDistance * gestureZoom >= viewConfiguration.touchSlop
+                                }
+                                val transform = movement(current)
+                                if (transform == ArtworkTransform()) transformed = null
+                                else {
+                                    val preview = transform.preview(doc.frame, ids, bounds, transformed ?: doc.frame)
+                                    transformed = preview.frame
+                                    preview.refusal?.let(vm::report)
+                                }
+                            }
+                        }
+                        else if (tapTool) {
                             val dx = current.x - first.x; val dy = current.y - first.y
                             val tolerance = 8f * doc.width / size.width / vm.viewportZoom
                             if (dx * dx + dy * dy > tolerance * tolerance) overflow = true
                         }
                         else if (tool == Tool.Lasso && selectionShape == SelectionShape.Rectangle) {
-                            pending = ShapePath.points(Tool.Rectangle, first, current, false)
+                            pending = DrawingPreview(ShapePath.points(Tool.Rectangle, first, current, false))
                         }
-                        else if (tool.isShape) pending = ShapePath.points(tool, first, current, equalSides)
+                        else if (tool.isShape) pending = DrawingPreview(ShapePath.points(tool, first, current, equalSides))
+                        else if (pressureSamples != null) {
+                            // The brush renderer smooths these raw, ruler-constrained samples once.
+                            // Lift events often report zero pressure; retain the last contact pressure.
+                            val next = ruler.constrain(current)
+                            val previousPressure = pressureSamples.last()
+                            val pressure = if (change.pressed) stylusPressure(change.pressure, previousPressure) else previousPressure
+                            if (next != points.last() || pressure != previousPressure) {
+                                if (points.size < 8192) {
+                                    points.add(next)
+                                    pressureSamples.add(pressure)
+                                    pending = drawingPreview()
+                                } else overflow = true
+                            }
+                        }
                         else {
                             val cap = if (tool == Tool.Lasso) 1024 else 8192
                             val ruled = ruler.constrain(current)
@@ -947,34 +1527,49 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                             if (!change.pressed && points.last() != ruled) {
                                 if (points.size < cap) points.add(ruled) else overflow = true
                             }
-                            pending = points.toList()
+                            pending = drawingPreview()
                         }
                         change.consume()
                         if (!change.pressed) {
-                            if (overflow) vm.report(if (tool == Tool.Text) "Tap without dragging to place text." else if (tool == Tool.Eyedropper) "Tap without dragging to sample a color." else if (tool == Tool.Fill) "Tap without dragging to fill." else "Outline too long. Draw a simpler outline.")
+                            if (overflow) vm.report(when (tool) {
+                                Tool.Text -> "Tap without dragging to place text."
+                                Tool.Eyedropper -> "Tap without dragging to sample a color."
+                                Tool.Fill -> "Tap without dragging to fill."
+                                Tool.Wand -> "Tap without dragging to select a color with Wand."
+                                else -> "Outline too long. Draw a simpler outline."
+                            })
                             else when(tool) {
                                 Tool.Text -> vm.addText(doc, first)
                                 Tool.Eyedropper -> vm.sampleColor(doc, current)
                                 Tool.Fill -> vm.fillAt(doc, first)
-                                Tool.Lasso -> vm.selectArea(doc, if (selectionShape == SelectionShape.Rectangle) pending else points, selectionMode, ids, selectionShape)
-                                Tool.Move -> vm.transformSelection(doc, ids, movement(current))
-                                else -> vm.commitStroke(doc, if (tool.isShape) pending else points, tool, width, color, filled, opacity, mirror, brush, brushSeed, nibAngle)
+                                Tool.Wand -> vm.wandAt(doc, first)
+                                Tool.Lasso -> vm.selectArea(doc, if (selectionShape == SelectionShape.Rectangle) pending.points else points, selectionMode, priorIDs, selectionShape)
+                                Tool.Move -> vm.finishMoveGesture(doc, priorIDs, ids, movement(current))
+                                else -> vm.commitStroke(doc, if (tool.isShape) pending.points else points, tool, width, color,
+                                    filled, opacity, mirror, brush, brushSeed, nibAngle, swiftRoundBrush = pending.roundBrush)
                             }
                             break
                         }
                     }
-                } finally { pending = emptyList(); transformed = null; vm.noteGesture(false) }
+                } finally {
+                    pending = DrawingPreview()
+                    transformed = null
+                    movePreviewIDs = null
+                    vm.noteGesture(false)
+                }
             }
         }) {
             val canvas = drawContext.canvas.nativeCanvas
             val checkpoint = canvas.save()
             try {
                 canvas.scale(size.width / doc.width, size.height / doc.height)
-                val live = if (pending.isNotEmpty() && !playing && vm.tool.isDrawing)
-                    Stroke(layerID = doc.activeLayerID, points = pending, color = vm.color, width = vm.width, tool = vm.tool,
+                val live = if (pending.points.isNotEmpty() && !playing && vm.tool.isDrawing)
+                    Stroke(layerID = doc.activeLayerID, points = pending.points, color = vm.color, width = vm.width, tool = vm.tool,
                         filled = vm.shapeFilled && (vm.tool.isClosedShape), opacity = vm.strokeOpacity,
-                        brush = if (vm.tool == Tool.Pencil) vm.brushFamily else BrushFamily.Round, brushSeed = pendingSeed, nibAngle = vm.nibAngle)
-                        .takeIf { runCatching { BrushRenderer.work(it) }.isSuccess } else null
+                        brush = if (vm.tool == Tool.Pencil) vm.brushFamily else BrushFamily.Round, brushSeed = pendingSeed,
+                        nibAngle = vm.nibAngle, swiftRoundBrush = pending.roundBrush,
+                        preservesLayerAlpha = pending.roundBrush != null && doc.layer.lockMode == LayerLockMode.Alpha)
+                        .takeIf { runCatching { it.swiftRoundBrush?.dabs(it)?.size ?: BrushRenderer.work(it) }.isSuccess } else null
                 val shown = if (!playing) transformed ?: frame else frame
                 val preview = if (live != null) shown.copy(strokes = shown.strokes + live.mirrored(doc.width, doc.height, vm.mirrorMode)) else shown
                 if (onion && !playing) FrameRenderer.drawOnion(canvas, doc, preview, maxPrevious = vm.planLimits.maxOnionSkinBack, maxNext = vm.planLimits.maxOnionSkinForward)
@@ -994,19 +1589,19 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                         color = 0xffe52b38.toInt(); style = android.graphics.Paint.Style.STROKE; strokeWidth = 1.5f*unit
                         pathEffect = android.graphics.DashPathEffect(floatArrayOf(5f*unit,4f*unit),0f)
                     }
-                    if (vm.tool == Tool.Lasso && pending.isNotEmpty()) {
+                    if (vm.tool == Tool.Lasso && pending.points.isNotEmpty()) {
                         val path = android.graphics.Path().apply {
-                            moveTo(pending.first().x,pending.first().y)
-                            pending.drop(1).forEach { lineTo(it.x,it.y) }; close()
+                            moveTo(pending.points.first().x,pending.points.first().y)
+                            pending.points.drop(1).forEach { lineTo(it.x,it.y) }; close()
                         }
                         canvas.drawPath(path,paint)
                     }
-                    val bounds = ArtworkSelection.bounds(shown,vm.selectedStrokeIDs)
+                    val bounds = ArtworkSelection.bounds(shown, movePreviewIDs ?: vm.selectedStrokeIDs)
                     if (bounds != null) {
                         canvas.drawRect(bounds.left,bounds.top,bounds.right,bounds.bottom,paint)
                         if (vm.tool == Tool.Move) {
                             val radius = minOf(22f*unit,minOf(doc.width,doc.height)/4f)
-                            selectionHandles(bounds,doc.width,doc.height,radius).forEach { (kind,p) ->
+                            ArtworkSelection.transformHandles(bounds,doc.width,doc.height,radius).forEach { (kind,p) ->
                                 paint.pathEffect = null; paint.style = android.graphics.Paint.Style.FILL
                                 paint.color = if (kind == "rotate") 0xffe52b38.toInt() else 0xffffffff.toInt()
                                 canvas.drawCircle(p.x,p.y,6f*unit,paint)

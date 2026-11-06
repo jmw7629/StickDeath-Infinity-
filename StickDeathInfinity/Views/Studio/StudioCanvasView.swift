@@ -506,10 +506,9 @@ struct StudioCanvasView: View {
                         moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
                         imageResizeCorner = nil
                         if let geometry = imageHandles(frame: vm.currentFrame, size: size) {
-                            imageResizeCorner = geometry.handles.filter {
-                                hypot($0.point.x-value.startLocation.x, $0.point.y-value.startLocation.y) <= geometry.hitRadius }
-                                .min { hypot($0.point.x-value.startLocation.x, $0.point.y-value.startLocation.y) <
-                                    hypot($1.point.x-value.startLocation.x, $1.point.y-value.startLocation.y) }?.kind
+                            // Use the same body/handle admission as drawings so
+                            // a small image near the canvas edge can still move.
+                            imageResizeCorner = geometry.hit(value.startLocation)
                         }
                         imageMoveCapture = imageResizeCorner == nil
                             ? vm.beginImageMove(at: documentPoint(value.startLocation, size: size)) : vm.currentImageMoveCapture()

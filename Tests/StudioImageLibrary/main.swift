@@ -1038,6 +1038,6 @@ private final class NetworkTrap: URLProtocol {
             try require(reopened.toggleFavorite(ids[0]) && reopened.favorites.isEmpty, "Unfavorite failed")
         }
         try require(NetworkTrap.count == 0, "Library attempted a network request")
-        print("STUDIO_IMAGE_LIBRARY_TESTS=PASS \(groups)/\(groups), 207 actual thumbnails, zero network requests")
+        print("STUDIO_IMAGE_LIBRARY_TESTS=PASS \(groups)/\(groups), \(catalogue.images.count) actual thumbnails, zero network requests")
     }
 }

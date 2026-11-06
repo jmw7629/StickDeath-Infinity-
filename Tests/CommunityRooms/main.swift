@@ -13,6 +13,8 @@ final class FakeTransport: CommunityTransport {
     var replies: [Result<String, Error>] = []
     var calls: [Call] = []
     var hasSession = true
+    var sessionAccountID: UUID?
+    var beforeReply: (() -> Void)?
     func rpc<P: Encodable & Sendable>(_ name: String, params: P) async throws -> CommunityReply {
         let data = try CommunityCoding.encoder().encode(params)
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
@@ -24,10 +26,83 @@ final class FakeTransport: CommunityTransport {
         return try next()
     }
     private func next() throws -> CommunityReply {
+        beforeReply?()
         guard !replies.isEmpty else { throw CommunityError.transport("No scripted reply.") }
         switch replies.removeFirst() {
         case .success(let json): return CommunityReply(data: Data(json.utf8), serverDate: nil, sentAt: Date(), receivedAt: Date())
         case .failure(let error): throw error
+        }
+    }
+}
+
+/// A held real CommunityTransport response, used through production RoomsClient
+/// and public coordinator entrypoints. It contains no session/sync implementation.
+/// Protocol calls may run off the main actor; the held response is lock protected.
+private final class HeldRoomTransport: CommunityTransport, @unchecked Sendable {
+    let hasSession = true
+    private let lock = NSLock()
+    private var callCount = 0
+    private var reply: CheckedContinuation<CommunityReply, Error>?
+    private var requested = false
+    private let heldEvents: AsyncStream<Void>
+    private let heldEvent: AsyncStream<Void>.Continuation
+    init() {
+        var installed: AsyncStream<Void>.Continuation?
+        heldEvents = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { installed = $0 }
+        heldEvent = installed!
+    }
+    var calls: Int {
+        lock.lock(); defer { lock.unlock() }
+        return callCount
+    }
+    private var isHeld: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return reply != nil
+    }
+    private func beginRequest() throws {
+        lock.lock(); defer { lock.unlock() }
+        callCount += 1
+        guard !requested else { throw Failure(description: "Stale synchronise requested another RPC") }
+        requested = true
+    }
+    func rpc<P: Encodable & Sendable>(_ name: String, params: P) async throws -> CommunityReply {
+        try beginRequest()
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.lock(); reply = continuation; lock.unlock()
+            // Publish readiness only after the real RPC reply is suspended.
+            heldEvent.yield(())
+            heldEvent.finish()
+        }
+    }
+    func rows(_ table: String, select: String, filters: [CommunityRowFilter], limit: Int) async throws -> CommunityReply {
+        throw Failure(description: "Unexpected held transport row request")
+    }
+    func waitUntilHeld() async throws {
+        // Task.yield() does not promise that another executor has run. Wait for
+        // the actual RPC signal, bounded independently of scheduler iteration count.
+        let events = heldEvents
+        let signalled = try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                var iterator = events.makeAsyncIterator()
+                return await iterator.next() != nil
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                return false
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? false
+        }
+        guard signalled && isHeld else {
+            throw Failure(description: "Production RoomsClient RPC did not suspend")
+        }
+    }
+    func release(_ result: Result<String, Error>) {
+        lock.lock(); let continuation = reply; reply = nil; lock.unlock()
+        switch result {
+        case .success(let json):
+            continuation?.resume(returning: CommunityReply(data: Data(json.utf8), serverDate: nil, sentAt: Date(), receivedAt: Date()))
+        case .failure(let error): continuation?.resume(throwing: error)
         }
     }
 }
@@ -55,11 +130,119 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
             catch { failed += 1; print("FAIL \(name): \(error)") }
         }
 
+        await test("Watch Together routes approved renditions to shared controls and provider references to independent controls") {
+            let id = UUID()
+            let raw = WatchRoomMedia(id: id, title: "Approved", duration: 12, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .rendition, url: "https://cdn.example.test/render.mp4"))
+            let youtube = WatchRoomMedia(id: id, title: "Provider", duration: nil, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .youtube, url: "https://www.youtube.com/watch?v=abcdefghijk"))
+            try require(raw.supportsSharedControls && raw.playbackSource?.renditionURL != nil, "raw synchronization preserved")
+            try require(!youtube.supportsSharedControls && youtube.playbackSource?.renditionURL == nil && youtube.playbackSource != nil, "provider reference cannot be downloaded or sought as a raw video")
+            let session = WatchRoomPlayback(id: UUID(), media_id: id, position: 0, playing: false, revision: 1, updated_at: Date())
+            try require(session.isValid(for: raw) && session.isValid(for: youtube), "paused shared choice")
+            let playing = WatchRoomPlayback(id: session.id, media_id: id, position: 1, playing: true, revision: 2, updated_at: Date())
+            try require(playing.isValid(for: raw) && !playing.isValid(for: youtube), "provider cannot fabricate synchronized position")
+        }
+        await test("Watch Together rejects malformed providers, invented duration and nonfinite or mismatched sessions") {
+            let id = UUID()
+            for (provider, url, duration) in [
+                (CommunityVideoSource.Provider.youtube, "https://www.youtube.com/watch?v=abcdefghijk", 5.0),
+                (.rendition, "https://www.youtube.com/watch?v=abcdefghijk", 5.0),
+                (.youtube, "https://cdn.example.test/render.mp4", 5.0),
+                (.rendition, "https://cdn.example.test/render.mp4", Double.infinity),
+                (.rendition, "https://cdn.example.test/render.mp4", -1.0),
+                (.rendition, "https://cdn.example.test/render.mp4", 3601.0)] {
+                let media = WatchRoomMedia(id: id, title: "Invalid", duration: duration, expires_at: nil,
+                    video_source: CommunityVideoSource(provider: provider, url: url))
+                try require(media.playbackSource == nil, "invalid media accepted")
+            }
+            let raw = WatchRoomMedia(id: id, title: "Valid", duration: 4, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .rendition, url: "https://cdn.example.test/render.mp4"))
+            for position in [-1.0, 5, Double.nan, Double.infinity] {
+                try require(!WatchRoomPlayback(id: UUID(), media_id: id, position: position, playing: true, revision: 0, updated_at: Date()).isValid(for: raw), "invalid position")
+            }
+            try require(!WatchRoomPlayback(id: UUID(), media_id: UUID(), position: 0, playing: false, revision: 0, updated_at: Date()).isValid(for: raw), "media mismatch")
+            try require(!WatchRoomPlayback(id: UUID(), media_id: id, position: 0, playing: false, revision: -1, updated_at: Date()).isValid(for: raw), "negative revision")
+        }
+        await test("Watch Together room requests omit account identity and optional controls and surface server refusals") {
+            let request = WatchRoomRequest(action: "select", room: room, media: project, revision: 7)
+            let data = try CommunityCoding.encoder().encode(request)
+            let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            try require(Set(json.keys) == ["action", "room", "media", "revision"], "caller cannot choose account or fabricate unused playback controls")
+            let empty = try CommunityCoding.decode(WatchRoomResponse.self, from: Data(#"{"status":"empty"}"#.utf8))
+            try require(empty.status == "empty" && empty.session == nil, "no fabricated session")
+            do { _ = try CommunityCoding.decode(WatchRoomResponse.self, from: Data(#"{"error":"Room access ended."}"#.utf8)); throw Failure(description: "denial ignored") }
+            catch CommunityError.server(let message, _) { try require(message == "Room access ended.", "exact refusal") }
+        }
+
+        await test("Watch Together admission fences older grants after a newer failed or empty refresh and a room reset") {
+            let mediaID = UUID()
+            let video = WatchRoomMedia(id: mediaID, title: "Provider", duration: nil, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .youtube, url: "https://www.youtube.com/watch?v=abcdefghijk"))
+            let session = WatchRoomPlayback(id: UUID(), media_id: mediaID, position: 0, playing: false, revision: 4, updated_at: Date())
+            var admission = WatchPlaybackAdmission()
+            let older = admission.beginRefresh()
+            let later = admission.beginRefresh()
+            try require(!admission.admit(session, media: video, ticket: older), "older success cannot overtake a newer issued refresh")
+            admission.invalidatePendingRequests() // later refresh failed or returned empty
+            try require(!admission.admit(session, media: video, ticket: older) && !admission.admit(session, media: video, ticket: later), "failure cannot resurrect either held success")
+            let fresh = admission.beginRefresh()
+            try require(admission.admit(session, media: video, ticket: fresh), "new authoritative refresh may restore access")
+            admission.reset()
+            try require(!admission.isCurrent(fresh) && !admission.admit(session, media: video, ticket: fresh), "same-account same-room rejoin rejects prior epoch")
+        }
+        await test("Watch Together admission rejects backwards revisions and same-revision media changes after selection") {
+            let mediaID = UUID(); let nextID = UUID(); let sessionID = UUID(); let timestamp = Date()
+            let video = WatchRoomMedia(id: mediaID, title: "Provider", duration: nil, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .youtube, url: "https://www.youtube.com/watch?v=abcdefghijk"))
+            let nextVideo = WatchRoomMedia(id: nextID, title: "Raw", duration: 4, expires_at: nil,
+                video_source: CommunityVideoSource(provider: .rendition, url: "https://cdn.example.test/render.mp4"))
+            let original = WatchRoomPlayback(id: sessionID, media_id: mediaID, position: 0, playing: false, revision: 7, updated_at: timestamp)
+            let newer = WatchRoomPlayback(id: sessionID, media_id: nextID, position: 0, playing: false, revision: 8, updated_at: timestamp.addingTimeInterval(1))
+            var admission = WatchPlaybackAdmission()
+            let first = admission.beginRefresh()
+            try require(admission.admit(original, media: video, ticket: first), "initial approved item")
+            let heldPoll = admission.beginRefresh()
+            let selection = admission.beginRefresh()
+            try require(admission.admit(newer, media: nextVideo, ticket: selection), "confirmed selection records revision floor before next poll")
+            try require(!admission.admit(original, media: video, ticket: heldPoll), "held pre-selection reply refused")
+            let stale = admission.beginRefresh()
+            try require(!admission.admit(original, media: video, ticket: stale), "newly delivered backwards session revision refused")
+            let sameRevisionOtherMedia = WatchRoomPlayback(id: sessionID, media_id: mediaID, position: 0, playing: false, revision: 8, updated_at: newer.updated_at)
+            let changed = admission.beginRefresh()
+            try require(!admission.admit(sameRevisionOtherMedia, media: video, ticket: changed), "same revision cannot replace selected media")
+            let latest = admission.beginRefresh()
+            try require(admission.admit(newer, media: nextVideo, ticket: latest), "unchanged current authoritative state remains valid")
+            admission.invalidatePendingRequests()
+            try require(!admission.isCurrent(latest), "provider opener must reject a grant superseded after await")
+        }
+
         await test("invitation codes are 64 hex characters, normalised, and the forward text explains owner approval") {
             try require(RoomInvitationPolicy.isWellFormed(code) && RoomInvitationPolicy.isWellFormed(" " + code.uppercased() + "\n"), "well-formed codes")
             try require(!RoomInvitationPolicy.isWellFormed(String(code.dropLast())) && !RoomInvitationPolicy.isWellFormed(code.replacingOccurrences(of: "a", with: "g")), "malformed codes")
             let text = RoomInvitationPolicy.shareText(code: code, roomTitle: "Duel")
             try require(text.contains(code) && text.contains("owner still approves") && text.contains("24 hours"), "share text")
+        }
+
+        await test("forwarded invitation imports a single code without trusting its room title") {
+            try require(try RoomInvitationPolicy.importedCode(from: " \n" + code.uppercased() + "\n") == code, "raw code normalization")
+            let shared = RoomInvitationPolicy.shareText(code: code.uppercased(), roomTitle: "A creator's \"Duel\" — take 2")
+            try require(try RoomInvitationPolicy.importedCode(from: shared) == code, "own forwarded envelope and quoted title")
+            let exactLimit = code + String(repeating: " ", count: RoomInvitationPolicy.maximumSharedTextBytes - code.utf8.count)
+            try require(try RoomInvitationPolicy.importedCode(from: exactLimit) == code, "inclusive byte limit")
+        }
+
+        await test("invitation import refuses ambiguity, arbitrary credentials, URLs and oversized text") {
+            for raw in ["https://example.com/invite/" + code, "access_token=" + code,
+                        "Please join " + code, code + " " + code,
+                        RoomInvitationPolicy.shareText(code: code, roomTitle: "Duel") + " edited",
+                        String(repeating: "é", count: RoomInvitationPolicy.maximumSharedTextBytes / 2) + code] {
+                do { _ = try RoomInvitationPolicy.importedCode(from: raw); throw Failure(description: "unrecognized or oversized text accepted") }
+                catch is RoomInvitationPolicy.ImportFailure {}
+            }
+            let ambiguous = RoomInvitationPolicy.shareText(code: code, roomTitle: "Duel " + String(repeating: "f", count: 64))
+            do { _ = try RoomInvitationPolicy.importedCode(from: ambiguous); throw Failure(description: "ambiguous code accepted") }
+            catch RoomInvitationPolicy.ImportFailure.ambiguous {}
         }
 
         await test("project share sends only an opaque reference, title and permissions") {
@@ -370,6 +553,224 @@ private func targeted(_ revision: Int, _ target: String, op: UUID = UUID(), auth
             catch RoomAssetTransfer.TransferError.refused {}
             do { _ = try RoomAssetInbox.save(Data("x".utf8), asset: listed[0], room: room, base: base); throw Failure(description: "saved unverified data") }
             catch RoomAssetTransfer.TransferError.corrupt {}
+        }
+
+        await test("late room teardown preserves a replacement room and another account's handoff") {
+            let coordinator = RoomSessionCoordinator(client: nil)
+            let otherRoom = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: owner)
+            let originalID = coordinator.sessionID!
+            coordinator.handOffToStudio(room: room, roomTitle: "Original room", projectID: project)
+            coordinator.begin(room: otherRoom, head: 7, projectID: project, canEdit: true, account: owner)
+            coordinator.handOffToStudio(room: otherRoom, roomTitle: "Replacement room", projectID: project)
+            try require(coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(2)])), "real replacement edit queued")
+            let replacement = coordinator.session
+            let replacementSync = coordinator.sync
+            let replacementHandoff = coordinator.handoff
+            try require(!coordinator.end(room: room, account: owner, sessionID: originalID, reason: "stale leave"), "old room teardown refused")
+            try require(coordinator.session == replacement && coordinator.sync === replacementSync
+                && coordinator.handoff == replacementHandoff && coordinator.pendingLocalCount == 1
+                && coordinator.endReason == nil, "replacement room, queue and handoff stay intact")
+
+            coordinator.begin(room: room, head: 3, projectID: project, canEdit: false, account: member)
+            coordinator.handOffToStudio(room: room, roomTitle: "New account", projectID: project)
+            let accountSync = coordinator.sync
+            try require(!coordinator.end(room: room, account: owner, sessionID: originalID, reason: "stale account"), "same room under a different account is preserved")
+            try require(coordinator.session?.account == member && coordinator.sync === accountSync
+                && coordinator.isHandedOff(room: room) && coordinator.endReason == nil, "new account's session was not cleared")
+            let currentID = coordinator.sessionID!
+            try require(coordinator.end(room: room, account: member, sessionID: currentID, reason: "Current member left."),
+                "matching confirmed leave ends its own session")
+            try require(coordinator.session == nil && coordinator.sync == nil && coordinator.handoff == nil
+                && coordinator.endReason == "Current member left.", "matching teardown uses canonical cleanup")
+            try require(!coordinator.end(room: room, account: member, sessionID: currentID, reason: "late duplicate")
+                && coordinator.endReason == "Current member left.", "duplicate late result cannot overwrite the outcome")
+        }
+
+        await test("a same-room same-account rejoin rejects the previous lifecycle's delayed leave") {
+            let coordinator = RoomSessionCoordinator(client: nil)
+            coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: owner)
+            let departedID = coordinator.sessionID!
+            var release: CheckedContinuation<Void, Never>?
+            let lateLeave = Task { @MainActor in
+                await withCheckedContinuation { continuation in release = continuation }
+                return coordinator.end(room: room, account: owner, sessionID: departedID, reason: "old leave finished")
+            }
+            for _ in 0..<100 { if release != nil { break }; await Task.yield() }
+            try require(release != nil, "old leave is actually suspended before replacing the session")
+            coordinator.end()
+            coordinator.begin(room: room, head: 4, projectID: project, canEdit: true, account: owner)
+            let rejoinedID = coordinator.sessionID!
+            try require(rejoinedID != departedID, "same account and room receive a fresh lifetime after rejoin")
+            coordinator.handOffToStudio(room: room, roomTitle: "Rejoined", projectID: project)
+            try require(coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(5)])), "real rejoined edit queued")
+            let rejoinedSync = coordinator.sync
+            release?.resume()
+            try require(!(await lateLeave.value), "held old same-room completion refused after rejoin")
+            try require(coordinator.sessionID == rejoinedID && coordinator.sync === rejoinedSync
+                && coordinator.pendingLocalCount == 1 && coordinator.isHandedOff(room: room)
+                && coordinator.endReason == nil, "rejoined live queue and handoff preserved")
+            coordinator.begin(room: room, head: 4, projectID: project, canEdit: false, account: owner)
+            try require(coordinator.sessionID == rejoinedID && coordinator.isHandedOff(room: room),
+                "ordinary permission refresh keeps the same lifecycle")
+            coordinator.begin(room: room, head: 4, projectID: project, canEdit: false, account: member)
+            try require(coordinator.sessionID != rejoinedID && coordinator.handoff == nil,
+                "another account cannot inherit the old account's Studio handoff")
+        }
+
+        await test("held catchUp drain and synchronise responses cannot mutate a same-account same-room replacement") {
+            for entry in ["catchUp", "drain", "synchronise"] {
+                for replyKind in ["accessEnded", "accepted", "transportError"] {
+                    let transport = HeldRoomTransport()
+                    let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+                    coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: owner)
+                    let departedID = coordinator.sessionID!
+                    if entry == "drain" { _ = coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(1)])) }
+                    let departedSync = coordinator.sync!
+                    var applied: [UUID] = []
+                    coordinator.applyRemote = { value in applied.append(value.op_id); return true }
+                    let held = Task { @MainActor in
+                        switch entry {
+                        case "catchUp": _ = await coordinator.catchUp()
+                        case "drain": _ = await coordinator.drain()
+                        default: _ = await coordinator.synchronise()
+                        }
+                    }
+                    try await transport.waitUntilHeld()
+                    coordinator.end()
+                    coordinator.begin(room: room, head: 20, projectID: project, canEdit: true, account: owner)
+                    let replacementID = coordinator.sessionID!
+                    let replacementSync = coordinator.sync!
+                    coordinator.handOffToStudio(room: room, roomTitle: "Rejoined", projectID: project)
+                    _ = coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(21)]))
+                    let context = "\(entry)/\(replyKind)"
+                    try require(replacementID != departedID && replacementSync !== departedSync, context + ": actual new lifetime")
+                    let response: Result<String, Error>
+                    switch replyKind {
+                    case "accessEnded": response = .success(#"{"error":"Room is unavailable."}"#)
+                    case "accepted":
+                        response = .success(entry == "drain" ? #"{"status":"applied","revision":1}"#
+                            : #"{"commands":[\#(record(1))],"head":1}"#)
+                    default: response = .failure(CommunityError.transport("Old room offline"))
+                    }
+                    transport.release(response)
+                    await held.value
+                    try require(coordinator.sessionID == replacementID && coordinator.sync === replacementSync
+                        && coordinator.session?.account == owner && coordinator.isHandedOff(room: room),
+                        context + ": replacement session/handoff preserved")
+                    try require(coordinator.head == 20 && coordinator.pendingLocalCount == 1
+                        && coordinator.pendingRemoteCount == 0 && coordinator.appliedRemoteCount == 0
+                        && coordinator.publishedLocalCount == 1 && coordinator.endReason == nil
+                        && coordinator.lastStopReason == nil && applied.isEmpty,
+                        context + ": no old queue, editor, counter, error or cleanup commit")
+                    try require(transport.calls == 1, context + ": old synchronise did not drain replacement")
+                    try require(!departedSync.accessEnded && departedSync.head == 0
+                        && departedSync.pending.count == (entry == "drain" ? 1 : 0)
+                        && departedSync.inbox.isEmpty, context + ": detached old queue not mutated")
+                }
+            }
+        }
+
+        await test("cancelled held synchronisation does not apply replies or overwrite current queue status") {
+            for entry in ["catchUp", "drain", "synchronise"] {
+                let transport = HeldRoomTransport()
+                let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+                coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: owner)
+                _ = coordinator.publishLocalEdit(kind: "frame.add", payload: .object(["frame": .number(1)]))
+                let identity = coordinator.sessionID!
+                let sync = coordinator.sync!
+                var applied = 0
+                coordinator.applyRemote = { _ in applied += 1; return true }
+                let held = Task { @MainActor in
+                    switch entry {
+                    case "catchUp": _ = await coordinator.catchUp()
+                    case "drain": _ = await coordinator.drain()
+                    default: _ = await coordinator.synchronise()
+                    }
+                }
+                try await transport.waitUntilHeld()
+                held.cancel()
+                transport.release(entry == "drain" ? .failure(CommunityError.transport("Cancelled old append"))
+                    : .success(#"{"commands":[\#(record(1))],"head":1}"#))
+                await held.value
+                try require(coordinator.sessionID == identity && coordinator.sync === sync
+                    && coordinator.head == 0 && coordinator.pendingLocalCount == 1
+                    && coordinator.pendingRemoteCount == 0 && coordinator.lastStopReason == nil
+                    && coordinator.endReason == nil && applied == 0 && transport.calls == 1,
+                    entry + ": cancelled public pass left real current state intact")
+            }
+        }
+
+        await test("scoped gateway refuses queued work and real account replacements before or after transport") {
+            let transport = FakeTransport()
+            transport.sessionAccountID = member
+            let client = RoomsClient(gateway: CommunityGateway(transport: transport))
+            var visible = false
+            let scope = CommunityOperationScope(account: member) { visible }
+            do {
+                _ = try await CommunityOperationContext.run(scope) { try await client.myRooms() }
+                throw Failure(description: "hidden operation was accepted")
+            } catch CommunityError.stale { }
+            try require(transport.calls.isEmpty, "hidden queued read made no RPC")
+            visible = true
+            transport.sessionAccountID = owner
+            do {
+                _ = try await CommunityOperationContext.run(scope) { try await client.myRooms() }
+                throw Failure(description: "wrong SDK account was accepted")
+            } catch CommunityError.stale { }
+            try require(transport.calls.isEmpty, "old-account work did not use replacement credentials")
+            transport.sessionAccountID = member
+            transport.replies = [.success("[]")]
+            transport.beforeReply = { transport.sessionAccountID = owner }
+            do {
+                _ = try await CommunityOperationContext.run(scope) { try await client.myRooms() }
+                throw Failure(description: "old-account reply was adopted")
+            } catch CommunityError.stale { }
+            try require(transport.calls.count == 1, "already-issued read was not repeated or followed up")
+        }
+
+        await test("hidden or background held scope cannot apply or drain and fresh same-session scope resumes its cursor") {
+            for reason in ["window hidden", "scene background", "identity replaced"] {
+                let transport = HeldRoomTransport()
+                let coordinator = RoomSessionCoordinator(client: RoomsClient(gateway: CommunityGateway(transport: transport)))
+                coordinator.begin(room: room, head: 0, projectID: project, canEdit: true, account: member)
+                coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+                _ = coordinator.publishLocalEdit(kind: "frame.add", payload: .object([:]))
+                let identity = coordinator.sessionID, sync = coordinator.sync
+                var epoch = UUID(); let captured = epoch
+                var applied = 0
+                coordinator.applyRemote = { _ in applied += 1; return true }
+                let scope = CommunityOperationScope { epoch == captured }
+                let held = Task { @MainActor in
+                    do { _ = try await CommunityOperationContext.run(scope) { await coordinator.synchronise() } }
+                    catch { }
+                }
+                try await transport.waitUntilHeld()
+                epoch = UUID()
+                transport.release(.success(#"{"commands":[\#(record(1))],"head":1}"#))
+                await held.value
+                try require(coordinator.sessionID == identity && coordinator.sync === sync && coordinator.head == 0 &&
+                    coordinator.pendingLocalCount == 1 && coordinator.pendingRemoteCount == 0 && applied == 0 &&
+                    transport.calls == 1 && coordinator.lastStopReason == nil && coordinator.isHandedOff(room: room), reason + ": stale pass retained queues and handoff without applying/draining")
+                // Returning to visibility creates a new lease, not a new sync/cursor/session.
+                let fresh = FakeTransport(); fresh.replies = [.success(#"{"commands":[\#(record(1))],"head":1}"#)]
+                coordinator.attachClient(RoomsClient(gateway: CommunityGateway(transport: fresh)))
+                let current = epoch
+                _ = try await CommunityOperationContext.run(CommunityOperationScope { epoch == current }) { await coordinator.catchUp() }
+                try require(coordinator.sessionID == identity && coordinator.sync === sync && coordinator.head == 1 && applied == 1 &&
+                    coordinator.pendingLocalCount == 1 && fresh.calls.count == 1, reason + ": fresh scope continued the retained cursor once")
+            }
+        }
+
+        await test("changing a room project replaces its old session instead of silently keeping the earlier project") {
+            let coordinator = RoomSessionCoordinator(client: nil)
+            coordinator.begin(room: room, head: 3, projectID: project, canEdit: true, account: member)
+            coordinator.handOffToStudio(room: room, roomTitle: "Duel", projectID: project)
+            let original = coordinator.sessionID
+            let otherProject = UUID()
+            coordinator.begin(room: room, head: 7, projectID: otherProject, canEdit: true, account: member)
+            try require(coordinator.sessionID != original && coordinator.session?.projectID == otherProject &&
+                coordinator.handoff == nil && coordinator.head == 7, "new share cannot replay onto the earlier open project")
         }
 
         await test("active-project handoff survives leaving Rooms for Studio and ends with the session") {

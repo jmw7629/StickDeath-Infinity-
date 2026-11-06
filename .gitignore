@@ -16,3 +16,7 @@ ReferenceCorpus/
 # Local ChatGPT ↔ OpenCode bridge state/logs/worktrees
 .bridge/
 bridge-state/
+
+# Regenerable Android build state (source, fixtures and project files stay tracked)
+android/.gradle/
+android/app/.cxx/

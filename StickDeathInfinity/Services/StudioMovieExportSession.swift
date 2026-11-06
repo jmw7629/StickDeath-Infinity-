@@ -79,6 +79,7 @@ final class StudioMovieExportSession: ObservableObject {
     private weak var editor: StudioViewModel?
     private var currentScope = Scope(isStudioVisible: false, isForeground: false, accountID: nil)
     private var capturedAccountID: String?
+    private var capturedRender: (plan: Service.RenderPlan, watermark: Bool)?
     private var task: Task<Void, Never>?
     private var activeRunID: UUID?
     private var activeShareID: UUID?
@@ -96,6 +97,13 @@ final class StudioMovieExportSession: ObservableObject {
 
     init(outputParent: URL = FileManager.default.temporaryDirectory, limits: Service.Limits = .init()) {
         self.outputParent = outputParent; self.limits = limits
+    }
+
+    var hasCurrentPlanAuthorization: Bool {
+        guard let capturedRender else { return false }
+        let gate = StudioPlanGate.current
+        return capturedRender.plan.isWithin(maximumLongEdge: gate.maxExportLongEdge)
+            && (!gate.exportWatermark || capturedRender.watermark)
     }
 
     @discardableResult
@@ -155,33 +163,29 @@ final class StudioMovieExportSession: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription; return false
         }
-        // Plan limits: the SDI mark and, when capped, the largest allowed size
-        // no bigger than the request. Unrestricted plans change nothing.
+        // Resolve the live plan after cleanup and snapshot validation. A
+        // previous output's fallback cap is never authority for this export.
         let gate = vm.planLimits
-        var planned = options
-        if gate.exportWatermark { planned.render.watermark = true }
-        if gate.maxExportLongEdge != nil {
-            let fitting = [planned.render.preset, .p1080, .p720, .p480].first { preset in
-                guard let plan = try? Service.RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: preset) else { return false }
-                return gate.allowsExport(width: plan.contentWidth, height: plan.contentHeight)
-            }
-            guard let fitting else { errorMessage = gate.upgradeNote; return false }
-            planned.render.preset = fitting
-        }
-        let snapshot = Service.Snapshot(document: document,
-            retainedAudioTracks: vm.projectAudioTracks, rasterDataByID: rasters, imageCredits: credits, render: planned.render)
-        // Preflight (#202): refuse before rendering when the device is critically
-        // hot or the destination volume lacks twice the estimated output.
+        let plan: Service.RenderPlan
         do {
-            let plan = try Service.RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: planned.render.preset)
+            plan = try Service.RenderPlan.resolve(canvasWidth: document.width, canvasHeight: document.height,
+                                                  requested: options.render.preset, maximumLongEdge: gate.maxExportLongEdge)
+            // Preflight (#202): refuse before rendering when the device is
+            // critically hot or the volume lacks twice the estimated output.
             let estimate = StudioExportPreflight.estimatedMovieBytes(width: plan.outputWidth, height: plan.outputHeight,
                 fps: document.fps, durationSeconds: document.durationSeconds, includesAudio: !document.audioClips.isEmpty)
             try StudioExportPreflight.check(estimatedOutputBytes: estimate, destination: outputParent)
         } catch {
             errorMessage = error.localizedDescription; return false
         }
+        var render = Service.RenderOptions(codec: options.render.codec, preset: plan.preset,
+                                           watermark: gate.exportWatermark || options.render.watermark == true)
+        render.fitLongEdge = plan.fitLongEdge
+        let snapshot = Service.Snapshot(document: document, retainedAudioTracks: vm.projectAudioTracks,
+            rasterDataByID: rasters, imageCredits: credits, render: render)
         let filenameBase = StudioExportFilename.base(for: document.name)
         editor = vm; capturedAccountID = scope.accountID
+        capturedRender = (plan, render.watermark == true)
         source = Source(projectID: document.id, revision: document.revision,
                         name: document.name, frameCount: document.frames.count)
         errorMessage = nil; notice = nil; phase = nil; audioProgressText = nil; soundCreditNotice = nil
@@ -254,7 +258,7 @@ final class StudioMovieExportSession: ObservableObject {
                 }
                 errorMessage = error.localizedDescription
             }
-            if isClosed || cancellationRequested || !contextMatches(requireForeground: true) {
+            if isClosed || cancellationRequested || !contextMatches(requireForeground: true) || !hasCurrentPlanAuthorization {
                 _ = cleanupOwnedOutput()
             }
             // Publish idle only after this run has completed its cleanup.
@@ -266,7 +270,7 @@ final class StudioMovieExportSession: ObservableObject {
     }
 
     /// Library credits for the captured audio assets (#191). Digests and the
-    /// bundled catalogue load off the main actor. An unavailable library yields
+    /// bundled and installed-pack credit receipts load off the main actor. An unavailable library yields
     /// no credits plus a notice, never a failed export: every library sound is
     /// CC0 and audio imported from Files has no library attribution anyway.
     static func resolveSoundCredits(for tracks: [AudioTrack]) async -> (credits: [StudioSoundCredit], notice: String?) {
@@ -278,8 +282,7 @@ final class StudioMovieExportSession: ObservableObject {
         }.value
         guard !assets.isEmpty else { return ([], nil) }
         do {
-            let catalogue = try await StudioSoundCatalogue.loadBundled()
-            let table = catalogue.attributionsByDigest
+            let table = try await StudioSoundCatalogue.loadAvailableAttributions()
             return (try StudioSoundCreditResolver.credits(for: assets) { table[$0] }, nil)
         } catch {
             return ([], "Library sound credits were not resolved (\(error.localizedDescription)). The MP4 manifest lists no sound credits.")
@@ -291,6 +294,10 @@ final class StudioMovieExportSession: ObservableObject {
         guard source != nil else { return }
         if !contextMatches(requireForeground: false) { close() }
         else if !scope.isForeground { invalidatePreview(); cancel() }
+        else if !hasCurrentPlanAuthorization {
+            invalidatePreview()
+            cancel()
+        }
     }
     func cancel() {
         guard isRunning else { return }
@@ -317,14 +324,16 @@ final class StudioMovieExportSession: ObservableObject {
         refreshScope(scope)
         guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isCleaning,
               contextMatches(requireForeground: true), let output else { return nil }
+        guard hasCurrentPlanAuthorization else { errorMessage = Service.ExportError.planChanged.localizedDescription; return nil }
         invalidatePreview()
         guard !isClosed, !isRunning, !isSharing, !isRecovering, !isPreviewing,
               contextMatches(requireForeground: true), self.output?.movieURL == output.movieURL else { return nil }
+        guard hasCurrentPlanAuthorization else { errorMessage = Service.ExportError.planChanged.localizedDescription; return nil }
         do { _ = try output.checkedURLs() }
         catch { errorMessage = error.localizedDescription; needsCleanup = true; return nil }
         let id = UUID(); activeShareID = id
         errorMessage = nil; notice = nil; isSharing = true
-        guard !isClosed, contextMatches(requireForeground: true) else {
+        guard !isClosed, contextMatches(requireForeground: true), hasCurrentPlanAuthorization else {
             finishSharing(id: id, completed: false, error: nil); return nil
         }
         return ShareRequest(id: id, owner: self, output: output)
@@ -353,6 +362,7 @@ final class StudioMovieExportSession: ObservableObject {
         guard !isClosed, !cancellationRequested, contextMatches(requireForeground: true) else {
             throw CancellationError()
         }
+        guard hasCurrentPlanAuthorization else { throw Service.ExportError.planChanged }
     }
     private func contextMatches(requireForeground: Bool) -> Bool {
         guard let source, let editor, editor.isEditing,
@@ -408,12 +418,13 @@ final class StudioMovieExportSession: ObservableObject {
         guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isCleaning,
               !needsCleanup, !isPreviewing, contextMatches(requireForeground: true),
               let output else { return nil }
+        guard hasCurrentPlanAuthorization else { errorMessage = Service.ExportError.planChanged.localizedDescription; return nil }
         do { _ = try output.checkedURLs() }
         catch { errorMessage = error.localizedDescription; needsCleanup = true; return nil }
         let id = UUID()
         let request = PreviewRequest(id: id, owner: self, output: output, stopConsumer: stopConsumer)
         activePreviewID = id; activePreview = request; isPreviewing = true
-        guard activePreviewID == id, !isClosed, contextMatches(requireForeground: true) else {
+        guard activePreviewID == id, !isClosed, contextMatches(requireForeground: true), hasCurrentPlanAuthorization else {
             request.invalidate()
             // @Published sends synchronously before storing its new value.
             // A close from that notification may already have released the ID.
@@ -442,6 +453,7 @@ final class StudioMovieExportSession: ObservableObject {
         }
         func checkedURL() throws -> URL {
             guard !finished, owner?.activePreviewID == id else { throw Service.ExportError.outputUnavailable }
+            guard owner?.hasCurrentPlanAuthorization == true else { throw Service.ExportError.planChanged }
             _ = try output.checkedURLs()
             return output.movieURL
         }
@@ -475,6 +487,7 @@ final class StudioMovieExportSession: ObservableObject {
         }
         func checkedURLs() throws -> [URL] {
             guard !finished, owner?.activeShareID == id else { throw Service.ExportError.outputUnavailable }
+            guard owner?.hasCurrentPlanAuthorization == true else { throw Service.ExportError.planChanged }
             return try output.checkedURLs()
         }
         func finish(completed: Bool, error: Error?) {

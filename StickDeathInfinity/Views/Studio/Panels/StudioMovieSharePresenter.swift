@@ -8,11 +8,12 @@ import UIKit
 struct StudioMovieSharePresenter: UIViewControllerRepresentable {
     let request: StudioMovieExportSession.ShareRequest
     let session: StudioMovieExportSession
+    var onOfferedToUIKit: @MainActor () -> Void = {}
     let isAllowed: @MainActor () -> Bool
     let onTerminal: (UUID) -> Void
 
     func makeUIViewController(context: Context) -> Host {
-        Host(request: request, session: session, isAllowed: isAllowed, onTerminal: onTerminal)
+        Host(request: request, session: session, onOfferedToUIKit: onOfferedToUIKit, isAllowed: isAllowed, onTerminal: onTerminal)
     }
     func updateUIViewController(_ controller: Host, context: Context) { controller.updateAuthorization(isAllowed) }
     static func dismantleUIViewController(_ controller: Host, coordinator: ()) { controller.detachFromPanel() }
@@ -21,6 +22,7 @@ struct StudioMovieSharePresenter: UIViewControllerRepresentable {
         private let request: StudioMovieExportSession.ShareRequest
         private let session: StudioMovieExportSession
         private var onTerminal: ((UUID) -> Void)?
+        private let onOfferedToUIKit: @MainActor () -> Void
         private var isAllowed: @MainActor () -> Bool
         private var activity: Activity?
         private var lease: StudioMovieShareLifetime.Lease?
@@ -29,8 +31,10 @@ struct StudioMovieSharePresenter: UIViewControllerRepresentable {
         private var finished = false
 
         init(request: StudioMovieExportSession.ShareRequest, session: StudioMovieExportSession,
+             onOfferedToUIKit: @escaping @MainActor () -> Void = {},
              isAllowed: @escaping @MainActor () -> Bool, onTerminal: @escaping (UUID) -> Void) {
-            self.request = request; self.session = session; self.isAllowed = isAllowed; self.onTerminal = onTerminal
+            self.request = request; self.session = session; self.onOfferedToUIKit = onOfferedToUIKit
+            self.isAllowed = isAllowed; self.onTerminal = onTerminal
             super.init(nibName: nil, bundle: nil)
         }
         required init?(coder: NSCoder) { fatalError("Programmatic movie sharing only") }
@@ -64,6 +68,7 @@ struct StudioMovieSharePresenter: UIViewControllerRepresentable {
                 // The initializer receives the URL; ownership must already be
                 // reserved even if presentation subsequently fails or times out.
                 reservation.offeredToUIKit()
+                onOfferedToUIKit()
                 let controller = Activity(movieURL: movie)
                 controller.appeared = { [weak self] in
                     guard let self else { return }

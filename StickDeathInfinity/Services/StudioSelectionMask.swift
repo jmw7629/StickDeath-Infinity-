@@ -189,8 +189,10 @@ enum StudioWandRegion {
     }
 
     /// `rgba` is straight RGBA8 from the canonical renderer, top-left origin.
+    /// Optional eligibility restricts drawing-layer sampling to actual paint;
+    /// nil retains existing active-layer and image-pixel sampling behavior.
     static func select(rgba: Data, width: Int, height: Int, x: Int, y: Int, settings: Settings,
-                       previous: [UInt8]?,
+                       previous: [UInt8]?, eligibility: Data? = nil,
                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [UInt8] {
         guard (0...StudioSelectionMask.maximumFeatherRadius).contains(settings.feather) else {
             throw StudioSelectionMask.Failure.invalidSettings
@@ -203,11 +205,29 @@ enum StudioWandRegion {
         var fill = StudioFillRegion.Settings()
         fill.tolerance = settings.tolerance; fill.contiguous = settings.contiguous
         fill.antiAlias = false
-        let mask = try StudioFillRegion.compute(rgba: rgba, width: width, height: height, x: x, y: y,
-                                                settings: fill, checkCancellation: checkCancellation)
+        let mask: StudioFillRegion.Mask
+        do {
+            // An explicit paint domain bounds traversal, not just its final crop.
+            mask = try StudioFillRegion.compute(rgba: rgba, width: width, height: height, x: x, y: y,
+                settings: fill, selectionCoverage: eligibility, checkCancellation: checkCancellation)
+        } catch StudioFillRegion.Failure.outsideSelection where eligibility != nil {
+            // Visible colors do not make blank paper paint on the active layer.
+            // Preserve the existing Replace/Add/Subtract/Intersect algebra.
+            let empty = [UInt8](repeating: 0, count: width * height)
+            let result = try StudioSelectionMask.combine(previous, empty, mode: settings.mode)
+            try checkCancellation()
+            return result
+        }
         var region = try StudioSelectionMask.coverage(from: mask)
         region = try StudioSelectionMask.feather(region, width: width, height: height, radius: settings.feather,
                                                  checkCancellation: checkCancellation)
+        if let eligibility {
+            // Feather softens painted pixels without acquiring unpainted paper.
+            for index in region.indices {
+                if index % 4096 == 0 { try checkCancellation() }
+                if eligibility[eligibility.startIndex + index] == 0 { region[index] = 0 }
+            }
+        }
         let result = try StudioSelectionMask.combine(previous, region, mode: settings.mode)
         try checkCancellation()
         return result
@@ -217,14 +237,45 @@ enum StudioWandRegion {
 /// Maps a canvas selection to the drawn elements it touches, so Wand can
 /// select editable vector artwork without flattening it (#153).
 enum StudioSelectionElementHitTest {
+    /// Compact canonical alpha rectangle in top-left document pixels. Row stride
+    /// is explicit so no full-canvas allocation is required for a small object.
+    struct AlphaCoverage: Equatable, Sendable {
+        let x: Int, y: Int, width: Int, height: Int, rowStride: Int
+        let bytes: [UInt8]
+    }
+    /// Finite native butt-capped line shaft in its original source coordinates.
+    /// The two inverse-affine axes map a canvas pixel centre back to distances
+    /// along/across the source shaft. This clips endpoint probe disks without
+    /// allocating a diagonal line's entire canvas bounding rectangle.
+    struct ButtStroke: Equatable, Sendable {
+        let startX: Double, startY: Double
+        let alongX: Double, alongY: Double, acrossX: Double, acrossY: Double
+        let length: Double, halfWidth: Double
+        var isValid: Bool {
+            [startX, startY, alongX, alongY, acrossX, acrossY, length, halfWidth].allSatisfy(\.isFinite)
+                && length > 0 && halfWidth > 0 && hypot(alongX, alongY).isFinite && hypot(acrossX, acrossY).isFinite
+                && hypot(alongX, alongY) > 0 && hypot(acrossX, acrossY) > 0
+        }
+        func contains(x: Double, y: Double) -> Bool {
+            let dx = x - startX, dy = y - startY
+            let along = dx * alongX + dy * alongY
+            let across = dx * acrossX + dy * acrossY
+            return along >= 0 && along <= length && abs(across) <= halfWidth
+        }
+    }
     struct Candidate: Equatable, Sendable {
         let id: String
         /// Canvas-space centreline samples after the element's transform.
         let points: [(x: Double, y: Double)]
         /// Half the rendered stroke width in canvas pixels.
         let radius: Double
+        /// Exact source-body alpha from the canonical renderer for a filled ellipse.
+        /// It is already in top-left canvas coordinates, including the element transform.
+        var alphaCoverage: AlphaCoverage? = nil
+        /// Plain `.line` uses the renderer's butt shaft, not round endpoint caps.
+        var buttStroke: ButtStroke? = nil
         static func == (lhs: Candidate, rhs: Candidate) -> Bool {
-            lhs.id == rhs.id && lhs.radius == rhs.radius && lhs.points.count == rhs.points.count &&
+            lhs.id == rhs.id && lhs.radius == rhs.radius && lhs.alphaCoverage == rhs.alphaCoverage && lhs.buttStroke == rhs.buttStroke && lhs.points.count == rhs.points.count &&
                 zip(lhs.points, rhs.points).allSatisfy { $0.x == $1.x && $0.y == $1.y }
         }
     }
@@ -234,16 +285,41 @@ enum StudioSelectionElementHitTest {
     static func elements(intersecting coverage: [UInt8], width: Int, height: Int, candidates: [Candidate],
                          threshold: UInt8 = 128, minimumCoveredProbes: Int = 1,
                          checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [String] {
-        guard width > 0, height > 0, coverage.count == width * height, threshold > 0, minimumCoveredProbes > 0 else {
+        guard width > 0, height > 0, width <= 4096, height <= 4096,
+              width <= StudioSelectionMask.maximumPixels / height,
+              coverage.count == width * height, threshold > 0, minimumCoveredProbes > 0 else {
             throw StudioSelectionMask.Failure.invalidMask
         }
         var probes = 0, selected: [String] = []
         for candidate in candidates {
             try checkCancellation()
+            if let alpha = candidate.alphaCoverage {
+                guard alpha.x >= 0, alpha.y >= 0, alpha.x < width, alpha.y < height,
+                      alpha.width > 0, alpha.height > 0, alpha.width <= width - alpha.x,
+                      alpha.height <= height - alpha.y, alpha.rowStride >= alpha.width,
+                      alpha.rowStride <= StudioSelectionMask.maximumElementProbes / alpha.height,
+                      alpha.bytes.count == alpha.rowStride * alpha.height else { throw StudioSelectionMask.Failure.invalidMask }
+                var covered = 0, localProbes = 0
+                for row in 0..<alpha.height where covered < minimumCoveredProbes {
+                    for column in 0..<alpha.width where covered < minimumCoveredProbes {
+                        if localProbes % 1024 == 0 { try checkCancellation() }
+                        localProbes += 1; probes += 1
+                        guard probes <= StudioSelectionMask.maximumElementProbes else { throw StudioSelectionMask.Failure.workLimit }
+                        // Selection threshold belongs to the Wand/feather mask. Any actually
+                        // painted source alpha counts, including faint or antialiased artwork.
+                        let source = row * alpha.rowStride + column
+                        let target = (alpha.y + row) * width + alpha.x + column
+                        if alpha.bytes[source] > 0 && coverage[target] >= threshold { covered += 1 }
+                    }
+                }
+                if covered >= minimumCoveredProbes { selected.append(candidate.id) }
+                continue
+            }
             guard candidate.radius.isFinite, candidate.radius >= 0, candidate.radius <= 512, !candidate.points.isEmpty,
                   candidate.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 1_000_000 && abs($0.y) <= 1_000_000 }) else {
                 throw StudioSelectionMask.Failure.invalidSettings
             }
+            if let shaft = candidate.buttStroke, !shaft.isValid { throw StudioSelectionMask.Failure.invalidSettings }
             var visited = Set<Int>(), covered = 0
             let reach = max(0.5, candidate.radius)
             func probe(_ cx: Double, _ cy: Double) throws {
@@ -256,6 +332,9 @@ enum StudioSelectionElementHitTest {
                         guard dx * dx + dy * dy <= reach * reach else { continue }
                         probes += 1
                         guard probes <= StudioSelectionMask.maximumElementProbes else { throw StudioSelectionMask.Failure.workLimit }
+                        // Charge every original disk probe to the same work budget,
+                        // then exclude pixels beyond the native butt shaft.
+                        if let shaft = candidate.buttStroke, !shaft.contains(x: Double(px) + 0.5, y: Double(py) + 0.5) { continue }
                         let index = py * width + px
                         if coverage[index] >= threshold && visited.insert(index).inserted { covered += 1 }
                     }

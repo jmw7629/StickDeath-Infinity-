@@ -9,6 +9,8 @@ import Supabase
 @MainActor
 final class SupabaseManager {
     static let shared = SupabaseManager()
+    /// One configured HTTP stack shared by SDK auth and scoped community requests.
+    let requestSession: URLSession = .shared
 
     private var cachedConfiguration: AppConfig.SupabaseConfiguration?
     private var cachedClient: SupabaseClient?
@@ -25,7 +27,8 @@ final class SupabaseManager {
             if cachedConfiguration == configuration, let cachedClient { return cachedClient }
             let client = SupabaseClient(
                 supabaseURL: configuration.url,
-                supabaseKey: configuration.publishableKey
+                supabaseKey: configuration.publishableKey,
+                options: .init(global: .init(session: requestSession))
             )
             cachedClient = client
             cachedConfiguration = configuration

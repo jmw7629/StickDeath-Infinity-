@@ -11,8 +11,11 @@ struct StudioGIFExportControls: View {
     var directRequest: StudioGIFPanelState.DirectRequest? = nil
     var onDirectRequestConsumed: () -> Void = {}
     var onReady: () -> Void = {}
+    var quickShareRequest: StudioQuickShareHandoff? = nil
+    var onQuickShareHandled: (UUID, String?) -> Void = { _, _ in }
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.sdiSubjectWindowVisible) private var subjectWindowVisible
     @ObservedObject private var shareLifetime = StudioGIFShareLifetime.shared
     @StateObject private var presentationScope = StudioGIFPresentationScope()
     @State private var isVisible = false
@@ -27,14 +30,21 @@ struct StudioGIFExportControls: View {
     @State private var previewError: String?
     @State private var shareAccountID: String?
     @State private var shareRequest: StudioGIFExportSession.ShareRequest?
+    @State private var shareHandoff: StudioQuickShareHandoff?
+    @State private var handledQuickShareID: UUID?
+    @State private var shareStartError: String?
     @State private var saveRequest: StudioGIFExportSession.ShareRequest?
 
     private var session: StudioGIFExportSession { gif.session }
     private var scope: StudioGIFExportSession.Scope {
-        .init(isStudioVisible: isVisible && vm.isEditing && vm.activePanel == .export && vm.exportFormat == .gif,
+        .init(isStudioVisible: isVisible && subjectWindowVisible && vm.isEditing && vm.activePanel == .export && vm.exportFormat == .gif,
               isForeground: scenePhase == .active, accountID: authVM.userId)
     }
-    private func refreshScope() { presentationScope.value = scope; session.refreshScope(scope) }
+    private func refreshScope() {
+        presentationScope.value = scope
+        presentationScope.subjectWindowVisible = subjectWindowVisible
+        session.refreshScope(scope)
+    }
 
     private var frameCapacity: Int {
         (try? StudioGIFEncoder.frameCapacity(document: vm.document,
@@ -106,7 +116,7 @@ struct StudioGIFExportControls: View {
                 Text(provenance).font(.specialElite(10))
                     .accessibilityIdentifier("studio.export.gif.spatter-receipt")
             }
-            if let error = session.errorMessage {
+            if let error = session.errorMessage ?? shareStartError {
                 Text(error).foregroundColor(Color(hex: "#FF8888"))
                     .font(.specialElite(11)).accessibilityIdentifier("studio.export.status")
             } else if let notice = session.notice {
@@ -140,10 +150,10 @@ struct StudioGIFExportControls: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(session.needsCleanup ? "GIF needs recovery" : "GIF ready on this device")
                         .font(.specialElite(9)).foregroundColor(.white.opacity(0.5)).tracking(1)
-                    Text(output.gifURL.lastPathComponent).font(.system(size: 12, weight: .bold, design: .monospaced))
+                    Text(output.gifURL.lastPathComponent).font(.specialElite(12)).bold()
                         .accessibilityIdentifier("studio.export.gif.filename")
                     Text("\(output.receipt.width) × \(output.receipt.height) · \(output.receipt.frameIDs.count) frames · \(output.receipt.sourceFPS) fps · revision \(output.receipt.revision)")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.export.gif.receipt")
                     if let credits = output.receipt.imageCredits, !credits.isEmpty {
                         Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
@@ -152,7 +162,7 @@ struct StudioGIFExportControls: View {
                             .accessibilityIdentifier("studio.export.gif.image-credits")
                     }
                     Text("\(output.receipt.encodedBytes) encoded bytes · \(output.receipt.delaysCentiseconds.reduce(0, +)) centiseconds · white · no audio")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                         .accessibilityIdentifier("studio.export.gif.media")
                     if let image = previewImage {
                         Image(decorative: image, scale: 1).resizable().scaledToFit()
@@ -161,6 +171,7 @@ struct StudioGIFExportControls: View {
                             .accessibilityLabel("Frame \(previewFrame + 1) decoded from exported GIF")
                             .accessibilityIdentifier("studio.export.gif.preview")
                         Button(previewPlaying ? "Pause GIF preview" : "Play exported GIF") { previewPlaying.toggle() }
+                            .font(.specialElite(17))
                             .disabled(gif.isBusy || session.needsCleanup)
                             .accessibilityIdentifier("studio.export.gif.preview-playback")
                         Text("Actual exported file · frame \(previewFrame + 1) of \(output.receipt.frameIDs.count) · silent")
@@ -171,11 +182,13 @@ struct StudioGIFExportControls: View {
                         Button("Retry GIF preview") { loadPreview() }
                     }
                     Button {
-                        shareAccountID = scope.accountID
-                        shareRequest = session.beginSharing(scope: scope)
+                        shareStartError = beginNativeShare()
                     } label: {
-                        Label("Share GIF / Save to Files", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        Label {
+                            Text("Share GIF / Save to Files").font(.specialElite(12)).bold()
+                        } icon: {
+                            Image(systemName: "square.and.arrow.up").font(.system(size: 12, weight: .bold, design: .monospaced))
+                        }
                             .frame(maxWidth: .infinity).padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                     }
@@ -184,8 +197,11 @@ struct StudioGIFExportControls: View {
                     Button {
                         saveRequest = session.beginSharing(scope: scope)
                     } label: {
-                        Label("Save to Files", systemImage: "folder")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        Label {
+                            Text("Save to Files").font(.specialElite(12)).bold()
+                        } icon: {
+                            Image(systemName: "folder").font(.system(size: 12, weight: .bold, design: .monospaced))
+                        }
                             .frame(maxWidth: .infinity).padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                     }
@@ -204,23 +220,40 @@ struct StudioGIFExportControls: View {
                 let binding = $shareRequest, holder = presentationScope
                 let projectID = session.source?.projectID, accountID = shareAccountID
                 let capturedSession = session
-                StudioGIFSharePresenter(request: request, session: capturedSession, isAllowed: { [weak vm, weak authVM, weak capturedSession] in
+                let handoff = shareHandoff
+                StudioGIFSharePresenter(request: request, session: capturedSession,
+                    onOfferedToUIKit: { holder.offeredRequestIDs.insert(request.id) }, isAllowed: { [weak vm, weak authVM, weak capturedSession] in
                     guard let vm, let authVM, let capturedSession else { return false }
                     return !capturedSession.isClosed && holder.value.isStudioVisible && holder.value.isForeground
+                        && (holder.subjectWindowVisible || holder.offeredRequestIDs.contains(request.id))
                         && vm.isEditing && vm.activePanel == .export && vm.exportFormat == .gif
                         && vm.document.id == projectID && authVM.userId == accountID
-                }) { id in if binding.wrappedValue?.id == id { binding.wrappedValue = nil } }
+                        && (handoff.map { expected in
+                            expected.file == .gif && expected.accepts(vm.exportFormat)
+                                && expected.accountID == authVM.userId && expected.projectID == vm.document.id
+                                && expected.revision == vm.document.revision && expected.sessionID == ObjectIdentifier(capturedSession)
+                                && capturedSession.output?.gifURL == expected.outputURL
+                        } ?? true)
+                }) { id in
+                    holder.offeredRequestIDs.remove(id)
+                    if binding.wrappedValue?.id == id { binding.wrappedValue = nil }
+                }
                     .id(request.id)
             }
             if let request = saveRequest {
                 let binding = $saveRequest, holder = presentationScope
                 let projectID = session.source?.projectID
                 let capturedSession = session
-                StudioFilesSavePresenter(request: request, isAllowed: { [weak vm, weak capturedSession] in
+                StudioFilesSavePresenter(request: request,
+                    onOfferedToUIKit: { holder.offeredRequestIDs.insert(request.id) }, isAllowed: { [weak vm, weak capturedSession] in
                     guard let vm, let capturedSession else { return false }
                     return !capturedSession.isClosed && holder.value.isStudioVisible && holder.value.isForeground
+                        && (holder.subjectWindowVisible || holder.offeredRequestIDs.contains(request.id))
                         && vm.isEditing && vm.activePanel == .export && vm.exportFormat == .gif && vm.document.id == projectID
-                }) { id in if binding.wrappedValue?.id == id { binding.wrappedValue = nil } }
+                }) { id in
+                    holder.offeredRequestIDs.remove(id)
+                    if binding.wrappedValue?.id == id { binding.wrappedValue = nil }
+                }
                     .id(request.id)
             }
         }
@@ -229,7 +262,7 @@ struct StudioGIFExportControls: View {
             await playPreview()
         }
         .onAppear {
-            isVisible = true; refreshScope()
+            isVisible = subjectWindowVisible; refreshScope()
             if gif.maximumDimension == 0, !originalSizeAllowed {
                 gif.maximumDimension = vm.planLimits.gifMaximumDimension(nil, canvasWidth: vm.document.width,
                     canvasHeight: vm.document.height) ?? 0
@@ -239,11 +272,16 @@ struct StudioGIFExportControls: View {
                 onDirectRequestConsumed()
             }
             loadPreview()
+            consumeQuickShare()
         }
-        .onDisappear {
-            previewPlaying = false
-            previewImage = nil
-            if !session.isSharing { isVisible = false; refreshScope(); session.close() }
+        .onChange(of: quickShareRequest?.id) { _, _ in consumeQuickShare() }
+        .onDisappear { suspendPresentation() }
+        .onChange(of: subjectWindowVisible) { _, visible in
+            if !visible { suspendPresentation() }
+            else { isVisible = true; refreshScope(); loadPreview() }
+        }
+        .onChange(of: session.isSharing) { _, sharing in
+            if !sharing && !subjectWindowVisible { suspendPresentation() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { previewPlaying = false }
@@ -255,14 +293,62 @@ struct StudioGIFExportControls: View {
         .onChange(of: vm.activePanel) { refreshScope() }
         .onChange(of: vm.exportFormat) { refreshScope() }
         .onChange(of: session.output?.gifURL) { _, value in
+            shareStartError = nil
             loadPreview()
             if value != nil { onReady() }
         }
     }
+    /// The native Share button and quick-share use the same file request and
+    /// existing completion-bound presenter; neither starts a new render.
+    private func beginNativeShare(expected: StudioQuickShareHandoff? = nil) -> String? {
+        guard scope.isStudioVisible, scope.isForeground, vm.exportFormat == .gif,
+              !gif.isBusy, !session.isClosed, !session.needsCleanup, !shareLifetime.isReserved,
+              shareRequest == nil, saveRequest == nil, previewImage != nil else {
+            return previewError ?? "The GIF is not ready to share. Finish the current export or share and verify its preview before retrying."
+        }
+        if let expected, !matchesQuickShare(expected) {
+            return "The project or rendered GIF changed. Export the current revision before sharing."
+        }
+        guard let request = session.beginSharing(scope: scope) else {
+            return session.errorMessage ?? "The GIF could not be shared in the current Studio state. Export it again before retrying."
+        }
+        if let expected, !matchesQuickShare(expected) {
+            request.finish(completed: false, error: nil)
+            return "Studio changed before GIF sharing could start. Nothing was shared."
+        }
+        shareAccountID = scope.accountID
+        shareHandoff = expected
+        shareRequest = request
+        return nil
+    }
+
+    private func matchesQuickShare(_ expected: StudioQuickShareHandoff) -> Bool {
+        guard expected.file == .gif, expected.accepts(vm.exportFormat), expected.accountID == scope.accountID,
+              expected.projectID == vm.document.id, expected.revision == vm.document.revision,
+              expected.sessionID == ObjectIdentifier(session), let output = session.output, !output.isCleaned else { return false }
+        return output.gifURL == expected.outputURL && output.receipt.projectID == expected.projectID
+            && output.receipt.revision == expected.revision
+    }
+
+    private func consumeQuickShare() {
+        guard let request = quickShareRequest, request.file == .gif, handledQuickShareID != request.id else { return }
+        handledQuickShareID = request.id
+        let failure = beginNativeShare(expected: request)
+        shareStartError = failure
+        onQuickShareHandled(request.id, failure)
+    }
+
+    private func suspendPresentation() {
+        // Match disappearance while an actual share/save consumer owns its lease.
+        previewPlaying = false; previewImage = nil
+        presentationScope.subjectWindowVisible = false
+        if !session.isSharing { isVisible = false; refreshScope(); session.close() }
+    }
     private func loadPreview() {
         previewPlaying = false; previewFrame = 0
         previewImage = nil; previewError = nil
-        guard let output = session.output, !output.isCleaned, !session.needsCleanup else { return }
+        guard scope.isStudioVisible, scope.isForeground, !session.isClosed,
+              let output = session.output, !output.isCleaned, !session.needsCleanup else { return }
         do {
             _ = try output.checkedURLs()
             guard let source = CGImageSourceCreateWithURL(output.gifURL as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -335,5 +421,9 @@ struct StudioGIFExportControls: View {
 }
 
 @MainActor private final class StudioGIFPresentationScope: ObservableObject {
+    // A queued request is not yet a consumer. Once UIKit receives its URLs,
+    // hiding the retained Studio keeps that existing lease until completion.
+    var subjectWindowVisible = false
+    var offeredRequestIDs: Set<UUID> = []
     var value = StudioGIFExportSession.Scope(isStudioVisible: false, isForeground: false, accountID: nil)
 }

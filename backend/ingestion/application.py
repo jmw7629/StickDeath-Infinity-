@@ -11,6 +11,7 @@ from .assets import LicensedAssetRegistry
 from .auth import AccountAuthorizer
 from .http import UploadApplication
 from .media import MediaValidator
+from .decoder import DecoderSandbox
 from .preview import PreviewApplication, PreviewLinks
 from .registration import ReviewRegistrar
 from .store import UploadStore
@@ -106,6 +107,9 @@ def create_application(environment=None):
     Construction initializes the private SQLite intake directory.
     """
     env = os.environ if environment is None else environment
+    # Fail before secrets, storage initialization or any direct decoder fallback.
+    sandbox = DecoderSandbox(Path(_required(env, "SDI_DECODER_ROOT")),
+                             Path(_required(env, "SDI_DECODER_SNAPSHOT_DIRECTORY")))
     backend = _required(env, "SDI_BACKEND_URL")
     origin = _required(env, "SDI_INTAKE_ORIGIN")
     consent = _required(env, "SDI_PUBLISHING_CONSENT_VERSION")
@@ -120,9 +124,10 @@ def create_application(environment=None):
     if not 1 <= concurrency <= 4 or not 1 <= account_quota <= quota <= 1024**4:
         raise ValueError("Invalid intake capacity limits.")
     links = PreviewLinks(origin, _secret_file(env, "SDI_PREVIEW_SIGNING_KEY_FILE", binary=True))
-    authorize = AccountAuthorizer(backend, _required(env, "SDI_BACKEND_PUBLISHABLE_KEY"))
+    publishable_key = _required(env, "SDI_BACKEND_PUBLISHABLE_KEY")
+    authorize = AccountAuthorizer(backend, publishable_key)
     service_key = _secret_file(env, "SDI_BACKEND_SERVICE_KEY_FILE")
-    validate = MediaValidator(Path(_required(env, "SDI_FFPROBE")), Path(_required(env, "SDI_FFMPEG")))
+    validate = MediaValidator(sandbox)
     catalogues = env.get("SDI_ASSET_CATALOGUE_ROOT")
     assets = LicensedAssetRegistry.from_catalogues(Path(catalogues) if catalogues else None)
     store = UploadStore(root, total_quota=quota, account_quota=account_quota, licensed_assets=assets)
@@ -135,7 +140,8 @@ def create_application(environment=None):
         drafts = DraftPreviewStore(store.root, links, env["SDI_DRAFT_PREVIEW_OWNER_ID"].strip(),
                                    total_quota=quota, other_usage=store.charged_bytes)
         store.reserved_bytes = drafts.retained_bytes
-    registrar = ReviewRegistrar(backend, service_key, store.root, consent, drafts.signer(links) if drafts else links)
+    registrar = ReviewRegistrar(backend, service_key, store.root, consent, drafts.signer(links) if drafts else links,
+                                publishable_key=publishable_key)
     upload = UploadApplication(store, authorize, validate, registrar, registrar.renew_preview)
     authority = registrar.preview_authority
     if drafts is not None:

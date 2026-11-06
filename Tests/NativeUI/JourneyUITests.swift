@@ -20,6 +20,9 @@ import UIKit
 /// they are not a pixel-parity claim.
 final class JourneyUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
+    // AX CGRect subtraction can report a 44-point edge as 43.99999999999997.
+    // This is numerical noise far below one physical pixel; 42x10 still fails.
+    private let hitTargetRoundingEpsilon: CGFloat = 1e-9
 
     @MainActor private var idiom: String { UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "phone" }
     /// Smallest canvas side that still counts as a usable, uncollapsed canvas.
@@ -29,6 +32,7 @@ final class JourneyUITests: XCTestCase {
 
     @MainActor
     func testAdaptiveStudioCanvasToolbarAndFrameTimelineInBothOrientations() throws {
+        executionTimeAllowance = 180
         let app = try launchGuestStudio(); defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         try createProject(app)
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
@@ -44,12 +48,15 @@ final class JourneyUITests: XCTestCase {
             let overlap = timeline.frame.intersection(canvas.frame)
             XCTAssertTrue(overlap.isNull || overlap.width * overlap.height < canvas.frame.width * canvas.frame.height * 0.1,
                           "Frame timeline covers the canvas")
-            capture(app, name: "journey-\(idiom)-studio-\(orientation == .portrait ? "portrait" : "landscape")")
+            capture(app, name: "journey-\(idiom)-studio-\(orientation == .portrait ? "portrait" : "landscape")", entireScreen: orientation.isLandscape)
         }
     }
 
     @MainActor
     func testAdaptiveAudioWorkspaceKeepsCanvasAndControlsReachable() throws {
+        // iOS 26.2 CI spent ~87s establishing automation and reached the
+        // landscape capture at 197s; retain both orientations within 300s.
+        executionTimeAllowance = 300
         let app = try launchGuestStudio(); defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         try createProject(app)
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
@@ -63,12 +70,26 @@ final class JourneyUITests: XCTestCase {
                 let control = app.buttons[id]
                 XCTAssertTrue(control.waitForExistence(timeout: 5), "Missing audio control \(id)")
                 XCTAssertTrue(control.isHittable, "Audio control \(id) is not reachable")
-                XCTAssertTrue(app.frame.contains(control.frame), "Audio control \(id) is clipped")
-                sizes.append("\(id) \(Int(control.frame.width))x\(Int(control.frame.height)) pt")
+                let frame = control.frame
+                XCTAssertTrue(app.frame.contains(frame), "Audio control \(id) is clipped")
+                sizes.append("\(id) \(frame.width)x\(frame.height) pt")
+                if id == "studio.audio.close" || id == "studio.audio.snap" {
+                    XCTAssertGreaterThanOrEqual(min(frame.width, frame.height) + hitTargetRoundingEpsilon, 44,
+                                                "Audio control \(id) needs a 44 pt touch target; actual \(frame)")
+                }
             }
-            // Close is built as a 44 pt target. Other measured sizes are recorded
-            // as actionable evidence (#264 touch targets), not asserted here.
-            XCTAssertGreaterThanOrEqual(min(app.buttons["studio.audio.close"].frame.width, app.buttons["studio.audio.close"].frame.height), 44)
+            // Keep the Snap control operable in both orientations and restore
+            // its original value before recording the workspace.
+            let snap = app.buttons["studio.audio.snap"]
+            let originalSnapLabel = snap.label
+            XCTAssertTrue(["Snap: ON", "Snap: OFF"].contains(originalSnapLabel))
+            let toggledSnapLabel = originalSnapLabel == "Snap: ON" ? "Snap: OFF" : "Snap: ON"
+            snap.tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", toggledSnapLabel), evaluatedWith: snap)
+                .waitUntilFulfilled(timeout: 5), "Audio snapping did not toggle")
+            snap.tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", originalSnapLabel), evaluatedWith: snap)
+                .waitUntilFulfilled(timeout: 5), "Audio snapping did not restore")
             let measured = XCTAttachment(string: sizes.joined(separator: "\n"))
             measured.name = "journey-\(idiom)-audio-touch-targets-\(orientation == .portrait ? "portrait" : "landscape")"
             measured.lifetime = .keepAlways
@@ -78,7 +99,7 @@ final class JourneyUITests: XCTestCase {
             XCTAssertTrue(canvas.exists, "Opening audio removed the canvas")
             XCTAssertGreaterThan(canvas.frame.height, 80, "Audio workspace collapsed the canvas")
             XCTAssertGreaterThan(canvas.frame.width, 80, "Audio workspace collapsed the canvas")
-            capture(app, name: "journey-\(idiom)-audio-\(orientation == .portrait ? "portrait" : "landscape")")
+            capture(app, name: "journey-\(idiom)-audio-\(orientation == .portrait ? "portrait" : "landscape")", entireScreen: orientation.isLandscape)
             app.buttons["studio.audio.close"].tap()
             XCTAssertTrue(waitUntilGone(app.buttons["studio.audio.close"]), "Audio workspace did not close")
         }
@@ -86,6 +107,7 @@ final class JourneyUITests: XCTestCase {
 
     @MainActor
     func testAdaptiveOptionsPopoverStaysInsideWindowAndDismisses() throws {
+        executionTimeAllowance = 180
         let app = try launchGuestStudio(); defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         try createProject(app)
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
@@ -97,8 +119,8 @@ final class JourneyUITests: XCTestCase {
             XCTAssertTrue(popup.waitForExistence(timeout: 10), "Options popup did not open")
             XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(popup.frame), "Options popup extends outside the window")
             let close = app.buttons["studio.tool-settings.close"]
-            XCTAssertTrue(close.isHittable && min(close.frame.width, close.frame.height) >= 44, "Popup close unreachable")
-            capture(app, name: "journey-\(idiom)-options-\(orientation == .portrait ? "portrait" : "landscape")")
+            XCTAssertTrue(close.isHittable && min(close.frame.width, close.frame.height) + hitTargetRoundingEpsilon >= 44, "Popup close unreachable")
+            capture(app, name: "journey-\(idiom)-options-\(orientation == .portrait ? "portrait" : "landscape")", entireScreen: orientation.isLandscape)
             close.tap()
             XCTAssertTrue(waitUntilGone(popup), "Options popup did not dismiss")
             let after = try settledCanvas(app)
@@ -106,20 +128,158 @@ final class JourneyUITests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testMirrorMenuChoicesAccessibilityAndOlderSystemFallback() throws {
+        executionTimeAllowance = 420
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        try createProject(app)
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            try rotate(app, to: orientation)
+            _ = try settledCanvas(app)
+            try railControl("studio.tool.pencil", app: app).tap()
+            let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+            XCTAssertTrue(popup.waitForExistence(timeout: 10))
+            let mirror = app.buttons["studio.drawing.mirror"]
+            let options = popup.scrollViews.firstMatch
+            let side = orientation == .portrait ? "portrait" : "landscape"
+            var revealFrames: [String] = []
+            for attempt in 0..<12 {
+                let scrollExists = options.exists
+                let scrollID = scrollExists ? options.identifier : "<missing>"
+                let viewport = scrollExists
+                    ? options.frame.intersection(popup.frame).intersection(app.frame) : CGRect.null
+                let target = mirror.exists ? mirror.frame : CGRect.null
+                let fullyVisible = target.width > 0 && target.height > 0
+                    && viewport.width > 0 && viewport.height > 0
+                    && viewport.insetBy(dx: -hitTargetRoundingEpsilon, dy: -hitTargetRoundingEpsilon).contains(target)
+                revealFrames.append("attempt=\(attempt);scroll=\(scrollID);viewport=\(viewport);mirror=\(target);visible=\(fullyVisible)")
+                if fullyVisible && mirror.isHittable { break }
+                guard viewport.width > 0 && viewport.height > 0 else { break }
+                // Full flicks overshot this 98 pt viewport in the hosted run.
+                // Keep both endpoints in its middle, measure toward the target,
+                // and hold before release so the pan does not add momentum.
+                guard !fullyVisible, target.width > 0, target.height > 0,
+                      target.width <= viewport.width, target.height <= viewport.height else { break }
+                let deltaY = viewport.midY - target.midY
+                let travel = min(abs(deltaY), viewport.height * 0.4)
+                guard travel > 0 else { break }
+                let direction: CGFloat = deltaY < 0 ? -1 : 1
+                let start = CGPoint(x: viewport.midX, y: viewport.midY - direction * travel / 2)
+                let end = CGPoint(x: start.x, y: start.y + direction * travel)
+                let bounds = app.frame
+                guard bounds.width > 0 && bounds.height > 0 else { break }
+                let from = app.coordinate(withNormalizedOffset: CGVector(
+                    dx: (start.x - bounds.minX) / bounds.width,
+                    dy: (start.y - bounds.minY) / bounds.height))
+                let to = app.coordinate(withNormalizedOffset: CGVector(
+                    dx: (end.x - bounds.minX) / bounds.width,
+                    dy: (end.y - bounds.minY) / bounds.height))
+                revealFrames.append("drag=\(start)->\(end);travel=\(travel)")
+                from.press(forDuration: 0.1, thenDragTo: to,
+                           withVelocity: .slow, thenHoldForDuration: 0.25)
+            }
+            let viewport = options.exists
+                ? options.frame.intersection(popup.frame).intersection(app.frame) : CGRect.null
+            let target = mirror.exists ? mirror.frame : CGRect.null
+            let fullyVisible = target.width > 0 && target.height > 0
+                && viewport.width > 0 && viewport.height > 0
+                && viewport.insetBy(dx: -hitTargetRoundingEpsilon, dy: -hitTargetRoundingEpsilon).contains(target)
+            if !fullyVisible || !mirror.isHittable {
+                revealFrames.append("final viewport=\(viewport);mirror=\(target);visible=\(fullyVisible)")
+                let diagnostic = XCTAttachment(string: revealFrames.joined(separator: "\n"))
+                diagnostic.name = "native-mirror-reveal-frames-" + side
+                diagnostic.lifetime = .keepAlways
+                add(diagnostic)
+                capture(app, name: "native-mirror-reveal-failed-" + side, entireScreen: true)
+            }
+            XCTAssertTrue(mirror.isHittable, "Mirror trigger must be reachable in Pencil options")
+            XCTAssertTrue(fullyVisible, "Mirror must be fully inside its visible options viewport")
+            XCTAssertEqual(mirror.label, "Mirror")
+            XCTAssertEqual(mirror.value as? String, "Off", "New project must default to Mirror Off")
+            XCTAssertGreaterThanOrEqual(min(mirror.frame.width, mirror.frame.height) + hitTargetRoundingEpsilon, 44,
+                                            "Mirror needs a 44 pt touch target; actual \(mirror.frame)")
+            XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(popup.frame))
+            capture(app, name: "native-font-pencil-mirror-\(side)", entireScreen: true)
+            var measured = ["orientation=\(side)", "os=\(ProcessInfo.processInfo.operatingSystemVersionString)",
+                            "window=\(app.frame)", "popup=\(popup.frame)", "mirror=\(mirror.frame)",
+                            "label=\(mirror.label)", "value=\(mirror.value as? String ?? "nil")"]
+            if let cg = XCUIScreen.main.screenshot().image.cgImage {
+                measured.append("screenshotPixels=\(cg.width)x\(cg.height)")
+            }
+            for selected in ["Vertical", "Horizontal", "Both", "Off"] {
+                mirror.tap()
+                for title in ["Off", "Vertical", "Horizontal", "Both"] {
+                    let choice = app.buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch
+                    let available = choice.waitForExistence(timeout: 5) && choice.isHittable
+                    if !available {
+                        let diagnostic = XCTAttachment(string: app.debugDescription)
+                        diagnostic.name = "native-mirror-choice-unavailable-" + side + "-" + title
+                        diagnostic.lifetime = .keepAlways
+                        add(diagnostic)
+                        capture(app, name: "native-mirror-choice-unavailable-" + side + "-" + title, entireScreen: true)
+                    }
+                    XCTAssertTrue(available, "Missing native Mirror choice: \(title)")
+                }
+                capture(app, name: "native-mirror-menu-\(side)-select-\(selected)", entireScreen: true)
+                app.buttons.matching(NSPredicate(format: "label == %@", selected)).firstMatch.tap()
+                XCTAssertEqual(mirror.value as? String, selected, "Mirror selection did not update its AX value")
+                XCTAssertTrue(popup.exists, "Choosing a Mirror mode dismissed its options context")
+                measured.append("selected=\(selected);value=\(mirror.value as? String ?? "nil")")
+            }
+            let attachment = XCTAttachment(string: measured.joined(separator: "\n"))
+            attachment.name = "native-mirror-measurements-\(side)"; attachment.lifetime = .keepAlways; add(attachment)
+            app.buttons["studio.tool-settings.close"].tap()
+            XCTAssertTrue(waitUntilGone(popup), "Pencil options did not dismiss after changing Mirror")
+            _ = try settledCanvas(app)
+        }
+        // On iOS 18.6 the actual production availability branch must stay disabled.
+        // This route only checks the truthful fallback and leaves generation uninvoked.
+        try rotate(app, to: .portrait)
+        app.buttons["studio.menu.open"].tap()
+        let spatter = app.buttons["studio.spatter.open"]
+        for _ in 0..<6 where !spatter.isHittable { app.scrollViews["studio.menu.scroll"].swipeUp(velocity: .slow) }
+        XCTAssertTrue(spatter.isHittable); spatter.tap()
+        let local = app.buttons["spatter.studio.local-motion"]
+        XCTAssertTrue(local.waitForExistence(timeout: 8) && local.isHittable); local.tap()
+        let generate = app.buttons["spatter.ondevice.generate"]
+        let scroll = app.scrollViews["spatter.motion.scroll"]
+        for _ in 0..<24 {
+            if generate.exists && scroll.frame.intersects(generate.frame) { break }
+            scroll.swipeUp(velocity: .slow)
+        }
+        XCTAssertTrue(generate.exists, "Actual on-device composer is missing")
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 26 {
+            XCTAssertFalse(generate.isEnabled, "Older systems must not attempt model generation")
+            let unavailable = app.staticTexts["On-device generation requires iOS 26 and an available Apple Intelligence model. Local instructions still work."]
+            XCTAssertTrue(unavailable.exists, "Older systems must explain that local instructions remain available")
+        }
+        let availability = XCTAttachment(string: "os=\(ProcessInfo.processInfo.operatingSystemVersionString)\ngenerateEnabled=\(generate.isEnabled)\n" + app.staticTexts.allElementsBoundByIndex.map(\.label).filter { $0.contains("on-device") || $0.contains("Apple Intelligence") }.joined(separator: "\n"))
+        availability.name = "native-ondevice-availability"; availability.lifetime = .keepAlways; add(availability)
+        XCTAssertTrue(app.textViews["spatter.motion.input"].exists, "The existing editable local instruction route must remain present")
+        capture(app, name: "native-ios18-ondevice-unavailable-local-fallback", entireScreen: true)
+    }
+
     // MARK: #265 guest journeys and #273 onboarding
 
     @MainActor
     func testGuestFeedRoomsAndWarRoomShowTruthfulUnconfiguredStates() throws {
+        executionTimeAllowance = 180
         let app = try launchAtWelcome(); defer { app.terminate() }
         try tapWelcomeAction("welcome.guest", in: app)
         try waitForButton("Skip Tutorial", in: app).tap()
         let notConfigured = NSPredicate(format: "label CONTAINS %@", "not configured in this build")
-        try waitForButton("Home", in: app).tap()
+        try openDesktopSubject("home", in: app)
         XCTAssertTrue(app.buttons["feed.home.sign-in"].waitForExistence(timeout: 5), "Feed must ask a guest to sign in")
         XCTAssertTrue(app.staticTexts.matching(notConfigured).firstMatch.exists, "Feed must say services are not configured")
         XCTAssertFalse(app.descendants(matching: .any)["feed.card"].exists, "No feed card may appear without a service")
         capture(app, name: "journey-\(idiom)-feed-guest")
-        try waitForButton("Rooms", in: app).tap()
+        try openDesktopSubject("profile", in: app)
+        XCTAssertTrue(app.descendants(matching: .any)["profile.identity"].firstMatch.waitForExistence(timeout: 5), "Guest Profile identity must appear")
+        _ = try desktopButton("profile.sign-in", in: app,
+                              deadline: ProcessInfo.processInfo.systemUptime + 10)
+        capture(app, name: "journey-\(idiom)-profile-guest")
+        try openDesktopSubject("rooms", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["rooms.not-configured"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["rooms.sign-in"].exists, "Rooms must ask a guest to sign in")
         XCTAssertFalse(app.descendants(matching: .any)["rooms.browser.room"].exists, "No room may appear without a service")
@@ -137,6 +297,7 @@ final class JourneyUITests: XCTestCase {
 
     @MainActor
     func testGuidePolicyStepIsTruthfulWithoutServicesAndNeverBlocksStudio() throws {
+        executionTimeAllowance = 180
         let app = try launchAtWelcome(); defer { app.terminate() }
         try tapWelcomeAction("welcome.guide", in: app)
         XCTAssertTrue(app.staticTexts["onboarding.position"].waitForExistence(timeout: 5))
@@ -152,6 +313,7 @@ final class JourneyUITests: XCTestCase {
         let next = app.buttons["onboarding.next"]
         XCTAssertTrue(next.isHittable, "Open Studio must stay reachable")
         next.tap()
+        capture(app, name: "journey-\(idiom)-guide-after-open-studio")
         try waitForButton("Skip Tutorial", in: app).tap()
         XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8),
                       "The policy step blocked Studio")
@@ -177,8 +339,51 @@ final class JourneyUITests: XCTestCase {
         let app = try launchAtWelcome()
         try tapWelcomeAction("welcome.guest", in: app)
         try waitForButton("Skip Tutorial", in: app).tap()
-        try waitForButton("Studio", in: app).tap()
+        try openDesktopSubject("studio", in: app)
         return app
+    }
+
+    /// Exercise the primary native navigation without relying on the optional dock.
+    /// These existing full-page journeys use real maximize controls so persisted
+    /// desktop placements cannot change their editor and sheet geometry.
+    @MainActor
+    private func openDesktopSubject(_ subject: String, in app: XCUIApplication) throws {
+        // Each native menu transition retains a bounded ten-second readiness
+        // allowance. Hosted iOS 26 automation consumed the former shared budget
+        // before an existing size button received its first hittability poll.
+        try desktopButton("desktop.menu.subjects", in: app,
+                          deadline: ProcessInfo.processInfo.systemUptime + 10).tap()
+        try desktopButton("desktop.open." + subject, in: app,
+                          deadline: ProcessInfo.processInfo.systemUptime + 10).tap()
+        try maximizeDesktopSubject(subject, in: app)
+    }
+
+    @MainActor
+    private func maximizeDesktopSubject(_ subject: String, in app: XCUIApplication,
+                                        deadline: TimeInterval = ProcessInfo.processInfo.systemUptime + 10) throws {
+        let prefix = "desktop.window." + subject
+        let maximize = app.buttons[prefix + ".maximize"]
+        let restored = app.buttons[prefix + ".restore-size"]
+        let available = NSPredicate { _, _ in maximize.exists || restored.exists }
+        XCTAssertTrue(expectation(for: available, evaluatedWith: nil)
+            .waitUntilFulfilled(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Missing native subject size control: " + subject)
+        if maximize.exists {
+            try desktopButton(prefix + ".maximize", in: app, deadline: deadline).tap()
+        }
+        _ = try desktopButton(prefix + ".restore-size", in: app, deadline: deadline)
+    }
+
+    @MainActor
+    private func desktopButton(_ identifier: String, in app: XCUIApplication,
+                               deadline: TimeInterval) throws -> XCUIElement {
+        let element = app.buttons[identifier]
+        XCTAssertTrue(element.waitUntilPresent(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Missing native button: " + identifier)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
+            .waitUntilFulfilled(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime)),
+            "Native button is not reachable: " + identifier)
+        return element
     }
 
     @MainActor private func tapWelcomeAction(_ identifier: String, in app: XCUIApplication) throws {
@@ -291,10 +496,31 @@ final class JourneyUITests: XCTestCase {
         return XCTWaiter.wait(for: [gone], timeout: timeout) == .completed
     }
 
-    @MainActor private func capture(_ app: XCUIApplication, name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+    @MainActor private func capture(_ app: XCUIApplication, name: String, entireScreen: Bool = false) {
+        // Application-scoped captures can crop a rotated Simulator window even
+        // after the orientation and canvas geometry assertions have settled.
+        let screenshot = entireScreen ? XCUIScreen.main.screenshot() : app.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+}
+
+private extension XCTestExpectation {
+    func waitUntilFulfilled(timeout: TimeInterval) -> Bool {
+        XCTWaiter.wait(for: [self], timeout: timeout) == .completed
+    }
+}
+
+// The recorded 5a6963a failure spent a one-second initial XCTest poll on
+// already-present controls. Keep the same bounded wait for absent controls;
+// presence alone does not replace any existing hittability/geometry assertion.
+private extension XCUIElement {
+    @MainActor func waitUntilPresent(timeout: TimeInterval) -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        if exists { return true }
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        return remaining > 0 && waitForExistence(timeout: remaining)
     }
 }

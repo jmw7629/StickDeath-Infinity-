@@ -137,36 +137,7 @@ enum StudioSmudgeReplay {
                     let source = try renderPrefix(prefix, layer: layer, canvasSize: canvasSize,
                                                   rasters: rasters, base: base, rasterElementOffset: consumedElements)
                     let original = try pixels(source)
-                    let changed: StudioSmudge.Pixels
-                    if let descriptor = element.smudge {
-                        changed = try StudioSmudge.apply(to: original,
-                            path: element.points.map { .init(x: $0.x, y: $0.y) },
-                            settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
-                    } else if let descriptor = element.blur {
-                        let input = try StudioBlur.Pixels(width: original.width, height: original.height, rgba: original.rgba)
-                        let output = try StudioBlur.apply(to: input,
-                            path: element.points.map { .init(x: $0.x, y: $0.y) },
-                            settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
-                        changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
-                    } else if let descriptor = element.sharpen {
-                        let input = try StudioSharpen.Pixels(width: original.width, height: original.height, rgba: original.rgba)
-                        let output = try StudioSharpen.apply(to: input,
-                            path: element.points.map { .init(x: $0.x, y: $0.y) },
-                            settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
-                        changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
-                    } else if let descriptor = element.dodgeBurn {
-                        let input = try StudioDodgeBurn.Pixels(width: original.width, height: original.height, rgba: original.rgba)
-                        let output = try StudioDodgeBurn.apply(to: input,
-                            path: element.points.map { .init(x: $0.x, y: $0.y) },
-                            settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
-                        changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
-                    } else if element.gradient != nil {
-                        changed = try applyGradient(element, to: original, checkCancellation: checkCancellation)
-                    } else { throw Failure.unprepared }
-                    // A selection-limited effect keeps every unselected pixel exact (#149).
-                    let clipped = try element.selectionMask == nil ? changed : StudioSmudge.Pixels(width: changed.width, height: changed.height,
-                        rgba: clipRGBA(original: original.rgba, effected: changed.rgba, mask: element.selectionMask,
-                                       width: changed.width, height: changed.height, checkCancellation: checkCancellation))
+                    let clipped = try applyPixelEffect(element, to: original, checkCancellation: checkCancellation)
                     let image = try cgImage(clipped)
                     images[element.id] = image; base = image; prefix.elements.removeAll()
                     // An image before this effect is now part of base. An image
@@ -178,6 +149,44 @@ enum StudioSmudgeReplay {
         try checkCancellation()
         return Prepared(frame: frame, layers: layers, canvasSize: canvasSize,
                         rasterData: rasterData, rasterDataByID: rasterDataByID, liveElement: liveElement, images: images)
+    }
+
+    /// Shared native engine and selection clipping for touch, typed edits and
+    /// replay/export. Pixels are transient; only editable descriptors persist.
+    static func applyPixelEffect(_ element: DrawnElement, to original: StudioSmudge.Pixels,
+                                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioSmudge.Pixels {
+        try checkCancellation()
+        let changed: StudioSmudge.Pixels
+        if let descriptor = element.smudge {
+            changed = try StudioSmudge.apply(to: original,
+                path: element.points.map { .init(x: $0.x, y: $0.y) },
+                settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
+        } else if let descriptor = element.blur {
+            let input = try StudioBlur.Pixels(width: original.width, height: original.height, rgba: original.rgba)
+            let output = try StudioBlur.apply(to: input,
+                path: element.points.map { .init(x: $0.x, y: $0.y) },
+                settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
+            changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
+        } else if let descriptor = element.sharpen {
+            let input = try StudioSharpen.Pixels(width: original.width, height: original.height, rgba: original.rgba)
+            let output = try StudioSharpen.apply(to: input,
+                path: element.points.map { .init(x: $0.x, y: $0.y) },
+                settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
+            changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
+        } else if let descriptor = element.dodgeBurn {
+            let input = try StudioDodgeBurn.Pixels(width: original.width, height: original.height, rgba: original.rgba)
+            let output = try StudioDodgeBurn.apply(to: input,
+                path: element.points.map { .init(x: $0.x, y: $0.y) },
+                settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
+            changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
+        } else if element.gradient != nil {
+            changed = try applyGradient(element, to: original, checkCancellation: checkCancellation)
+        } else { throw Failure.unprepared }
+        let clipped = try element.selectionMask == nil ? changed : StudioSmudge.Pixels(width: changed.width, height: changed.height,
+            rgba: clipRGBA(original: original.rgba, effected: changed.rgba, mask: element.selectionMask,
+                width: changed.width, height: changed.height, checkCancellation: checkCancellation))
+        try checkCancellation()
+        return clipped
     }
 
     /// Pixel-engine settings for an editable gradient (#149). Raw values are

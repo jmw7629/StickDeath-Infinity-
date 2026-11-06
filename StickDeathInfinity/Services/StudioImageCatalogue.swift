@@ -453,7 +453,7 @@ actor StudioImagePackCache {
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
-    private static func validateDescriptor(_ descriptor: Descriptor) throws {
+    fileprivate static func validateDescriptor(_ descriptor: Descriptor) throws {
         if let additional = descriptor.additional {
             guard descriptor.tiles.isEmpty, !additional.entries.isEmpty, additional.entries.count <= 2000,
                   additionalPins[descriptor.id] == additionalFingerprint(descriptor) else { throw PackError.invalid }
@@ -716,28 +716,120 @@ actor StudioImagePackCache {
         try identity.check()
         return bytes
     }
-    static func fetch(_ descriptor: Descriptor, protocolClasses: [AnyClass] = []) async throws -> Data {
-        try validateDescriptor(descriptor)
+    /// Legacy links may only resolve through the publisher's known, short-lived
+    /// download route. Descriptor hashes and installed-cache signatures stay fixed.
+    private static let publisherSlugs = [
+        "kenney.1-bit-scenery.v1": "1-bit-pack",
+        "kenney.1-bit-expansion.v1": "1-bit-pack",
+        "kenney.1-bit-platformer.v1": "1-bit-platformer-pack",
+        "kenney.monochrome-rpg.v1": "monochrome-rpg",
+        "kenney.micro-roguelike.v1": "micro-roguelike",
+        "kenney.smoke-particles.v1": "smoke-particles"
+    ]
+    private static func publisherRoute(_ descriptor: Descriptor) throws -> (page: URL, endpoint: URL, asset: String) {
+        guard let slug = publisherSlugs[descriptor.id],
+              let page = URL(string: "https://kenney.nl/assets/" + slug) else { throw PackError.invalid }
+        let asset = Data(("assets/" + slug).utf8).map { String(format: "%02x", $0) }.joined()
+        guard let endpoint = URL(string: "https://kenney.nl/download-link/" + asset),
+              descriptor.additional?.sourceURL == nil || descriptor.additional?.sourceURL == page.absoluteString else { throw PackError.invalid }
+        return (page, endpoint, asset)
+    }
+    private static func publisherArchiveURL(_ text: String, asset: String) throws -> URL {
+        guard text.utf8.count <= 2048, let parts = URLComponents(string: text),
+              parts.scheme == "https", parts.host == "kenney.nl", parts.port == nil,
+              parts.user == nil, parts.password == nil, parts.fragment == nil,
+              parts.queryItems?.count == 1, let expiry = parts.queryItems?.first,
+              expiry.name == "expires", let value = expiry.value, (1...12).contains(value.utf8.count),
+              value.utf8.allSatisfy({ (48...57).contains($0) }),
+              parts.percentEncodedQuery == "expires=" + value, let expires = TimeInterval(value) else { throw PackError.network }
+        let prefix = "/download/" + asset + "/"
+        guard parts.percentEncodedPath.hasPrefix(prefix) else { throw PackError.network }
+        let signature = parts.percentEncodedPath.dropFirst(prefix.count)
+        let now = Date().timeIntervalSince1970
+        guard signature.utf8.count == 64,
+              signature.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              expires > now, expires <= now + 900,
+              let url = parts.url, url.absoluteString == text else { throw PackError.network }
+        return url
+    }
+    private static func responseBytes(_ session: URLSession, url: URL, limit: Int,
+                                      exactLength: Int? = nil, referer: URL? = nil) async throws -> (Data, HTTPURLResponse) {
+        try Task.checkCancellation()
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.httpShouldHandleCookies = false
+        request.setValue(referer == nil ? "application/zip" : "application/json", forHTTPHeaderField: "Accept")
+        if let referer { request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer") }
+        let (stream, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.url == url else { throw PackError.network }
+        // The delegate never follows this Location. Its caller may only recognize
+        // the exact release-known landing page, then construct its own request.
+        if http.statusCode == 302 { return (Data(), http) }
+        guard http.statusCode == 200, response.expectedContentLength == -1 ||
+              (response.expectedContentLength <= limit &&
+               (exactLength == nil || response.expectedContentLength == exactLength!)) else { throw PackError.network }
+        var bytes = Data(); bytes.reserveCapacity(limit)
+        for try await byte in stream {
+            try Task.checkCancellation()
+            guard bytes.count < limit else { throw PackError.invalid }
+            bytes.append(byte)
+        }
+        try Task.checkCancellation()
+        return (bytes, http)
+    }
+    private static func fetchTransport(_ descriptor: Descriptor, protocolClasses: [AnyClass]) async throws -> Data {
+        let route = try publisherRoute(descriptor)
         guard let url = URL(string: descriptor.archiveURL), url.scheme == "https", url.host == "kenney.nl",
               descriptor.archiveBytes <= 32 * 1024 * 1024 else { throw PackError.invalid }
         let delegate = StudioImagePackRedirectPolicy()
         let config = URLSessionConfiguration.ephemeral
         if !protocolClasses.isEmpty { config.protocolClasses = protocolClasses }
-        config.httpShouldSetCookies = false; config.urlCredentialStorage = nil
+        config.httpShouldSetCookies = false; config.httpCookieStorage = nil; config.urlCredentialStorage = nil
         config.timeoutIntervalForRequest = 30; config.timeoutIntervalForResource = 120
         let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        var request = URLRequest(url: url); request.cachePolicy = .reloadIgnoringLocalCacheData
-        let (stream, response) = try await session.bytes(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.url == url,
-              response.expectedContentLength == -1 || response.expectedContentLength == descriptor.archiveBytes else { throw PackError.network }
-        var bytes = Data(); bytes.reserveCapacity(descriptor.archiveBytes)
-        for try await byte in stream {
-            try Task.checkCancellation()
-            guard bytes.count < descriptor.archiveBytes else { throw PackError.invalid }
-            bytes.append(byte)
-        }
+        let (direct, response) = try await responseBytes(session, url: url, limit: descriptor.archiveBytes,
+                                                        exactLength: descriptor.archiveBytes)
+        let bytes: Data
+        if response.statusCode == 302 {
+            guard response.value(forHTTPHeaderField: "Location") == route.page.absoluteString else { throw PackError.network }
+            let (metadata, metadataResponse) = try await responseBytes(session, url: route.endpoint, limit: 16 * 1024,
+                                                                      referer: route.page)
+            guard metadataResponse.statusCode == 200,
+                  let record = try? JSONSerialization.jsonObject(with: metadata) as? [String: Any],
+                  Set(record.keys) == ["url"], let text = record["url"] as? String else { throw PackError.network }
+            let download = try publisherArchiveURL(text, asset: route.asset)
+            let (resolved, resolvedResponse) = try await responseBytes(session, url: download, limit: descriptor.archiveBytes,
+                                                                      exactLength: descriptor.archiveBytes)
+            guard resolvedResponse.statusCode == 200 else { throw PackError.network }
+            bytes = resolved
+        } else { bytes = direct }
+        guard bytes.count == descriptor.archiveBytes, digest(bytes) == descriptor.archiveSHA256 else { throw PackError.invalid }
         return bytes
+    }
+    static func fetch(_ descriptor: Descriptor, protocolClasses: [AnyClass] = []) async throws -> Data {
+        try Task.checkCancellation()
+        try validateDescriptor(descriptor)
+        do {
+            // Bound the complete resolution + archive operation, rather than
+            // granting a new two-minute budget at every metadata stage.
+            return try await withThrowingTaskGroup(of: Data.self) { group in
+                group.addTask { try await Self.fetchTransport(descriptor, protocolClasses: protocolClasses) }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 120_000_000_000)
+                    throw PackError.network
+                }
+                defer { group.cancelAll() }
+                guard let bytes = try await group.next() else { throw PackError.network }
+                try Task.checkCancellation()
+                return bytes
+            }
+        } catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
+            if let failure = error as? PackError { throw failure }
+            // Network errors can contain a signed URL. Keep them out of receipts/logs.
+            throw PackError.network
+        }
     }
     private static func install(_ archive: Data, descriptor: Descriptor, directory: URL,
                                 checkpoint: () throws -> Void) throws {
@@ -875,5 +967,95 @@ private final class StudioImagePackRedirectPolicy: NSObject, URLSessionTaskDeleg
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+}
+
+/// Owns one explicit manual/assistant pack operation until its actual task ends.
+/// The existing cache still owns pinning, quota, transport and atomic publication.
+actor StudioImagePackOperations {
+    enum Action: String, Equatable, Sendable { case install, remove }
+    struct Request: Equatable, Sendable {
+        let id: UUID
+        let ownerID: UUID
+        let packID: String
+        let action: Action
+    }
+    enum Outcome: Equatable, Sendable {
+        case installed(availablePictures: Int), removed, cancelled, failed(String)
+    }
+    struct Receipt: Equatable, Sendable { let request: Request; let outcome: Outcome }
+    struct Completion: Sendable { let receipt: Receipt; let catalogue: StudioImageCatalogue? }
+    struct Handle: Sendable {
+        let request: Request
+        fileprivate let task: Task<Completion, Never>
+    }
+    enum Phase: Equatable, Sendable { case running, cancelling, finished(Receipt) }
+    struct Status: Equatable, Sendable { let request: Request; let phase: Phase }
+    enum OwnershipError: Error { case wrongOwner }
+    static let shared = StudioImagePackOperations(cache: .shared)
+    private let cache: StudioImagePackCache
+    private var active: Handle?
+    private var cancellationRequested = false
+    private var lastReceipt: Receipt?
+    init(cache: StudioImagePackCache) { self.cache = cache }
+
+    func status() -> Status? {
+        if let active { return .init(request: active.request, phase: cancellationRequested ? .cancelling : .running) }
+        return lastReceipt.map { .init(request: $0.request, phase: .finished($0)) }
+    }
+    /// Actual local verification, not a cached UI assumption or network probe.
+    func installed(_ descriptor: StudioImagePackCache.Descriptor) async throws -> StudioImageCatalogue? {
+        try await cache.installed(descriptor)
+    }
+    func start(_ descriptor: StudioImagePackCache.Descriptor, action: Action, ownerID: UUID,
+               fetch: (@Sendable (StudioImagePackCache.Descriptor) async throws -> Data)? = nil,
+               checkpoint: @escaping @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> Handle {
+        try Task.checkCancellation()
+        try StudioImagePackCache.validateDescriptor(descriptor)
+        guard active == nil else { throw StudioImagePackCache.PackError.busy }
+        let request = Request(id: UUID(), ownerID: ownerID, packID: descriptor.id, action: action)
+        let task = Task<Completion, Never> {
+            let completion: Completion
+            do {
+                switch action {
+                case .install:
+                    let catalogue = try await self.cache.download(descriptor, fetch: fetch, checkpoint: checkpoint)
+                    // No cancellation check after the cache's atomic publication:
+                    // cancellation cannot turn an installed pack into a rollback receipt.
+                    completion = .init(receipt: .init(request: request,
+                        outcome: .installed(availablePictures: catalogue.availableImages.count)), catalogue: catalogue)
+                case .remove:
+                    try await self.cache.remove(descriptor)
+                    completion = .init(receipt: .init(request: request, outcome: .removed), catalogue: nil)
+                }
+            } catch is CancellationError {
+                completion = .init(receipt: .init(request: request, outcome: .cancelled), catalogue: nil)
+            } catch {
+                // URLSession may report an owned task cancellation as URLError.
+                // Cache operations never throw after successful publication/removal.
+                let outcome: Outcome = Task.isCancelled ? .cancelled : .failed(String(error.localizedDescription.prefix(512)))
+                completion = .init(receipt: .init(request: request, outcome: outcome), catalogue: nil)
+            }
+            self.finish(completion.receipt)
+            return completion
+        }
+        let handle = Handle(request: request, task: task)
+        active = handle; cancellationRequested = false
+        return handle
+    }
+    /// A cancellation request, not proof of rollback. Busy ownership remains
+    /// until the actual cache task reports its terminal result and cleanup ends.
+    @discardableResult
+    func cancel(_ request: Request, ownerID: UUID) -> Bool {
+        guard request.ownerID == ownerID, active?.request == request, !cancellationRequested else { return false }
+        cancellationRequested = true; active?.task.cancel(); return true
+    }
+    func wait(for handle: Handle, ownerID: UUID) async throws -> Completion {
+        guard handle.request.ownerID == ownerID else { throw OwnershipError.wrongOwner }
+        return await handle.task.value
+    }
+    private func finish(_ receipt: Receipt) {
+        guard active?.request == receipt.request else { return }
+        lastReceipt = receipt; active = nil; cancellationRequested = false
     }
 }

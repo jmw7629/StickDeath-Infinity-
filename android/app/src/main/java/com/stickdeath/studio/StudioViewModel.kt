@@ -351,16 +351,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     var fillTolerance by mutableIntStateOf(24); private set
     var fillContiguous by mutableStateOf(true); private set
     var filling by mutableStateOf(false); private set
+    var wandTolerance by mutableIntStateOf(24); private set
+    var wandContiguous by mutableStateOf(true); private set
+    var wandSelecting by mutableStateOf(false); private set
     private var fillJob: Job? = null
     // Cancellation is cooperative during native raster calls. Keep one allocation
-    // owner until that call unwinds before admitting the next requested fill.
+    // owner across Fill and Wand until that call unwinds.
     private val fillComputeMutex = Mutex()
     private var fillGeneration = 0L
     fun cancelFill() {
         if (filling) message = "Fill cancelled; no fill was added."
+        if (wandSelecting) message = "Wand selection cancelled."
         fillGeneration++
-        fillJob?.cancel(); fillJob = null; filling = false
+        fillJob?.cancel(); fillJob = null; filling = false; wandSelecting = false
     }
+    fun cancelWand() { if (wandSelecting) cancelFill() }
     fun configureFill(tolerance: Int = fillTolerance, contiguous: Boolean = fillContiguous) {
         require(tolerance in 0..255)
         cancelFill(); fillTolerance = tolerance; fillContiguous = contiguous
@@ -404,6 +409,49 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 if (generation == fillGeneration) report(error.message ?: "Fill could not be completed; no fill was added.")
             } finally {
                 if (generation == fillGeneration) { filling = false; fillJob = null }
+            }
+        }
+    }
+    fun configureWand(tolerance: Int = wandTolerance, contiguous: Boolean = wandContiguous) {
+        require(tolerance in 0..255)
+        cancelWand()
+        wandTolerance = tolerance; wandContiguous = contiguous
+    }
+    fun wandAt(captured: Document, point: Point) {
+        if (document != captured || closing || playbackActive || tool != Tool.Wand) return
+        cancelFill()
+        val generation = fillGeneration
+        val tolerance = wandTolerance
+        val contiguous = wandContiguous
+        val prior = selectedStrokeIDs
+        wandSelecting = true
+        message = "Selecting painted artwork by color…"
+        fillJob = viewModelScope.launch {
+            try {
+                val ids = withContext(Dispatchers.Default) {
+                    fillComputeMutex.withLock {
+                        val context = currentCoroutineContext()
+                        context.ensureActive()
+                        DrawingWand.select(captured, point, tolerance, contiguous) { context.ensureActive() }
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                if (generation != fillGeneration || document != captured || closing || playbackActive ||
+                    tool != Tool.Wand || prior != selectedStrokeIDs ||
+                    tolerance != wandTolerance || contiguous != wandContiguous) {
+                    if (generation == fillGeneration) report("Wand cancelled because the canvas or settings changed.")
+                    return@launch
+                }
+                fillJob = null
+                wandSelecting = false
+                selectedStrokeIDs = ids
+                if (ids.isEmpty()) message = "No painted artwork found at that point on the active layer."
+                else finishSelection()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                if (generation == fillGeneration) report(error.message ?: "Wand selection is unavailable.")
+            } finally {
+                if (generation == fillGeneration) { wandSelecting = false; fillJob = null }
             }
         }
     }
@@ -842,6 +890,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             transformSelection(captured, ids, ArtworkTransform(dx = x, dy = y))
         } catch (e: Exception) { report(e.message ?: "Selection could not be positioned.") }
     }
+    fun finishMoveGesture(captured: Document, prior: Set<String>, ids: Set<String>, transform: ArtworkTransform) {
+        if (document != captured || closing || playbackActive || tool != Tool.Move || prior != selectedStrokeIDs) return
+        if (ids != prior && !ArtworkSelection.eligible(captured.frame, captured.layers).containsAll(ids)) return
+        selectedStrokeIDs = ids
+        if (transform != ArtworkTransform()) transformSelection(captured, ids, transform)
+    }
     fun transformSelection(captured: Document, ids: Set<String>, transform: ArtworkTransform) {
         if (document != captured || ids != selectedStrokeIDs || ids.isEmpty() || closing) return
         val bounds = ArtworkSelection.bounds(captured.frame, ids) ?: return
@@ -873,7 +927,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     var color by mutableIntStateOf(0xffe52b38.toInt())
     var exporting by mutableStateOf(false); private set
     var exportArtifact by mutableStateOf<ExportArtifact?>(null); private set
-    var exportPickerRequested by mutableStateOf(false); private set
+    class ExportHandoff internal constructor(val artifact: ExportArtifact) {
+        val id = newID()
+    }
+    var exportHandoff by mutableStateOf<ExportHandoff?>(null); private set
+    private var exportHandoffOffered = false
+    private val hasPendingExport get() = exporting || exportArtifact != null || exportHandoff != null
     data class ExportProgress(val stage: String, val percent: Int? = null)
     // Exporters report from IO. StateFlow safely conflates updates without
     // launching one Main coroutine per video frame or output buffer.
@@ -884,7 +943,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     var exportTransparent by mutableStateOf(false)
     data class RenderManifest(val name: String, val text: String, val projectID: String, val revision: Long)
     /** The iOS-layout manifest of the most recent MP4/GIF render, offered as a separate file. */
-    var lastRenderManifest by mutableStateOf<RenderManifest?>(null); private set
+    private var renderManifest by mutableStateOf<RenderManifest?>(null)
+    val lastRenderManifest get() = renderManifest?.takeIf { it.projectID == document?.id }
     fun exportLastRenderManifest() {
         val manifest = lastRenderManifest ?: return
         prepareExport(ExportKind.MANIFEST, options = ExportOptions(manifestText = manifest.text, manifestName = manifest.name))
@@ -893,7 +953,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     val sdiExportBlockers: List<String> get() = document?.let { SwiftProjectExport.unsupportedReasons(it) } ?: emptyList()
     fun prepareExport(kind: ExportKind, share: Boolean = false, options: ExportOptions = ExportOptions(transparent = exportTransparent), targetPackages: List<String> = emptyList()) {
         val snapshot = document ?: return
-        if (exporting || exportArtifact != null || closing) return
+        if (hasPendingExport || closing) return
         if (kind == ExportKind.SEQUENCE && !requirePlan(planLimits.pngSequenceExport)) return
         // Free: MP4/GIF scaled to fit 720p (1280 px long edge) with the SDI watermark burned in.
         val limits = planLimits
@@ -923,34 +983,62 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 owned?.manifest?.let { text ->
-                    lastRenderManifest = RenderManifest(requireNotNull(owned).name.substringBeforeLast('.') + "-manifest.json", text, snapshot.id, snapshot.revision)
+                    renderManifest = RenderManifest(requireNotNull(owned).name.substringBeforeLast('.') + "-manifest.json", text, snapshot.id, snapshot.revision)
                 }
-                exportArtifact = owned; exportPickerRequested = false; delivered = true
+                exportArtifact = owned; delivered = true
                 message = if (share) "Choose an installed app to share this rendered file." else "Choose where to save the export."
             } catch (_: CancellationException) { message = "Export cancelled." }
             catch (e: Exception) { message = e.message ?: "Could not prepare export." }
             finally { if (!delivered) owned?.let { ShareExports.discard(it) }; mutableExportProgress.value = null; exporting = false; exportJob = null }
         }
     }
-    fun shareSheetOpened(artifact: ExportArtifact, directApp: Boolean = false) {
-        if (exportArtifact != artifact || !artifact.share) return
-        exportArtifact = null; exportPickerRequested = false
+    fun beginExportHandoff(expected: ExportArtifact): ExportHandoff? {
+        if (exporting || closing || exportHandoff != null || exportArtifact !== expected) return null
+        return ExportHandoff(expected).also { exportHandoff = it }
+    }
+    fun offerExportHandoff(request: ExportHandoff): Boolean {
+        if (exporting || closing || exportHandoffOffered || !ownsExportHandoff(request)) return false
+        exportHandoffOffered = true
+        return true
+    }
+    private fun ownsExportHandoff(request: ExportHandoff) =
+        exportHandoff === request && exportArtifact === request.artifact
+    private fun clearExportHandoff() {
+        exportArtifact = null
+        exportHandoff = null
+        exportHandoffOffered = false
+    }
+    private fun discardPendingExport(notice: String) {
+        exportArtifact?.let { ShareExports.discard(it) }
+        clearExportHandoff()
+        message = notice
+    }
+    fun shareSheetOpened(request: ExportHandoff, directApp: Boolean = false) {
+        val artifact = request.artifact
+        if (!exportHandoffOffered || !ownsExportHandoff(request) || !artifact.share) return
+        clearExportHandoff()
         message = when {
             directApp -> "Handed to the chosen app. SDI cannot confirm whether that app posts or sends the file."
             artifact.targetPackages.isNotEmpty() -> "That app is not installed or did not accept the file, so the share chooser opened. SDI cannot confirm whether another app posts or sends the file."
             else -> "Share chooser opened. SDI cannot confirm whether another app posts or sends the file."
         }
     }
-    fun markExportPickerRequested() { exportPickerRequested = true }
+    fun exportHandoffLaunchFailed(request: ExportHandoff, notice: String) {
+        if (exportHandoffOffered && ownsExportHandoff(request)) discardPendingExport(notice)
+    }
     fun cancelExport() {
         if (exporting) exportJob?.cancel()
-        else { exportArtifact?.let { ShareExports.discard(it) }; exportArtifact = null; exportPickerRequested = false; message = "Export cancelled." }
+        else if (exportHandoffOffered) {
+            if (exportHandoff?.artifact?.share == false) message = "Cancel in Files to stop this export."
+        } else if (exportArtifact != null) discardPendingExport("Export cancelled.")
     }
-    fun finishExport(uri: Uri?) {
-        val artifact = exportArtifact ?: return
-        if (exporting) return
-        if (uri == null) { cancelExport(); return }
-        exporting = true; exportArtifact = null; message = "Writing export…"
+    fun finishExport(request: ExportHandoff, uri: Uri?) {
+        val artifact = request.artifact
+        if (exporting || !exportHandoffOffered || !ownsExportHandoff(request) || artifact.share) return
+        if (uri == null) { discardPendingExport("Export cancelled."); return }
+        exporting = true
+        clearExportHandoff()
+        message = "Writing export…"
         mutableExportProgress.value = ExportProgress("Writing to Files", 0)
         exportJob = viewModelScope.launch {
             var destinationOpened = false
@@ -958,24 +1046,32 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 withContext(Dispatchers.IO) {
                     val scope = currentCoroutineContext()
                     scope.ensureActive()
-                    val output = getApplication<Application>().contentResolver.openOutputStream(uri, "wt")
-                        ?: error("Document provider did not open the destination.")
-                    destinationOpened = true
-                    output.use { target -> artifact.file.inputStream().use { source ->
+                    check(artifact.file.isFile) { "The prepared export is unavailable. Prepare it again." }
+                    artifact.file.inputStream().use { source ->
                         val bytes = ByteArray(64 * 1024)
-                        val totalBytes = artifact.file.length()
-                        var written = 0L
-                        while (true) {
-                            scope.ensureActive()
-                            val count = source.read(bytes); if (count < 0) break
-                            target.write(bytes, 0, count)
-                            written += count
-                            mutableExportProgress.value = ExportProgress("Writing to Files",
-                                if (totalBytes > 0) (written * 100 / totalBytes).toInt().coerceIn(0, 99) else null)
+                        val totalBytes = source.channel.size()
+                        var count = source.read(bytes)
+                        check(count > 0) { "The prepared export is empty. Prepare it again." }
+                        // Keep the readable staging descriptor open before touching a
+                        // destination that the provider may truncate on open.
+                        scope.ensureActive()
+                        val output = getApplication<Application>().contentResolver.openOutputStream(uri, "wt")
+                            ?: error("Document provider did not open the destination.")
+                        destinationOpened = true
+                        output.use { target ->
+                            var written = 0L
+                            while (count > 0) {
+                                scope.ensureActive()
+                                target.write(bytes, 0, count)
+                                written += count
+                                mutableExportProgress.value = ExportProgress("Writing to Files",
+                                    if (totalBytes > 0) (written * 100 / totalBytes).toInt().coerceIn(0, 99) else null)
+                                count = source.read(bytes)
+                            }
+                            mutableExportProgress.value = ExportProgress("Finishing file")
+                            scope.ensureActive(); target.flush()
                         }
-                        mutableExportProgress.value = ExportProgress("Finishing file")
-                        scope.ensureActive(); target.flush()
-                    } }
+                    }
                 }
                 message = when (artifact.kind) {
                     ExportKind.CREDITS -> "Project asset credits exported; unknown sources remain identified."
@@ -996,7 +1092,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             } finally {
                 // Only our staging file is owned. Never delete an arbitrary provider URI:
                 // the user may have chosen to replace an existing document.
-                ShareExports.discard(artifact); mutableExportProgress.value = null; exporting = false; exportPickerRequested = false; exportJob = null
+                ShareExports.discard(artifact); mutableExportProgress.value = null; exporting = false; exportJob = null
             }
         }
     }
@@ -1088,6 +1184,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             finally { busy = false }
         }
     }
+    /** Rooms use the editor's existing store owner, without changing/opening/closing its document,
+     * history, export consumers or launchers. Blocking helpers are called only on Dispatchers.IO. */
+    internal fun encodeRoomBackup(snapshot: Document, check: () -> Unit): ByteArray {
+        check()
+        return store.encode(snapshot).also { check() }
+    }
+    internal fun importRoomBackup(bytes: ByteArray, account: String, snapshot: String, projectRef: String,
+        sha256: String, check: () -> Unit): ProjectStore.RoomImport =
+        store.importRoomProject(bytes, account, snapshot, projectRef, sha256, check)
     fun open(id: String) {
         if (busy || document != null) return
         busy = true
@@ -1104,6 +1209,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
      * Closing waits for the latest revision; failure leaves the editor and history intact. */
     fun save(close: Boolean = false) {
         if (document == null) return
+        // The activity owns the export picker across recompositions. Keep the
+        // captured project open until its render, picker or Files copy settles.
+        if (close && hasPendingExport) {
+            report("Finish or cancel the current export before returning to Projects.")
+            return
+        }
         if (close) { cancelImageImport(); cancelFill(); cancelAudioImport(); stopAudioPreview(); closing = true }
         if (saving) return
         saving = true
@@ -1183,7 +1294,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             d.copy(frames = d.frames.map { if (it.id == d.activeFrameID) it.copy(strokes = it.strokes.map { s -> if (s.id == id) updated else s }) else it })
         }
     }
-    fun commitStroke(captured: Document, points: List<Point>, strokeTool: Tool, strokeWidth: Float, strokeColor: Int, filled: Boolean = false, opacity: Float = 1f, mirror: MirrorMode = MirrorMode.Off, brush: BrushFamily = BrushFamily.Round, brushSeed: Int = newID().hashCode(), nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f) {
+    fun commitStroke(captured: Document, points: List<Point>, strokeTool: Tool, strokeWidth: Float, strokeColor: Int, filled: Boolean = false, opacity: Float = 1f, mirror: MirrorMode = MirrorMode.Off, brush: BrushFamily = BrushFamily.Round, brushSeed: Int = newID().hashCode(), nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f,
+                     swiftRoundBrush: SwiftRoundBrush? = null) {
         val now = document ?: return
         if (!strokeTool.isDrawing) return
         if (now.id != captured.id || now.revision != captured.revision || closing) return
@@ -1198,7 +1310,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         if (alphaLocked && strokeTool != Tool.Pencil) { report("Alpha lock supports brush painting only. Unlock ${now.layer.name} before adding shapes; nothing changed."); return }
         if (!alphaLocked && !mode.allowsNewMarks) return
         change { d -> d.copy(frames = d.frames.map { f -> if (f.id != d.activeFrameID) f else
-            f.copy(strokes = f.strokes + Stroke(layerID = d.activeLayerID, points = points.toList(), color = strokeColor, width = strokeWidth, tool = strokeTool, filled = filled, opacity = opacity, brush = if (strokeTool == Tool.Pencil) brush else BrushFamily.Round, brushSeed = brushSeed, nibAngle = nibAngle, preservesLayerAlpha = alphaLocked).mirrored(d.width, d.height, mirror)) }) }
+            f.copy(strokes = f.strokes + Stroke(layerID = d.activeLayerID, points = points.toList(), color = strokeColor, width = strokeWidth, tool = strokeTool, filled = filled, opacity = opacity, brush = if (strokeTool == Tool.Pencil) brush else BrushFamily.Round, brushSeed = brushSeed, nibAngle = nibAngle,
+                swiftRoundBrush = swiftRoundBrush, preservesLayerAlpha = alphaLocked).mirrored(d.width, d.height, mirror)) }) }
     }
     /** Apply one parsed Spatter instruction through the ordinary guarded history path. */
     fun applySpatterCommand(captured: Document, command: SpatterCommand): Boolean {
