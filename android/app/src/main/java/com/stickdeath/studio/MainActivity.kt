@@ -72,8 +72,8 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    override fun onStart() { super.onStart(); community.setRoomsAppForeground(true) }
-    override fun onStop() { community.setRoomsAppForeground(false); studio.cancelWand(); studio.stopScenePlayback(); studio.save(); super.onStop() }
+    override fun onStart() { super.onStart(); community.setRoomsAppForeground(true); account.setDesktopAppForeground(true); community.setDesktopAppForeground(true) }
+    override fun onStop() { community.setRoomsAppForeground(false); account.setDesktopAppForeground(false); community.setDesktopAppForeground(false); studio.cancelWand(); studio.stopScenePlayback(); studio.save(); super.onStop() }
     override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handleAuthCallback(intent) }
     /** Only the app's own OAuth redirect is handled; the in-memory PKCE verifier makes it single-use. */
     private fun handleAuthCallback(received: android.content.Intent?) {
@@ -131,10 +131,11 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    // Activity-scoped owners: the account callbacks and all subjects use the same session/model.
+    // Activity-scoped owners: auth callbacks and every subject share these exact models.
     val account: com.stickdeath.studio.connect.AccountViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     val community: com.stickdeath.studio.connect.CommunityViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
-    val accountIdentity = (account.state as? com.stickdeath.studio.connect.AccountState.SignedIn)?.userId
+    val signedIn = account.state as? com.stickdeath.studio.connect.AccountState.SignedIn
+    val accountIdentity = signedIn?.takeIf { !it.isAnonymous && !account.needsNewPassword }?.userId
     LaunchedEffect(accountIdentity) { community.accountChanged(accountIdentity) }
     val document = vm.document
     var showDock by rememberSaveable { mutableStateOf(false) }
@@ -150,21 +151,51 @@ class MainActivity : ComponentActivity() {
     }
     var roomsMounted by rememberSaveable { mutableStateOf(false) }
     var accountMounted by rememberSaveable { mutableStateOf(false) }
-    var frontSubject by rememberSaveable { mutableStateOf("studio") }
-    var previousSubject by rememberSaveable { mutableStateOf("account") }
-    fun focusSubject(subject: String) {
-        if (frontSubject != subject) { previousSubject = frontSubject; frontSubject = subject }
+    val communityWindows = com.stickdeath.studio.connect.CommunitySubject.entries.associateWith { subject ->
+        key(subject.key) { rememberCommunityWindow(subject) }
     }
-    fun subjectOrder(subject: String) = when (subject) { frontSubject -> 3f; previousSubject -> 2f; else -> 1f }
-    val studioVisible = studioWindow.open && !studioWindow.minimized
-    val accountVisible = accountWindow.open && !accountWindow.minimized
-    val roomsVisible = roomsWindow.open && !roomsWindow.minimized
-    SideEffect { community.setRoomsWindowVisible(roomsVisible) }
-    DisposableEffect(community) { onDispose { community.setRoomsWindowVisible(false) } }
+    var frontSubject by rememberSaveable { mutableStateOf("studio") }
+    var windowOrder by rememberSaveable { mutableStateOf(arrayListOf("account", "rooms", "studio")) }
+    fun focusSubject(subject: String) {
+        if (subject != "desktop") windowOrder = ArrayList(windowOrder.filter { it != subject } + subject)
+        frontSubject = subject
+    }
+    fun subjectOrder(subject: String) = (windowOrder.indexOf(subject) + 1).toFloat()
+    fun subjectVisible(subject: String): Boolean = when (subject) {
+        "studio" -> studioWindow.open && !studioWindow.minimized
+        "account" -> accountWindow.open && !accountWindow.minimized
+        "rooms" -> roomsWindow.open && !roomsWindow.minimized
+        else -> communityWindows.entries.firstOrNull { it.key.key == subject }?.value?.visible == true
+    }
+    fun focusRemaining(excluding: String) {
+        focusSubject(windowOrder.asReversed().firstOrNull { it != excluding && subjectVisible(it) } ?: "desktop")
+    }
+    val studioVisible = subjectVisible("studio")
+    val accountVisible = subjectVisible("account")
+    val roomsVisible = subjectVisible("rooms")
+    SideEffect {
+        community.setRoomsWindowVisible(roomsVisible)
+        community.setDesktopWindowVisible("account", accountVisible)
+        communityWindows.forEach { (subject, state) ->
+            account.setDesktopWindowVisible(subject.key, state.visible)
+            community.setDesktopWindowVisible(subject.key, state.visible)
+        }
+    }
+    DisposableEffect(account, community) {
+        onDispose {
+            community.setRoomsWindowVisible(false)
+            community.setDesktopWindowVisible("account", false)
+            com.stickdeath.studio.connect.CommunitySubject.entries.forEach {
+                account.setDesktopWindowVisible(it.key, false)
+                community.setDesktopWindowVisible(it.key, false)
+            }
+        }
+    }
     fun openStudio() { studioWindow = studioWindow.copy(open = true, minimized = false); focusSubject("studio") }
     fun openAccount() {
         accountMounted = true
         accountWindow = accountWindow.copy(open = true, minimized = false)
+        community.setDesktopWindowVisible("account", true)
         focusSubject("account")
     }
     fun openRooms() {
@@ -173,32 +204,53 @@ class MainActivity : ComponentActivity() {
         roomsWindow = roomsWindow.copy(open = true, minimized = false)
         focusSubject("rooms")
     }
+    fun openCommunity(subject: com.stickdeath.studio.connect.CommunitySubject) {
+        val state = communityWindows.getValue(subject)
+        state.mounted.value = true
+        state.placement.value = state.placement.value.copy(open = true, minimized = false)
+        account.setDesktopWindowVisible(subject.key, true)
+        community.setDesktopWindowVisible(subject.key, true)
+        focusSubject(subject.key)
+    }
     fun hideStudio(minimize: Boolean) {
         // Hide the window, never discard the editor/project/history or export owner.
         vm.cancelWand(); vm.cancelAudioImport(); vm.cancelImageImport(); vm.cancelFill()
         vm.stopScenePlayback(); vm.save()
         studioWindow = studioWindow.copy(open = minimize, minimized = minimize)
-        focusSubject(if (accountVisible) "account" else if (roomsVisible) "rooms" else "desktop")
+        focusRemaining("studio")
     }
     fun hideAccount(minimize: Boolean) {
+        community.setDesktopWindowVisible("account", false)
         accountWindow = accountWindow.copy(open = minimize, minimized = minimize)
-        focusSubject(if (studioVisible) "studio" else if (roomsVisible) "rooms" else "desktop")
+        focusRemaining("account")
     }
     fun hideRooms(minimize: Boolean) {
         community.setRoomsWindowVisible(false)
         roomsWindow = roomsWindow.copy(open = minimize, minimized = minimize)
-        focusSubject(if (studioVisible) "studio" else if (accountVisible) "account" else "desktop")
+        focusRemaining("rooms")
+    }
+    fun hideCommunity(subject: com.stickdeath.studio.connect.CommunitySubject, minimize: Boolean) {
+        val state = communityWindows.getValue(subject)
+        account.setDesktopWindowVisible(subject.key, false)
+        community.setDesktopWindowVisible(subject.key, false)
+        state.placement.value = state.placement.value.copy(open = minimize, minimized = minimize)
+        focusRemaining(subject.key)
     }
     BackHandler(enabled = roomsVisible && frontSubject == "rooms") { hideRooms(false) }
     BackHandler(enabled = accountVisible && frontSubject == "account") { hideAccount(false) }
-    BackHandler(enabled = !studioVisible && !accountVisible && !roomsVisible && document != null) { openStudio() }
-    // These fixed hosts never move in the composition when their stacking
-    // order changes. The canonical Studio and root export launchers stay mounted.
+    val frontCommunity = com.stickdeath.studio.connect.CommunitySubject.entries.firstOrNull { it.key == frontSubject }
+    BackHandler(enabled = frontCommunity != null && subjectVisible(frontCommunity.key)) {
+        frontCommunity?.let { hideCommunity(it, false) }
+    }
+    BackHandler(enabled = windowOrder.none { subjectVisible(it) } && document != null) { openStudio() }
+    // Every host has a fixed keyed slot. Focus changes only z-order; Studio and
+    // its export launchers never move or acquire another model/store.
     Column(Modifier.fillMaxSize().safeDrawingPadding().background(Color(0xff24778a))) {
         StudioDesktopNavigation(
             hasProject = document != null, available = !vm.closing,
             showDock = showDock, toggleDock = { showDock = !showDock },
             openStudio = { openStudio() }, openAccount = { openAccount() }, openRooms = { openRooms() },
+            openCommunity = { openCommunity(it) },
             openProjects = { openStudio(); if (document != null) requestedPanel = "projects" },
             openSettings = { openStudio(); requestedPanel = "project" })
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
@@ -224,7 +276,7 @@ class MainActivity : ComponentActivity() {
                 move = { dx, dy -> accountWindow = accountWindow.moved(dx, dy, boundsWidth, boundsHeight) },
                 resize = { dx, dy -> accountWindow = accountWindow.resized(dx, dy, boundsWidth, boundsHeight) }) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)) { AccountPanel(vm, onOpenRooms = { openRooms() }) }
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) { AccountPanel(vm, account, community, accountVisible) }
             }
             if (roomsMounted) AndroidDesktopWindow("Rooms", roomsWindow, boundsWidth, boundsHeight,
                 visible = roomsVisible, focused = frontSubject == "rooms", order = subjectOrder("rooms"),
@@ -236,6 +288,25 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     com.stickdeath.studio.connect.RoomsDesktopSection(vm, account, community, roomsVisible,
                         onOpenAccount = { openAccount() }, onOpenStudio = { openStudio() })
+                }
+            }
+            com.stickdeath.studio.connect.CommunitySubject.entries.forEach { subject ->
+                key(subject.key) {
+                    val state = communityWindows.getValue(subject)
+                    if (state.mounted.value) AndroidDesktopWindow(subject.title, state.placement.value, boundsWidth, boundsHeight,
+                        visible = state.visible, focused = frontSubject == subject.key, order = subjectOrder(subject.key),
+                        focus = { focusSubject(subject.key) }, close = { hideCommunity(subject, false) },
+                        minimize = { hideCommunity(subject, true) },
+                        maximize = { state.placement.value = state.placement.value.copy(maximized = !state.placement.value.maximized); focusSubject(subject.key) },
+                        move = { dx, dy -> state.placement.value = state.placement.value.moved(dx, dy, boundsWidth, boundsHeight) },
+                        resize = { dx, dy -> state.placement.value = state.placement.value.resized(dx, dy, boundsWidth, boundsHeight) }) {
+                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (subject == com.stickdeath.studio.connect.CommunitySubject.Notifications) LocalNotificationPreferences(vm)
+                            com.stickdeath.studio.connect.CommunityDesktopSection(subject, account, community, state.visible,
+                                onOpenAccount = { openAccount() })
+                        }
+                    }
                 }
             }
         }
@@ -250,9 +321,28 @@ class MainActivity : ComponentActivity() {
                 TextButton({ openRooms() }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
                     Text(if (roomsWindow.minimized) "Restore Rooms" else "Rooms")
                 }
+                com.stickdeath.studio.connect.CommunitySubject.entries.forEach { subject ->
+                    TextButton({ openCommunity(subject) }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) {
+                        Text(if (communityWindows.getValue(subject).placement.value.minimized) "Restore ${subject.title}" else subject.title)
+                    }
+                }
             }
         }
     }
+}
+
+private class RetainedCommunityWindow(
+    val placement: MutableState<AndroidDesktopPlacement>, val mounted: MutableState<Boolean>,
+) {
+    val visible: Boolean get() = placement.value.open && !placement.value.minimized
+}
+@Composable private fun rememberCommunityWindow(subject: com.stickdeath.studio.connect.CommunitySubject): RetainedCommunityWindow {
+    val position = .03f + (subject.ordinal % 3) * .025f
+    val placement = rememberSaveable(subject.key, stateSaver = AndroidDesktopPlacement.saver) {
+        mutableStateOf(AndroidDesktopPlacement(x = position, y = position, width = .88f, height = .88f))
+    }
+    val mounted = rememberSaveable(subject.key) { mutableStateOf(false) }
+    return remember(placement, mounted) { RetainedCommunityWindow(placement, mounted) }
 }
 
 /** Normal placements are normalized to the safe workspace, then clamped on each
@@ -366,6 +456,7 @@ private fun Modifier.desktopVisibility(visible: Boolean): Modifier =
 @Composable private fun StudioDesktopNavigation(
     hasProject: Boolean, available: Boolean, showDock: Boolean, toggleDock: () -> Unit,
     openStudio: () -> Unit, openProjects: () -> Unit, openSettings: () -> Unit, openAccount: () -> Unit, openRooms: () -> Unit,
+    openCommunity: (com.stickdeath.studio.connect.CommunitySubject) -> Unit,
 ) {
     var expanded by remember { mutableStateOf<String?>(null) }
     Surface(color = Color(0xfff1dfb0), contentColor = Color(0xff171b24), shadowElevation = 3.dp) {
@@ -377,6 +468,9 @@ private fun Modifier.desktopVisibility(visible: Boolean): Modifier =
                 DropdownMenu(expanded == "subjects", onDismissRequest = { expanded = null }) {
                     DropdownMenuItem(text = { Text("Studio") }, enabled = available, onClick = { expanded = null; openStudio() })
                     DropdownMenuItem(text = { Text("Rooms") }, enabled = available, onClick = { expanded = null; openRooms() })
+                    com.stickdeath.studio.connect.CommunitySubject.entries.forEach { subject ->
+                        DropdownMenuItem(text = { Text(subject.title) }, enabled = available, onClick = { expanded = null; openCommunity(subject) })
+                    }
                     DropdownMenuItem(text = { Text("Account, plans & preferences") }, enabled = available, onClick = { expanded = null; openAccount() })
                 }
             }
@@ -1140,15 +1234,22 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
 }
 
 /** Honest connection state, local notification preferences and local crash diagnostics. */
-@Composable private fun AccountPanel(vm: StudioViewModel, onOpenRooms: () -> Unit) {
-    com.stickdeath.studio.connect.ConnectedAccountSection(onOpenRooms = onOpenRooms)
+@Composable private fun AccountPanel(vm: StudioViewModel, account: com.stickdeath.studio.connect.AccountViewModel,
+    community: com.stickdeath.studio.connect.CommunityViewModel, visible: Boolean) {
+    com.stickdeath.studio.connect.ConnectedAccountSection(account)
     com.stickdeath.studio.billing.PlansSection()
-    Text(BackendContract.IDENTITY)
-    Text("Planned server contract: ${BackendContract.rpcs.size} member RPCs across " +
-        BackendArea.entries.filter { BackendContract.rpcs(it).isNotEmpty() }.joinToString { "${it.label} (${BackendContract.rpcs(it).size})" } +
-        ". Transport: ${BackendContract.TRANSPORT}")
-    Text("No user-to-user messaging or calls exist in this contract.")
-    Text("Notifications", style = MaterialTheme.typography.titleMedium)
+    com.stickdeath.studio.connect.AccountDataDesktopSection(account, community, visible)
+    Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
+    val reports = remember(vm.message) { vm.crashReports() }
+    Text("${reports.size} local crash report(s). Reports are redacted (no names, paths, project contents or identifiers), kept at most 30 days / five files, and never uploaded. No analytics SDK is installed.")
+    reports.firstOrNull()?.let { latest -> Text(vm.readCrashReport(latest).lineSequence().take(12).joinToString("\n"), style = MaterialTheme.typography.bodySmall) }
+    if (reports.isNotEmpty()) TextButton({ vm.deleteCrashReports() }) { Text("Delete local crash reports") }
+    val diagnosticsContext = LocalContext.current
+    DiagnosticsSettingsSection(remember { DiagnosticsStore(diagnosticsContext) })
+}
+
+@Composable private fun LocalNotificationPreferences(vm: StudioViewModel) {
+    Text("Local notification preferences", style = MaterialTheme.typography.titleMedium)
     Text("No push provider is configured on Android and nothing is sent. These choices are stored on this device so delivery honours them once the owner enables it. Account, billing and moderation notices cannot be turned off.")
     var preferences by remember { mutableStateOf(vm.notificationPreferences()) }
     preferences.fold({ current ->
@@ -1165,13 +1266,6 @@ private fun toolLabel(tool: Tool) = when (tool) { Tool.SoftEraser -> "Soft erase
         }
         Text("Daily cap for Studio/community and announcement notices: ${current.dailyCap} per day.")
     }, { error -> Text("Saved notification preferences could not be read (${error.message}). They were preserved, not overwritten.") })
-    Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
-    val reports = remember(vm.message) { vm.crashReports() }
-    Text("${reports.size} local crash report(s). Reports are redacted (no names, paths, project contents or identifiers), kept at most 30 days / five files, and never uploaded. No analytics SDK is installed.")
-    reports.firstOrNull()?.let { latest -> Text(vm.readCrashReport(latest).lineSequence().take(12).joinToString("\n"), style = MaterialTheme.typography.bodySmall) }
-    if (reports.isNotEmpty()) TextButton({ vm.deleteCrashReports() }) { Text("Delete local crash reports") }
-    val diagnosticsContext = LocalContext.current
-    DiagnosticsSettingsSection(remember { DiagnosticsStore(diagnosticsContext) })
 }
 
 private val viewportZoomRange = 0.25f..8f

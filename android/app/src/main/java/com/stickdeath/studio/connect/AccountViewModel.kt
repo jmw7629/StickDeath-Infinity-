@@ -56,7 +56,7 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     var spatterReply by mutableStateOf<Load<SpatterReply>>(Load.Idle); private set
     /** Server-reported plan, allowance and credits; the device never counts prompts itself. */
     var spatterUsage by mutableStateOf<Load<SpatterUsage>>(Load.Idle); private set
-    private val feedLikes = FeedLikeMutations()
+    private var feedLikes = FeedLikeMutations()
     var pendingFeedLikes by mutableStateOf<Set<String>>(emptySet()); private set
     private var accountOperation = 0L
 
@@ -64,6 +64,46 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     val providers get() = manager.providers()
     val spatterConfigured get() = manager.config?.spatterEndpoint != null
     val signedInMember get() = (state as? AccountState.SignedIn)?.isAnonymous == false
+
+    // Desktop read scopes are separate from the shared authentication/Spatter owner.
+    private var desktopRequested = emptySet<String>()
+    private var desktopForeground = false
+    @Volatile private var desktopVisible = emptySet<String>()
+    @Volatile private var desktopEpochs = emptyMap<String, Long>()
+    private var desktopVisibleState by mutableStateOf(emptySet<String>())
+    fun setDesktopWindowVisible(subject: String, visible: Boolean) {
+        if (subject !in setOf("feed", "profile")) return
+        desktopRequested = if (visible) desktopRequested + subject else desktopRequested - subject
+        updateDesktopVisibility()
+    }
+    fun setDesktopAppForeground(foreground: Boolean) { desktopForeground = foreground; updateDesktopVisibility() }
+    private fun updateDesktopVisibility() {
+        val next = if (desktopForeground) desktopRequested else emptySet()
+        (desktopVisible - next).forEach { subject ->
+            desktopEpochs = desktopEpochs + (subject to ((desktopEpochs[subject] ?: 0L) + 1))
+            if (subject == "feed") {
+                if (feed is Load.Loading) feed = Load.Idle
+            } else if (records is Load.Loading) records = Load.Idle
+        }
+        desktopVisible = next
+        desktopVisibleState = next
+    }
+    private fun desktopReadable(subject: String): Boolean {
+        val shown = state as? AccountState.SignedIn
+        val current = manager.state as? AccountState.SignedIn
+        return subject in desktopVisible && configured && shown != null && current != null &&
+            identity(shown) == identity(current) && !needsNewPassword &&
+            (subject == "feed" || signedInMember)
+    }
+    val feedImagesAllowed: Boolean get() = "feed" in desktopVisibleState && desktopReadable("feed")
+    val profileReadsAllowed: Boolean get() = "profile" in desktopVisibleState && desktopReadable("profile")
+    private fun identity(value: AccountState): Triple<String, Boolean, Boolean>? =
+        (value as? AccountState.SignedIn)?.let { Triple(it.userId, it.isAnonymous, it.provider == RECOVERY_PROVIDER) }
+    private fun clearAccountContent() {
+        feedRequest++; feedLikes = FeedLikeMutations(); pendingFeedLikes = emptySet()
+        feed = Load.Idle; records = Load.Idle; invitation = Load.Idle; spatterReply = Load.Idle; spatterUsage = Load.Idle
+        PlanRuntime.reportServerPlan(null)
+    }
 
     init { if (manager.isConfigured && state is AccountState.SignedOut) perform("Restoring your session…") { manager.restore() } }
 
@@ -75,19 +115,29 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
             val failure = withContext(Dispatchers.IO) { runCatching { block() }.exceptionOrNull() }
             if (operation != accountOperation) return@launch
             working = false
-            state = manager.state
+            val nextState = manager.state
+            if (identity(state) != identity(nextState)) clearAccountContent()
+            state = nextState
             notice = when (failure) { null -> done; is CancellationException -> ""; else -> failure.message ?: "That did not complete." }
             if (state !is AccountState.SignedIn) { feed = Load.Idle; records = Load.Idle; invitation = Load.Idle; spatterReply = Load.Idle; spatterUsage = Load.Idle; PlanRuntime.reportServerPlan(null) }
             else if (spatterUsage is Load.Idle) refreshSpatterUsage()
         }
     }
     /** Runs a member request; a reply for an earlier account is dropped as stale. */
-    private fun <T> fetch(set: (Load<T>) -> Unit, block: () -> T) {
+    private fun <T> fetch(set: (Load<T>) -> Unit, subject: String? = null, block: () -> T) {
+        if (subject != null && !desktopReadable(subject)) return
         val generation = manager.generation
+        val epoch = subject?.let { desktopEpochs[it] ?: 0L }
         set(Load.Loading)
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching(block) }
-            if (generation != manager.generation) { set(Load.Failed(CommunityException.Stale().message!!)); return@launch }
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (generation != manager.generation ||
+                    (subject != null && (!desktopReadable(subject) || epoch != (desktopEpochs[subject] ?: 0L))))
+                    throw CancellationException("The account or window changed before the request started.")
+                block()
+            } }
+            if (generation != manager.generation) return@launch
+            if (subject != null && (!desktopReadable(subject) || epoch != (desktopEpochs[subject] ?: 0L))) return@launch
             set(result.fold({ Load.Loaded(it) }, { Load.Failed(it.message ?: "That did not complete.") }))
             state = manager.state
         }
@@ -103,8 +153,7 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
         // The account controls disappear immediately. The manager independently invalidates
         // its session/operation epoch before best-effort server revocation.
         state = AccountState.SignedOut
-        feed = Load.Idle; records = Load.Idle; invitation = Load.Idle; spatterReply = Load.Idle; spatterUsage = Load.Idle
-        PlanRuntime.reportServerPlan(null)
+        clearAccountContent()
         perform("Signing out…", interruptPending = true) { manager.signOut() }
     }
     /** The hosted authorize URL for the browser, or null with a notice when unavailable. */
@@ -123,12 +172,14 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
     /** Bumped by every feed request; a reply for an older request (another category or page) is dropped. */
     private var feedRequest = 0
     fun loadFeed(category: FeedCategory = feedCategory) {
+        if (!desktopReadable("feed")) return
         feedCategory = category
         val request = ++feedRequest
-        fetch<FeedPage>({ if (request == feedRequest) feed = it }) { feedClient.page(category) }
+        fetch<FeedPage>({ if (request == feedRequest) feed = it }, subject = "feed") { feedClient.page(category) }
     }
     /** Next keyset page under page 0's snapshot; stops at the client memory bound (refresh restarts). */
     fun loadMoreFeed() {
+        if (!desktopReadable("feed")) return
         val current = (feed as? Load.Loaded)?.value ?: return
         val cursor = current.cursor
         if (!current.hasMore || cursor == null) return
@@ -140,20 +191,25 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
                 val merged = (current.posts + next.value.posts).distinctBy { it.id }
                 Load.Loaded(FeedPage(merged, next.value.hasMore && merged.size < FeedClient.MAXIMUM_RETAINED_POSTS, current.asOf, next.value.cursor))
             } else next
-        }) { feedClient.page(category, cursor, current.asOf) }
+        }, subject = "feed") { feedClient.page(category, cursor, current.asOf) }
     }
     /** One pending request per card; old replies cannot undo a newer query or account. */
     fun toggleLike(post: FeedPost) {
-        if (!signedInMember) return
+        if (!signedInMember || !desktopReadable("feed")) return
         val page = (feed as? Load.Loaded)?.value ?: return
         val current = page.posts.firstOrNull { it.id == post.id } ?: return
-        val mutation = feedLikes.begin(current, manager.generation, feedRequest) ?: return
+        val generation = manager.generation
+        val epoch = desktopEpochs["feed"] ?: 0L
+        val mutation = feedLikes.begin(current, generation, feedRequest) ?: return
         pendingFeedLikes = feedLikes.pendingIds
         feed = Load.Loaded(page.copy(posts = page.posts.map { if (it.id == post.id) mutation.optimistic else it }))
         viewModelScope.launch {
             var result: Result<Boolean>? = null
             try {
-                result = withContext(Dispatchers.IO) { runCatching { feedClient.like(current.id, mutation.optimistic.liked) } }
+                result = withContext(Dispatchers.IO) { runCatching {
+                    if (generation != manager.generation || !desktopReadable("feed") || epoch != (desktopEpochs["feed"] ?: 0L)) throw CancellationException("The account or Feed window changed.")
+                    feedClient.like(current.id, mutation.optimistic.liked)
+                } }
             } finally {
                 val latest = (feed as? Load.Loaded)?.value
                 val completion = feedLikes.finish(mutation, manager.generation, feedRequest,
@@ -164,19 +220,26 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
                         feed = Load.Loaded(latest.copy(posts = latest.posts.map { if (it.id == current.id) completion.original else it }))
                         notice = result?.exceptionOrNull()?.message ?: "The like was not confirmed and was undone."
                     }
-                    FeedLikeMutations.Completion.Refresh -> if (signedInMember) loadFeed()
+                    FeedLikeMutations.Completion.Refresh -> if (signedInMember && epoch == (desktopEpochs["feed"] ?: 0L)) loadFeed()
                     FeedLikeMutations.Completion.Confirmed, FeedLikeMutations.Completion.Stale -> Unit
                 }
             }
         }
     }
     fun report(post: FeedPost, reason: FeedReportReason) {
+        if (!signedInMember || !desktopReadable("feed")) return
+        val generation = manager.generation
+        val epoch = desktopEpochs["feed"] ?: 0L
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) { runCatching { feedClient.report(post.id, reason) } }
+            val ok = withContext(Dispatchers.IO) { runCatching {
+                if (generation != manager.generation || !desktopReadable("feed") || epoch != (desktopEpochs["feed"] ?: 0L)) throw CancellationException("The account or Feed window changed.")
+                feedClient.report(post.id, reason)
+            } }
+            if (generation != manager.generation) return@launch
             notice = ok.fold({ if (it) "Report recorded for moderator review." else "The report was not confirmed." }, { it.message ?: "The report could not be sent." })
         }
     }
-    fun loadRecords() = fetch({ records = it }) { profileClient.readRecords() }
+    fun loadRecords() = fetch({ records = it }, subject = "profile") { profileClient.readRecords() }
     fun previewInvitation(code: String) = fetch({ invitation = it }) { roomsClient.previewInvitation(code) }
     fun requestAdmission(code: String, consent: Boolean) {
         viewModelScope.launch {

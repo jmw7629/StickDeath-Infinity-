@@ -20,6 +20,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,9 +35,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
-/** Account section of the Account panel: honest connection state, sign-in, the video wall, the
- * member's own records and the separate Rooms subject. No messaging or calls exist here. */
-@Composable fun ConnectedAccountSection(account: AccountViewModel = viewModel(), onOpenRooms: () -> Unit) {
+/** Account authentication only. Community screens have independent desktop hosts. */
+@Composable fun ConnectedAccountSection(account: AccountViewModel) {
     val context = LocalContext.current
     val state = account.state
     Text(state.summary)
@@ -48,7 +49,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         is AccountState.RetryableFailure -> Button({ account.retryRestore() }, enabled = !account.working) { Text("Retry") }
         is AccountState.SignedIn -> {
             TextButton({ account.signOut() }) { Text("Sign out") }
-            if (account.needsNewPassword) NewPasswordForm(account) else CommunitySection(account, onOpenRooms)
+            if (account.needsNewPassword) key(state.userId) { NewPasswordForm(account) }
         }
         is AccountState.Restoring -> Unit
         else -> SignInForm(account) { provider -> account.beginOAuth(provider)?.let { url ->
@@ -91,7 +92,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
     }
 }
 
-@Composable private fun CommunitySection(account: AccountViewModel, onOpenRooms: () -> Unit) {
+@Composable internal fun FeedDesktopContent(account: AccountViewModel, visible: Boolean) {
+    val canLoad = visible && account.feedImagesAllowed
+    val idle = account.feed is Load.Idle
+    LaunchedEffect(canLoad, idle) {
+        if (canLoad && idle) account.loadFeed()
+    }
     val context = LocalContext.current
     Text("Video wall", style = MaterialTheme.typography.titleMedium)
     Row(Modifier.horizontalScroll(rememberScrollState())) {
@@ -100,6 +106,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
         }
     }
     Text(account.feedCategory.explanation)
+    TextButton({ account.loadFeed() }) { Text("Refresh videos") }
     when (val feed = account.feed) {
         Load.Idle -> Text("Choose a category to load approved videos.")
         Load.Loading -> Text("Loading…")
@@ -112,7 +119,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
             if (feed.value.posts.isNotEmpty()) LazyColumn(Modifier.fillMaxWidth().heightIn(max = feedHeight)) {
                 items(feed.value.posts, key = { it.id }) { post ->
                     Column {
-                        FeedPosterImage(post)
+                        if (visible && account.feedImagesAllowed) FeedPosterImage(post)
                         Text("${post.title.ifBlank { "Untitled" }} — ${post.creatorName}")
                         if (post.caption.isNotBlank()) Text(post.caption, style = MaterialTheme.typography.bodySmall)
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -128,6 +135,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
             if (feed.value.hasMore) TextButton({ account.loadMoreFeed() }) { Text("Load more") }
         }
     }
+    if (!account.signedInMember) Text("Guests can browse the wall; likes and reports need a full account.")
+}
+
+@Composable internal fun ProfileDesktopContent(account: AccountViewModel, visible: Boolean) {
+    val canLoad = visible && account.profileReadsAllowed
+    val idle = account.records is Load.Idle
+    LaunchedEffect(canLoad, idle) {
+        if (canLoad && idle) account.loadRecords()
+    }
     Text("Records and badges", style = MaterialTheme.typography.titleMedium)
     when (val records = account.records) {
         Load.Idle -> TextButton({ account.loadRecords() }, enabled = account.signedInMember) { Text("Load my records") }
@@ -139,12 +155,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
             Text("Earned badges: ${r.badges?.size ?: 0}")
         }
     }
-    Text("Rooms", style = MaterialTheme.typography.titleMedium)
-    Text("Create a shared-project room, review an invitation or manage membership in its own desktop window.")
-    TextButton(onOpenRooms) { Text("Open Rooms") }
-    if (!account.signedInMember) Text("Guests can browse the wall; likes, reports, records and rooms need a full account.")
-    Text("Contests and account", style = MaterialTheme.typography.titleMedium)
-    CommunityFeaturesSection(account)
 }
 
 /** Cloud guidance for the Spatter panel. Replies are text only and never edit the project. */

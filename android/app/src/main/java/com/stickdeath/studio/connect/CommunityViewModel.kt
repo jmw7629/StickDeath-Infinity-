@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -67,10 +68,61 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     var calendar by mutableStateOf<Load<CalendarMonth>>(Load.Idle); private set
     /** Moderator results, from the server only. */
     var moderation by mutableStateOf(""); private set
-    private var lastAccount: String? = null
+    @Volatile private var lastAccount: String? = null
+
+    // Foreground window scopes fence new reads and follow-up loads. They do not
+    // end the independently owned Studio room-sync session or a started mutation.
+    private var mediaReadSubject: String? = null
+    private var mediaReadRequest = 0L
+    private var desktopRequested = emptySet<String>()
+    private var desktopForeground = false
+    @Volatile private var desktopVisible = emptySet<String>()
+    private var desktopVisibleState by mutableStateOf(emptySet<String>())
+    @Volatile private var desktopEpochs = emptyMap<String, Long>()
+    val sessionGeneration: Long get() = manager.generation
+    val accountDataVisible: Boolean get() = "account" in desktopVisibleState && desktopReadable("account")
+    fun setDesktopWindowVisible(subject: String, visible: Boolean) {
+        if (subject !in setOf("war-room", "challenges", "calendar", "notifications", "account")) return
+        desktopRequested = if (visible) desktopRequested + subject else desktopRequested - subject
+        updateDesktopVisibility()
+    }
+    fun setDesktopAppForeground(foreground: Boolean) { desktopForeground = foreground; updateDesktopVisibility() }
+    private fun updateDesktopVisibility() {
+        val next = if (desktopForeground) desktopRequested else emptySet()
+        val mediaOwner = mediaReadSubject
+        if (myMedia is Load.Loading && mediaOwner != null && mediaOwner in (desktopVisible - next)) {
+            mediaReadRequest++; mediaReadSubject = null; myMedia = Load.Idle
+        }
+        (desktopVisible - next).forEach { subject ->
+            desktopEpochs = desktopEpochs + (subject to ((desktopEpochs[subject] ?: 0L) + 1))
+            when (subject) {
+                "war-room" -> { if (matches is Load.Loading) matches = Load.Idle; if (warNotices is Load.Loading) warNotices = Load.Idle }
+                "challenges" -> {
+                    if (challenges is Load.Loading) challenges = Load.Idle
+                    entries = entries.mapValues { if (it.value is Load.Loading) Load.Idle else it.value }
+                }
+                "calendar" -> if (calendar is Load.Loading) calendar = Load.Idle
+                "notifications" -> {
+                    if (notificationPreferences is Load.Loading) notificationPreferences = Load.Idle
+                    if (inbox is Load.Loading) inbox = Load.Idle
+                }
+                "account" -> if (lifecycle is Load.Loading) lifecycle = Load.Idle
+            }
+        }
+        if ("war-room" !in next && "challenges" !in next && myMedia is Load.Loading) myMedia = Load.Idle
+        desktopVisible = next
+        desktopVisibleState = next
+    }
+    private fun desktopReadable(subject: String): Boolean {
+        val member = manager.state as? AccountState.SignedIn
+        return subject in desktopVisible && manager.isConfigured && member != null && member.userId == lastAccount &&
+            !member.isAnonymous && member.provider != RECOVERY_PROVIDER
+    }
 
     val viewer: String? get() = (manager.state as? AccountState.SignedIn)?.takeIf { !it.isAnonymous }?.userId
 
+    // Original overloads remain the Rooms adapter implementation; desktop reads
+    // use the explicit subject overloads below.
     private fun <T> fetch(set: (Load<T>) -> Unit, block: () -> T) {
         val generation = manager.generation
         set(Load.Loading)
@@ -93,6 +145,40 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
             if (result.isSuccess) done()
         }
     }
+    private fun <T> fetch(set: (Load<T>) -> Unit, subject: String, block: () -> T) {
+        if (!desktopReadable(subject)) return
+        val generation = manager.generation
+        val epoch = desktopEpochs[subject] ?: 0L
+        set(Load.Loading)
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (generation != manager.generation || !desktopReadable(subject) || epoch != (desktopEpochs[subject] ?: 0L))
+                    throw CancellationException("The account or window changed before the request started.")
+                block()
+            } }
+            if (generation != manager.generation || !desktopReadable(subject) || epoch != (desktopEpochs[subject] ?: 0L)) return@launch
+            set(result.fold({ Load.Loaded(it) }, { Load.Failed(it.message ?: "That did not complete.") }))
+        }
+    }
+    /** A started mutation may finish; a hidden/replaced window never starts
+     * queued transport or an automatic follow-up read. */
+    private fun act(subject: String, progress: String, success: String, block: () -> Unit, done: () -> Unit = {}) {
+        if (busy || !desktopReadable(subject)) return
+        val generation = manager.generation
+        val epoch = desktopEpochs[subject] ?: 0L
+        busy = true; notice = progress
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (generation != manager.generation || !desktopReadable(subject) || epoch != (desktopEpochs[subject] ?: 0L))
+                    throw CancellationException("The account or window changed before the request started.")
+                block()
+            } }
+            busy = false
+            if (generation != manager.generation) return@launch
+            notice = result.fold({ success }, { it.message ?: "That did not complete." })
+            if (result.isSuccess && desktopReadable(subject) && epoch == (desktopEpochs[subject] ?: 0L)) done()
+        }
+    }
     /** Clears every member view when the account actually changes or signs out (not when the panel
      * merely reopens, so a Studio room session keeps running). */
     fun accountChanged(account: String?) {
@@ -103,6 +189,7 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
         if (session != null && session.account != account) roomSession.end("The account changed. Synchronisation stopped; your device copy of the project is unchanged.")
     }
     fun reset() {
+        mediaReadRequest++; mediaReadSubject = null
         matches = Load.Idle; votes = emptyMap(); warNotices = Load.Idle; myMedia = Load.Idle; challenges = Load.Idle; entries = emptyMap()
         lifecycle = Load.Idle; pendingExport = null; notificationPreferences = Load.Idle; inbox = Load.Idle; myRooms = Load.Idle
         roomDetails = emptyMap(); roomMembers = emptyMap(); invitation = null; pendingRequests = Load.Idle; calendar = Load.Idle; moderation = ""
@@ -117,57 +204,78 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     fun loadMatches() = fetch<List<WarMatch>>({ result ->
         matches = result
         if (result is Load.Loaded) votes = result.value.associate { it.id to (votes[it.id]?.takeIf { machine -> machine.isPending } ?: WarVoteMachine.fromServer(it.myVote)) }
-    }) { war.matches() }
-    fun loadMyMedia() { val me = viewer ?: return; fetch({ myMedia = it }) { profile.portfolio(me) } }
-    fun loadWarNotices() = fetch({ warNotices = it }) { war.notices() }
+    }, subject = "war-room") { war.matches() }
+    fun loadMyMedia() {
+        val me = viewer ?: return
+        val subject = when {
+            desktopReadable("war-room") -> "war-room"
+            desktopReadable("challenges") -> "challenges"
+            else -> return
+        }
+        mediaReadSubject = subject
+        val request = ++mediaReadRequest
+        fetch({ if (request == mediaReadRequest) myMedia = it }, subject) { profile.portfolio(me) }
+    }
+    fun loadWarNotices() = fetch({ warNotices = it }, subject = "war-room") { war.notices() }
 
     /** The tap is pending until the server confirms; on refusal the previous server vote stays and
      * the matchup list is re-read so tallies only ever come from the server. */
     fun vote(match: WarMatch, choice: WarVoteChoice) {
+        if (!desktopReadable("war-room")) return
+        val epoch = desktopEpochs["war-room"] ?: 0L
         val machine = votes[match.id] ?: WarVoteMachine.fromServer(match.myVote)
         val pending = machine.tap(choice) ?: return
         votes = votes + (match.id to pending)
         val generation = manager.generation
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { war.vote(match.id, choice) } }
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (generation != manager.generation || !desktopReadable("war-room") || epoch != (desktopEpochs["war-room"] ?: 0L))
+                    throw CancellationException("The account or War Room window changed.")
+                war.vote(match.id, choice)
+            } }
             if (generation != manager.generation) return@launch
             val current = votes[match.id] ?: pending
             votes = votes + (match.id to result.fold({ current.confirm() }, { current.fail(it.message ?: "The vote was not recorded.") }))
             notice = result.fold({ "Vote recorded. You can change it until voting closes." }, { it.message ?: "The vote was not recorded." })
-            if (result.isSuccess) loadMatches()
+            if (result.isSuccess && desktopReadable("war-room") && epoch == (desktopEpochs["war-room"] ?: 0L)) loadMatches()
         }
     }
-    fun propose(media: String, opponent: String, agreed: Boolean) = act("Sending the matchup proposal…", "Proposal sent. The other creator must accept with their own approved video.",
+    fun propose(media: String, opponent: String, agreed: Boolean) = act("war-room", "Sending the matchup proposal…", "Proposal sent. The other creator must accept with their own approved video.",
         { war.propose(media, opponent.trim().lowercase(), agreed) }) { loadMatches() }
-    fun accept(match: String, media: String, agreed: Boolean) = act("Accepting the matchup…", "Matchup accepted. Voting is open for 24 hours.",
+    fun accept(match: String, media: String, agreed: Boolean) = act("war-room", "Accepting the matchup…", "Matchup accepted. Voting is open for 24 hours.",
         { war.accept(match, media, agreed) }) { loadMatches() }
-    fun withdraw(match: String) = act("Withdrawing…", "Matchup withdrawn.", { war.withdraw(match) }) { loadMatches() }
-    fun blockCreator(creator: String) = act("Blocking…", "Creator blocked in War Room. Shared matchups were withdrawn.", { war.blockCreator(creator) }) { loadMatches() }
-    fun reportMatch(match: String, reason: String) = act("Sending report…", "Report recorded for moderator review.", { war.report(match, reason) })
-    fun appeal(decision: String, explanation: String) = act("Sending appeal…", "Appeal recorded for review.", { war.appeal(decision, explanation) }) { loadWarNotices() }
+    fun withdraw(match: String) = act("war-room", "Withdrawing…", "Matchup withdrawn.", { war.withdraw(match) }) { loadMatches() }
+    fun blockCreator(creator: String) = act("war-room", "Blocking…", "Creator blocked in War Room. Shared matchups were withdrawn.", { war.blockCreator(creator) }) { loadMatches() }
+    fun reportMatch(match: String, reason: String) = act("war-room", "Sending report…", "Report recorded for moderator review.", { war.report(match, reason) })
+    fun appeal(decision: String, explanation: String) = act("war-room", "Sending appeal…", "Appeal recorded for review.", { war.appeal(decision, explanation) }) { loadWarNotices() }
 
     // MARK: Challenges
 
-    fun loadChallenges() = fetch({ challenges = it }) { challengesClient.list() }
-    fun loadEntries(challenge: String) = fetch<ChallengeEntries>({ entries = entries + (challenge to it) }) { challengesClient.entries(challenge) }
-    fun submitEntry(challenge: String, media: String) = act("Submitting entry…", "Entry submitted.", { challengesClient.submit(challenge, media) }) { loadChallenges(); loadEntries(challenge) }
-    fun withdrawEntry(challenge: String, entry: String) = act("Withdrawing entry…", "Entry withdrawn.", { challengesClient.withdraw(entry) }) { loadChallenges(); loadEntries(challenge) }
-    fun voteEntry(challenge: String, entry: String) = act("Recording your favourite…", "Favourite recorded. You can change it until voting ends.", { challengesClient.vote(challenge, entry) }) { loadEntries(challenge) }
+    fun loadChallenges() = fetch({ challenges = it }, subject = "challenges") { challengesClient.list() }
+    fun loadEntries(challenge: String) = fetch<ChallengeEntries>({ entries = entries + (challenge to it) }, subject = "challenges") { challengesClient.entries(challenge) }
+    fun submitEntry(challenge: String, media: String) = act("challenges", "Submitting entry…", "Entry submitted.", { challengesClient.submit(challenge, media) }) { loadChallenges(); loadEntries(challenge) }
+    fun withdrawEntry(challenge: String, entry: String) = act("challenges", "Withdrawing entry…", "Entry withdrawn.", { challengesClient.withdraw(entry) }) { loadChallenges(); loadEntries(challenge) }
+    fun voteEntry(challenge: String, entry: String) = act("challenges", "Recording your favourite…", "Favourite recorded. You can change it until voting ends.", { challengesClient.vote(challenge, entry) }) { loadEntries(challenge) }
 
     // MARK: Account lifecycle (#262)
 
-    fun loadLifecycle() = fetch({ lifecycle = it }) { lifecycleClient.status() }
+    fun loadLifecycle() = fetch({ lifecycle = it }, subject = "account") { lifecycleClient.status() }
     fun requestDeletion(confirmed: Boolean) {
         if (!confirmed) { notice = "Confirm that you understand what deletion removes. Nothing was sent."; return }
-        act("Filing the deletion request…", "Deletion requested. It completes after the seven-day cooling-off period unless you cancel.", { lifecycleClient.requestDeletion() }) { loadLifecycle() }
+        act("account", "Filing the deletion request…", "Deletion requested. It completes after the seven-day cooling-off period unless you cancel.", { lifecycleClient.requestDeletion() }) { loadLifecycle() }
     }
-    fun cancelDeletion(revision: Int) = act("Cancelling the deletion request…", "Deletion cancelled. Nothing was removed.", { lifecycleClient.cancelDeletion(revision) }) { loadLifecycle() }
+    fun cancelDeletion(revision: Int) = act("account", "Cancelling the deletion request…", "Deletion cancelled. Nothing was removed.", { lifecycleClient.cancelDeletion(revision) }) { loadLifecycle() }
     fun prepareExport() {
-        if (busy) return
+        if (busy || !desktopReadable("account")) return
+        val epoch = desktopEpochs["account"] ?: 0L
         val generation = manager.generation
         busy = true; notice = "Preparing your data export…"
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { lifecycleClient.export() } }
+            val result = withContext(Dispatchers.IO) { runCatching {
+                if (generation != manager.generation || !desktopReadable("account") || epoch != (desktopEpochs["account"] ?: 0L))
+                    throw CancellationException("The account or Account window changed.")
+                lifecycleClient.export()
+            } }
             busy = false
             if (generation != manager.generation) { notice = CommunityException.Stale().message!!; return@launch }
             result.onSuccess { pendingExport = it; notice = "Export ready. Choose where to save it." }
@@ -175,15 +283,18 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
     /** Writes the held export to the document the member picked; a cancelled picker discards it. */
-    fun saveExport(uri: Uri?) {
-        val text = pendingExport ?: return
+    fun saveExport(uri: Uri?, expectedGeneration: Long = manager.generation, expectedText: String? = pendingExport) {
+        if (expectedGeneration != manager.generation || expectedText == null || pendingExport != expectedText) return
+        val text = expectedText
         pendingExport = null
         if (uri == null) { notice = "Export discarded. Nothing was saved."; return }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
+                if (expectedGeneration != manager.generation) throw CancellationException("The account changed before the export save started.")
                 getApplication<Application>().contentResolver.openOutputStream(uri, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
                     ?: throw IllegalStateException("The chosen location could not be opened.")
             } }
+            if (expectedGeneration != manager.generation) return@launch
             notice = result.fold({ "Export saved. It contains your server records only; projects stay on this device." }, { it.message ?: "The export could not be saved." })
             loadLifecycle()
         }
@@ -191,11 +302,11 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
 
     // MARK: Notifications (#290)
 
-    fun loadNotificationPreferences() = fetch({ notificationPreferences = it }) { notifications.preferences() }
+    fun loadNotificationPreferences() = fetch({ notificationPreferences = it }, subject = "notifications") { notifications.preferences() }
     fun saveNotificationPreferences(value: ServerNotificationPreferences) =
-        act("Saving notification preferences…", "Notification preferences saved on the server.", { notifications.save(value) }) { loadNotificationPreferences() }
-    fun loadInbox() = fetch({ inbox = it }) { notifications.inbox() }
-    fun markRead(delivery: String) = act("Marking as read…", "Marked as read.", { notifications.markRead(delivery) }) { loadInbox() }
+        act("notifications", "Saving notification preferences…", "Notification preferences saved on the server.", { notifications.save(value) }) { loadNotificationPreferences() }
+    fun loadInbox() = fetch({ inbox = it }, subject = "notifications") { notifications.inbox() }
+    fun markRead(delivery: String) = act("notifications", "Marking as read…", "Marked as read.", { notifications.markRead(delivery) }) { loadInbox() }
 
     // MARK: Shared rooms (#288)
 
@@ -434,20 +545,21 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
 
     // MARK: Challenge moderation (server-gated: moderation permission with MFA)
 
-    private fun moderate(progress: String, success: String, block: () -> Unit) = act(progress, success, block) { moderation = success; loadChallenges() }
+    private fun moderate(progress: String, success: String, block: () -> Unit) = act("challenges", progress, success, block) { moderation = success; loadChallenges() }
     fun createChallenge(title: String, brief: String, reward: String) =
         moderate("Creating the draft challenge…", "Draft challenge created. Schedule it to make it visible.") { challengesClient.create(title, brief, reward) }
     fun scheduleChallenge(challenge: ChallengeSummary, draft: ChallengeScheduleDraft) =
         moderate("Scheduling…", "Challenge scheduled.") { challengesClient.schedule(challenge.id, challenge.revision, draft) }
     fun cancelChallenge(challenge: ChallengeSummary, reason: String) =
         moderate("Cancelling…", "Challenge cancelled.") { challengesClient.cancel(challenge.id, challenge.revision, reason) }
-    fun removeEntry(challenge: ChallengeSummary, entry: String, reason: String) = act("Removing the entry…", "Entry removed and its votes cleared.",
+    fun removeEntry(challenge: ChallengeSummary, entry: String, reason: String) = act("challenges", "Removing the entry…", "Entry removed and its votes cleared.",
         { challengesClient.removeEntry(challenge.id, challenge.revision, entry, reason) }) { moderation = "Entry removed."; loadChallenges(); loadEntries(challenge.id) }
 
     // MARK: Calendar (read-only)
 
     fun loadCalendar(month: java.time.YearMonth = calendarMonth) {
+        if (!desktopReadable("calendar")) return
         calendarMonth = month
-        fetch({ calendar = it }) { calendarClient.month(month) }
+        fetch({ calendar = it }, subject = "calendar") { calendarClient.month(month) }
     }
 }

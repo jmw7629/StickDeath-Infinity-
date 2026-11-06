@@ -1,6 +1,8 @@
 package com.stickdeath.studio.connect
 
 import android.content.Intent
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -45,26 +47,27 @@ import java.time.format.FormatStyle
             prepared = true
         }
         Text("Rooms", style = MaterialTheme.typography.titleMedium)
-        if (!account.configured) {
-            Text("Rooms are unavailable in this build. No room request is sent until the owner configures the public backend.")
-            return@key
+        // Structured branches retain all gates without labelled returns from inline key.
+        when {
+            !account.configured -> Text("Rooms are unavailable in this build. No room request is sent until the owner configures the public backend.")
+            signedIn == null || signedIn.isAnonymous -> {
+                Text("Sign in with a full account to create or join rooms. Guests send no Rooms requests.")
+                TextButton(onOpenAccount) { Text("Open Account") }
+            }
+            account.needsNewPassword -> {
+                Text("Finish setting your account password in Account before using Rooms.")
+                TextButton(onOpenAccount) { Text("Open Account") }
+            }
+            !prepared || community.viewer != signedIn.userId -> Text("Preparing this account’s Rooms…")
+            else -> {
+                Text("Share a chosen project reference with members you approve. There is no chat or calling.")
+                if (community.notice.isNotEmpty()) Text(community.notice)
+                CreateRoomForm(studio, community, visible, onOpenStudio)
+                JoinRoomForm(community, visible)
+                RoomSyncSection(community, studio)
+            }
         }
-        if (signedIn == null || signedIn.isAnonymous) {
-            Text("Sign in with a full account to create or join rooms. Guests send no Rooms requests.")
-            TextButton(onOpenAccount) { Text("Open Account") }
-            return@key
-        }
-        if (account.needsNewPassword) {
-            Text("Finish setting your account password in Account before using Rooms.")
-            TextButton(onOpenAccount) { Text("Open Account") }
-            return@key
-        }
-        if (!prepared || community.viewer != signedIn.userId) { Text("Preparing this account’s Rooms…"); return@key }
-        Text("Share a chosen project reference with members you approve. There is no chat or calling.")
-        if (community.notice.isNotEmpty()) Text(community.notice)
-        CreateRoomForm(studio, community, visible, onOpenStudio)
-        JoinRoomForm(community, visible)
-        RoomSyncSection(community, studio)
+
     }
 }
 
@@ -342,7 +345,7 @@ private fun localInstant(text: String): Instant? = runCatching {
     val month = community.calendarMonth
     Text("Calendar", style = MaterialTheme.typography.titleMedium)
     Text("Challenge milestones and your own War Room voting deadlines, from the server, in this device's time zone. Read only; nothing is kept offline on Android, so without a connection the calendar says so.")
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
         TextButton({ community.loadCalendar(month.minusMonths(1)) }) { Text("Previous") }
         Text(month.format(DateTimeFormatter.ofPattern("MMMM yyyy")))
         TextButton({ community.loadCalendar(month.plusMonths(1)) }) { Text("Next") }
