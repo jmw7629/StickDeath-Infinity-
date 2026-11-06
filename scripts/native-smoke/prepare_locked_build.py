@@ -9,6 +9,18 @@ import subprocess
 import sys
 
 
+# Match the existing compile/capture offline settings for every locked build.
+LIBRARY_OFFLINE_SETTINGS = (
+    "SPATTER_BACKEND_URL", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY", "LIVEKIT_WS_URL",
+    "SDI_UPLOAD_SERVICE_URL", "SDI_RENDER_PREVIEW_URL", "SDI_PUBLISHING_CONSENT_VERSION", "SDI_PUBLISHING_TERMS_URL",
+    "SDI_OAUTH_PROVIDERS", "SDI_MICROSOFT_TENANT", "SDI_STOREKIT_PLAN_4_99_PRODUCT_ID",
+    "SDI_STOREKIT_PLAN_9_99_PRODUCT_ID", "SDI_STOREKIT_PLAN_19_99_PRODUCT_ID",
+    "SDI_STOREKIT_PLAN_4_99_ANNUAL_PRODUCT_ID", "SDI_STOREKIT_PLAN_9_99_ANNUAL_PRODUCT_ID",
+    "SDI_STOREKIT_CREDITS_SMALL_PRODUCT_ID", "SDI_STOREKIT_CREDITS_LARGE_PRODUCT_ID",
+    "SDI_BILLING_ANNUAL_OWNER_CONFIGURED",
+)
+
+
 def xcode_version(environment):
     return subprocess.check_output(["xcodebuild", "-version"], env=environment, text=True, timeout=30).strip()
 
@@ -72,7 +84,8 @@ def main():
         "-configuration", "Debug", "-destination", "generic/platform=iOS Simulator",
         "-derivedDataPath", str(derived), "-clonedSourcePackagesDirPath", str(packages),
         "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
-        "-jobs", "2", "CODE_SIGNING_ALLOWED=NO", "build",
+        "-jobs", "2", "CODE_SIGNING_ALLOWED=NO",
+        *[key + "=" for key in LIBRARY_OFFLINE_SETTINGS], "build",
     ], env=environment)
     if not clean_checkout("after the locked native build"):
         return result.returncode or 2
