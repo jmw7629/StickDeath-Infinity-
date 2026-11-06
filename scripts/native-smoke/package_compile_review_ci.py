@@ -111,7 +111,8 @@ def prepare(report):
                      "-configuration", "Debug", "-destination", "generic/platform=iOS Simulator",
                      "-derivedDataPath", str(build / "DerivedData"), "-clonedSourcePackagesDirPath", str(build / "Packages"),
                      "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
-                     "-jobs", "2", "CODE_SIGNING_ALLOWED=NO", "build"]):
+                     "-jobs", "2", "CODE_SIGNING_ALLOWED=NO"] +
+                    [key + "=" for key in OFFLINE_SETTINGS] + ["build"]):
         raise ValueError("A completed unsigned Simulator build is required")
     require_source(commit, tree, inputs)
     info_data = read_regular(app / "Info.plist", 1024 * 1024)
