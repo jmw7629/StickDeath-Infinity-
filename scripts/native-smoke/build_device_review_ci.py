@@ -493,8 +493,14 @@ def version_string(number):
     return f"{number >> 16}.{number >> 8 & 255}.{number & 255}"
 
 
-def inspect_macho(path):
+def inspect_macho(path, *, qualified_build_rpath=None):
     """Read bounded Mach-O headers; reject Simulator, fat, signed and legacy code."""
+    if qualified_build_rpath is not None:
+        app = next((parent for parent in path.parents if parent.name == APP + ".app"), None)
+        if (app is None or not app.is_absolute() or app.resolve(strict=True) != app or
+                app.parent.parts[-5:] != ("sdi-device-review-build", "DerivedData", "Build", "Products", "Debug-iphoneos") or
+                qualified_build_rpath != str(app.parent / "PackageFrameworks")):
+            raise ValueError("Native build RPATH requires the exact validated CI product directory")
     with path.open("rb") as stream:
         header = stream.read(32)
         if len(header) != 32 or header[:4] != b"\xcf\xfa\xed\xfe":
@@ -534,14 +540,26 @@ def inspect_macho(path):
             if not fixed <= start < length or b"\0" not in payload[start:]:
                 raise ValueError("Invalid native dynamic-link path")
             name = payload[start:].split(b"\0", 1)[0].decode("utf-8")
-            if not name.startswith(("@rpath/", "@executable_path/", "@loader_path/", "/System/Library/", "/usr/lib/")):
-                raise ValueError("Unexpected absolute or relative native dependency path")
-            (rpaths if plain == 0x1C else dependencies).append(name)
+            allowed = name.startswith(("@rpath/", "@executable_path/", "@loader_path/", "/System/Library/", "/usr/lib/"))
+            if plain == 0x1C:
+                # LC_RPATH is a directory (loader.h rpath_command), not a dylib name.
+                allowed = allowed or name in {"@executable_path", "@loader_path"} or name == qualified_build_rpath
+                if not allowed:
+                    raise ValueError("Unexpected native LC_RPATH directory")
+                if name in rpaths:
+                    raise ValueError("Duplicate native LC_RPATH directory")
+                rpaths.append(name)
+            else:
+                if not allowed:
+                    raise ValueError("Unexpected native dylib dependency path")
+                dependencies.append(name)
         offset += length
     if offset != size or build is None:
         raise ValueError("Complete LC_BUILD_VERSION device evidence is required")
     return {"architecture": "arm64", "fileType": filetype, "headerFlags": flags,
-            "buildVersion": build, "dependencies": dependencies, "rpaths": rpaths, "signature": "absent"}
+            "buildVersion": build, "dependencies": dependencies, "rpaths": rpaths,
+            "qualifiedBuildRpathDirectory": qualified_build_rpath if qualified_build_rpath in rpaths else None,
+            "signature": "absent"}
 
 
 def app_inventory(app, check):
@@ -612,7 +630,7 @@ def validate_product(app, expected_info, files, check):
         with path.open("rb") as stream:
             magic = stream.read(4)
         if magic in MACHO_MAGICS:
-            binaries[name] = inspect_macho(path)
+            binaries[name] = inspect_macho(path, qualified_build_rpath=str(app.parent / "PackageFrameworks"))
             minimum = tuple(int(x) for x in binaries[name]["buildVersion"]["minimumOS"].split("."))
             if minimum > (17, 0, 0):
                 raise ValueError("Embedded native code exceeds the app's supported minimum iOS version")
@@ -820,6 +838,7 @@ def main():
                     "displayName": "SDI Review", "bundleVersion": info["CFBundleVersion"],
                     "platform": "iOS device", "architectures": ["arm64"], "unsigned": True,
                     "embeddedProvisioningProfiles": 0, "nativeBinaries": binaries, "files": files,
+                    "qualifiedBuildRpathDirectory": str(app.parent / "PackageFrameworks"),
                     "fileCount": len(files), "uncompressedBytes": sum(x["bytes"] for x in files.values()),
                     "archive": archive, "declaredPostBuildMetadataChanges": corrections,
                     "offlineSettingsVerified": list(OFFLINE_SETTINGS),

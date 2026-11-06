@@ -7,6 +7,7 @@ from pathlib import Path
 import importlib.util
 import os
 import stat
+import struct
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -218,6 +219,108 @@ class DeviceReviewScratchPolicyTests(unittest.TestCase):
             self.assertEqual(arguments.count(value), 1)
         for setting in subject.OFFLINE_SETTINGS:
             self.assertEqual(arguments.count(setting + "="), 1)
+
+
+class DeviceReviewMachORpathTests(unittest.TestCase):
+    """Tiny actual Mach-O byte fixtures; no compiler or native project build."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="sdi-rpath-policy-", dir=os.environ.get("SDI_POLICY_FIXTURE_ROOT"))
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.app = self.root / "sdi-device-review-build/DerivedData/Build/Products/Debug-iphoneos" / (subject.APP + ".app")
+        self.app.mkdir(parents=True)
+        self.binary = self.app / subject.APP
+        self.qualified = str(self.app.parent / "PackageFrameworks")
+
+    def command(self, kind, name):
+        fixed = 12 if kind & 0x7fffffff == 0x1c else 24
+        encoded = name.encode() + b"\0"
+        length = (fixed + len(encoded) + 7) & ~7
+        return struct.pack("<III", kind, length, fixed) + bytes(fixed - 12) + encoded + bytes(length - fixed - len(encoded))
+
+    def macho(self, commands=(), *, platform=2, cpu=0x0100000c, subtype=0, filetype=2):
+        build = struct.pack("<IIIIII", 0x32, 24, platform, 17 << 16, 26 << 16, 0)
+        commands = [build, *commands]
+        payload = b"".join(commands)
+        self.binary.write_bytes(struct.pack("<IiiIIIII", 0xfeedfacf, cpu, subtype, filetype, len(commands), len(payload), 0, 0) + payload)
+        return self.binary
+
+    def inspect(self, commands=(), **header):
+        return subject.inspect_macho(self.macho(commands, **header), qualified_build_rpath=self.qualified)
+
+    def test_actual_main_and_debug_dylib_runpaths_are_directories_and_audited(self):
+        for names, filetype in ((["@executable_path", self.qualified, "@executable_path/Frameworks"], 2),
+                                (["/usr/lib/swift", self.qualified, "@executable_path/Frameworks"], 6)):
+            with self.subTest(filetype=filetype):
+                result = self.inspect([self.command(0x8000001c, name) for name in names], filetype=filetype)
+                self.assertEqual(result["rpaths"], names)
+                self.assertEqual(result["qualifiedBuildRpathDirectory"], self.qualified)
+                self.assertEqual(result["dependencies"], [])
+                self.assertEqual(result["buildVersion"]["platform"], "iOS")
+                self.assertEqual(result["signature"], "absent")
+
+    def test_bare_macros_are_rpath_only_and_default_does_not_qualify_build_paths(self):
+        names = ["@executable_path", "@loader_path"]
+        result = subject.inspect_macho(self.macho([self.command(0x8000001c, name) for name in names]))
+        self.assertEqual(result["rpaths"], names)
+        self.assertIsNone(result["qualifiedBuildRpathDirectory"])
+        with self.assertRaisesRegex(ValueError, "LC_RPATH"):
+            subject.inspect_macho(self.macho([self.command(0x8000001c, self.qualified)]))
+        for kind in (0xc, 0xd, 0x80000018, 0x8000001f, 0x80000023):
+            for name in [*names, self.qualified]:
+                with self.subTest(kind=kind, name=name), self.assertRaisesRegex(ValueError, "dylib"):
+                    self.inspect([self.command(kind, name)])
+
+    def test_foreign_adjacent_relative_and_unqualified_runpaths_stay_rejected(self):
+        for name in (self.qualified + "-other", self.qualified + "/child", self.qualified + "/../PackageFrameworks",
+                     str(self.app.parent.parent / "PackageFrameworks"), "/private/arbitrary-secret-directory",
+                     "PackageFrameworks", "@executable_path-other", "@loader_path-other", "@rpath"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "LC_RPATH") as error:
+                self.inspect([self.command(0x8000001c, name)])
+            self.assertNotIn(name, str(error.exception))
+
+    def test_caller_cannot_qualify_a_foreign_directory_or_non_ci_product(self):
+        path = self.macho([self.command(0x8000001c, self.qualified)])
+        for value in (self.qualified + "-other", "/private/PackageFrameworks", [self.qualified]):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "exact validated CI product"):
+                subject.inspect_macho(path, qualified_build_rpath=value)
+        outside = self.root / (subject.APP + ".app")
+        outside.mkdir()
+        moved = outside / subject.APP
+        moved.write_bytes(path.read_bytes())
+        with self.assertRaisesRegex(ValueError, "exact validated CI product"):
+            subject.inspect_macho(moved, qualified_build_rpath=str(outside.parent / "PackageFrameworks"))
+        alias = self.root / "linked-product.app"
+        alias.symlink_to(self.app, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "exact validated CI product"):
+            subject.inspect_macho(alias / subject.APP, qualified_build_rpath=self.qualified)
+
+    def test_duplicate_runpaths_are_rejected_including_the_qualified_directory(self):
+        for name in ("@executable_path", "@loader_path/Frameworks", self.qualified, "/usr/lib/swift"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Duplicate native LC_RPATH"):
+                self.inspect([self.command(0x8000001c, name)] * 2)
+
+    def test_existing_dylib_prefixes_remain_unchanged(self):
+        names = ["@rpath/Library.dylib", "@executable_path/Library.dylib", "@loader_path/Library.dylib",
+                 "/System/Library/Frameworks/Foundation.framework/Foundation", "/usr/lib/libSystem.B.dylib"]
+        result = self.inspect([self.command(0xc, name) for name in names])
+        self.assertEqual(result["dependencies"], names)
+        self.assertEqual(result["rpaths"], [])
+
+    def test_signed_simulator_wrong_cpu_and_malformed_headers_still_fail(self):
+        rpath = self.command(0x8000001c, self.qualified)
+        with self.assertRaisesRegex(ValueError, "signature"):
+            self.inspect([rpath, struct.pack("<IIII", 0x1d, 16, 0, 0)])
+        for header in ({"platform": 7}, {"cpu": 0x01000007}, {"subtype": 2}, {"filetype": 1}):
+            with self.subTest(header=header), self.assertRaises(ValueError):
+                self.inspect([rpath], **header)
+        path = self.macho([rpath])
+        path.write_bytes(path.read_bytes()[:-1])
+        with self.assertRaisesRegex(ValueError, "bounds"):
+            subject.inspect_macho(path, qualified_build_rpath=self.qualified)
+        path.write_bytes(b"\xca\xfe\xba\xbe" + bytes(28))
+        with self.assertRaisesRegex(ValueError, "thin"):
+            subject.inspect_macho(path, qualified_build_rpath=self.qualified)
 
 
 if __name__ == "__main__":
