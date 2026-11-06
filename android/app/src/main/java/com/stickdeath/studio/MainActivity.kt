@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -119,7 +120,78 @@ class MainActivity : ComponentActivity() {
         }
     }
     val document = vm.document
-    if (document == null) ProjectLibrary(vm) else Editor(vm, document)
+    var showDock by rememberSaveable { mutableStateOf(false) }
+    var requestedPanel by remember { mutableStateOf<String?>(null) }
+    // Navigation surrounds one canonical Studio. Export launchers and effects
+    // above stay mounted when menus or the optional dock are used.
+    Column(Modifier.fillMaxSize().safeDrawingPadding().background(Color(0xff24778a))) {
+        StudioDesktopNavigation(
+            hasProject = document != null, available = !vm.closing,
+            showDock = showDock, toggleDock = { showDock = !showDock },
+            openProjects = { if (document != null) requestedPanel = "projects" },
+            openSettings = { requestedPanel = "project" },
+            openAccount = { requestedPanel = "account" })
+        Box(Modifier.weight(1f).fillMaxWidth().padding(4.dp)
+            .border(2.dp, Color(0xff151921)).background(MaterialTheme.colorScheme.background)) {
+            if (document == null) ProjectLibrary(vm)
+            else Editor(vm, document, requestedPanel) { requestedPanel = null }
+        }
+        if (showDock) Surface(color = Color(0xffead29a), contentColor = Color(0xff171b24)) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                TextButton({ if (document != null) requestedPanel = "projects" }, enabled = !vm.closing, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Projects") }
+                TextButton({ requestedPanel = "project" }, enabled = document != null && !vm.closing, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Project settings") }
+                TextButton({ requestedPanel = "account" }, enabled = !vm.closing, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Account") }
+            }
+        }
+    }
+    // With no Editor composed, the same existing account content is available
+    // from the library. Once a project is open, its existing single panel hosts it.
+    if (document == null && requestedPanel == "account") {
+        AlertDialog(onDismissRequest = { requestedPanel = null },
+            title = { Text("Account, notifications & diagnostics") },
+            text = { Column(Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) { AccountPanel(vm) } },
+            confirmButton = { TextButton({ requestedPanel = null }) { Text("Done") } })
+    }
+}
+
+/** Subject navigation only. Independent overlapping desktop windows remain a
+ * separate shell feature; the existing canvas and its sole toolbar stay intact. */
+@Composable private fun StudioDesktopNavigation(
+    hasProject: Boolean, available: Boolean, showDock: Boolean, toggleDock: () -> Unit,
+    openProjects: () -> Unit, openSettings: () -> Unit, openAccount: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf<String?>(null) }
+    Surface(color = Color(0xfff1dfb0), contentColor = Color(0xff171b24), shadowElevation = 3.dp) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("SDI ∞", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(end = 8.dp))
+            Box {
+                TextButton({ expanded = "studio" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Studio") }
+                DropdownMenu(expanded == "studio", onDismissRequest = { expanded = null }) {
+                    DropdownMenuItem(text = { Text("Local projects") }, enabled = available,
+                        onClick = { expanded = null; openProjects() })
+                    DropdownMenuItem(text = { Text("Project settings") }, enabled = hasProject && available,
+                        onClick = { expanded = null; openSettings() })
+                }
+            }
+            Box {
+                TextButton({ expanded = "account" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Account") }
+                DropdownMenu(expanded == "account", onDismissRequest = { expanded = null }) {
+                    DropdownMenuItem(text = { Text("Account, plans & preferences") }, enabled = available,
+                        onClick = { expanded = null; openAccount() })
+                }
+            }
+            Box {
+                TextButton({ expanded = "desktop" }, colors = ButtonDefaults.textButtonColors(contentColor = Color(0xff171b24))) { Text("Desktop") }
+                DropdownMenu(expanded == "desktop", onDismissRequest = { expanded = null }) {
+                    DropdownMenuItem(text = { Text(if (showDock) "Hide bottom navigation" else "Show bottom navigation") },
+                        onClick = { expanded = null; toggleDock() })
+                }
+            }
+        }
+    }
 }
 
 /** Shared with the plan model, which allows Free accounts only these sizes. */
@@ -264,7 +336,8 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     }
 }
 
-@Composable private fun Editor(vm: StudioViewModel, doc: Document) {
+@Composable private fun Editor(vm: StudioViewModel, doc: Document,
+    requestedPanel: String? = null, onPanelRequestHandled: () -> Unit = {}) {
     val compactHeight = LocalConfiguration.current.screenHeightDp < 480
     val viewportSize = remember { mutableStateOf(IntSize.Zero) }
     var thumbnailsOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
@@ -284,6 +357,14 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     var settingsDraft by remember(doc.id) { mutableStateOf(ProjectDraft.from(doc)) }
     var fitArtwork by remember(doc.id) { mutableStateOf(true) }
     var playing by remember { mutableStateOf(false) }
+    LaunchedEffect(requestedPanel, doc.id) {
+        when (requestedPanel) {
+            "projects" -> { playing = false; vm.save(close = true) }
+            "project" -> { playing = false; settingsCapture = doc; settingsDraft = ProjectDraft.from(doc); panel = "project" }
+            "account" -> panel = "account"
+        }
+        if (requestedPanel != null) onPanelRequestHandled()
+    }
     LaunchedEffect(vm.sceneStopGeneration) { playing = false }
     LaunchedEffect(playing) { vm.notePlayback(playing) }
     var selectedLayerAction by remember(doc.id) { mutableStateOf<String?>(null) }

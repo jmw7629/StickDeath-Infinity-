@@ -234,6 +234,39 @@ private final class NetworkTrap: URLProtocol {
             try require(!session.submit(red, in: vm, accountID: nil, submissionID: id, currentScope: { guest }), "Accepted token replayed")
             try require(vm.document == changed && vm.frames.count == 9, "Duplicate completion changed actual content")
         }
+        try await test("rejected oversized and replayed drafts preserve the last real edit receipt and targeted actions") {
+            let (vm, _) = try await fixture("rejected-draft-receipt")
+            try require(vm.commitElement(styledStroke(vm)), "Original artwork fixture failed")
+            await vm.flush()
+            let before = vm.document, session = SpatterStudioEditSession(), id = UUID()
+            try require(session.submit(SpatterMultiClauseBrief.example, in: vm, accountID: nil,
+                submissionID: id, currentScope: { guest }), "Scene request rejected")
+            await session.waitForCompletion(); await vm.flush()
+            guard session.status == .applied, let edit = session.appliedEdit else {
+                throw Failure(message: "Actual scene edit missing: \(session.notice ?? "")")
+            }
+            let generated = vm.document
+            let oversized = String(repeating: "💀", count: 257)
+            try require(oversized.utf8.count > SpatterMotionRecipe.maximumInstructionBytes
+                && !session.submit(oversized, in: vm, accountID: nil, currentScope: { guest }), "Oversized draft was accepted")
+            try require(session.appliedEdit?.receipt.requestID == edit.receipt.requestID && vm.document == generated
+                && session.canUndoAppliedEdit(in: vm, currentScope: guest)
+                && session.canRevertAppliedEdit(in: vm, currentScope: guest), "Oversized rejection lost the previous real receipt or targeted actions")
+            try require(!session.submit(SpatterMultiClauseBrief.example, in: vm, accountID: nil,
+                submissionID: id, currentScope: { guest }), "Accepted request was replayed")
+            try require(session.appliedEdit?.receipt.requestID == edit.receipt.requestID && vm.document == generated
+                && session.saveState(in: vm, currentScope: guest) == .saved
+                && session.canUndoAppliedEdit(in: vm, currentScope: guest)
+                && session.canRevertAppliedEdit(in: vm, currentScope: guest), "Replay rejection lost the saved receipt or targeted actions")
+            let handoff = session.prepareMovieExport(in: vm, currentScope: guest)
+            try require(handoff?.editRequestID == edit.receipt.requestID && handoff?.revision == edit.receipt.revision,
+                "Rejected draft lost the saved edit export handoff")
+            try require(session.revertAppliedEdit(in: vm, currentScope: guest)
+                && vm.frames == before.frames && vm.layers == before.layers, "Retained receipt did not revert only its generated content")
+            vm.undo()
+            try require(vm.frames == generated.frames && vm.layers == generated.layers, "Studio Undo did not restore the reverted generated edit")
+            await vm.backToProjects()
+        }
         try await test("cancellation at either async boundary retains edits draft history and user autosave") {
             for boundary in [1, 2] {
                 let (vm, store) = try await fixture("cancel-\(boundary)")

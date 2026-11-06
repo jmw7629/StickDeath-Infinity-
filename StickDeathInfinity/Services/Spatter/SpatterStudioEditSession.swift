@@ -429,7 +429,6 @@ final class SpatterStudioEditSession: ObservableObject {
                 submissionID: UUID = UUID(), currentScope: @escaping ScopeProvider) -> Bool {
         guard !isWorking else { return false }
         guard !isClosed else { notice = "This local edit session is closed. Open a new session to create another recipe."; return false }
-        appliedEdit = nil; appliedAccountID = nil; exportHandoff = nil
         guard draft.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else {
             status = .rejected; notice = SpatterMotionRecipe.RecipeError.instructionTooLong.localizedDescription; return false
         }
@@ -440,6 +439,9 @@ final class SpatterStudioEditSession: ObservableObject {
         guard acceptedIDs.count < Self.maximumSubmissions else {
             status = .rejected; notice = "This local edit session has reached its request limit. Open a new session; your project is unchanged."; return false
         }
+        // A rejected draft or replay is not a new edit; keep the previous receipt.
+        // Context/eligibility rejection and accepted preparation keep their existing cleanup.
+        appliedEdit = nil; appliedAccountID = nil; exportHandoff = nil
         let scope = currentScope(), screen = studio.commandScreenContext
         do {
             guard scope.isStudioVisible else { throw SessionError.outsideStudio }

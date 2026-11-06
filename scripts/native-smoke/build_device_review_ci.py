@@ -29,6 +29,9 @@ ORIGINAL_BUNDLE = "com.willisbmb.StickDeathInfinity"
 RESOURCE_INFO = "swift-crypto_Crypto.bundle/Info.plist"
 RESOURCE_BUNDLE = "swift-crypto.Crypto.resources"
 GIB = 1024 ** 3
+SPARSE_COMPILATION_CACHE_PATH = "DerivedData/CompilationCache.noindex/generic/v1.1/v8.data"
+MAX_SPARSE_COMPILATION_CACHE_BYTES = 32 * GIB
+MAX_SPARSE_COMPILATION_CACHE_ALLOCATED = 2 * GIB
 MAX_APP_BYTES = 512 * 1024 ** 2
 MAX_FILES = 10_000
 MAX_LOG_BYTES = 32 * 1024 ** 2
@@ -284,15 +287,21 @@ class Guard:
             return
         total = count = allocated = charged = allocated_charge = 0
         sparse_count = sparse_logical = sparse_allocated = 0
+        cas_count = cas_logical = cas_allocated = 0
         self.observation.update(scratchScanComplete=False, scratchScanStartedSeconds=round(now - self.started, 6),
                                 scratchLogicalByteLimit=16 * GIB, scratchEntryLimit=250_000,
                                 scratchChargedByteLimit=16 * GIB, scratchAllocatedByteLimit=16 * GIB,
                                 scratchSparseSDKStatCacheLogicalByteLimit=64 * GIB,
                                 scratchSparseSDKStatCacheFileLimit=2,
+                                scratchSparseCompilationCacheFileLimit=1,
+                                scratchSparseCompilationCacheLogicalByteLimit=MAX_SPARSE_COMPILATION_CACHE_BYTES,
+                                scratchSparseCompilationCacheAllocatedByteLimit=MAX_SPARSE_COMPILATION_CACHE_ALLOCATED,
                                 scratchEntries=0, scratchLogicalBytes=0, scratchAllocatedBytes=0,
                                 scratchChargedBytes=0, scratchAllocatedChargeBytes=0,
                                 scratchSparseSDKStatCacheCount=0, scratchSparseSDKStatCacheLogicalBytes=0,
                                 scratchSparseSDKStatCacheAllocatedBytes=0,
+                                scratchSparseCompilationCacheCount=0, scratchSparseCompilationCacheLogicalBytes=0,
+                                scratchSparseCompilationCacheAllocatedBytes=0,
                                 scratchLastRelativeEntry=None, scratchOffendingRelativeEntry=None)
         for directory, folders, files in os.walk(self.scratch, followlinks=False):
             for name in folders + files:
@@ -303,6 +312,10 @@ class Guard:
                     continue  # A compiler may remove its own transient output.
                 relative = entry.relative_to(self.scratch).as_posix()
                 count += 1
+                if relative == SPARSE_COMPILATION_CACHE_PATH and not stat.S_ISREG(s.st_mode):
+                    self.observation.update(scratchEntries=count, scratchLastRelativeEntry=relative,
+                                            scratchOffendingRelativeEntry=relative)
+                    raise RuntimeError("Owned CI compilation-cache data is not a regular file")
                 if stat.S_ISREG(s.st_mode):
                     total += s.st_size
                     blocks = getattr(s, "st_blocks", None)
@@ -324,10 +337,36 @@ class Guard:
                                              (self.scratch, entry.parent.parent, entry.parent))
                         except FileNotFoundError:
                             sparse_sdk = False
+                    # Xcode still creates this exact CAS data file with all
+                    # three compilation-cache settings disabled. Admit only the
+                    # observed owned sparse extent, never the cache directory.
+                    sparse_cas = (relative == SPARSE_COMPILATION_CACHE_PATH
+                                  and type(s.st_size) is int and s.st_size > 0
+                                  and file_allocated is not None and file_allocated * 8 <= s.st_size
+                                  and getattr(s, "st_uid", None) == os.getuid()
+                                  and getattr(s, "st_nlink", None) == 1)
+                    if sparse_cas:
+                        try:
+                            parents = (self.scratch, self.scratch / "DerivedData",
+                                       self.scratch / "DerivedData/CompilationCache.noindex",
+                                       entry.parent.parent, entry.parent)
+                            parent_stats = [parent.lstat() for parent in parents]
+                            sparse_cas = (self.scratch.resolve(strict=True) == self.scratch
+                                          and entry.resolve(strict=True) == entry
+                                          and all(stat.S_ISDIR(parent.st_mode)
+                                                  and getattr(parent, "st_uid", None) == os.getuid()
+                                                  for parent in parent_stats))
+                        except (OSError, RuntimeError):
+                            sparse_cas = False
                     if sparse_sdk:
                         sparse_count += 1
                         sparse_logical += s.st_size
                         sparse_allocated += file_allocated
+                        charged += file_allocated
+                    elif sparse_cas:
+                        cas_count += 1
+                        cas_logical += s.st_size
+                        cas_allocated += file_allocated
                         charged += file_allocated
                     else:
                         charged += s.st_size
@@ -337,10 +376,17 @@ class Guard:
                                         scratchSparseSDKStatCacheCount=sparse_count,
                                         scratchSparseSDKStatCacheLogicalBytes=sparse_logical,
                                         scratchSparseSDKStatCacheAllocatedBytes=sparse_allocated,
+                                        scratchSparseCompilationCacheCount=cas_count,
+                                        scratchSparseCompilationCacheLogicalBytes=cas_logical,
+                                        scratchSparseCompilationCacheAllocatedBytes=cas_allocated,
                                         scratchLastRelativeEntry=relative)
                 if sparse_count > 2 or sparse_logical > 64 * GIB:
                     self.observation["scratchOffendingRelativeEntry"] = relative
                     raise RuntimeError("Owned CI sparse SDK stat-cache exceeded its exception bound")
+                if (cas_count > 1 or cas_logical > MAX_SPARSE_COMPILATION_CACHE_BYTES
+                        or cas_allocated > MAX_SPARSE_COMPILATION_CACHE_ALLOCATED):
+                    self.observation["scratchOffendingRelativeEntry"] = relative
+                    raise RuntimeError("Owned CI sparse compilation-cache exceeded its exception bound")
                 if charged > 16 * GIB or allocated_charge > 16 * GIB or count > 250_000:
                     self.observation["scratchOffendingRelativeEntry"] = relative
                     raise RuntimeError("Owned CI build scratch exceeded its disk or entry bound")
