@@ -1,5 +1,6 @@
 import SwiftUI
 import ImageIO
+import UIKit
 
 // ═══════════════════════════════════════════════════════════════════
 // Floating Tool Settings Panel — positioned over canvas
@@ -272,10 +273,9 @@ struct FloatingToolSettingsPanel: View {
         // ── GRADIENT (#149) ──
         case .gradient:
             VStack(alignment: .leading, spacing: 8) {
-                Picker("Shape", selection: $vm.gradientShape) {
-                    Text("Linear").tag(StudioGradientDescriptor.Shape.linear)
-                    Text("Radial").tag(StudioGradientDescriptor.Shape.radial)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.gradient.shape")
+                StudioSettingSegments(title: "Shape", selection: $vm.gradientShape,
+                    choices: [.linear, .radial], choiceTitle: { $0 == .linear ? "Linear" : "Radial" },
+                    identifier: "studio.gradient.shape").frame(height: 44)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsToggle(label: "Fade to transparent", isOn: $vm.gradientFadeToTransparent, accent: accentColor)
                     .accessibilityIdentifier("studio.gradient.fade")
@@ -293,10 +293,9 @@ struct FloatingToolSettingsPanel: View {
                     .accessibilityLabel("Gradient end color")
                     .accessibilityValue(vm.brushGradientEndColorHex.uppercased())
                 }
-                Picker("Blend colors", selection: $vm.gradientInterpolation) {
-                    Text("Classic").tag(StudioGradientDescriptor.Interpolation.sRGB)
-                    Text("Linear light").tag(StudioGradientDescriptor.Interpolation.linearLight)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.gradient.interpolation")
+                StudioSettingSegments(title: "Blend colors", selection: $vm.gradientInterpolation,
+                    choices: [.sRGB, .linearLight], choiceTitle: { $0 == .sRGB ? "Classic" : "Linear light" },
+                    identifier: "studio.gradient.interpolation").frame(height: 44)
                 SettingsToggle(label: "Dither (reduces banding)", isOn: $vm.gradientDither, accent: accentColor)
                     .accessibilityIdentifier("studio.gradient.dither")
                 Text(vm.selectedElementIDs.isEmpty
@@ -459,13 +458,13 @@ struct FloatingToolSettingsPanel: View {
                             .accessibilityIdentifier("studio.text.keyboard-done")
                     }.frame(minHeight: 44)
                 }
-                Picker("Font", selection: $vm.textStyle.font) {
-                    ForEach(StudioTextFont.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.accessibilityIdentifier("studio.text.font")
+                StudioSettingChoice(title: "Font", selection: $vm.textStyle.font,
+                    choices: StudioTextFont.allCases, choiceTitle: { $0.title },
+                    identifier: "studio.text.font", showsTitle: true)
                 SettingsSlider(label: "Font Size", value: $vm.textStyle.size, range: 8...240, unit: "px", accent: accentColor)
-                Picker("Alignment", selection: $vm.textStyle.alignment) {
-                    ForEach(StudioTextAlignment.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.text.alignment")
+                StudioSettingSegments(title: "Alignment", selection: $vm.textStyle.alignment,
+                    choices: StudioTextAlignment.allCases, choiceTitle: { $0.rawValue.capitalized },
+                    identifier: "studio.text.alignment").frame(height: 44)
                 HStack {
                     Toggle("Bold", isOn: $vm.textStyle.bold).accessibilityIdentifier("studio.text.bold")
                     Toggle("Italic", isOn: $vm.textStyle.italic).accessibilityIdentifier("studio.text.italic")
@@ -488,20 +487,17 @@ struct FloatingToolSettingsPanel: View {
                 mirrorSettings
                 SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                Picker("Arrowheads", selection: $vm.lineArrowEnds) {
-                    Text("None").tag(StudioArrowEnds.none); Text("Start").tag(StudioArrowEnds.start)
-                    Text("End").tag(StudioArrowEnds.end); Text("Both").tag(StudioArrowEnds.both)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.line.arrowheads")
+                StudioSettingSegments(title: "Arrowheads", selection: $vm.lineArrowEnds,
+                    choices: [.none, .start, .end, .both], choiceTitle: { $0.rawValue.capitalized },
+                    identifier: "studio.line.arrowheads").frame(height: 44)
                 if vm.lineArrowEnds != .none {
                     SettingsSlider(label: "Head Length", value: $vm.lineArrowLength, range: 1...100, unit: "px", accent: accentColor)
                         .accessibilityIdentifier("studio.line.arrow-length")
                 }
-                Picker("Angle snap", selection: $vm.lineAngleSnap) {
-                    Text("Free").tag(0.0)
-                    Text("15°").tag(15.0)
-                    Text("45°").tag(45.0)
-                    Text("90°").tag(90.0)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.line.angle-snap")
+                StudioSettingSegments(title: "Angle snap", selection: $vm.lineAngleSnap,
+                    choices: [0.0, 15.0, 45.0, 90.0],
+                    choiceTitle: { $0 == 0 ? "Free" : "\(Int($0))°" },
+                    identifier: "studio.line.angle-snap").frame(height: 44)
                     .disabled(vm.lineRulerEnabled)
                 lineRulerSettings
                 Text("Drag from the line's start. Angle snapping is measured in canvas coordinates.")
@@ -754,9 +750,9 @@ struct FloatingToolSettingsPanel: View {
                 }
                 Divider().background(Color.white.opacity(0.08))
                 Text("POSITION").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
-                Picker("Nudge distance", selection: $vm.selectionNudgeDistance) {
-                    Text("1 px").tag(1.0); Text("10 px").tag(10.0); Text("100 px").tag(100.0)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.selection.nudge-distance")
+                StudioSettingSegments(title: "Nudge distance", selection: $vm.selectionNudgeDistance,
+                    choices: [1.0, 10.0, 100.0], choiceTitle: { "\(Int($0)) px" },
+                    identifier: "studio.selection.nudge-distance").frame(height: 44)
                 HStack {
                     Button("←") { _ = vm.positionSelected(dx: -vm.selectionNudgeDistance) }.accessibilityLabel("Move selection left")
                     Button("→") { _ = vm.positionSelected(dx: vm.selectionNudgeDistance) }.accessibilityLabel("Move selection right")
@@ -821,15 +817,14 @@ struct FloatingToolSettingsPanel: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Image pixels").font(.specialElite(16))
                 Text("Select an image layer, close this popup and tap its visible pixels. Sample the image colors or the visible canvas. Only the active image’s pixels are edited; other layers remain untouched. The active image layer must be normal and fully opaque, without drawings or effects.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
-                Picker("Region", selection: $vm.wandMode) {
-                    ForEach(StudioImageRegionService.Mode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.wand.mode")
+                StudioSettingSegments(title: "Region", selection: $vm.wandMode,
+                    choices: StudioImageRegionService.Mode.allCases, choiceTitle: { $0.rawValue },
+                    identifier: "studio.wand.mode").frame(height: 44)
                 HStack { Text("Tolerance"); Slider(value: $vm.wandTolerance, in: 0...128, step: 1); Text("\(Int(vm.wandTolerance))") }
                     .accessibilityIdentifier("studio.wand.tolerance")
-                Picker("Sample colors", selection: $vm.wandSampleVisibleCanvas) {
-                    Text("Active image").tag(false)
-                    Text("Visible canvas").tag(true)
-                }.pickerStyle(.segmented).accessibilityIdentifier("studio.wand.sampling")
+                StudioSettingSegments(title: "Sample colors", selection: $vm.wandSampleVisibleCanvas,
+                    choices: [false, true], choiceTitle: { $0 ? "Visible canvas" : "Active image" },
+                    identifier: "studio.wand.sampling").frame(height: 44)
                 Toggle("Connected pixels only", isOn: $vm.wandContiguous).accessibilityIdentifier("studio.wand.contiguous")
                 HStack {
                     Button("Select all pixels") { Task { await vm.changeImageRegionMembership(.all) } }
@@ -1131,6 +1126,65 @@ struct FloatingToolSettingsPanel: View {
             get: { vm.toolOpacity * 100 },
             set: { vm.toolOpacity = $0 / 100 }
         )
+    }
+}
+
+/// Keep native segmented-control accessibility and each original value binding,
+/// while giving only these Studio controls the bundled typewriter font. No
+/// application-wide UIKit appearance is changed.
+private struct StudioSettingSegments<Selection: Hashable>: UIViewRepresentable {
+    let title: String
+    @Binding var selection: Selection
+    let choices: [Selection]
+    let choiceTitle: (Selection) -> String
+    let identifier: String
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeCoordinator() -> StudioSettingSegmentCoordinator {
+        StudioSettingSegmentCoordinator()
+    }
+
+    func makeUIView(context: Context) -> UISegmentedControl {
+        let control = UISegmentedControl(items: choices.map(choiceTitle))
+        control.addTarget(context.coordinator,
+                          action: #selector(StudioSettingSegmentCoordinator.changed(_:)),
+                          for: .valueChanged)
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return control
+    }
+
+    func updateUIView(_ control: UISegmentedControl, context: Context) {
+        let titles = choices.map(choiceTitle)
+        if control.numberOfSegments != titles.count ||
+            titles.indices.contains(where: { control.titleForSegment(at: $0) != titles[$0] }) {
+            control.removeAllSegments()
+            for (index, text) in titles.enumerated() {
+                control.insertSegment(withTitle: text, at: index, animated: false)
+            }
+        }
+        control.selectedSegmentIndex = choices.firstIndex(of: selection) ?? UISegmentedControl.noSegment
+        control.isEnabled = isEnabled
+        control.accessibilityLabel = title
+        control.accessibilityIdentifier = identifier
+        let baseFont = UIFont(name: "SpecialElite-Regular", size: 11) ?? UIFont.systemFont(ofSize: 11)
+        let font = UIFontMetrics(forTextStyle: .caption1)
+            .scaledFont(for: baseFont, compatibleWith: control.traitCollection)
+        control.setTitleTextAttributes([.font: font, .foregroundColor: UIColor.white.withAlphaComponent(0.85)], for: .normal)
+        control.setTitleTextAttributes([.font: font, .foregroundColor: UIColor.white], for: .selected)
+        control.setTitleTextAttributes([.font: font, .foregroundColor: UIColor.white.withAlphaComponent(0.35)], for: .disabled)
+        control.selectedSegmentTintColor = UIColor(Color.sdRed)
+        context.coordinator.choose = { index in
+            guard isEnabled, choices.indices.contains(index) else { return }
+            selection = choices[index]
+        }
+    }
+}
+
+private final class StudioSettingSegmentCoordinator: NSObject {
+    var choose: (Int) -> Void = { _ in }
+    @objc func changed(_ control: UISegmentedControl) {
+        guard control.isEnabled else { return }
+        choose(control.selectedSegmentIndex)
     }
 }
 
