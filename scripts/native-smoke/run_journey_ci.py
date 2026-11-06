@@ -85,7 +85,9 @@ def preinstall_owned_app(profile, evidence, udid, commit, ui_deadline):
     def command(stage, argv, seconds, *, cleanup=False, cap=16 * 1024):
         limit = deadline if cleanup else work_deadline
         end = min(limit, time.monotonic() + seconds)
-        result = run_bounded(argv, end, stdout_cap=cap, stderr_cap=16 * 1024)
+        # Cold boot output may close shortly after its acknowledged command exits.
+        drain = {"post_exit_drain_seconds": 1.0} if stage == "bootstatus" else {}
+        result = run_bounded(argv, end, stdout_cap=cap, stderr_cap=16 * 1024, **drain)
         step = {"stage": stage, "argv": argv, **result_projection(result)}
         report["steps"].append(step)
         for name, data in (("stdout", result.stdout), ("stderr", result.stderr)):

@@ -231,7 +231,8 @@ class OwnedPreinstallTests(unittest.TestCase):
     def simulate(self,f,*,failure=False,revoke=False,remaining=1740):
         root,app,profile,evidence,udid,runtime,marker=f
         calls=[];state={"value":"Shutdown"}
-        def bounded(argv,deadline,stdout_cap,stderr_cap):
+        def bounded(argv,deadline,stdout_cap,stderr_cap,*,post_exit_drain_seconds=0.05):
+            self.assertEqual(post_exit_drain_seconds,1.0 if argv[2]=="bootstatus" else 0.05)
             calls.append((argv,deadline));data=b"";code=0
             self.assertEqual(argv[:2],["xcrun","simctl"]);self.assertNotIn("launch",argv)
             if argv[2]=="list":
@@ -269,7 +270,8 @@ class OwnedPreinstallTests(unittest.TestCase):
                 original_copy_marker(checkpoint,*args)
                 if checkpoint.name.endswith("preinstall-before-install"):
                     clock["now"]+=6.193212  # Observed setup overhead upper bound.
-            def bounded(argv,deadline,stdout_cap,stderr_cap):
+            def bounded(argv,deadline,stdout_cap,stderr_cap,*,post_exit_drain_seconds=0.05):
+                self.assertEqual(post_exit_drain_seconds,1.0 if argv[2]=="bootstatus" else 0.05)
                 calls.append((argv,deadline));data=b""
                 action=argv[2]
                 if action=="list":
@@ -301,7 +303,8 @@ class OwnedPreinstallTests(unittest.TestCase):
         with self.fixture() as f:
             root,app,profile,evidence,udid,runtime,marker=f
             clock={"now":1000.0};calls=[];state={"value":"Shutdown"}
-            def bounded(argv,deadline,stdout_cap,stderr_cap):
+            def bounded(argv,deadline,stdout_cap,stderr_cap,*,post_exit_drain_seconds=0.05):
+                self.assertEqual(post_exit_drain_seconds,1.0 if argv[2]=="bootstatus" else 0.05)
                 calls.append((argv,deadline));data=b""
                 self.assertEqual(argv[:2],["xcrun","simctl"]);self.assertNotIn("launch",argv)
                 action=argv[2]

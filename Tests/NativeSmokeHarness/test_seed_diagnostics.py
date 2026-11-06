@@ -91,6 +91,48 @@ class Diagnostics(unittest.TestCase):
         self.assertTrue(result.capture_incomplete);self.assertTrue(result.reaped)
         self.assertLess(time.monotonic()-started,0.7)
 
+    def test_opted_in_drain_waits_for_delayed_inherited_eof_and_preserves_byte_caps(self):
+        descendant='import os,time;time.sleep(0.2);os.write(1,b"a"*5000);os.write(2,b"b"*5000)'
+        code='import subprocess,sys\nsubprocess.Popen([sys.executable,"-c",'+repr(descendant)+'])'
+        started=time.monotonic()
+        result=diag.run_bounded([sys.executable,'-c',code],started+2,
+                                stdout_cap=7,stderr_cap=5,post_exit_drain_seconds=1.0)
+        self.assertEqual(result.returncode,0);self.assertFalse(result.timed_out)
+        self.assertTrue(result.reaped);self.assertFalse(result.capture_incomplete)
+        self.assertEqual((result.stdout_seen,result.stderr_seen),(5000,5000))
+        self.assertEqual((result.stdout,result.stderr),(b'a'*7,b'b'*5))
+        self.assertLess(time.monotonic()-started,1.5)
+
+    def test_opted_in_drain_still_rejects_pipes_open_beyond_one_second(self):
+        code='import subprocess,sys\nsubprocess.Popen([sys.executable,"-c","import time;time.sleep(1.4)"])'
+        started=time.monotonic()
+        result=diag.run_bounded([sys.executable,'-c',code],started+3,post_exit_drain_seconds=1)
+        self.assertEqual(result.returncode,0);self.assertFalse(result.timed_out)
+        self.assertTrue(result.reaped);self.assertTrue(result.capture_incomplete)
+        self.assertGreaterEqual(time.monotonic()-started,1)
+        self.assertLess(time.monotonic()-started,1.8)
+
+    def test_opted_in_drain_cannot_extend_the_existing_work_deadline(self):
+        code='import subprocess,sys\nsubprocess.Popen([sys.executable,"-c","import time;time.sleep(0.8)"])'
+        started=time.monotonic()
+        result=diag.run_bounded([sys.executable,'-c',code],started+2,
+                                work_deadline=started+0.35,post_exit_drain_seconds=1)
+        self.assertEqual(result.returncode,0);self.assertFalse(result.timed_out)
+        self.assertTrue(result.reaped);self.assertTrue(result.capture_incomplete)
+        self.assertLess(time.monotonic()-started,0.7)
+
+    def test_drain_validation_occurs_before_spawn_and_accepts_only_finite_zero_to_one(self):
+        invalid=[-0.001,1.001,float('inf'),float('-inf'),float('nan'),None,'0.2',True]
+        for value in invalid:
+            with self.subTest(value=value),patch.object(diag.subprocess,'Popen') as child:
+                with self.assertRaises(ValueError):
+                    diag.run_bounded(['unused'],time.monotonic()+2,post_exit_drain_seconds=value)
+                child.assert_not_called()
+        for value in (0,1):
+            with self.subTest(value=value),patch.object(diag.subprocess,'Popen') as child:
+                result=diag.run_bounded(['unused'],time.monotonic()-1,post_exit_drain_seconds=value)
+                self.assertTrue(result.timed_out);child.assert_not_called()
+
     def test_unexpected_seeding_error_still_stops_recorder_and_ui_after_original_boot_gate(self):
         argv=['rec','--udid',ID,'--output',str(self.out),'--','xcodebuild','test-without-building',
               '-destination','id='+ID,'-test-timeouts-enabled','YES',
